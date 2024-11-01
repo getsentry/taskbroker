@@ -10,6 +10,9 @@ sentry = { version = "0.34.0", features = ["tracing"] }
 sentry_protos = "0.1.32"
 tonic = "0.12.3"
 tokio = { version = "1.41.0", features = ["macros", "rt-multi-thread"] }
-rust_arroyo = { version = "*", git = "https://github.com/getsentry/arroyo", tag = "2.18.0" }
+rust_arroyo = { version = "2.18.0", git = "https://github.com/getsentry/arroyo" }
 tracing = "0.1.40"
 metrics = "0.24.0"
+
+[patch.crates-io]
+rdkafka = { git = "https://github.com/fede1024/rust-rdkafka" }
