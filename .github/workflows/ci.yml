@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+
       - name: Install Rust Toolchain
         run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt --no-self-update
 
@@ -34,6 +37,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
