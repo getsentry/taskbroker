@@ -1,21 +1,11 @@
-use std::sync::Arc;
-
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use prost::Message;
-use rdkafka::{
-    error::KafkaError,
-    message::OwnedMessage,
-    producer::{FutureProducer, FutureRecord},
-    util::Timeout,
-};
 use sentry_protos::sentry::v1::{InflightActivation, TaskActivation, TaskActivationStatus};
 use sqlx::{migrate::MigrateDatabase, sqlite::SqlitePool, QueryBuilder, Row, Sqlite};
-use tokio::task::JoinSet;
 
-pub struct InflightTaskStore<T> {
+pub struct InflightTaskStore {
     sqlite_pool: SqlitePool,
-    kafka_producer: Arc<T>,
 }
 
 pub struct TableRow {
@@ -94,8 +84,8 @@ impl From<TableRow> for InflightActivation {
     }
 }
 
-impl<T> InflightTaskStore<T> {
-    pub async fn new(url: &str, kafka_producer: T) -> Result<Self, Error> {
+impl InflightTaskStore {
+    pub async fn new(url: &str) -> Result<Self, Error> {
         if !Sqlite::database_exists(url).await? {
             Sqlite::create_database(url).await?
         }
@@ -116,10 +106,7 @@ impl<T> InflightTaskStore<T> {
         .execute(&sqlite_pool)
         .await?;
 
-        Ok(Self {
-            sqlite_pool,
-            kafka_producer: Arc::new(kafka_producer),
-        })
+        Ok(Self { sqlite_pool })
     }
 
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<(), Error> {
@@ -225,48 +212,9 @@ impl<T> InflightTaskStore<T> {
             .await?;
         Ok(())
     }
-}
 
-pub trait Producer {
-    fn send<T>(
-        &self,
-        payload: T,
-    ) -> impl std::future::Future<Output = Result<(i32, i64), (KafkaError, OwnedMessage)>> + Send
-    where
-        T: rdkafka::message::ToBytes + Send + Sync;
-}
-
-pub struct KafkaProducer {
-    producer: FutureProducer,
-    topic: String,
-    timeout: Timeout,
-}
-
-impl Producer for KafkaProducer {
-    async fn send<T>(&self, payload: T) -> Result<(i32, i64), (KafkaError, OwnedMessage)>
-    where
-        T: rdkafka::message::ToBytes + Send + Sync,
-    {
-        self.producer
-            .clone()
-            .send(
-                FutureRecord::<(), T>::to(&self.topic).payload(&payload),
-                self.timeout,
-            )
-            .await
-    }
-}
-
-impl<T> InflightTaskStore<T>
-where
-    T: Producer + Send + Sync + 'static,
-{
-    pub async fn upkeep(&self) -> Result<(), Error> {
-        todo!()
-    }
-
-    async fn produce_retry_activations(&self) -> Result<(), Error> {
-        let mut inflight_activations: Vec<InflightActivation> =
+    pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
+        Ok(
             sqlx::query("SELECT * FROM inflight_taskactivations WHERE status = $1")
                 .bind(TaskActivationStatus::Retry as i32)
                 .fetch_all(&self.sqlite_pool)
@@ -285,88 +233,21 @@ where
                     }
                     .into()
                 })
-                .collect();
-
-        inflight_activations
-            .iter_mut()
-            .for_each(|inflight_activation| {
-                inflight_activation
-                    .activation
-                    .as_mut()
-                    .expect("InflightActivation should always have a TaskActivation")
-                    .retry_state
-                    .as_mut()
-                    .expect("InflightActivation should always have a retry state")
-                    .attempts += 1;
-            });
-
-        let retry_activation_ids: Vec<_> = inflight_activations
-            .iter()
-            .map(|inflight_activation| {
-                inflight_activation
-                    .activation
-                    .as_ref()
-                    .expect("InflightActivation should always have a TaskActivation")
-                    .id
-                    .clone()
-            })
-            .collect();
-
-        let kafka_acks: JoinSet<_> = inflight_activations
-            .into_iter()
-            .map(|inflight_activation| {
-                let kafka_producer = self.kafka_producer.clone();
-                tokio::spawn(async move {
-                    kafka_producer
-                        .send(
-                            inflight_activation
-                                .activation
-                                .expect("InflightActivation should always have a TaskActivation")
-                                .encode_to_vec(),
-                        )
-                        .await
-                })
-            })
-            .collect();
-
-        kafka_acks.join_all().await;
-
-        let mut query_builder =
-            QueryBuilder::<Sqlite>::new("DELETE FROM inflight_taskactivations WHERE id in (");
-        let mut separated = query_builder.separated(", ");
-        for id in retry_activation_ids.into_iter() {
-            separated.push_bind(id);
-        }
-        separated.push_unseparated(") ");
-        query_builder.build().execute(&self.sqlite_pool).await?;
-
-        Ok(())
+                .collect(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        sync::{Arc, RwLock},
-        time::Duration,
-    };
+    use std::collections::HashMap;
 
     use chrono::{DateTime, Utc};
-    use prost::Message;
     use rand::Rng;
-    use rdkafka::{
-        error::KafkaError, message::OwnedMessage, producer::FutureProducer, ClientConfig,
-    };
-    use sentry_protos::sentry::v1::{
-        InflightActivation, RetryState, TaskActivation, TaskActivationStatus,
-    };
+    use sentry_protos::sentry::v1::{InflightActivation, TaskActivation, TaskActivationStatus};
     use sqlx::{Row, SqlitePool};
-    use tokio::time::sleep;
 
-    use crate::inflight_task_store::{InflightTaskStore, Producer};
-
-    use super::KafkaProducer;
+    use crate::inflight_task_store::InflightTaskStore;
 
     fn generate_temp_filename() -> String {
         let mut rng = rand::thread_rng();
@@ -375,7 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_db() {
-        assert!(InflightTaskStore::new(&generate_temp_filename(), ())
+        assert!(InflightTaskStore::new(&generate_temp_filename())
             .await
             .is_ok())
     }
@@ -383,7 +264,7 @@ mod tests {
     #[tokio::test]
     async fn test_store() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url, ()).await.unwrap();
+        let store = InflightTaskStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -454,7 +335,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_pending_activation() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url, ()).await.unwrap();
+        let store = InflightTaskStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![InflightActivation {
@@ -521,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn test_count_pending_activations() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url, ()).await.unwrap();
+        let store = InflightTaskStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -584,7 +465,7 @@ mod tests {
     #[tokio::test]
     async fn set_activation_status() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url, ()).await.unwrap();
+        let store = InflightTaskStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -667,7 +548,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_processing_deadline() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url, ()).await.unwrap();
+        let store = InflightTaskStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![InflightActivation {
@@ -722,7 +603,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_activation() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url, ()).await.unwrap();
+        let store = InflightTaskStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -820,53 +701,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_store_can_accept_kafka_producer() {
+    async fn test_get_retry_activations() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(
-            &url,
-            KafkaProducer {
-                producer: ClientConfig::new()
-                    .set("bootstrap.servers", "127.0.0.1:9092")
-                    .set("message.timeout.ms", "5000")
-                    .create::<FutureProducer>()
-                    .expect("Producer creation error"),
-                topic: "topic".into(),
-                timeout: rdkafka::util::Timeout::After(Duration::from_secs(1)),
-            },
-        )
-        .await
-        .unwrap();
-
-        assert!(store.produce_retry_activations().await.is_ok());
-    }
-
-    struct TestProducer {
-        data: Arc<RwLock<Vec<Vec<u8>>>>,
-    }
-
-    impl Producer for TestProducer {
-        async fn send<T>(&self, payload: T) -> Result<(i32, i64), (KafkaError, OwnedMessage)>
-        where
-            T: rdkafka::message::ToBytes + Send + Sync,
-        {
-            self.data.write().unwrap().push(payload.to_bytes().to_vec());
-            sleep(Duration::from_secs(1)).await;
-            Ok((0, self.data.read().unwrap().len().try_into().unwrap()))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_produce_retry_activations() {
-        let url = generate_temp_filename();
-        let producer_queue = Arc::new(RwLock::new(Vec::new()));
-        let store = InflightTaskStore::new(
-            &url,
-            TestProducer {
-                data: producer_queue.clone(),
-            },
-        )
-        .await
-        .unwrap();
+        let store = InflightTaskStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -882,12 +719,7 @@ mod tests {
                         nanos: 0,
                     }),
                     deadline: None,
-                    retry_state: Some(RetryState {
-                        attempts: 1,
-                        kind: "".into(),
-                        discard_after_attempt: None,
-                        deadletter_after_attempt: None,
-                    }),
+                    retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 }),
@@ -912,42 +744,7 @@ mod tests {
                         nanos: 0,
                     }),
                     deadline: None,
-                    retry_state: Some(RetryState {
-                        attempts: 2,
-                        kind: "".into(),
-                        discard_after_attempt: None,
-                        deadletter_after_attempt: None,
-                    }),
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                }),
-                status: 0,
-                offset: 1,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: Some(TaskActivation {
-                    id: "id_2".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: Some(RetryState {
-                        attempts: 3,
-                        kind: "".into(),
-                        discard_after_attempt: None,
-                        deadletter_after_attempt: None,
-                    }),
+                    retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 }),
@@ -961,34 +758,73 @@ mod tests {
                 processing_deadline: None,
             },
         ];
-
         assert!(store.store(batch.clone()).await.is_ok());
-        assert!(store.produce_retry_activations().await.is_ok());
-        assert_eq!(producer_queue.read().unwrap().len(), 0);
 
+        assert_eq!(store.count_pending_activations().await.unwrap(), 2);
         assert!(store
             .set_status("id_0", TaskActivationStatus::Retry)
             .await
             .is_ok());
+        assert_eq!(store.count_pending_activations().await.unwrap(), 1);
         assert!(store
             .set_status("id_1", TaskActivationStatus::Retry)
             .await
             .is_ok());
-        assert!(store.produce_retry_activations().await.is_ok());
-        assert_eq!(producer_queue.read().unwrap().len(), 2);
-        let mut expected_activation = batch[1].activation.as_ref().unwrap().clone();
-        expected_activation.retry_state.as_mut().unwrap().attempts += 1;
-        assert_eq!(
-            TaskActivation::decode(&producer_queue.write().unwrap().pop().unwrap() as &[u8])
-                .unwrap(),
-            expected_activation
-        );
-        let mut expected_activation = batch[0].activation.as_ref().unwrap().clone();
-        expected_activation.retry_state.as_mut().unwrap().attempts += 1;
-        assert_eq!(
-            TaskActivation::decode(&producer_queue.write().unwrap().pop().unwrap() as &[u8])
-                .unwrap(),
-            expected_activation
-        );
+
+        #[allow(deprecated)]
+        let expected = vec![
+            InflightActivation {
+                activation: Some(TaskActivation {
+                    id: "id_0".into(),
+                    namespace: "namespace".into(),
+                    taskname: "taskname".into(),
+                    parameters: "{}".into(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    deadline: None,
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: Some(1),
+                }),
+                status: TaskActivationStatus::Retry as i32,
+                offset: 0,
+                added_at: Some(prost_types::Timestamp {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                deadletter_at: None,
+                processing_deadline: None,
+            },
+            InflightActivation {
+                activation: Some(TaskActivation {
+                    id: "id_1".into(),
+                    namespace: "namespace".into(),
+                    taskname: "taskname".into(),
+                    parameters: "{}".into(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    deadline: None,
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: Some(1),
+                }),
+                status: TaskActivationStatus::Retry as i32,
+                offset: 1,
+                added_at: Some(prost_types::Timestamp {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                deadletter_at: None,
+                processing_deadline: None,
+            },
+        ];
+
+        assert_eq!(store.get_retry_activations().await.unwrap(), expected);
     }
 }
