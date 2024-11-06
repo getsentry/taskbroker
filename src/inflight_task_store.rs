@@ -2,15 +2,16 @@ use anyhow::Error;
 use chrono::{DateTime, Utc};
 use prost::Message;
 use sentry_protos::sentry::v1::TaskActivation;
-use sqlx::{migrate::MigrateDatabase, sqlite::SqlitePool, QueryBuilder, Row, Sqlite};
+use sqlx::{
+    migrate::MigrateDatabase, sqlite::SqlitePool, FromRow, QueryBuilder, Row, Sqlite, Type,
+};
 
 pub struct InflightTaskStore {
     sqlite_pool: SqlitePool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
 pub enum TaskActivationStatus {
-    Unspecified,
     Pending,
     Processing,
     Failure,
@@ -18,45 +19,17 @@ pub enum TaskActivationStatus {
     Complete,
 }
 
-impl TaskActivationStatus {
-    /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    fn as_str_name(&self) -> &'static str {
-        match self {
-            Self::Unspecified => "TASK_ACTIVATION_STATUS_UNSPECIFIED",
-            Self::Pending => "TASK_ACTIVATION_STATUS_PENDING",
-            Self::Processing => "TASK_ACTIVATION_STATUS_PROCESSING",
-            Self::Failure => "TASK_ACTIVATION_STATUS_FAILURE",
-            Self::Retry => "TASK_ACTIVATION_STATUS_RETRY",
-            Self::Complete => "TASK_ACTIVATION_STATUS_COMPLETE",
-        }
-    }
-    /// Creates an enum from field names used in the ProtoBuf definition.
-    fn from_str_name(value: &str) -> ::core::option::Option<Self> {
-        match value {
-            "TASK_ACTIVATION_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
-            "TASK_ACTIVATION_STATUS_PENDING" => Some(Self::Pending),
-            "TASK_ACTIVATION_STATUS_PROCESSING" => Some(Self::Processing),
-            "TASK_ACTIVATION_STATUS_FAILURE" => Some(Self::Failure),
-            "TASK_ACTIVATION_STATUS_RETRY" => Some(Self::Retry),
-            "TASK_ACTIVATION_STATUS_COMPLETE" => Some(Self::Complete),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct InflightActivation {
-    activation: TaskActivation,
-    status: TaskActivationStatus,
-    offset: i64,
-    added_at: DateTime<Utc>,
-    deadletter_at: Option<DateTime<Utc>>,
-    processing_deadline: Option<DateTime<Utc>>,
+    pub activation: TaskActivation,
+    pub status: TaskActivationStatus,
+    pub offset: i64,
+    pub added_at: DateTime<Utc>,
+    pub deadletter_at: Option<DateTime<Utc>>,
+    pub processing_deadline: Option<DateTime<Utc>>,
 }
 
+#[derive(FromRow)]
 pub struct TableRow {
     id: String,
     activation: Vec<u8>,
@@ -65,7 +38,7 @@ pub struct TableRow {
     deadletter_at: Option<DateTime<Utc>>,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
-    status: String,
+    status: TaskActivationStatus,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -80,7 +53,7 @@ impl TryFrom<InflightActivation> for TableRow {
             deadletter_at: value.deadletter_at,
             processing_deadline_duration: value.activation.processing_deadline_duration as u32,
             processing_deadline: None,
-            status: TaskActivationStatus::Pending.as_str_name().into(),
+            status: TaskActivationStatus::Pending,
         })
     }
 }
@@ -91,7 +64,7 @@ impl From<TableRow> for InflightActivation {
             activation: TaskActivation::decode(&value.activation as &[u8]).expect(
                 "Decode should always be successful as we only store encoded data in this column",
             ),
-            status: TaskActivationStatus::from_str_name(&value.status).unwrap(),
+            status: value.status,
             offset: value.offset,
             added_at: value.added_at,
             deadletter_at: value.deadletter_at,
@@ -162,38 +135,25 @@ impl InflightTaskStore {
                     )
                 RETURNING id",
         )
-        .bind(TaskActivationStatus::Processing.as_str_name())
-        .bind(TaskActivationStatus::Pending.as_str_name())
+        .bind(TaskActivationStatus::Processing)
+        .bind(TaskActivationStatus::Pending)
         .fetch_optional(&self.sqlite_pool)
         .await?;
 
         let Some(row) = result else { return Ok(None) };
 
-        let row = sqlx::query("SELECT * FROM inflight_taskactivations WHERE id = ?")
+        let row: TableRow = sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = ?")
             .bind(row.get::<String, _>("id"))
             .fetch_one(&self.sqlite_pool)
-            .await
-            .expect("This row should always be available as we just fetched the ID via the previous query");
+            .await?;
 
-        Ok(Some(
-            TableRow {
-                id: row.get("id"),
-                activation: row.get("activation"),
-                offset: row.get("offset"),
-                added_at: row.get("added_at"),
-                deadletter_at: row.get("deadletter_at"),
-                processing_deadline_duration: row.get("processing_deadline_duration"),
-                processing_deadline: row.get("processing_deadline"),
-                status: row.get("status"),
-            }
-            .into(),
-        ))
+        Ok(Some(row.into()))
     }
 
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
-                .bind(TaskActivationStatus::Pending.as_str_name())
+                .bind(TaskActivationStatus::Pending)
                 .fetch_one(&self.sqlite_pool)
                 .await?;
         Ok(result.get::<u64, _>("count") as usize)
@@ -201,7 +161,7 @@ impl InflightTaskStore {
 
     pub async fn set_status(&self, id: &str, status: TaskActivationStatus) -> Result<(), Error> {
         sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2")
-            .bind(status.as_str_name())
+            .bind(status)
             .bind(id)
             .execute(&self.sqlite_pool)
             .await?;
@@ -232,7 +192,7 @@ impl InflightTaskStore {
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         Ok(
             sqlx::query("SELECT * FROM inflight_taskactivations WHERE status = $1")
-                .bind(TaskActivationStatus::Retry.as_str_name())
+                .bind(TaskActivationStatus::Retry)
                 .fetch_all(&self.sqlite_pool)
                 .await?
                 .into_iter()
@@ -300,7 +260,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -322,7 +282,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -365,7 +325,7 @@ mod tests {
                 processing_deadline_duration: 10,
                 expires: Some(1),
             },
-            status: TaskActivationStatus::Unspecified,
+            status: TaskActivationStatus::Pending,
             offset: 0,
             added_at,
             deadletter_at: None,
@@ -391,7 +351,7 @@ mod tests {
                 processing_deadline_duration: 10,
                 expires: Some(1),
             },
-            status: TaskActivationStatus::Processing.into(),
+            status: TaskActivationStatus::Processing,
             offset: 0,
             added_at,
             deadletter_at: None,
@@ -427,7 +387,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -449,7 +409,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -484,7 +444,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -506,7 +466,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -560,7 +520,7 @@ mod tests {
                 processing_deadline_duration: 0,
                 expires: Some(1),
             },
-            status: TaskActivationStatus::Unspecified,
+            status: TaskActivationStatus::Pending,
             offset: 0,
             added_at: Utc::now(),
             deadletter_at: None,
@@ -613,7 +573,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -635,7 +595,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -708,7 +668,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 0,
                 added_at,
                 deadletter_at: None,
@@ -730,7 +690,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: Some(1),
                 },
-                status: TaskActivationStatus::Unspecified,
+                status: TaskActivationStatus::Pending,
                 offset: 1,
                 added_at,
                 deadletter_at: None,
