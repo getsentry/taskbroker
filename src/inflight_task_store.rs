@@ -1,11 +1,60 @@
-use anyhow::{anyhow, Error};
+use anyhow::Error;
 use chrono::{DateTime, Utc};
 use prost::Message;
-use sentry_protos::sentry::v1::{InflightActivation, TaskActivation, TaskActivationStatus};
+use sentry_protos::sentry::v1::TaskActivation;
 use sqlx::{migrate::MigrateDatabase, sqlite::SqlitePool, QueryBuilder, Row, Sqlite};
 
 pub struct InflightTaskStore {
     sqlite_pool: SqlitePool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TaskActivationStatus {
+    Unspecified,
+    Pending,
+    Processing,
+    Failure,
+    Retry,
+    Complete,
+}
+
+impl TaskActivationStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "TASK_ACTIVATION_STATUS_UNSPECIFIED",
+            Self::Pending => "TASK_ACTIVATION_STATUS_PENDING",
+            Self::Processing => "TASK_ACTIVATION_STATUS_PROCESSING",
+            Self::Failure => "TASK_ACTIVATION_STATUS_FAILURE",
+            Self::Retry => "TASK_ACTIVATION_STATUS_RETRY",
+            Self::Complete => "TASK_ACTIVATION_STATUS_COMPLETE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "TASK_ACTIVATION_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "TASK_ACTIVATION_STATUS_PENDING" => Some(Self::Pending),
+            "TASK_ACTIVATION_STATUS_PROCESSING" => Some(Self::Processing),
+            "TASK_ACTIVATION_STATUS_FAILURE" => Some(Self::Failure),
+            "TASK_ACTIVATION_STATUS_RETRY" => Some(Self::Retry),
+            "TASK_ACTIVATION_STATUS_COMPLETE" => Some(Self::Complete),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InflightActivation {
+    activation: TaskActivation,
+    status: TaskActivationStatus,
+    offset: i64,
+    added_at: DateTime<Utc>,
+    deadletter_at: Option<DateTime<Utc>>,
+    processing_deadline: Option<DateTime<Utc>>,
 }
 
 pub struct TableRow {
@@ -16,44 +65,22 @@ pub struct TableRow {
     deadletter_at: Option<DateTime<Utc>>,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
-    status: i32,
+    status: String,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
     type Error = anyhow::Error;
 
     fn try_from(value: InflightActivation) -> Result<Self, Self::Error> {
-        let activation = value.activation.as_ref().ok_or(anyhow!(
-            "Failed to convert InflightActivation to TableRow: missing activation"
-        ))?;
-
         Ok(Self {
-            id: activation.id.clone(),
-            activation: activation.encode_to_vec(),
+            id: value.activation.id.clone(),
+            activation: value.activation.encode_to_vec(),
             offset: value.offset,
-            added_at: DateTime::from_timestamp(
-                value
-                    .added_at
-                    .ok_or(anyhow!(
-                        "Failed to convert InflightActivation to TableRow: missing added_at"
-                    ))?
-                    .seconds,
-                0,
-            )
-            .ok_or(anyhow!(
-                "Failed to convert InflightActivation to TableRow: invalid added_at timestamp"
-            ))?,
-            deadletter_at: value
-                .deadletter_at
-                .map(|timestamp| {
-                    DateTime::from_timestamp(timestamp.seconds, 0).ok_or(anyhow!(
-                    "Failed to convert InflightActivation to TableRow: invalid added_at timestamp"
-                ))
-                })
-                .transpose()?,
-            processing_deadline_duration: activation.processing_deadline_duration as u32,
+            added_at: value.added_at,
+            deadletter_at: value.deadletter_at,
+            processing_deadline_duration: value.activation.processing_deadline_duration as u32,
             processing_deadline: None,
-            status: TaskActivationStatus::Pending.into(),
+            status: TaskActivationStatus::Pending.as_str_name().into(),
         })
     }
 }
@@ -61,25 +88,14 @@ impl TryFrom<InflightActivation> for TableRow {
 impl From<TableRow> for InflightActivation {
     fn from(value: TableRow) -> Self {
         Self {
-            activation: Some(TaskActivation::decode(&value.activation as &[u8]).expect(
+            activation: TaskActivation::decode(&value.activation as &[u8]).expect(
                 "Decode should always be successful as we only store encoded data in this column",
-            )),
-            status: value.status,
+            ),
+            status: TaskActivationStatus::from_str_name(&value.status).unwrap(),
             offset: value.offset,
-            added_at: Some(prost_types::Timestamp {
-                seconds: value.added_at.timestamp(),
-                nanos: 0,
-            }),
-            deadletter_at: value.deadletter_at.map(|date_time| prost_types::Timestamp {
-                seconds: date_time.timestamp(),
-                nanos: 0,
-            }),
-            processing_deadline: value.processing_deadline.map(|date_time| {
-                prost_types::Timestamp {
-                    seconds: date_time.timestamp(),
-                    nanos: 0,
-                }
-            }),
+            added_at: value.added_at,
+            deadletter_at: value.deadletter_at,
+            processing_deadline: value.processing_deadline,
         }
     }
 }
@@ -146,8 +162,8 @@ impl InflightTaskStore {
                     )
                 RETURNING id",
         )
-        .bind(TaskActivationStatus::Processing as i32)
-        .bind(TaskActivationStatus::Pending as i32)
+        .bind(TaskActivationStatus::Processing.as_str_name())
+        .bind(TaskActivationStatus::Pending.as_str_name())
         .fetch_optional(&self.sqlite_pool)
         .await?;
 
@@ -177,7 +193,7 @@ impl InflightTaskStore {
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
-                .bind(TaskActivationStatus::Pending as i32)
+                .bind(TaskActivationStatus::Pending.as_str_name())
                 .fetch_one(&self.sqlite_pool)
                 .await?;
         Ok(result.get::<u64, _>("count") as usize)
@@ -185,7 +201,7 @@ impl InflightTaskStore {
 
     pub async fn set_status(&self, id: &str, status: TaskActivationStatus) -> Result<(), Error> {
         sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2")
-            .bind(status as i32)
+            .bind(status.as_str_name())
             .bind(id)
             .execute(&self.sqlite_pool)
             .await?;
@@ -216,7 +232,7 @@ impl InflightTaskStore {
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         Ok(
             sqlx::query("SELECT * FROM inflight_taskactivations WHERE status = $1")
-                .bind(TaskActivationStatus::Retry as i32)
+                .bind(TaskActivationStatus::Retry.as_str_name())
                 .fetch_all(&self.sqlite_pool)
                 .await?
                 .into_iter()
@@ -244,10 +260,10 @@ mod tests {
 
     use chrono::{DateTime, Utc};
     use rand::Rng;
-    use sentry_protos::sentry::v1::{InflightActivation, TaskActivation, TaskActivationStatus};
+    use sentry_protos::sentry::v1::TaskActivation;
     use sqlx::{Row, SqlitePool};
 
-    use crate::inflight_task_store::InflightTaskStore;
+    use crate::inflight_task_store::{InflightActivation, InflightTaskStore, TaskActivationStatus};
 
     fn generate_temp_filename() -> String {
         let mut rng = rand::thread_rng();
@@ -269,7 +285,7 @@ mod tests {
         #[allow(deprecated)]
         let batch = vec![
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_0".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -283,18 +299,15 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 0,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_1".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -308,13 +321,10 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 1,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
@@ -336,10 +346,11 @@ mod tests {
     async fn test_get_pending_activation() {
         let url = generate_temp_filename();
         let store = InflightTaskStore::new(&url).await.unwrap();
+        let added_at = Utc::now();
 
         #[allow(deprecated)]
         let batch = vec![InflightActivation {
-            activation: Some(TaskActivation {
+            activation: TaskActivation {
                 id: "id_0".into(),
                 namespace: "namespace".into(),
                 taskname: "taskname".into(),
@@ -353,13 +364,10 @@ mod tests {
                 retry_state: None,
                 processing_deadline_duration: 10,
                 expires: Some(1),
-            }),
-            status: 0,
+            },
+            status: TaskActivationStatus::Unspecified,
             offset: 0,
-            added_at: Some(prost_types::Timestamp {
-                seconds: 0,
-                nanos: 0,
-            }),
+            added_at,
             deadletter_at: None,
             processing_deadline: None,
         }];
@@ -368,7 +376,7 @@ mod tests {
         let result = store.get_pending_activation().await.unwrap();
         #[allow(deprecated)]
         let expected = Some(InflightActivation {
-            activation: Some(TaskActivation {
+            activation: TaskActivation {
                 id: "id_0".into(),
                 namespace: "namespace".into(),
                 taskname: "taskname".into(),
@@ -382,13 +390,10 @@ mod tests {
                 retry_state: None,
                 processing_deadline_duration: 10,
                 expires: Some(1),
-            }),
+            },
             status: TaskActivationStatus::Processing.into(),
             offset: 0,
-            added_at: Some(prost_types::Timestamp {
-                seconds: 0,
-                nanos: 0,
-            }),
+            added_at,
             deadletter_at: None,
             processing_deadline: result.as_ref().unwrap().processing_deadline,
         });
@@ -396,7 +401,7 @@ mod tests {
         assert_eq!(result, expected);
 
         let deadline = result.as_ref().unwrap().processing_deadline;
-        assert!(deadline.unwrap().seconds > Utc::now().timestamp());
+        assert!(deadline.unwrap() > Utc::now());
     }
 
     #[tokio::test]
@@ -407,7 +412,7 @@ mod tests {
         #[allow(deprecated)]
         let batch = vec![
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_0".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -421,18 +426,15 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 0,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_1".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -446,13 +448,10 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 1,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
@@ -470,7 +469,7 @@ mod tests {
         #[allow(deprecated)]
         let batch = vec![
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_0".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -484,18 +483,15 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 0,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_1".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -509,13 +505,10 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 1,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
@@ -552,7 +545,7 @@ mod tests {
 
         #[allow(deprecated)]
         let batch = vec![InflightActivation {
-            activation: Some(TaskActivation {
+            activation: TaskActivation {
                 id: "id_0".into(),
                 namespace: "namespace".into(),
                 taskname: "taskname".into(),
@@ -566,13 +559,10 @@ mod tests {
                 retry_state: None,
                 processing_deadline_duration: 0,
                 expires: Some(1),
-            }),
-            status: 0,
+            },
+            status: TaskActivationStatus::Unspecified,
             offset: 0,
-            added_at: Some(prost_types::Timestamp {
-                seconds: 0,
-                nanos: 0,
-            }),
+            added_at: Utc::now(),
             deadletter_at: None,
             processing_deadline: None,
         }];
@@ -608,7 +598,7 @@ mod tests {
         #[allow(deprecated)]
         let batch = vec![
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_0".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -622,18 +612,15 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 0,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_1".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -647,13 +634,10 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 1,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at: Utc::now(),
                 deadletter_at: None,
                 processing_deadline: None,
             },
@@ -704,11 +688,12 @@ mod tests {
     async fn test_get_retry_activations() {
         let url = generate_temp_filename();
         let store = InflightTaskStore::new(&url).await.unwrap();
+        let added_at = Utc::now();
 
         #[allow(deprecated)]
         let batch = vec![
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_0".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -722,18 +707,15 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 0,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at,
                 deadletter_at: None,
                 processing_deadline: None,
             },
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_1".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -747,13 +729,10 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: 0,
+                },
+                status: TaskActivationStatus::Unspecified,
                 offset: 1,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at,
                 deadletter_at: None,
                 processing_deadline: None,
             },
@@ -774,7 +753,7 @@ mod tests {
         #[allow(deprecated)]
         let expected = vec![
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_0".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -788,18 +767,15 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: TaskActivationStatus::Retry as i32,
+                },
+                status: TaskActivationStatus::Retry,
                 offset: 0,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at,
                 deadletter_at: None,
                 processing_deadline: None,
             },
             InflightActivation {
-                activation: Some(TaskActivation {
+                activation: TaskActivation {
                     id: "id_1".into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
@@ -813,13 +789,10 @@ mod tests {
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: Some(1),
-                }),
-                status: TaskActivationStatus::Retry as i32,
+                },
+                status: TaskActivationStatus::Retry,
                 offset: 1,
-                added_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                added_at,
                 deadletter_at: None,
                 processing_deadline: None,
             },
