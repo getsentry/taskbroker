@@ -30,7 +30,7 @@ pub struct InflightActivation {
 }
 
 #[derive(FromRow)]
-pub struct TableRow {
+struct TableRow {
     id: String,
     activation: Vec<u8>,
     offset: i64,
