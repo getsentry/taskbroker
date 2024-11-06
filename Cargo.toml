@@ -6,13 +6,14 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-sentry = { version = "0.34.0", features = ["tracing"] }
-sentry_protos = "0.1.32"
-tonic = "0.12.3"
-tokio = { version = "1.41.0", features = ["macros", "rt-multi-thread"] }
-rust_arroyo = { version = "2.18.0", git = "https://github.com/getsentry/arroyo" }
-tracing = "0.1.40"
-metrics = "0.24.0"
+sentry_protos = "0.1.33"
+anyhow = "1.0.92"
+chrono = { version = "0.4.26" }
+sqlx = { version = "0.8.2", features = ["sqlite", "runtime-tokio", "chrono"] }
+prost = "0.13"
+tokio = { version = "1.41.0", features = ["full"] }
+prost-types = "0.13.3"
+rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 
-[patch.crates-io]
-rdkafka = { git = "https://github.com/fede1024/rust-rdkafka" }
+[dev-dependencies]
+rand = "0.8.5"
