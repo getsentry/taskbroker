@@ -14,6 +14,9 @@ prost = "0.13"
 tokio = { version = "1.41.0", features = ["full"] }
 prost-types = "0.13.3"
 rdkafka = { version = "0.36.2", features = ["cmake-build"] }
+serde = "1.0.214"
+serde_yaml = "0.9.34"
+figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 
 [dev-dependencies]
 rand = "0.8.5"
