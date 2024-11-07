@@ -52,7 +52,7 @@ pub struct Config {
     pub max_processing_deadline: u32,
 
     /// The maximum duration a task can be in InflightTaskStore
-    /// After this time, messages will be deadlettered if they 
+    /// After this time, messages will be deadlettered if they
     /// are not complete. This should be a multiple of max_processing_deadline
     /// to allow temporary worker deaths to be resolved.
     pub deadletter_deadline: u32,
