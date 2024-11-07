@@ -1,7 +1,10 @@
+use figment::{
+    providers::{Env, Format, Yaml},
+    Figment,
+};
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::path::Path;
-use figment::{Figment, providers::{Format, Yaml, Env}};
-use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -61,16 +64,17 @@ pub fn load_config(path: &Path) -> Result<Config, figment::Error> {
     figment.extract()
 }
 
-
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use super::{Config, LogLevel, load_config};
+    use super::{load_config, Config, LogLevel};
     use figment::Jail;
+    use std::path::Path;
 
     #[test]
     fn test_default() {
-        let config = Config {..Default::default()};
+        let config = Config {
+            ..Default::default()
+        };
         assert_eq!(config.sentry_dsn, None);
         assert_eq!(config.sentry_env, None);
         assert_eq!(config.log_level, Some(LogLevel::Info));
@@ -81,7 +85,9 @@ mod tests {
     #[test]
     fn test_parse_yaml_and_env() {
         Jail::expect_with(|jail| {
-            jail.create_file("config.yaml", r#"
+            jail.create_file(
+                "config.yaml",
+                r#"
                 sentry_dsn: fake_dsn
                 sentry_env: prod
                 log_level: info
@@ -89,7 +95,8 @@ mod tests {
                 kafka_cluster: [10.0.0.1:9092, 10.0.0.2:9092]
                 kafka_topic: error-tasks
                 db_path: ./taskworker-error.sqlite
-            "#)?;
+            "#,
+            )?;
             jail.set_env("TASKWORKER_LOG_LEVEL", "error");
 
             let config = load_config(Path::new("config.yaml"))?;
