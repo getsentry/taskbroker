@@ -34,6 +34,9 @@ pub struct Config {
     /// The statsd address to report metrics to.
     pub statsd_addr: SocketAddr,
 
+    /// The port to bind the grpc service to
+    pub grpc_port: u32,
+
     /// comma separated list of kafka brokers to connect to
     pub kafka_cluster: Vec<String>,
 
@@ -67,6 +70,7 @@ impl Default for Config {
             sentry_dsn: None,
             sentry_env: None,
             log_level: Some(LogLevel::Info),
+            grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             kafka_cluster: vec!["127.0.0.1:9092".to_owned()],
             kafka_topic: "task-worker".to_owned(),
@@ -125,6 +129,7 @@ mod tests {
         assert_eq!(config.sentry_dsn, None);
         assert_eq!(config.sentry_env, None);
         assert_eq!(config.log_level, Some(LogLevel::Info));
+        assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
         assert_eq!(config.db_path, "./taskworker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 200);
