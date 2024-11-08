@@ -259,7 +259,7 @@ macro_rules! processing_strategy {
             for (topic, partition) in tpl.iter() {
                 let queue = consumer
                     .split_partition_queue(topic, *partition)
-                    .expect("Topic and parition should always be splittable");
+                    .expect("Unable to split topic by parition");
 
                 handles.spawn($crate::consumer::kafka::map(
                     queue,
@@ -454,7 +454,7 @@ pub async fn map<T>(
                             Arc::try_unwrap(msg).expect("msg should only have a single strong ref"),
                         )
                         .await
-                        .expect("reduce_err should always be available");
+                        .expect("reduce_err is not available");
                     }
                 }
             }
@@ -497,7 +497,7 @@ pub trait Reducer {
     fn reduce(&mut self, t: Self::Input) -> impl Future<Output = Result<(), anyhow::Error>> + Send;
     fn flush(&mut self) -> impl Future<Output = Result<Self::Output, anyhow::Error>> + Send;
     fn reset(&mut self);
-    fn is_full(&self) -> bool;
+    fn is_full(&self) -> impl Future<Output = bool> + Send;
     fn get_reduce_config(&self) -> ReduceConfig;
 }
 
@@ -507,9 +507,7 @@ async fn handle_reducer_failure<T>(
     err: &mpsc::Sender<OwnedMessage>,
 ) {
     for msg in take(inflight_msgs).into_iter() {
-        err.send(msg)
-            .await
-            .expect("reduce_err should always be available");
+        err.send(msg).await.expect("reduce_err is not available");
     }
     reducer.reset();
 }
@@ -579,7 +577,7 @@ pub async fn reduce<T, U>(
                 flush_reducer(&mut reducer, &mut inflight_msgs, &ok, &err).await?;
             }
 
-            val = receiver.recv(), if !reducer.is_full() => {
+            val = receiver.recv(), if !reducer.is_full().await => {
                 let Some((msg, value)) = val else {
                     assert_eq!(
                         config.shutdown_condition,
@@ -614,7 +612,7 @@ pub async fn reduce<T, U>(
                 }
 
                 if config.when_full_behaviour == ReducerWhenFullBehaviour::Flush
-                    && reducer.is_full()
+                    && reducer.is_full().await
                 {
                     flush_reducer(&mut reducer, &mut inflight_msgs, &ok, &err).await?;
                 }
@@ -648,7 +646,7 @@ pub async fn reduce_err(
                         reducer
                             .flush()
                             .await
-                            .expect("error reducer flush should always be successful");
+                            .expect("Failed to flush error reducer");
                         if !inflight_msgs.is_empty() {
                             ok.send((take(&mut inflight_msgs), ()))
                                 .await
@@ -671,7 +669,7 @@ pub async fn reduce_err(
                 reducer
                     .flush()
                     .await
-                    .expect("error reducer flush should always be successful");
+                    .expect("Failed to flush error reducer");
                 if !inflight_msgs.is_empty() {
                     ok.send((take(&mut inflight_msgs), ()))
                         .await
@@ -679,7 +677,7 @@ pub async fn reduce_err(
                 }
             }
 
-            val = receiver.recv(), if !reducer.is_full() => {
+            val = receiver.recv(), if !reducer.is_full().await => {
                 let Some(msg) = val else {
                     unreachable!("Received end of stream without shutdown signal");
                 };
@@ -688,15 +686,15 @@ pub async fn reduce_err(
                 reducer
                     .reduce(msg)
                     .await
-                    .expect("error reducer reduce should always be successful");
+                    .expect("Failed to reduce error reducer");
 
                 if matches!(config.when_full_behaviour, ReducerWhenFullBehaviour::Flush)
-                    && reducer.is_full()
+                    && reducer.is_full().await
                 {
                     reducer
                         .flush()
                         .await
-                        .expect("error reducer flush should always be successful");
+                        .expect("Failed to flush error reducer");
 
                     if !inflight_msgs.is_empty() {
                         ok.send((take(&mut inflight_msgs), ()))
@@ -752,7 +750,7 @@ impl From<HighwaterMark> for TopicPartitionList {
         let mut tpl = TopicPartitionList::with_capacity(val.len());
         for ((topic, partition), offset) in val.data.iter() {
             tpl.add_partition_offset(topic, *partition, Offset::Offset(*offset))
-                .expect("Partition offset should always be valid");
+                .expect("Invalid partition offset");
         }
         tpl
     }
@@ -863,7 +861,7 @@ mod tests {
             self.data.take();
         }
 
-        fn is_full(&self) -> bool {
+        async fn is_full(&self) -> bool {
             self.data.is_some()
         }
 
@@ -949,7 +947,7 @@ mod tests {
             self.buffer.write().unwrap().clear();
         }
 
-        fn is_full(&self) -> bool {
+        async fn is_full(&self) -> bool {
             self.buffer.read().unwrap().len() >= 32
         }
 

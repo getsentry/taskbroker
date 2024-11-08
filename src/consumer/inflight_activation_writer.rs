@@ -11,6 +11,7 @@ use super::kafka::{
 
 pub struct InflightTaskWriterConfig {
     pub max_buf_len: usize,
+    pub max_pending_tasks: usize,
     pub flush_interval: Option<Duration>,
     pub when_full_behaviour: ReducerWhenFullBehaviour,
     pub shutdown_behaviour: ReduceShutdownBehaviour,
@@ -61,8 +62,15 @@ impl Reducer for InflightTaskWriter {
         self.buffer.clear();
     }
 
-    fn is_full(&self) -> bool {
+    async fn is_full(&self) -> bool {
         self.buffer.len() >= self.config.max_buf_len
+            || self
+                .store
+                .count_pending_activations()
+                .await
+                .expect("Error communicating with activation store")
+                + self.buffer.len()
+                >= self.config.max_pending_tasks
     }
 
     fn get_reduce_config(&self) -> ReduceConfig {

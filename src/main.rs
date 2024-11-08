@@ -54,10 +54,11 @@ async fn main() -> Result<(), Error> {
             reduce: InflightTaskWriter::new(
                 store.clone(),
                 InflightTaskWriterConfig {
-                    max_buf_len: 2048,
-                    flush_interval: Some(Duration::from_secs(1)),
-                    when_full_behaviour: ReducerWhenFullBehaviour::Backpressure,
-                    shutdown_behaviour: ReduceShutdownBehaviour::Flush,
+                    max_buf_len: 128,
+                    max_pending_tasks: 2048,
+                    flush_interval: None,
+                    when_full_behaviour: ReducerWhenFullBehaviour::Flush,
+                    shutdown_behaviour: ReduceShutdownBehaviour::Drop,
                 }
             ),
 

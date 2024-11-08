@@ -30,7 +30,7 @@ impl<T> OsStreamWriter<T> {
 
 impl<T> Reducer for OsStreamWriter<T>
 where
-    T: Debug + Send,
+    T: Debug + Send + Sync,
 {
     type Input = T;
     type Output = ();
@@ -56,7 +56,7 @@ where
         self.data.take();
     }
 
-    fn is_full(&self) -> bool {
+    async fn is_full(&self) -> bool {
         self.data.is_some()
     }
 
