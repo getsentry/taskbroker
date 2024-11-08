@@ -1,6 +1,9 @@
 use figment::{
     providers::{Env, Format, Yaml},
     Figment,
+    Metadata,
+    Provider,
+    Profile,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -76,18 +79,41 @@ impl Default for Config {
     }
 }
 
-/// Load configuration from a file path
-/// Will merge in environment variables prefixed with TASKWORKER_ as well.
-pub fn load_config(path: &Path) -> Result<Config, figment::Error> {
-    let figment = Figment::new()
-        .merge(Yaml::file(path))
-        .merge(Env::prefixed("TASKWORKER_"));
-    figment.extract()
+impl Config {
+    fn figment() -> Figment {
+        let figment = Figment::from(Config::default())
+            .merge(Env::prefixed("TASKWORKER_"));
+        figment
+    }
+
+    /// Build a Config instance from defaults and Env vars
+    pub fn from_env() -> Result<Self, figment::Error> {
+        let config = Config::figment().extract();
+        config
+    }
+
+    /// Build a Config instance from default, env vars and a file.
+    pub fn from_file(path: &Path) -> Result<Self, figment::Error> {
+        let config = Config::figment()
+            .merge(Yaml::file(path))
+            .extract();
+        config
+    }
+}
+
+impl Provider for Config {
+    fn metadata(&self) -> Metadata {
+        Metadata::named("Taskbroker config")
+    }
+
+    fn data(&self) -> Result<figment::value::Map<Profile, figment::value::Dict>, figment::Error> {
+        figment::providers::Serialized::defaults(Config::default()).data()
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{load_config, Config, LogLevel};
+    use super::{Config, LogLevel};
     use figment::Jail;
     use std::path::Path;
 
@@ -105,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_yaml_and_env() {
+    fn test_from_file() {
         Jail::expect_with(|jail| {
             jail.create_file(
                 "config.yaml",
@@ -125,14 +151,35 @@ mod tests {
             )?;
             jail.set_env("TASKWORKER_LOG_LEVEL", "error");
 
-            let config = load_config(Path::new("config.yaml"))?;
+            let config = Config::from_file(Path::new("config.yaml")).unwrap();
             assert_eq!(config.sentry_dsn, Some("fake_dsn".to_owned()));
-            assert_eq!(config.log_level, Some(LogLevel::Error));
+            assert_eq!(config.log_level, Some(LogLevel::Info));
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.db_path, "./taskworker-error.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 512);
             assert_eq!(config.max_processing_deadline, 1000);
+            assert_eq!(config.deadletter_deadline, 2000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKWORKER_LOG_LEVEL", "error");
+            jail.set_env("TASKWORKER_DEADLETTER_DEADLINE", "2000");
+
+            let config = Config::from_env().unwrap();
+            assert_eq!(config.sentry_dsn, None);
+            assert_eq!(config.sentry_env, None);
+            assert_eq!(config.log_level, Some(LogLevel::Error));
+            assert_eq!(config.kafka_topic, "task-worker".to_owned());
+            assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
+            assert_eq!(config.db_path, "./taskworker-inflight.sqlite".to_owned());
+            assert_eq!(config.max_pending_count, 200);
+            assert_eq!(config.max_processing_deadline, 300);
             assert_eq!(config.deadletter_deadline, 2000);
 
             Ok(())
