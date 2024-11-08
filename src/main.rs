@@ -6,6 +6,9 @@ use inflight_task_store::InflightTaskStore;
 mod config;
 #[allow(dead_code)]
 mod inflight_task_store;
+mod logging;
+
+pub const VERSION: &str = env!("TASKWORKER_VERSION");
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -22,6 +25,8 @@ async fn main() -> Result<(), Error> {
     // Read command line options
     let args = Args::parse();
     let config = Config::from_args(&args)?;
+
+    logging::init(logging::LoggingConfig::from_config(&config));
 
     InflightTaskStore::new(&config.db_path).await?;
     Ok(())

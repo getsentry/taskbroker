@@ -18,6 +18,8 @@ serde = "1.0.214"
 serde_yaml = "0.9.34"
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 clap = { version = "4.5.20", features = ["derive"] }
+sentry = { version = "0.34.0", features = ["tracing"] }
+tracing-subscriber = { version = "0.3.18", features = ["json"] }
 
 [dev-dependencies]
 rand = "0.8.5"
