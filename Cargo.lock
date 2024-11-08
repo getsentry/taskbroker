@@ -2084,7 +2084,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "taskworker"
+name = "taskbroker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
