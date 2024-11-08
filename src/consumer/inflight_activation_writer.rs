@@ -9,7 +9,7 @@ use super::kafka::{
     ReducerWhenFullBehaviour,
 };
 
-pub struct InflightTaskWriterConfig {
+pub struct Config {
     pub max_buf_len: usize,
     pub max_pending_tasks: usize,
     pub flush_interval: Option<Duration>,
@@ -17,14 +17,14 @@ pub struct InflightTaskWriterConfig {
     pub shutdown_behaviour: ReduceShutdownBehaviour,
 }
 
-pub struct InflightTaskWriter {
+pub struct InflightActivationWriter {
     store: Arc<InflightActivationStore>,
     buffer: Vec<InflightActivation>,
-    config: InflightTaskWriterConfig,
+    config: Config,
 }
 
-impl InflightTaskWriter {
-    pub fn new(store: Arc<InflightActivationStore>, config: InflightTaskWriterConfig) -> Self {
+impl InflightActivationWriter {
+    pub fn new(store: Arc<InflightActivationStore>, config: Config) -> Self {
         Self {
             store,
             buffer: Vec::with_capacity(config.max_buf_len),
@@ -33,7 +33,7 @@ impl InflightTaskWriter {
     }
 }
 
-impl Reducer for InflightTaskWriter {
+impl Reducer for InflightActivationWriter {
     type Input = InflightActivation;
 
     type Output = ();

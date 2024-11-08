@@ -3,8 +3,8 @@ use std::{sync::Arc, time::Duration};
 use anyhow::Error;
 use chrono::Utc;
 use consumer::{
-    deserialize_activation::{self, DeserializerConfig},
-    inflight_activation_writer::{InflightTaskWriter, InflightTaskWriterConfig},
+    deserialize_activation::{self},
+    inflight_activation_writer::{self, InflightActivationWriter},
     kafka::{start_consumer, ReduceShutdownBehaviour, ReducerWhenFullBehaviour},
     os_stream_writer::{OsStream, OsStreamWriter},
 };
@@ -47,13 +47,13 @@ async fn main() -> Result<(), Error> {
             .set("enable.auto.offset.store", "false")
             .set_log_level(RDKafkaLogLevel::Debug),
         processing_strategy!({
-            map: deserialize_activation::new(DeserializerConfig {
+            map: deserialize_activation::new(deserialize_activation::Config {
                 deadletter_duration,
             }),
 
-            reduce: InflightTaskWriter::new(
+            reduce: InflightActivationWriter::new(
                 store.clone(),
-                InflightTaskWriterConfig {
+                inflight_activation_writer::Config {
                     max_buf_len: 128,
                     max_pending_tasks: 2048,
                     flush_interval: None,
