@@ -1,10 +1,11 @@
 use figment::{
-    providers::{Env, Format, Yaml},
+    providers::{Env, Format, Serialized, Yaml},
     Figment, Metadata, Profile, Provider,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::path::Path;
+
+use crate::Args;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -81,18 +82,19 @@ impl Default for Config {
 }
 
 impl Config {
-    fn figment() -> Figment {
-        Figment::from(Config::default()).merge(Env::prefixed("TASKWORKER_"))
-    }
+    /// Build a config instance from defaults, env vars, file + CLI options
+    pub fn from_args(args: &Args) -> Result<Self, figment::Error> {
+        let mut builder = Figment::from(Config::default())
+            .merge(Env::prefixed("TASKWORKER_"));
 
-    /// Build a Config instance from defaults and Env vars
-    pub fn from_env() -> Result<Self, figment::Error> {
-        Config::figment().extract()
-    }
-
-    /// Build a Config instance from default, env vars and a file.
-    pub fn from_file(path: &Path) -> Result<Self, figment::Error> {
-        Config::figment().merge(Yaml::file(path)).extract()
+        if let Some(path) = &args.config {
+            builder = builder.merge(Yaml::file(path));
+        }
+        if let Some(log_level) = &args.log_level {
+            builder = builder.merge(Serialized::default("log_level", log_level));
+        }
+        let config = builder.extract()?;
+        Ok(config)
     }
 }
 
@@ -108,9 +110,9 @@ impl Provider for Config {
 
 #[cfg(test)]
 mod tests {
+    use crate::Args;
     use super::{Config, LogLevel};
     use figment::Jail;
-    use std::path::Path;
 
     #[test]
     fn test_default() {
@@ -127,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_file() {
+    fn test_from_args_config_file() {
         Jail::expect_with(|jail| {
             jail.create_file(
                 "config.yaml",
@@ -145,9 +147,14 @@ mod tests {
                 deadletter_deadline: 2000
             "#,
             )?;
+            // Env vars are not used if config file sets same key
             jail.set_env("TASKWORKER_LOG_LEVEL", "error");
 
-            let config = Config::from_file(Path::new("config.yaml")).unwrap();
+            let args = Args { 
+                config: Some("config.yaml".to_owned()),
+                log_level: None,
+            };
+            let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, Some("fake_dsn".to_owned()));
             assert_eq!(config.log_level, Some(LogLevel::Info));
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
@@ -162,12 +169,34 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env() {
+    fn test_from_from_args_env_and_args() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKWORKER_LOG_LEVEL", "error");
             jail.set_env("TASKWORKER_DEADLETTER_DEADLINE", "2000");
 
-            let config = Config::from_env().unwrap();
+            let args = Args {
+                config: None,
+                log_level: Some("debug".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.log_level, Some(LogLevel::Debug));
+            assert_eq!(config.deadletter_deadline, 2000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_from_args_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKWORKER_LOG_LEVEL", "error");
+            jail.set_env("TASKWORKER_DEADLETTER_DEADLINE", "2000");
+
+            let args = Args {
+                config: None,
+                log_level: None,
+            };
+            let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
             assert_eq!(config.log_level, Some(LogLevel::Error));
