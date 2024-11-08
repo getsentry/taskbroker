@@ -17,6 +17,7 @@ rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
+clap = { version = "4.5.20", features = ["derive"] }
 
 [dev-dependencies]
 rand = "0.8.5"
