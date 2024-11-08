@@ -1,9 +1,6 @@
 use figment::{
     providers::{Env, Format, Yaml},
-    Figment,
-    Metadata,
-    Provider,
-    Profile,
+    Figment, Metadata, Profile, Provider,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -85,23 +82,17 @@ impl Default for Config {
 
 impl Config {
     fn figment() -> Figment {
-        let figment = Figment::from(Config::default())
-            .merge(Env::prefixed("TASKWORKER_"));
-        figment
+        Figment::from(Config::default()).merge(Env::prefixed("TASKWORKER_"))
     }
 
     /// Build a Config instance from defaults and Env vars
     pub fn from_env() -> Result<Self, figment::Error> {
-        let config = Config::figment().extract();
-        config
+        Config::figment().extract()
     }
 
     /// Build a Config instance from default, env vars and a file.
     pub fn from_file(path: &Path) -> Result<Self, figment::Error> {
-        let config = Config::figment()
-            .merge(Yaml::file(path))
-            .extract();
-        config
+        Config::figment().merge(Yaml::file(path)).extract()
     }
 }
 
