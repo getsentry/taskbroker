@@ -5,7 +5,10 @@ use figment::{
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, net::SocketAddr};
 
-use crate::{logging::{LogFormat, LogLevel}, Args};
+use crate::{
+    logging::{LogFormat, LogLevel},
+    Args,
+};
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -77,8 +80,7 @@ impl Default for Config {
 impl Config {
     /// Build a config instance from defaults, env vars, file + CLI options
     pub fn from_args(args: &Args) -> Result<Self, figment::Error> {
-        let mut builder = Figment::from(Config::default())
-            .merge(Env::prefixed("TASKWORKER_"));
+        let mut builder = Figment::from(Config::default()).merge(Env::prefixed("TASKWORKER_"));
 
         if let Some(path) = &args.config {
             builder = builder.merge(Yaml::file(path));
@@ -105,8 +107,11 @@ impl Provider for Config {
 mod tests {
     use std::borrow::Cow;
 
-    use crate::{logging::{LogLevel, LogFormat}, Args};
     use super::Config;
+    use crate::{
+        logging::{LogFormat, LogLevel},
+        Args,
+    };
     use figment::Jail;
 
     #[test]
@@ -147,7 +152,7 @@ mod tests {
             // Env vars are not used if config file sets same key
             jail.set_env("TASKWORKER_LOG_LEVEL", "error");
 
-            let args = Args { 
+            let args = Args {
                 config: Some("config.yaml".to_owned()),
                 log_level: None,
             };

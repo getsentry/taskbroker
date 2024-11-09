@@ -87,18 +87,15 @@ pub fn init(log_config: LoggingConfig) {
         .with_target(true);
 
     let formatter = match log_config.log_format {
-        LogFormat::Json => {
-            subscriber.json()
-                .flatten_event(true)
-                .with_current_span(true)
-                .with_span_list(true)
-                .with_file(true)
-                .with_line_number(true)
-                .boxed()
-        },
-        LogFormat::Text => {
-            subscriber.compact().boxed()
-        }
+        LogFormat::Json => subscriber
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_file(true)
+            .with_line_number(true)
+            .boxed(),
+        LogFormat::Text => subscriber.compact().boxed(),
     };
 
     let logs_subscriber = tracing_subscriber::registry()
