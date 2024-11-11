@@ -424,6 +424,7 @@ pub async fn map<T>(
             biased;
 
             _ = shutdown.cancelled() => {
+                debug!("Receive shutdown signal, shutting down...");
                 break;
             }
 
@@ -434,12 +435,16 @@ pub async fn map<T>(
                 let msg = Arc::new(msg.detach()?);
                 match transform(msg.clone()) {
                     Ok(transformed) => {
-                        ok.send((
-                            iter::once(Arc::try_unwrap(msg).expect("msg should only have a single strong ref")),
+                        if ok.send((
+                            iter::once(
+                                Arc::try_unwrap(msg)
+                                    .expect("msg should only have a single strong ref"),
+                            ),
                             transformed,
-                        ))
-                        .await
-                        .map_err(|err| anyhow!("{}", err))?;
+                        )).await.is_err() {
+                            debug!("Receive half of ok channel is closed, shutting down...");
+                            break;
+                        }
                     }
                     Err(e) => {
                         error!(
