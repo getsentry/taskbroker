@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_from_args_env_and_args() {
+    fn test_from_args_env_and_args() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_LEVEL", "error");
             jail.set_env("TASKBROKER_DEADLETTER_DEADLINE", "2000");
@@ -190,10 +190,10 @@ mod tests {
     }
 
     #[test]
-    fn test_from_from_args_env() {
+    fn test_from_args_env_test() {
         Jail::expect_with(|jail| {
-            jail.set_env("TASKWORKER_LOG_LEVEL", "error");
-            jail.set_env("TASKWORKER_DEADLETTER_DEADLINE", "2000");
+            jail.set_env("TASKBROKER_LOG_LEVEL", "error");
+            jail.set_env("TASKBROKER_DEADLETTER_DEADLINE", "2000");
 
             let args = Args {
                 config: None,
