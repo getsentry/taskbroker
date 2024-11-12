@@ -2,3 +2,8 @@
 
 # Editors
 .DS_Store
+
+# Sqlite artifacts
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
