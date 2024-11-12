@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
-use metrics_exporter_statsd::StatsdBuilder;
 use crate::config::Config;
+use metrics_exporter_statsd::StatsdBuilder;
+use std::net::SocketAddr;
 
 pub struct MetricsConfig {
     pub statsd_addr: SocketAddr,
