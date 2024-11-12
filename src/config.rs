@@ -1,21 +1,14 @@
 use figment::{
-    providers::{Env, Format, Yaml},
+    providers::{Env, Format, Serialized, Yaml},
     Figment, Metadata, Profile, Provider,
 };
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
-use std::path::Path;
+use std::{borrow::Cow, net::SocketAddr};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-    Off,
-}
+use crate::{
+    logging::{LogFormat, LogLevel},
+    Args,
+};
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -23,10 +16,13 @@ pub struct Config {
     pub sentry_dsn: Option<String>,
 
     /// The environment to report to sentry errors to.
-    pub sentry_env: Option<String>,
+    pub sentry_env: Option<Cow<'static, str>>,
 
     /// The log level to filter logging to.
-    pub log_level: Option<LogLevel>,
+    pub log_level: LogLevel,
+
+    /// The log format to use
+    pub log_format: LogFormat,
 
     /// The statsd address to report metrics to.
     pub statsd_addr: SocketAddr,
@@ -66,7 +62,8 @@ impl Default for Config {
         Self {
             sentry_dsn: None,
             sentry_env: None,
-            log_level: Some(LogLevel::Info),
+            log_level: LogLevel::Info,
+            log_format: LogFormat::Text,
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             kafka_cluster: vec!["127.0.0.1:9092".to_owned()],
@@ -81,18 +78,17 @@ impl Default for Config {
 }
 
 impl Config {
-    fn figment() -> Figment {
-        Figment::from(Config::default()).merge(Env::prefixed("TASKBROKER_"))
-    }
-
-    /// Build a Config instance from defaults and Env vars
-    pub fn from_env() -> Result<Self, figment::Error> {
-        Config::figment().extract()
-    }
-
-    /// Build a Config instance from default, env vars and a file.
-    pub fn from_file(path: &Path) -> Result<Self, figment::Error> {
-        Config::figment().merge(Yaml::file(path)).extract()
+    /// Build a config instance from defaults, env vars, file + CLI options
+    pub fn from_args(args: &Args) -> Result<Self, figment::Error> {
+        let mut builder = Figment::from(Config::default()).merge(Env::prefixed("TASKBROKER_"));
+        if let Some(path) = &args.config {
+            builder = builder.merge(Yaml::file(path));
+        }
+        if let Some(log_level) = &args.log_level {
+            builder = builder.merge(Serialized::default("log_level", log_level));
+        }
+        let config = builder.extract()?;
+        Ok(config)
     }
 }
 
@@ -108,9 +104,14 @@ impl Provider for Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, LogLevel};
+    use std::borrow::Cow;
+
+    use super::Config;
+    use crate::{
+        logging::{LogFormat, LogLevel},
+        Args,
+    };
     use figment::Jail;
-    use std::path::Path;
 
     #[test]
     fn test_default() {
@@ -119,7 +120,8 @@ mod tests {
         };
         assert_eq!(config.sentry_dsn, None);
         assert_eq!(config.sentry_env, None);
-        assert_eq!(config.log_level, Some(LogLevel::Info));
+        assert_eq!(config.log_level, LogLevel::Info);
+        assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
@@ -127,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_file() {
+    fn test_from_args_config_file() {
         Jail::expect_with(|jail| {
             jail.create_file(
                 "config.yaml",
@@ -135,6 +137,7 @@ mod tests {
                 sentry_dsn: fake_dsn
                 sentry_env: prod
                 log_level: info
+                log_format: json
                 statsd_addr: 127.0.0.1:8126
                 kafka_cluster: [10.0.0.1:9092, 10.0.0.2:9092]
                 kafka_topic: error-tasks
@@ -145,11 +148,18 @@ mod tests {
                 deadletter_deadline: 2000
             "#,
             )?;
+            // Env vars are not used if config file sets same key
             jail.set_env("TASKBROKER_LOG_LEVEL", "error");
 
-            let config = Config::from_file(Path::new("config.yaml")).unwrap();
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+                log_level: None,
+            };
+            let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, Some("fake_dsn".to_owned()));
-            assert_eq!(config.log_level, Some(LogLevel::Info));
+            assert_eq!(config.sentry_env, Some(Cow::Borrowed("prod")));
+            assert_eq!(config.log_level, LogLevel::Info);
+            assert_eq!(config.log_format, LogFormat::Json);
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
@@ -162,15 +172,37 @@ mod tests {
     }
 
     #[test]
-    fn test_from_env() {
+    fn test_from_args_env_and_args() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_LEVEL", "error");
             jail.set_env("TASKBROKER_DEADLETTER_DEADLINE", "2000");
 
-            let config = Config::from_env().unwrap();
+            let args = Args {
+                config: None,
+                log_level: Some("debug".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.log_level, LogLevel::Debug);
+            assert_eq!(config.deadletter_deadline, 2000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_args_env_test() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_LOG_LEVEL", "error");
+            jail.set_env("TASKBROKER_DEADLETTER_DEADLINE", "2000");
+
+            let args = Args {
+                config: None,
+                log_level: None,
+            };
+            let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
-            assert_eq!(config.log_level, Some(LogLevel::Error));
+            assert_eq!(config.log_level, LogLevel::Error);
             assert_eq!(config.kafka_topic, "task-worker".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
