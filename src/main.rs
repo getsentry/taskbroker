@@ -10,6 +10,8 @@ use consumer::{
 };
 use inflight_activation_store::InflightActivationStore;
 use rdkafka::{config::RDKafkaLogLevel, ClientConfig};
+use tokio::{select, signal, time};
+use tracing::info;
 use tracing_subscriber::FmtSubscriber;
 
 #[allow(dead_code)]
@@ -34,6 +36,26 @@ async fn main() -> Result<(), Error> {
         InflightActivationStore::new(&format!("taskworker_{:?}.sqlite", Utc::now())).await?,
     );
     let deadletter_duration = Some(Duration::from_secs(1));
+
+    let rpc_store = store.clone();
+
+    tokio::spawn(async move {
+        let mut timer = time::interval(Duration::from_millis(200));
+        loop {
+            select! {
+                _ = signal::ctrl_c() => {
+                    break;
+                }
+                _ = timer.tick() => {
+                    let _ = rpc_store.get_pending_activation().await;
+                    info!(
+                        "Pending activation in store: {}",
+                        rpc_store.count_pending_activations().await.unwrap()
+                    );
+                }
+            }
+        }
+    });
 
     start_consumer(
         [topic].as_ref(),
