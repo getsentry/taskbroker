@@ -69,7 +69,7 @@ impl Default for Config {
             kafka_cluster: vec!["127.0.0.1:9092".to_owned()],
             kafka_topic: "task-worker".to_owned(),
             kafka_deadletter_topic: "task-worker-dlq".to_owned(),
-            db_path: "./taskworker-inflight.sqlite".to_owned(),
+            db_path: "./taskbroker-inflight.sqlite".to_owned(),
             max_pending_count: 200,
             max_processing_deadline: 300,
             deadletter_deadline: 900,
@@ -80,8 +80,7 @@ impl Default for Config {
 impl Config {
     /// Build a config instance from defaults, env vars, file + CLI options
     pub fn from_args(args: &Args) -> Result<Self, figment::Error> {
-        let mut builder = Figment::from(Config::default()).merge(Env::prefixed("TASKWORKER_"));
-
+        let mut builder = Figment::from(Config::default()).merge(Env::prefixed("TASKBROKER_"));
         if let Some(path) = &args.config {
             builder = builder.merge(Yaml::file(path));
         }
@@ -125,7 +124,7 @@ mod tests {
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
-        assert_eq!(config.db_path, "./taskworker-inflight.sqlite");
+        assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 200);
     }
 
@@ -143,14 +142,14 @@ mod tests {
                 kafka_cluster: [10.0.0.1:9092, 10.0.0.2:9092]
                 kafka_topic: error-tasks
                 kafka_deadletter_topic: error-tasks-dlq
-                db_path: ./taskworker-error.sqlite
+                db_path: ./taskbroker-error.sqlite
                 max_pending_count: 512
                 max_processing_deadline: 1000
                 deadletter_deadline: 2000
             "#,
             )?;
             // Env vars are not used if config file sets same key
-            jail.set_env("TASKWORKER_LOG_LEVEL", "error");
+            jail.set_env("TASKBROKER_LOG_LEVEL", "error");
 
             let args = Args {
                 config: Some("config.yaml".to_owned()),
@@ -163,7 +162,7 @@ mod tests {
             assert_eq!(config.log_format, LogFormat::Json);
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
-            assert_eq!(config.db_path, "./taskworker-error.sqlite".to_owned());
+            assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 512);
             assert_eq!(config.max_processing_deadline, 1000);
             assert_eq!(config.deadletter_deadline, 2000);
@@ -175,8 +174,8 @@ mod tests {
     #[test]
     fn test_from_from_args_env_and_args() {
         Jail::expect_with(|jail| {
-            jail.set_env("TASKWORKER_LOG_LEVEL", "error");
-            jail.set_env("TASKWORKER_DEADLETTER_DEADLINE", "2000");
+            jail.set_env("TASKBROKER_LOG_LEVEL", "error");
+            jail.set_env("TASKBROKER_DEADLETTER_DEADLINE", "2000");
 
             let args = Args {
                 config: None,
@@ -206,7 +205,7 @@ mod tests {
             assert_eq!(config.log_level, LogLevel::Error);
             assert_eq!(config.kafka_topic, "task-worker".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
-            assert_eq!(config.db_path, "./taskworker-inflight.sqlite".to_owned());
+            assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 200);
             assert_eq!(config.max_processing_deadline, 300);
             assert_eq!(config.deadletter_deadline, 2000);

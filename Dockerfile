@@ -14,5 +14,5 @@ RUN apt-get update && \
 
 EXPOSE 3000
 
-COPY --from=build /opt/src/target/release/taskworker /opt/taskworker
-CMD ["/opt/taskworker"]
+COPY --from=build /opt/src/target/release/taskbroker /opt/taskbroker
+CMD ["/opt/taskbroker"]
