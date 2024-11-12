@@ -31,7 +31,7 @@ use tokio::{
         oneshot,
     },
     task::JoinSet,
-    time::{self, sleep},
+    time::{self, sleep, MissedTickBehavior},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::{either::Either, sync::CancellationToken};
@@ -550,6 +550,8 @@ pub async fn reduce<T, U>(
 ) -> Result<(), Error> {
     let config = reducer.get_reduce_config();
     let mut flush_timer = config.flush_interval.map(time::interval);
+    let mut loop_timer = time::interval(Duration::from_secs(1));
+    loop_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut inflight_msgs = Vec::new();
 
     loop {
@@ -622,6 +624,8 @@ pub async fn reduce<T, U>(
                     flush_reducer(&mut reducer, &mut inflight_msgs, &ok, &err).await?;
                 }
             }
+
+            _ = loop_timer.tick() => { }
         }
     }
 
