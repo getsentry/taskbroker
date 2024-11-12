@@ -7,6 +7,7 @@ mod config;
 #[allow(dead_code)]
 mod inflight_task_store;
 mod logging;
+mod metrics;
 
 pub const VERSION: &str = env!("TASKWORKER_VERSION");
 
@@ -27,6 +28,7 @@ async fn main() -> Result<(), Error> {
     let config = Config::from_args(&args)?;
 
     logging::init(logging::LoggingConfig::from_config(&config));
+    metrics::init(metrics::MetricsConfig::from_config(&config));
 
     InflightTaskStore::new(&config.db_path).await?;
     Ok(())
