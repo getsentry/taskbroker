@@ -1,13 +1,14 @@
 use tonic::transport::Server;
-
 use anyhow::Error;
-<<<<<<< HEAD
-use inflight_task_store::InflightTaskStore;
-use grpc_server::MyConsumerService;
-use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
-=======
 use clap::Parser;
+use rdkafka::{config::RDKafkaLogLevel, ClientConfig};
+use std::{sync::Arc, time::Duration};
+use tokio::{select, signal, time};
+
+use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
+
 use config::Config;
+use grpc_server::MyConsumerService;
 use consumer::{
     deserialize_activation::{self},
     inflight_activation_writer::{self, InflightActivationWriter},
@@ -15,35 +16,14 @@ use consumer::{
     os_stream_writer::{OsStream, OsStreamWriter},
 };
 use inflight_activation_store::InflightActivationStore;
-use rdkafka::{config::RDKafkaLogLevel, ClientConfig};
-use std::{sync::Arc, time::Duration};
-use tokio::{select, signal, time};
 use tracing::info;
->>>>>>> main
 
 #[allow(dead_code)]
 mod config;
 #[allow(dead_code)]
-<<<<<<< HEAD
-mod inflight_task_store;
-mod grpc_server;
-
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    InflightTaskStore::new("hello_world.sqlite").await?;
-
-    let addr = "[::1]:50051".parse()?;
-    let service = MyConsumerService::default();
-
-    Server::builder()
-        .add_service(ConsumerServiceServer::new(service))
-        .serve(addr)
-        .await?;
-
-
-    Ok(())
-=======
 mod consumer;
+#[allow(dead_code)]
+mod grpc_server;
 #[allow(dead_code)]
 mod inflight_activation_store;
 mod logging;
@@ -72,6 +52,7 @@ async fn main() -> Result<(), Error> {
     let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
     let rpc_store = store.clone();
 
+    // Upkeep thread
     tokio::spawn(async move {
         let mut timer = time::interval(Duration::from_millis(200));
         loop {
@@ -90,17 +71,21 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    start_consumer(
-        [&config.kafka_topic as &str].as_ref(),
-        ClientConfig::new()
-            .set("group.id", "test-taskworker-consumer")
-            .set("bootstrap.servers", "127.0.0.1:9092")
-            .set("enable.partition.eof", "false")
-            .set("session.timeout.ms", "6000")
-            .set("enable.auto.commit", "true")
-            .set("auto.commit.interval.ms", "5000")
-            .set("enable.auto.offset.store", "false")
-            .set_log_level(RDKafkaLogLevel::Debug),
+    // Consumer from kafka
+    let kafka_topic = config.kafka_topic.clone();
+    let kafka_topics = [kafka_topic.as_str()];
+    let mut config = ClientConfig::new();
+    config.set("group.id", "test-taskworker-consumer")
+        .set("bootstrap.servers", "127.0.0.1:9092")
+        .set("enable.partition.eof", "false")
+        .set("session.timeout.ms", "6000")
+        .set("enable.auto.commit", "true")
+        .set("auto.commit.interval.ms", "5000")
+        .set("enable.auto.offset.store", "false")
+        .set_log_level(RDKafkaLogLevel::Debug);
+    let consumer_task = start_consumer(
+        kafka_topics.as_ref(),
+        &config,
         processing_strategy!({
             map: deserialize_activation::new(deserialize_activation::Config {
                 deadletter_duration: None,
@@ -122,7 +107,25 @@ async fn main() -> Result<(), Error> {
                 OsStream::StdErr,
             ),
         }),
-    )
-    .await
->>>>>>> main
+    );
+    
+    // GRPC server
+    let addr = "[::1]:50051".parse()?;
+    let grpc_store = store.clone();
+    let service = MyConsumerService{ store: grpc_store };
+
+    let grpc_task = Server::builder()
+        .add_service(ConsumerServiceServer::new(service))
+        .serve(addr);
+
+    select! {
+        _ = consumer_task => {
+            info!("Consumer task finished");
+        }
+        _ = grpc_task => {
+            info!("GRPC task finished");
+        }
+    };
+
+    Ok(())
 }
