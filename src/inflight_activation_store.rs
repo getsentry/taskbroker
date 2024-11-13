@@ -1,12 +1,16 @@
+use std::str::FromStr;
+
 use anyhow::Error;
 use chrono::{DateTime, Utc};
 use prost::Message;
 use sentry_protos::sentry::v1::TaskActivation;
 use sqlx::{
-    migrate::MigrateDatabase, sqlite::SqlitePool, FromRow, QueryBuilder, Row, Sqlite, Type,
+    migrate::MigrateDatabase,
+    sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult},
+    ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
 
-pub struct InflightTaskStore {
+pub struct InflightActivationStore {
     sqlite_pool: SqlitePool,
 }
 
@@ -23,16 +27,31 @@ pub enum TaskActivationStatus {
 pub struct InflightActivation {
     pub activation: TaskActivation,
     pub status: TaskActivationStatus,
+    pub partition: i32,
     pub offset: i64,
     pub added_at: DateTime<Utc>,
     pub deadletter_at: Option<DateTime<Utc>>,
     pub processing_deadline: Option<DateTime<Utc>>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct QueryResult {
+    pub rows_affected: u64,
+}
+
+impl From<SqliteQueryResult> for QueryResult {
+    fn from(value: SqliteQueryResult) -> Self {
+        Self {
+            rows_affected: value.rows_affected(),
+        }
+    }
+}
+
 #[derive(FromRow)]
 struct TableRow {
     id: String,
     activation: Vec<u8>,
+    partition: i32,
     offset: i64,
     added_at: DateTime<Utc>,
     deadletter_at: Option<DateTime<Utc>>,
@@ -48,6 +67,7 @@ impl TryFrom<InflightActivation> for TableRow {
         Ok(Self {
             id: value.activation.id.clone(),
             activation: value.activation.encode_to_vec(),
+            partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
             deadletter_at: value.deadletter_at,
@@ -65,6 +85,7 @@ impl From<TableRow> for InflightActivation {
                 "Decode should always be successful as we only store encoded data in this column",
             ),
             status: value.status,
+            partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
             deadletter_at: value.deadletter_at,
@@ -73,22 +94,27 @@ impl From<TableRow> for InflightActivation {
     }
 }
 
-impl InflightTaskStore {
+impl InflightActivationStore {
     pub async fn new(url: &str) -> Result<Self, Error> {
         if !Sqlite::database_exists(url).await? {
             Sqlite::create_database(url).await?
         }
-        let sqlite_pool = SqlitePool::connect(url).await?;
+        let conn_options = SqliteConnectOptions::from_str(url)?.disable_statement_logging();
+
+        let sqlite_pool = SqlitePool::connect_with(conn_options).await?;
 
         sqlx::migrate!("./migrations").run(&sqlite_pool).await?;
 
         Ok(Self { sqlite_pool })
     }
 
-    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<(), Error> {
+    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+        if batch.is_empty() {
+            return Ok(QueryResult { rows_affected: 0 });
+        }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, offset, added_at, deadletter_at, processing_deadline_duration, status)",
+            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, status)",
         );
         let rows = batch
             .into_iter()
@@ -98,6 +124,7 @@ impl InflightTaskStore {
             .push_values(rows, |mut b, row| {
                 b.push_bind(row.id);
                 b.push_bind(row.activation);
+                b.push_bind(row.partition);
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at);
                 b.push_bind(row.deadletter_at);
@@ -105,8 +132,7 @@ impl InflightTaskStore {
                 b.push_bind(row.status);
             })
             .build();
-        query.execute(&self.sqlite_pool).await?;
-        Ok(())
+        Ok(query.execute(&self.sqlite_pool).await?.into())
     }
 
     pub async fn get_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
@@ -178,24 +204,12 @@ impl InflightTaskStore {
 
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         Ok(
-            sqlx::query("SELECT * FROM inflight_taskactivations WHERE status = $1")
+            sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE status = $1")
                 .bind(TaskActivationStatus::Retry)
                 .fetch_all(&self.sqlite_pool)
                 .await?
                 .into_iter()
-                .map(|row| {
-                    TableRow {
-                        id: row.get("id"),
-                        activation: row.get("activation"),
-                        offset: row.get("offset"),
-                        added_at: row.get("added_at"),
-                        deadletter_at: row.get("deadletter_at"),
-                        processing_deadline_duration: row.get("processing_deadline_duration"),
-                        processing_deadline: row.get("processing_deadline"),
-                        status: row.get("status"),
-                    }
-                    .into()
-                })
+                .map(|row: TableRow| row.into())
                 .collect(),
         )
     }
@@ -210,7 +224,9 @@ mod tests {
     use sentry_protos::sentry::v1::TaskActivation;
     use sqlx::{Row, SqlitePool};
 
-    use crate::inflight_task_store::{InflightActivation, InflightTaskStore, TaskActivationStatus};
+    use crate::inflight_activation_store::{
+        InflightActivation, InflightActivationStore, TaskActivationStatus,
+    };
 
     fn generate_temp_filename() -> String {
         let mut rng = rand::thread_rng();
@@ -219,7 +235,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_db() {
-        assert!(InflightTaskStore::new(&generate_temp_filename())
+        assert!(InflightActivationStore::new(&generate_temp_filename())
             .await
             .is_ok())
     }
@@ -227,7 +243,7 @@ mod tests {
     #[tokio::test]
     async fn test_store() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url).await.unwrap();
+        let store = InflightActivationStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -248,6 +264,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -270,6 +287,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -292,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_pending_activation() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url).await.unwrap();
+        let store = InflightActivationStore::new(&url).await.unwrap();
         let added_at = Utc::now();
 
         #[allow(deprecated)]
@@ -313,6 +331,7 @@ mod tests {
                 expires: Some(1),
             },
             status: TaskActivationStatus::Pending,
+            partition: 0,
             offset: 0,
             added_at,
             deadletter_at: None,
@@ -339,6 +358,7 @@ mod tests {
                 expires: Some(1),
             },
             status: TaskActivationStatus::Processing,
+            partition: 0,
             offset: 0,
             added_at,
             deadletter_at: None,
@@ -354,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn test_count_pending_activations() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url).await.unwrap();
+        let store = InflightActivationStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -375,6 +395,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -397,6 +418,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -411,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn set_activation_status() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url).await.unwrap();
+        let store = InflightActivationStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -432,6 +454,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -454,6 +477,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -488,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_processing_deadline() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url).await.unwrap();
+        let store = InflightActivationStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![InflightActivation {
@@ -508,6 +532,7 @@ mod tests {
                 expires: Some(1),
             },
             status: TaskActivationStatus::Pending,
+            partition: 0,
             offset: 0,
             added_at: Utc::now(),
             deadletter_at: None,
@@ -540,7 +565,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_activation() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url).await.unwrap();
+        let store = InflightActivationStore::new(&url).await.unwrap();
 
         #[allow(deprecated)]
         let batch = vec![
@@ -561,6 +586,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -583,6 +609,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 1,
                 added_at: Utc::now(),
                 deadletter_at: None,
@@ -634,7 +661,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_retry_activations() {
         let url = generate_temp_filename();
-        let store = InflightTaskStore::new(&url).await.unwrap();
+        let store = InflightActivationStore::new(&url).await.unwrap();
         let added_at = Utc::now();
 
         #[allow(deprecated)]
@@ -656,6 +683,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 0,
                 added_at,
                 deadletter_at: None,
@@ -678,6 +706,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Pending,
+                partition: 0,
                 offset: 1,
                 added_at,
                 deadletter_at: None,
@@ -716,6 +745,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Retry,
+                partition: 0,
                 offset: 0,
                 added_at,
                 deadletter_at: None,
@@ -738,6 +768,7 @@ mod tests {
                     expires: Some(1),
                 },
                 status: TaskActivationStatus::Retry,
+                partition: 0,
                 offset: 1,
                 added_at,
                 deadletter_at: None,

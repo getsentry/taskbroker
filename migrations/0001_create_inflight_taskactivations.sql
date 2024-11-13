@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     id UUID NOT NULL PRIMARY KEY,
     activation BLOB NOT NULL,
+    partition INTEGER NOT NULL,
     offset BIGINTEGER NOT NULL,
     added_at DATETIME NOT NULL,
     deadletter_at DATETIME,
