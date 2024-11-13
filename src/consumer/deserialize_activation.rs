@@ -6,7 +6,10 @@ use prost::Message as _;
 use rdkafka::{message::OwnedMessage, Message};
 use sentry_protos::sentry::v1::TaskActivation;
 
-use crate::{config::Config, inflight_activation_store::{InflightActivation, TaskActivationStatus}};
+use crate::{
+    config::Config,
+    inflight_activation_store::{InflightActivation, TaskActivationStatus},
+};
 
 pub struct DeserializeConfig {
     pub deadletter_deadline: Option<Duration>,
@@ -21,7 +24,9 @@ impl DeserializeConfig {
     }
 }
 
-pub fn new(config: DeserializeConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
+pub fn new(
+    config: DeserializeConfig,
+) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
     move |msg: Arc<OwnedMessage>| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
