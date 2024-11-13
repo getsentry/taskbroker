@@ -83,7 +83,7 @@ async fn main() -> Result<(), Error> {
                 store.clone(),
                 inflight_activation_writer::Config {
                     max_buf_len: 128,
-                    max_pending_tasks: 2048,
+                    max_pending_activations: 2048,
                     flush_interval: None,
                     when_full_behaviour: ReducerWhenFullBehaviour::Flush,
                     shutdown_behaviour: ReduceShutdownBehaviour::Drop,
