@@ -84,7 +84,7 @@ async fn main() -> Result<(), Error> {
                 inflight_activation_writer::Config {
                     max_buf_len: 128,
                     max_pending_activations: 2048,
-                    flush_interval: None,
+                    flush_interval: Some(Duration::from_secs(4)),
                     when_full_behaviour: ReducerWhenFullBehaviour::Flush,
                     shutdown_behaviour: ReduceShutdownBehaviour::Drop,
                 }
