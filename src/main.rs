@@ -2,7 +2,7 @@ use anyhow::Error;
 use clap::Parser;
 use config::Config;
 use consumer::{
-    deserialize_activation::{self},
+    deserialize_activation::{self, DeserializeConfig},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
@@ -68,9 +68,7 @@ async fn main() -> Result<(), Error> {
         [&config.kafka_topic as &str].as_ref(),
         &kafka_config,
         processing_strategy!({
-            map: deserialize_activation::new(deserialize_activation::Config {
-                deadletter_duration: None,
-            }),
+            map: deserialize_activation::new(DeserializeConfig::from_config(&config)),
 
             reduce: InflightActivationWriter::new(
                 store.clone(),
