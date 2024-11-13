@@ -1,9 +1,9 @@
 
 use tonic::{Request, Response, Status};
 use std::sync::Arc;
-use anyhow::Error;
 
-use sentry_protos::sentry::v1::{GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse};
+
+use sentry_protos::sentry::v1::{GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, Error, SetTaskStatusResponse};
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
 
 use super::inflight_activation_store::InflightActivationStore;
@@ -12,12 +12,6 @@ pub struct MyConsumerService {
     pub store: Arc<InflightActivationStore>,
 }
 
-// impl MyConsumerService {
-//     pub fn new(store: Arc<InflightActivationStore>) -> Result<Self, Error> {
-//         Ok(Self { store })
-//     }
-// }
-
 #[tonic::async_trait]
 impl ConsumerService for MyConsumerService {
     async fn get_task(
@@ -25,12 +19,26 @@ impl ConsumerService for MyConsumerService {
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
         println!("Got a request: {:?}", request);
-
-        let resp = GetTaskResponse {
-            task: None,
-            error: None,
-        };
-        Ok(Response::new(resp))
+        let inflight = self.store.get_pending_activation().await;
+        match inflight {
+            Ok(Some(inflight)) => {
+                let resp = GetTaskResponse {
+                    task: Some(inflight.activation),
+                    error: None,
+                };
+                Ok(Response::new(resp))
+            },
+            Ok(None) => {
+                let resp = GetTaskResponse {
+                    task: None,
+                    error: Some(Error { code: 404, message: "No pending activation".to_string(), details: vec![] }),
+                };
+                Ok(Response::new(resp))
+            },
+            Err(e) => {
+                Err(Status::not_found(e.to_string()))
+            }
+        }
     }
 
     async fn set_task_status(

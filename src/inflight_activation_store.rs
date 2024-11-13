@@ -213,6 +213,14 @@ impl InflightActivationStore {
                 .collect(),
         )
     }
+
+    pub async fn get_activation(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+        let result = sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE status = $1id = $1")
+            .bind(id)
+            .fetch_optional(&self.sqlite_pool)
+            .await?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
