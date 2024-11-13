@@ -173,7 +173,7 @@ impl ActorHandles {
 
         select! {
             _ = self.rendezvous => {
-                info!("Rendezvous complete within callback deadline.");
+                info!("Rendezvous complete within callback deadline");
             }
             _ = sleep(deadline) => {
                 error!(
