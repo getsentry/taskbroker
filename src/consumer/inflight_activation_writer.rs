@@ -2,7 +2,10 @@ use std::{mem::replace, sync::Arc, time::Duration};
 
 use tracing::info;
 
-use crate::{config::Config, inflight_activation_store::{InflightActivation, InflightActivationStore}};
+use crate::{
+    config::Config,
+    inflight_activation_store::{InflightActivation, InflightActivationStore},
+};
 
 use super::kafka::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,

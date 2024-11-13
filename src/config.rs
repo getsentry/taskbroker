@@ -115,10 +115,16 @@ impl Config {
         let config = new_config
             .set("group.id", self.kafka_consumer_group.clone())
             .set("bootstrap.servers", self.kafka_cluster.clone())
-            .set("session.timeout.ms", self.kafka_session_timeout_ms.to_string())
+            .set(
+                "session.timeout.ms",
+                self.kafka_session_timeout_ms.to_string(),
+            )
             .set("enable.partition.eof", "false")
             .set("enable.auto.commit", "true")
-            .set("auto.commit.interval.ms", self.kafka_auto_commit_interval_ms.to_string())
+            .set(
+                "auto.commit.interval.ms",
+                self.kafka_auto_commit_interval_ms.to_string(),
+            )
             .set("enable.auto.offset.store", "false")
             .set_log_level(self.log_level.kafka_level());
         config.clone()
@@ -193,7 +199,10 @@ mod tests {
             assert_eq!(config.sentry_env, Some(Cow::Borrowed("prod")));
             assert_eq!(config.log_level, LogLevel::Info);
             assert_eq!(config.log_format, LogFormat::Json);
-            assert_eq!(config.kafka_cluster, "10.0.0.1:9092,10.0.0.2:9092".to_owned());
+            assert_eq!(
+                config.kafka_cluster,
+                "10.0.0.1:9092,10.0.0.2:9092".to_owned()
+            );
             assert_eq!(config.kafka_consumer_group, "task-worker".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
