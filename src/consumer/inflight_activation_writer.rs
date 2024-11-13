@@ -2,14 +2,14 @@ use std::{mem::replace, sync::Arc, time::Duration};
 
 use tracing::info;
 
-use crate::inflight_activation_store::{InflightActivation, InflightActivationStore};
+use crate::{config::Config, inflight_activation_store::{InflightActivation, InflightActivationStore}};
 
 use super::kafka::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
 
-pub struct Config {
+pub struct ActivationWriterConfig {
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
     pub flush_interval: Option<Duration>,
@@ -17,14 +17,27 @@ pub struct Config {
     pub shutdown_behaviour: ReduceShutdownBehaviour,
 }
 
+impl ActivationWriterConfig {
+    /// Convert from application configuration into InflightActivationWriter config.
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            max_buf_len: config.max_pending_buffer_count,
+            max_pending_activations: config.max_pending_count,
+            flush_interval: Some(Duration::from_secs(4)),
+            when_full_behaviour: ReducerWhenFullBehaviour::Flush,
+            shutdown_behaviour: ReduceShutdownBehaviour::Drop,
+        }
+    }
+}
+
 pub struct InflightActivationWriter {
     store: Arc<InflightActivationStore>,
     buffer: Vec<InflightActivation>,
-    config: Config,
+    config: ActivationWriterConfig,
 }
 
 impl InflightActivationWriter {
-    pub fn new(store: Arc<InflightActivationStore>, config: Config) -> Self {
+    pub fn new(store: Arc<InflightActivationStore>, config: ActivationWriterConfig) -> Self {
         Self {
             store,
             buffer: Vec::with_capacity(config.max_buf_len),

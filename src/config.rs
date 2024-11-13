@@ -2,6 +2,7 @@ use figment::{
     providers::{Env, Format, Serialized, Yaml},
     Figment, Metadata, Profile, Provider,
 };
+use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, net::SocketAddr};
 
@@ -31,7 +32,10 @@ pub struct Config {
     pub grpc_port: u32,
 
     /// comma separated list of kafka brokers to connect to
-    pub kafka_cluster: Vec<String>,
+    pub kafka_cluster: String,
+
+    /// The kafka consumer group name
+    pub kafka_consumer_group: String,
 
     /// The topic to fetch task messages from.
     pub kafka_topic: String,
@@ -39,22 +43,32 @@ pub struct Config {
     /// The kafka topic to publish dead letter messages on
     pub kafka_deadletter_topic: String,
 
+    /// The kafka session timeout in ms
+    pub kafka_session_timeout_ms: usize,
+
+    /// The amount of ms that the consumer will commit at.
+    pub kafka_auto_commit_interval_ms: usize,
+
     /// The path to the sqlite database
     pub db_path: String,
 
     /// The maximum number of pending records that can be
-    /// in the InflightTaskStore
-    pub max_pending_count: u32,
+    /// in the InflightTaskStore (sqlite)
+    pub max_pending_count: usize,
+
+    /// The maximum number of tasks that are buffered
+    /// before being written to InflightTaskStore (sqlite).
+    pub max_pending_buffer_count: usize,
 
     /// The maximum value for processing deadlines. If a task
     /// does not have a processing deadline set, this will be used.
-    pub max_processing_deadline: u32,
+    pub max_processing_deadline: usize,
 
     /// The maximum duration a task can be in InflightTaskStore
     /// After this time, messages will be deadlettered if they
     /// are not complete. This should be a multiple of max_processing_deadline
     /// to allow temporary worker deaths to be resolved.
-    pub deadletter_deadline: u32,
+    pub deadletter_deadline: usize,
 }
 
 impl Default for Config {
@@ -66,11 +80,15 @@ impl Default for Config {
             log_format: LogFormat::Text,
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
-            kafka_cluster: vec!["127.0.0.1:9092".to_owned()],
+            kafka_cluster: "127.0.0.1:9092".to_owned(),
+            kafka_consumer_group: "task-worker".to_owned(),
             kafka_topic: "task-worker".to_owned(),
             kafka_deadletter_topic: "task-worker-dlq".to_owned(),
+            kafka_session_timeout_ms: 6000,
+            kafka_auto_commit_interval_ms: 5000,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
-            max_pending_count: 200,
+            max_pending_count: 2048,
+            max_pending_buffer_count: 1,
             max_processing_deadline: 300,
             deadletter_deadline: 900,
         }
@@ -89,6 +107,21 @@ impl Config {
         }
         let config = builder.extract()?;
         Ok(config)
+    }
+
+    /// Convert the application Config into rdkafka::ClientConfig
+    pub fn kafka_client_config(&self) -> ClientConfig {
+        let mut new_config = ClientConfig::new();
+        let config = new_config
+            .set("group.id", self.kafka_consumer_group.clone())
+            .set("bootstrap.servers", self.kafka_cluster.clone())
+            .set("session.timeout.ms", self.kafka_session_timeout_ms.to_string())
+            .set("enable.partition.eof", "false")
+            .set("enable.auto.commit", "true")
+            .set("auto.commit.interval.ms", self.kafka_auto_commit_interval_ms.to_string())
+            .set("enable.auto.offset.store", "false")
+            .set_log_level(self.log_level.kafka_level());
+        config.clone()
     }
 }
 
@@ -125,7 +158,7 @@ mod tests {
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
-        assert_eq!(config.max_pending_count, 200);
+        assert_eq!(config.max_pending_count, 2048);
     }
 
     #[test]
@@ -139,7 +172,7 @@ mod tests {
                 log_level: info
                 log_format: json
                 statsd_addr: 127.0.0.1:8126
-                kafka_cluster: [10.0.0.1:9092, 10.0.0.2:9092]
+                kafka_cluster: 10.0.0.1:9092,10.0.0.2:9092
                 kafka_topic: error-tasks
                 kafka_deadletter_topic: error-tasks-dlq
                 db_path: ./taskbroker-error.sqlite
@@ -160,6 +193,9 @@ mod tests {
             assert_eq!(config.sentry_env, Some(Cow::Borrowed("prod")));
             assert_eq!(config.log_level, LogLevel::Info);
             assert_eq!(config.log_format, LogFormat::Json);
+            assert_eq!(config.kafka_cluster, "10.0.0.1:9092,10.0.0.2:9092".to_owned());
+            assert_eq!(config.kafka_consumer_group, "task-worker".to_owned());
+            assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
@@ -206,7 +242,7 @@ mod tests {
             assert_eq!(config.kafka_topic, "task-worker".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
-            assert_eq!(config.max_pending_count, 200);
+            assert_eq!(config.max_pending_count, 2048);
             assert_eq!(config.max_processing_deadline, 300);
             assert_eq!(config.deadletter_deadline, 2000);
 
