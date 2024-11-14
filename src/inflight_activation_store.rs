@@ -132,8 +132,8 @@ impl InflightActivationStore {
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline.format("%Y-%m-%D %H:%M:%S").to_string());
                 } else {
-                    // TODO(mark) how do we bind null?
-                    b.push_bind("");
+                    // Add a literal null
+                    b.push("null");
                 }
                 b.push_bind(row.status);
             })
