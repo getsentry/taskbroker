@@ -270,7 +270,7 @@ impl InflightActivationStore {
             }
         }
 
-        if to_update.len() == 0 {
+        if to_update.is_empty() {
             return Ok(0);
         }
 
