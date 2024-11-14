@@ -123,10 +123,18 @@ async fn main() -> Result<(), Error> {
             let addr = "[::1]:50051".parse().expect("Failed to parse address");
             let service = MyConsumerService{ store: grpc_store };
 
-            Server::builder()
+            let server =Server::builder()
                 .add_service(ConsumerServiceServer::new(service))
-                .serve(addr)
-                .await
+                .serve(addr);
+            
+                select! {
+                    _ = signal::ctrl_c() => {
+                        return Ok(());
+                    }
+                    _ = server => {
+                        return Err(anyhow::anyhow!("GRPC server task failed"));
+                    }
+                }
         }
     });
 
