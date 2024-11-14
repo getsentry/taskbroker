@@ -231,14 +231,14 @@ impl InflightActivationStore {
             "SELECT id, activation
             FROM inflight_taskactivations
             WHERE processing_deadline < $1 AND status = $2
-            "
+            ",
         )
-            .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
-            .bind(TaskActivationStatus::Processing)
-            .fetch_all(&mut *atomic)
-            .await?
-            .into_iter()
-            .collect();
+        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(TaskActivationStatus::Processing)
+        .fetch_all(&mut *atomic)
+        .await?
+        .into_iter()
+        .collect();
 
         let mut to_update: Vec<String> = vec![];
         for record in expired {
@@ -278,7 +278,7 @@ impl InflightActivationStore {
         let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
             SET status = $1, processing_deadline = null
-            WHERE id IN ("
+            WHERE id IN (",
         );
         let mut separated = query_builder.separated(", ");
         for id in to_update.iter() {
@@ -303,7 +303,7 @@ impl InflightActivationStore {
 mod tests {
     use std::collections::HashMap;
 
-    use chrono::{DateTime, Utc, TimeZone};
+    use chrono::{DateTime, TimeZone, Utc};
     use rand::Rng;
     use sentry_protos::sentry::v1::TaskActivation;
     use sqlx::{Row, SqlitePool};
