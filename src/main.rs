@@ -2,13 +2,12 @@ use anyhow::Error;
 use clap::Parser;
 use config::Config;
 use consumer::{
-    deserialize_activation::{self},
-    inflight_activation_writer::{self, InflightActivationWriter},
-    kafka::{start_consumer, ReduceShutdownBehaviour, ReducerWhenFullBehaviour},
+    deserialize_activation::{self, DeserializeConfig},
+    inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
+    kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
 use inflight_activation_store::InflightActivationStore;
-use rdkafka::{config::RDKafkaLogLevel, ClientConfig};
 use std::{sync::Arc, time::Duration};
 use tokio::{select, signal, time};
 use tracing::info;
@@ -63,31 +62,17 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    let kafka_config = config.kafka_client_config();
+
     start_consumer(
         [&config.kafka_topic as &str].as_ref(),
-        ClientConfig::new()
-            .set("group.id", "test-taskworker-consumer")
-            .set("bootstrap.servers", "127.0.0.1:9092")
-            .set("enable.partition.eof", "false")
-            .set("session.timeout.ms", "6000")
-            .set("enable.auto.commit", "true")
-            .set("auto.commit.interval.ms", "5000")
-            .set("enable.auto.offset.store", "false")
-            .set_log_level(RDKafkaLogLevel::Debug),
+        &kafka_config,
         processing_strategy!({
-            map: deserialize_activation::new(deserialize_activation::Config {
-                deadletter_duration: None,
-            }),
+            map: deserialize_activation::new(DeserializeConfig::from_config(&config)),
 
             reduce: InflightActivationWriter::new(
                 store.clone(),
-                inflight_activation_writer::Config {
-                    max_buf_len: 128,
-                    max_pending_activations: 2048,
-                    flush_interval: Some(Duration::from_secs(4)),
-                    when_full_behaviour: ReducerWhenFullBehaviour::Flush,
-                    shutdown_behaviour: ReduceShutdownBehaviour::Drop,
-                }
+                ActivationWriterConfig::from_config(&config)
             ),
 
             err: OsStreamWriter::new(
