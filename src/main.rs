@@ -106,7 +106,7 @@ async fn main() -> Result<(), Error> {
             let addr = format!("[::1]:{}", grpc_config.grpc_port).parse().expect("Failed to parse address");
             let service = MyConsumerService{ store: grpc_store };
 
-            let server =Server::builder()
+            let server = Server::builder()
                 .add_service(ConsumerServiceServer::new(service))
                 .serve(addr);
             
