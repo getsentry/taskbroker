@@ -45,87 +45,94 @@ struct Args {
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
     let config = Config::from_args(&args)?;
+    // let config = Config::from_args(&args)?;
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
-
     let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
-    let rpc_store = store.clone();
 
     // Upkeep thread
-    tokio::spawn(async move {
-        let mut timer = time::interval(Duration::from_millis(200));
-        loop {
-            select! {
+    let upkeep_task = tokio::spawn({
+        let upkeep_store = store.clone();
+        async move {
+            let mut timer = time::interval(Duration::from_millis(200));
+            loop {
+                select! {
                 _ = signal::ctrl_c() => {
                     break;
                 }
                 _ = timer.tick() => {
-                    let _ = rpc_store.get_pending_activation().await;
+                    let _ = upkeep_store.get_pending_activation().await;
                     info!(
                         "Pending activation in store: {}",
-                        rpc_store.count_pending_activations().await.unwrap()
+                        upkeep_store.count_pending_activations().await.unwrap()
                     );
+                }
                 }
             }
         }
     });
 
     // Consumer from kafka
-    let kafka_topic = config.kafka_topic.clone();
-    let kafka_topics = [kafka_topic.as_str()];
-    let mut config = ClientConfig::new();
-    config.set("group.id", "test-taskworker-consumer")
-        .set("bootstrap.servers", "127.0.0.1:9092")
-        .set("enable.partition.eof", "false")
-        .set("session.timeout.ms", "6000")
-        .set("enable.auto.commit", "true")
-        .set("auto.commit.interval.ms", "5000")
-        .set("enable.auto.offset.store", "false")
-        .set_log_level(RDKafkaLogLevel::Debug);
-    let consumer_task = start_consumer(
-        kafka_topics.as_ref(),
-        &config,
-        processing_strategy!({
-            map: deserialize_activation::new(deserialize_activation::Config {
-                deadletter_duration: None,
-            }),
+    let consumer_task = tokio::spawn({
+        let consumer_store = store.clone();
+        async move {
+            let kafka_topic = config.kafka_topic.clone();
+            let kafka_topics = [kafka_topic.as_str()];
+            let mut kafka_config = ClientConfig::new();
+            kafka_config.set("group.id", "test-taskworker-consumer")
+            .set("bootstrap.servers", "127.0.0.1:9092")
+            .set("enable.partition.eof", "false")
+            .set("session.timeout.ms", "6000")
+            .set("enable.auto.commit", "true")
+            .set("auto.commit.interval.ms", "5000")
+            .set("enable.auto.offset.store", "false")
+            .set_log_level(RDKafkaLogLevel::Debug);
+            start_consumer(
+                kafka_topics.as_ref(),
+                &kafka_config,
+                processing_strategy!({
+                    map: deserialize_activation::new(deserialize_activation::Config {
+                        deadletter_duration: None,
+                    }),
 
-            reduce: InflightActivationWriter::new(
-                store.clone(),
-                inflight_activation_writer::Config {
-                    max_buf_len: 128,
-                    max_pending_activations: 2048,
-                    flush_interval: None,
-                    when_full_behaviour: ReducerWhenFullBehaviour::Flush,
-                    shutdown_behaviour: ReduceShutdownBehaviour::Drop,
-                }
-            ),
+                    reduce: InflightActivationWriter::new(
+                        consumer_store.clone(),
+                        inflight_activation_writer::Config {
+                            max_buf_len: 128,
+                            max_pending_activations: 2048,
+                            flush_interval: None,
+                            when_full_behaviour: ReducerWhenFullBehaviour::Flush,
+                            shutdown_behaviour: ReduceShutdownBehaviour::Drop,
+                        }
+                    ),
 
-            err: OsStreamWriter::new(
-                Duration::from_secs(1),
-                OsStream::StdErr,
-            ),
-        }),
-    );
-    
+                    err: OsStreamWriter::new(
+                        Duration::from_secs(1),
+                        OsStream::StdErr,
+                    ),
+                }),
+            ).await
+        }
+    });
+
     // GRPC server
-    let addr = "[::1]:50051".parse()?;
-    let grpc_store = store.clone();
-    let service = MyConsumerService{ store: grpc_store };
+    let grpc_server_task = tokio::spawn({
+        let grpc_store = store.clone();
+        async move {
+            let addr = "[::1]:50051".parse().expect("Failed to parse address");
+            let service = MyConsumerService{ store: grpc_store };
 
-    let grpc_task = Server::builder()
-        .add_service(ConsumerServiceServer::new(service))
-        .serve(addr);
-
-    select! {
-        _ = consumer_task => {
-            info!("Consumer task finished");
+            Server::builder()
+                .add_service(ConsumerServiceServer::new(service))
+                .serve(addr)
+                .await
         }
-        _ = grpc_task => {
-            info!("GRPC task finished");
-        }
-    };
+    });
 
+    let results = tokio::join!(consumer_task, grpc_server_task, upkeep_task);
+    let _ = results.0.expect("Consumer task failed");
+    let _ = results.1.expect("GRPC server task failed");
+    let _ = results.2.expect("Upkeep task failed");
     Ok(())
 }
