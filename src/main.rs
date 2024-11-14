@@ -43,8 +43,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
-    let config = Config::from_args(&args)?;
-    // let config = Config::from_args(&args)?;
+    let config = Arc::new(Config::from_args(&args)?);
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
@@ -75,18 +74,19 @@ async fn main() -> Result<(), Error> {
     // Consumer from kafka
     let consumer_task = tokio::spawn({
         let consumer_store = store.clone();
+        let consumer_config = config.clone();
         async move {
-            let kafka_config = config.kafka_client_config();
+            let kafka_config = consumer_config.kafka_client_config();
 
             start_consumer(
-                [&config.kafka_topic as &str].as_ref(),
+                [&consumer_config.kafka_topic as &str].as_ref(),
                 &kafka_config,
                 processing_strategy!({
-                    map: deserialize_activation::new(DeserializeConfig::from_config(&config)),
+                    map: deserialize_activation::new(DeserializeConfig::from_config(&consumer_config)),
         
                     reduce: InflightActivationWriter::new(
                         consumer_store.clone(),
-                        ActivationWriterConfig::from_config(&config)
+                        ActivationWriterConfig::from_config(&consumer_config)
                     ),
 
                     err: OsStreamWriter::new(
@@ -101,8 +101,9 @@ async fn main() -> Result<(), Error> {
     // GRPC server
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
+        let grpc_config = config.clone();
         async move {
-            let addr = "[::1]:50051".parse().expect("Failed to parse address");
+            let addr = format!("[::1]:{}", grpc_config.grpc_port).parse().expect("Failed to parse address");
             let service = MyConsumerService{ store: grpc_store };
 
             let server =Server::builder()
