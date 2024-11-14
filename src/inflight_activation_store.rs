@@ -1,12 +1,12 @@
 use std::str::FromStr;
 
-use anyhow::Error;
+use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use prost::Message;
 use sentry_protos::sentry::v1::TaskActivation;
 use sqlx::{
     migrate::MigrateDatabase,
-    sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult},
+    sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow},
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
 
@@ -72,8 +72,8 @@ impl TryFrom<InflightActivation> for TableRow {
             added_at: value.added_at,
             deadletter_at: value.deadletter_at,
             processing_deadline_duration: value.activation.processing_deadline_duration as u32,
-            processing_deadline: None,
-            status: TaskActivationStatus::Pending,
+            processing_deadline: value.processing_deadline,
+            status: value.status,
         })
     }
 }
@@ -114,7 +114,7 @@ impl InflightActivationStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, status)",
+            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status)",
         );
         let rows = batch
             .into_iter()
@@ -129,6 +129,12 @@ impl InflightActivationStore {
                 b.push_bind(row.added_at);
                 b.push_bind(row.deadletter_at);
                 b.push_bind(row.processing_deadline_duration);
+                if let Some(deadline) = row.processing_deadline {
+                    b.push_bind(deadline.format("%Y-%m-%D %H:%M:%S").to_string());
+                } else {
+                    // TODO(mark) how do we bind null?
+                    b.push_bind("");
+                }
                 b.push_bind(row.status);
             })
             .build();
@@ -213,13 +219,91 @@ impl InflightActivationStore {
                 .collect(),
         )
     }
+
+    /// Update tasks that are in processing and have exceeded their processing deadline
+    pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+        // Find rows past processing deadlines
+        let now = Utc::now();
+
+        let mut atomic = self.sqlite_pool.begin().await?;
+
+        let expired: Vec<SqliteRow> = sqlx::query(
+            "SELECT id, activation
+            FROM inflight_taskactivations
+            WHERE processing_deadline < $1 AND status = $2
+            "
+        )
+            .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
+            .bind(TaskActivationStatus::Processing)
+            .fetch_all(&mut *atomic)
+            .await?
+            .into_iter()
+            .collect();
+
+        let mut to_update: Vec<String> = vec![];
+        for record in expired {
+            let activation_data: &[u8] = record.get("activation");
+            let row_id: String = record.get("id");
+
+            let activation = TaskActivation::decode(activation_data)?;
+            let retry_state_option = activation.retry_state;
+            if retry_state_option.is_none() {
+                to_update.push(row_id);
+                continue;
+            }
+            // Determine if there are retries remaining. Exceeding a processing deadline
+            // does not increment the number of retry attempts.
+            let retry_state = retry_state_option.unwrap();
+            let mut has_retries_remaining = false;
+            if let Some(deadletter_after_attempt) = retry_state.deadletter_after_attempt {
+                if deadletter_after_attempt < retry_state.attempts {
+                    has_retries_remaining = true;
+                }
+            }
+            if let Some(discard_after_attempt) = retry_state.discard_after_attempt {
+                if discard_after_attempt < retry_state.attempts {
+                    has_retries_remaining = true;
+                }
+            }
+            if has_retries_remaining {
+                to_update.push(row_id);
+            }
+        }
+
+        if to_update.len() == 0 {
+            return Ok(0);
+        }
+
+        // Clear processing deadlines and make tasks available again.
+        let mut query_builder = QueryBuilder::new(
+            "UPDATE inflight_taskactivations
+            SET status = $1, processing_deadline = null
+            WHERE id IN ("
+        );
+        let mut separated = query_builder.separated(", ");
+        for id in to_update.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+
+        let query = query_builder.build();
+        let result = query.execute(&self.sqlite_pool).await;
+
+        atomic.commit().await?;
+
+        if let Ok(query_res) = result {
+            return Ok(query_res.rows_affected());
+        }
+
+        Err(anyhow!("Could not update tasks past processing_deadline"))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
-    use chrono::{DateTime, Utc};
+    use chrono::{DateTime, Utc, TimeZone};
     use rand::Rng;
     use sentry_protos::sentry::v1::TaskActivation;
     use sqlx::{Row, SqlitePool};
@@ -777,5 +861,71 @@ mod tests {
         ];
 
         assert_eq!(store.get_retry_activations().await.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        #[allow(deprecated)]
+        let batch = vec![
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "id_0".into(),
+                    namespace: "namespace".into(),
+                    taskname: "taskname".into(),
+                    parameters: "{}".into(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    deadline: None,
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: Some(1),
+                },
+                status: TaskActivationStatus::Pending,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                deadletter_at: None,
+                processing_deadline: None,
+            },
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "id_1".into(),
+                    namespace: "namespace".into(),
+                    taskname: "taskname".into(),
+                    parameters: "{}".into(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    deadline: None,
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: Some(1),
+                },
+                status: TaskActivationStatus::Processing,
+                partition: 0,
+                offset: 1,
+                added_at: Utc::now(),
+                deadletter_at: None,
+                processing_deadline: Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap()),
+            },
+        ];
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+
+        // Run again to check early return
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 0);
     }
 }
