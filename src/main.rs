@@ -1,7 +1,6 @@
 use tonic::transport::Server;
 use anyhow::Error;
 use clap::Parser;
-use rdkafka::{config::RDKafkaLogLevel, ClientConfig};
 use std::{sync::Arc, time::Duration};
 use tokio::{select, signal, time};
 
@@ -10,9 +9,9 @@ use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
 use config::Config;
 use grpc_server::MyConsumerService;
 use consumer::{
-    deserialize_activation::{self},
-    inflight_activation_writer::{self, InflightActivationWriter},
-    kafka::{start_consumer, ReduceShutdownBehaviour, ReducerWhenFullBehaviour},
+    deserialize_activation::{self, DeserializeConfig},
+    inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
+    kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
 use inflight_activation_store::InflightActivationStore;
@@ -77,34 +76,17 @@ async fn main() -> Result<(), Error> {
     let consumer_task = tokio::spawn({
         let consumer_store = store.clone();
         async move {
-            let kafka_topic = config.kafka_topic.clone();
-            let kafka_topics = [kafka_topic.as_str()];
-            let mut kafka_config = ClientConfig::new();
-            kafka_config.set("group.id", "test-taskworker-consumer")
-            .set("bootstrap.servers", "127.0.0.1:9092")
-            .set("enable.partition.eof", "false")
-            .set("session.timeout.ms", "6000")
-            .set("enable.auto.commit", "true")
-            .set("auto.commit.interval.ms", "5000")
-            .set("enable.auto.offset.store", "false")
-            .set_log_level(RDKafkaLogLevel::Debug);
+            let kafka_config = config.kafka_client_config();
+
             start_consumer(
-                kafka_topics.as_ref(),
+                [&config.kafka_topic as &str].as_ref(),
                 &kafka_config,
                 processing_strategy!({
-                    map: deserialize_activation::new(deserialize_activation::Config {
-                        deadletter_duration: None,
-                    }),
-
+                    map: deserialize_activation::new(DeserializeConfig::from_config(&config)),
+        
                     reduce: InflightActivationWriter::new(
                         consumer_store.clone(),
-                        inflight_activation_writer::Config {
-                            max_buf_len: 128,
-                            max_pending_activations: 2048,
-                            flush_interval: None,
-                            when_full_behaviour: ReducerWhenFullBehaviour::Flush,
-                            shutdown_behaviour: ReduceShutdownBehaviour::Drop,
-                        }
+                        ActivationWriterConfig::from_config(&config)
                     ),
 
                     err: OsStreamWriter::new(

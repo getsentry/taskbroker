@@ -1,3 +1,4 @@
+use rdkafka::config::RDKafkaLogLevel;
 use sentry::types::Dsn;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -27,6 +28,20 @@ impl LogLevel {
             Self::Debug => LevelFilter::DEBUG,
             Self::Trace => LevelFilter::TRACE,
             Self::Off => LevelFilter::OFF,
+        }
+    }
+    /// Convert to the log levels used by rdkafka
+    pub const fn kafka_level(&self) -> RDKafkaLogLevel {
+        match self {
+            Self::Error => RDKafkaLogLevel::Error,
+            Self::Warn => RDKafkaLogLevel::Warning,
+            Self::Info => RDKafkaLogLevel::Info,
+            Self::Debug => RDKafkaLogLevel::Debug,
+            Self::Trace => RDKafkaLogLevel::Debug,
+            // While emerg is not an off state,
+            // emerg is effectively off as we don't
+            // use emerg level.
+            Self::Off => RDKafkaLogLevel::Emerg,
         }
     }
 }
