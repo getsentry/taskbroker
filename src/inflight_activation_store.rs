@@ -241,7 +241,7 @@ impl InflightActivationStore {
             .await?;
         Ok(())
     }
-    
+
     /// Update tasks that are in processing and have exceeded their processing deadline
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         // Find rows past processing deadlines
