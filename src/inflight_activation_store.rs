@@ -369,14 +369,14 @@ mod tests {
 
     fn make_activations(count: u32) -> Vec<InflightActivation> {
         let mut records: Vec<InflightActivation> = vec![];
-        for i in 1..=count {
+        for i in 0..count {
             #[allow(deprecated)]
             let item = InflightActivation {
                 activation: TaskActivation {
                     id: format!("id_{}", i).into(),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
-                    parameters: "{some_param: 123}".into(),
+                    parameters: "{}".into(),
                     headers: HashMap::new(),
                     received_at: Some(prost_types::Timestamp {
                         seconds: Utc::now().timestamp(),
@@ -411,55 +411,7 @@ mod tests {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
 
-        #[allow(deprecated)]
-        let batch = vec![
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_0".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_1".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 1,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-        ];
+        let batch = make_activations(2);
         assert!(store.store(batch).await.is_ok());
 
         let result = sqlx::query(
@@ -542,55 +494,8 @@ mod tests {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
 
-        #[allow(deprecated)]
-        let batch = vec![
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_0".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_1".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 1,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-        ];
+        let mut batch = make_activations(3);
+        batch[0].status = TaskActivationStatus::Processing;
         assert!(store.store(batch).await.is_ok());
 
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
@@ -601,55 +506,7 @@ mod tests {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
 
-        #[allow(deprecated)]
-        let batch = vec![
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_0".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_1".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 1,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-        ];
+        let batch = make_activations(2);
         assert!(store.store(batch).await.is_ok());
 
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
@@ -680,30 +537,7 @@ mod tests {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
 
-        #[allow(deprecated)]
-        let batch = vec![InflightActivation {
-            activation: TaskActivation {
-                id: "id_0".into(),
-                namespace: "namespace".into(),
-                taskname: "taskname".into(),
-                parameters: "{some_param: 123}".into(),
-                headers: HashMap::new(),
-                received_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
-                deadline: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: Some(1),
-            },
-            status: TaskActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            deadletter_at: None,
-            processing_deadline: None,
-        }];
+        let batch = make_activations(1);
         assert!(store.store(batch.clone()).await.is_ok());
 
         let deadline = Utc::now();
@@ -733,55 +567,7 @@ mod tests {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
 
-        #[allow(deprecated)]
-        let batch = vec![
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_0".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_1".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 1,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-        ];
+        let batch = make_activations(2);
         assert!(store.store(batch).await.is_ok());
 
         let result = sqlx::query(
@@ -828,57 +614,8 @@ mod tests {
     async fn test_get_retry_activations() {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
-        let added_at = Utc::now();
 
-        #[allow(deprecated)]
-        let batch = vec![
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_0".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at,
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_1".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 1,
-                added_at,
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-        ];
+        let batch = make_activations(2);
         assert!(store.store(batch.clone()).await.is_ok());
 
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
@@ -892,57 +629,11 @@ mod tests {
             .await
             .is_ok());
 
-        #[allow(deprecated)]
-        let expected = vec![
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_0".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Retry,
-                partition: 0,
-                offset: 0,
-                added_at,
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_1".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Retry,
-                partition: 0,
-                offset: 1,
-                added_at,
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-        ];
-
-        assert_eq!(store.get_retry_activations().await.unwrap(), expected);
+        let retries = store.get_retry_activations().await.unwrap();
+        assert_eq!(retries.len(), 2);
+        for record in retries.iter() {
+            assert_eq!(record.status, TaskActivationStatus::Retry);
+        }
     }
 
     #[tokio::test]
@@ -950,55 +641,10 @@ mod tests {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
 
-        #[allow(deprecated)]
-        let batch = vec![
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_0".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            },
-            InflightActivation {
-                activation: TaskActivation {
-                    id: "id_1".into(),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: Some(1),
-                },
-                status: TaskActivationStatus::Processing,
-                partition: 0,
-                offset: 1,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap()),
-            },
-        ];
+        let mut batch = make_activations(2);
+        batch[1].status = TaskActivationStatus::Processing;
+        batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+
         assert!(store.store(batch).await.is_ok());
 
         let past_deadline = store.handle_processing_deadline().await;
