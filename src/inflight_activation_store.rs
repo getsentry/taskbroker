@@ -373,7 +373,7 @@ mod tests {
             #[allow(deprecated)]
             let item = InflightActivation {
                 activation: TaskActivation {
-                    id: format!("id_{}", i).into(),
+                    id: format!("id_{}", i),
                     namespace: "namespace".into(),
                     taskname: "taskname".into(),
                     parameters: "{}".into(),
