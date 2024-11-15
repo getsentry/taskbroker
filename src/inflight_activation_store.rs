@@ -318,6 +318,8 @@ impl InflightActivationStore {
     ///
     /// This method is a garbage collector for the inflight task store.
     pub async fn remove_completed(&self) -> Result<u64, Error> {
+        let mut atomic = self.sqlite_pool.begin().await?;
+
         let incomplete_query = sqlx::query(
             r#"
             SELECT "offset"
@@ -328,7 +330,7 @@ impl InflightActivationStore {
             "#,
         )
         .bind(TaskActivationStatus::Complete)
-        .fetch_optional(&self.sqlite_pool)
+        .fetch_optional(&mut *atomic)
         .await?;
 
         let lowest_incomplete_offset: i64 = if let Some(query_result) = incomplete_query {
@@ -342,8 +344,10 @@ impl InflightActivationStore {
         )
         .bind(TaskActivationStatus::Complete)
         .bind(lowest_incomplete_offset)
-        .execute(&self.sqlite_pool)
+        .execute(&mut *atomic)
         .await?;
+
+        atomic.commit().await?;
 
         Ok(cleanup_query.rows_affected())
     }
