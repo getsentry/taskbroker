@@ -643,7 +643,8 @@ mod tests {
 
         let mut batch = make_activations(2);
         batch[1].status = TaskActivationStatus::Processing;
-        batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
         assert!(store.store(batch).await.is_ok());
 
