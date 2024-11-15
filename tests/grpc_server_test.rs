@@ -1,9 +1,9 @@
+use chrono::Utc;
+use rand::Rng;
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
 use sentry_protos::sentry::v1::{GetTaskRequest, SetTaskStatusRequest};
 use std::sync::Arc;
-use rand::Rng;
 use tonic::{Code, Request};
-use chrono::Utc;
 
 use taskbroker::grpc_server::MyConsumerService;
 use taskbroker::inflight_activation_store::InflightActivationStore;
