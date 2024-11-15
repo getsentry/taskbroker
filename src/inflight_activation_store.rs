@@ -287,7 +287,7 @@ impl InflightActivationStore {
         separated.push_unseparated(")");
 
         let query = query_builder.build();
-        let result = query.execute(&self.sqlite_pool).await;
+        let result = query.execute(&mut *atomic).await;
 
         atomic.commit().await?;
 
