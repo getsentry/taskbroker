@@ -7,26 +7,15 @@ use tokio::{select, signal, time};
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
 
 use config::Config;
-use grpc_server::MyConsumerService;
+use taskbroker::grpc_server::MyConsumerService;
 use consumer::{
     deserialize_activation::{self, DeserializeConfig},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
-use inflight_activation_store::InflightActivationStore;
+use taskbroker::inflight_activation_store::InflightActivationStore;
 use tracing::info;
-
-#[allow(dead_code)]
-mod config;
-#[allow(dead_code)]
-mod consumer;
-#[allow(dead_code)]
-mod grpc_server;
-#[allow(dead_code)]
-mod inflight_activation_store;
-mod logging;
-mod metrics;
 
 pub const VERSION: &str = env!("TASKWORKER_VERSION");
 
