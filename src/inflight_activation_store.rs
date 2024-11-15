@@ -108,6 +108,21 @@ impl InflightActivationStore {
         Ok(Self { sqlite_pool })
     }
 
+    /// Get an activation by id. Primarily used for testing
+    pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+        let row_result: Option<TableRow> =
+            sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.sqlite_pool)
+                .await?;
+
+        let Some(row) = row_result else {
+            return Ok(None);
+        };
+
+        Ok(Some(row.into()))
+    }
+
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         if batch.is_empty() {
             return Ok(QueryResult { rows_affected: 0 });
@@ -297,6 +312,41 @@ impl InflightActivationStore {
 
         Err(anyhow!("Could not update tasks past processing_deadline"))
     }
+
+    /// Remove completed tasks that do not have an incomplete record following
+    /// them in offset order.
+    ///
+    /// This method is a garbage collector for the inflight task store.
+    pub async fn remove_completed(&self) -> Result<u64, Error> {
+        let incomplete_query = sqlx::query(
+            r#"
+            SELECT "offset"
+            FROM inflight_taskactivations
+            WHERE status != $1
+            ORDER BY "offset"
+            LIMIT 1
+            "#,
+        )
+        .bind(TaskActivationStatus::Complete)
+        .fetch_optional(&self.sqlite_pool)
+        .await?;
+
+        let lowest_incomplete_offset: i64 = if let Some(query_result) = incomplete_query {
+            query_result.get("offset")
+        } else {
+            return Ok(0);
+        };
+
+        let cleanup_query = sqlx::query(
+            r#"DELETE FROM inflight_taskactivations WHERE status = $1 AND "offset" < $2"#,
+        )
+        .bind(TaskActivationStatus::Complete)
+        .bind(lowest_incomplete_offset)
+        .execute(&self.sqlite_pool)
+        .await?;
+
+        Ok(cleanup_query.rows_affected())
+    }
 }
 
 #[cfg(test)]
@@ -315,6 +365,38 @@ mod tests {
     fn generate_temp_filename() -> String {
         let mut rng = rand::thread_rng();
         format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.gen::<u64>())
+    }
+
+    fn make_activations(count: u32) -> Vec<InflightActivation> {
+        let mut records: Vec<InflightActivation> = vec![];
+        for i in 1..=count {
+            #[allow(deprecated)]
+            let item = InflightActivation {
+                activation: TaskActivation {
+                    id: format!("id_{}", i).into(),
+                    namespace: "namespace".into(),
+                    taskname: "taskname".into(),
+                    parameters: "{some_param: 123}".into(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: Utc::now().timestamp(),
+                        nanos: 0,
+                    }),
+                    deadline: None,
+                    retry_state: None,
+                    processing_deadline_duration: 10,
+                    expires: None,
+                },
+                status: TaskActivationStatus::Pending,
+                partition: 0,
+                offset: i as i64,
+                added_at: Utc::now(),
+                deadletter_at: None,
+                processing_deadline: None,
+            };
+            records.push(item);
+        }
+        records
     }
 
     #[tokio::test]
@@ -927,5 +1009,77 @@ mod tests {
         let past_deadline = store.handle_processing_deadline().await;
         assert!(past_deadline.is_ok());
         assert_eq!(past_deadline.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_remove_completed() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut records = make_activations(3);
+        // record 1 & 2 should not be removed.
+        records[0].status = TaskActivationStatus::Complete;
+        records[1].status = TaskActivationStatus::Pending;
+        records[2].status = TaskActivationStatus::Complete;
+
+        assert!(store.store(records.clone()).await.is_ok());
+
+        let result = store.remove_completed().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+        assert!(store
+            .get_by_id(&records[0].activation.id)
+            .await
+            .expect("no error")
+            .is_none());
+        assert!(store
+            .get_by_id(&records[1].activation.id)
+            .await
+            .expect("no error")
+            .is_some());
+        assert!(store
+            .get_by_id(&records[2].activation.id)
+            .await
+            .expect("no error")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_remove_completed_multiple_gaps() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut records = make_activations(4);
+        // only record 1 can be removed
+        records[0].status = TaskActivationStatus::Complete;
+        records[1].status = TaskActivationStatus::Failure;
+        records[2].status = TaskActivationStatus::Complete;
+        records[3].status = TaskActivationStatus::Processing;
+
+        assert!(store.store(records.clone()).await.is_ok());
+
+        let result = store.remove_completed().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+        assert!(store
+            .get_by_id(&records[0].activation.id)
+            .await
+            .expect("no error")
+            .is_none());
+        assert!(store
+            .get_by_id(&records[1].activation.id)
+            .await
+            .expect("no error")
+            .is_some());
+        assert!(store
+            .get_by_id(&records[2].activation.id)
+            .await
+            .expect("no error")
+            .is_some());
+        assert!(store
+            .get_by_id(&records[3].activation.id)
+            .await
+            .expect("no error")
+            .is_some());
     }
 }
