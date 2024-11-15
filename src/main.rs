@@ -101,10 +101,11 @@ async fn main() -> Result<(), Error> {
                 }
         }
     });
+    
+    let (consumer_result, grpc_server_result, upkeep_result) = tokio::join!(consumer_task, grpc_server_task, upkeep_task);
 
-    let results = tokio::join!(consumer_task, grpc_server_task, upkeep_task);
-    let _ = results.0.expect("Consumer task failed");
-    let _ = results.1.expect("GRPC server task failed");
-    let _ = results.2.expect("Upkeep task failed");
+    let _ = consumer_result.expect("Consumer task failed");
+    let _ = grpc_server_result.expect("GRPC server task failed");
+    let _ = upkeep_result.expect("Upkeep task failed");
     Ok(())
 }
