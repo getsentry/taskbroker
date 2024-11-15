@@ -213,6 +213,13 @@ impl InflightActivationStore {
                 .collect(),
         )
     }
+
+    pub async fn clear(&self) -> Result<(), Error> {
+        sqlx::query("DELETE FROM inflight_taskactivations")
+            .execute(&self.sqlite_pool)
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -777,5 +784,59 @@ mod tests {
         ];
 
         assert_eq!(store.get_retry_activations().await.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn test_clear() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        #[allow(deprecated)]
+        let batch = vec![InflightActivation {
+            activation: TaskActivation {
+                id: "id_0".into(),
+                namespace: "namespace".into(),
+                taskname: "taskname".into(),
+                parameters: "{}".into(),
+                headers: HashMap::new(),
+                received_at: Some(prost_types::Timestamp {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                deadline: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: Some(1),
+            },
+            status: TaskActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            deadletter_at: None,
+            processing_deadline: None,
+        }];
+        assert!(store.store(batch).await.is_ok());
+
+        let result = sqlx::query(
+            "SELECT count() as count
+             FROM inflight_taskactivations;",
+        )
+        .fetch_one(&SqlitePool::connect(&url).await.unwrap())
+        .await
+        .unwrap();
+
+        assert_eq!(result.get::<u32, &str>("count"), 1);
+
+        assert!(store.clear().await.is_ok());
+
+        let result = sqlx::query(
+            "SELECT count() as count
+             FROM inflight_taskactivations;",
+        )
+        .fetch_one(&SqlitePool::connect(&url).await.unwrap())
+        .await
+        .unwrap();
+
+        assert_eq!(result.get::<u32, &str>("count"), 0);
     }
 }

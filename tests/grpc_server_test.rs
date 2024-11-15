@@ -1,19 +1,41 @@
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
 use sentry_protos::sentry::v1::{GetTaskRequest, SetTaskStatusRequest};
 use std::sync::Arc;
+use std::{future::Future, pin::Pin, task};
 use tonic::{Code, Request};
+
+use async_once_cell::Lazy;
 
 use taskbroker::grpc_server::MyConsumerService;
 use taskbroker::inflight_activation_store::InflightActivationStore;
 
+struct F(Option<Pin<Box<dyn Future<Output = Arc<InflightActivationStore>> + Send>>>);
+impl Future for F {
+    type Output = Arc<InflightActivationStore>;
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context,
+    ) -> task::Poll<Arc<InflightActivationStore>> {
+        Pin::new(self.0.get_or_insert_with(|| {
+            Box::pin(async {
+                let store = Arc::new(
+                    InflightActivationStore::new("test_db.sqlite")
+                        .await
+                        .unwrap(),
+                );
+                store.clear().await.unwrap();
+                store
+            })
+        }))
+        .poll(cx)
+    }
+}
+
+static STORE: Lazy<Arc<InflightActivationStore>, F> = Lazy::new(F(None));
+
 #[tokio::test]
 async fn test_get_task() {
-    let store = Arc::new(
-        InflightActivationStore::new("test_db.sqlite")
-            .await
-            .unwrap(),
-    );
-    // TODO: clear the db?
+    let store = STORE.get_unpin().await.clone();
     let service = MyConsumerService { store };
     let request = GetTaskRequest {};
     let response = service.get_task(Request::new(request)).await;
@@ -25,11 +47,7 @@ async fn test_get_task() {
 
 #[tokio::test]
 async fn test_set_task_status() {
-    let store = Arc::new(
-        InflightActivationStore::new("test_db.sqlite")
-            .await
-            .unwrap(),
-    );
+    let store = STORE.get_unpin().await.clone();
     let service = MyConsumerService { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -45,11 +63,7 @@ async fn test_set_task_status() {
 
 #[tokio::test]
 async fn test_set_task_status_invalid() {
-    let store = Arc::new(
-        InflightActivationStore::new("test_db.sqlite")
-            .await
-            .unwrap(),
-    );
+    let store = STORE.get_unpin().await.clone();
     let service = MyConsumerService { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
