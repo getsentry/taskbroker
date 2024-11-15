@@ -46,7 +46,7 @@ impl ConsumerService for MyConsumerService {
         let status = match request.get_ref().status {
             3 => TaskActivationStatus::Failure,
             4 => TaskActivationStatus::Retry,
-            5 => TaskActivationStatus::Complete, // TODO: Do we care about any state besides this one?
+            5 => TaskActivationStatus::Complete,
             _ => {
                 return Err(Status::invalid_argument(
                     "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)",
