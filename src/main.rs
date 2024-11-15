@@ -1,25 +1,25 @@
-use tonic::transport::Server;
 use anyhow::Error;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
 use tokio::{select, signal, time};
+use tonic::transport::Server;
 use tracing::info;
 
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::config::Config;
-use taskbroker::grpc_server::MyConsumerService;
 use taskbroker::consumer::{
     deserialize_activation::{self, DeserializeConfig},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
+use taskbroker::grpc_server::MyConsumerService;
 use taskbroker::inflight_activation_store::InflightActivationStore;
-use taskbroker::Args;
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
+use taskbroker::Args;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -64,7 +64,6 @@ async fn main() -> Result<(), Error> {
                 &kafka_config,
                 processing_strategy!({
                     map: deserialize_activation::new(DeserializeConfig::from_config(&consumer_config)),
-        
                     reduce: InflightActivationWriter::new(
                         consumer_store.clone(),
                         ActivationWriterConfig::from_config(&consumer_config)
@@ -84,25 +83,28 @@ async fn main() -> Result<(), Error> {
         let grpc_store = store.clone();
         let grpc_config = config.clone();
         async move {
-            let addr = format!("[::1]:{}", grpc_config.grpc_port).parse().expect("Failed to parse address");
-            let service = MyConsumerService{ store: grpc_store };
+            let addr = format!("[::1]:{}", grpc_config.grpc_port)
+                .parse()
+                .expect("Failed to parse address");
+            let service = MyConsumerService { store: grpc_store };
 
             let server = Server::builder()
                 .add_service(ConsumerServiceServer::new(service))
                 .serve(addr);
-            
-                select! {
-                    _ = signal::ctrl_c() => {
-                        return Ok(());
-                    }
-                    _ = server => {
-                        return Err(anyhow::anyhow!("GRPC server task failed"));
-                    }
+
+            select! {
+                _ = signal::ctrl_c() => {
+                    return Ok(());
                 }
+                _ = server => {
+                    return Err(anyhow::anyhow!("GRPC server task failed"));
+                }
+            }
         }
     });
-    
-    let (consumer_result, grpc_server_result, upkeep_result) = tokio::join!(consumer_task, grpc_server_task, upkeep_task);
+
+    let (consumer_result, grpc_server_result, upkeep_result) =
+        tokio::join!(consumer_task, grpc_server_task, upkeep_task);
 
     let _ = consumer_result.expect("Consumer task failed");
     let _ = grpc_server_result.expect("GRPC server task failed");

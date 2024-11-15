@@ -4,12 +4,12 @@ use clap::Parser;
 pub mod config;
 #[allow(dead_code)]
 pub mod consumer;
-pub mod logging;
-pub mod metrics;
 #[allow(dead_code)]
 pub mod grpc_server;
 #[allow(dead_code)]
 pub mod inflight_activation_store;
+pub mod logging;
+pub mod metrics;
 
 pub const VERSION: &str = env!("TASKWORKER_VERSION");
 

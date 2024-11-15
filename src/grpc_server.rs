@@ -1,10 +1,10 @@
-
-use tonic::{Request, Response, Status};
 use std::sync::Arc;
+use tonic::{Request, Response, Status};
 
-
-use sentry_protos::sentry::v1::{GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse};
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
+use sentry_protos::sentry::v1::{
+    GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
+};
 
 use super::inflight_activation_store::{InflightActivationStore, TaskActivationStatus};
 use tracing::{info, instrument};
@@ -29,13 +29,9 @@ impl ConsumerService for MyConsumerService {
                     error: None,
                 };
                 Ok(Response::new(resp))
-            },
-            Ok(None) => {
-                return Err(Status::not_found("No pending activation"))
-            },
-            Err(e) => {
-                Err(Status::internal(e.to_string()))
             }
+            Ok(None) => return Err(Status::not_found("No pending activation")),
+            Err(e) => Err(Status::internal(e.to_string())),
         }
     }
 
@@ -51,15 +47,17 @@ impl ConsumerService for MyConsumerService {
             3 => TaskActivationStatus::Failure,
             4 => TaskActivationStatus::Retry,
             5 => TaskActivationStatus::Complete, // TODO: Do we care about any state besides this one?
-            _ => return Err(Status::invalid_argument("Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)"))
+            _ => {
+                return Err(Status::invalid_argument(
+                    "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)",
+                ))
+            }
         };
 
         let inflight = self.store.set_status(&id, status).await;
         match inflight {
-            Ok(()) => { },
-            Err(e) => {
-                return Err(Status::internal(e.to_string()))
-            }
+            Ok(()) => {}
+            Err(e) => return Err(Status::internal(e.to_string())),
         }
 
         let mut response = SetTaskStatusResponse {
@@ -73,13 +71,9 @@ impl ConsumerService for MyConsumerService {
                 match inflight {
                     Ok(Some(inflight)) => {
                         response.task = Some(inflight.activation);
-                    },
-                    Ok(None) => {
-                        return Err(Status::not_found("No pending activation"))
-                    },
-                    Err(e) => {
-                        return Err(Status::internal(e.to_string()))
                     }
+                    Ok(None) => return Err(Status::not_found("No pending activation")),
+                    Err(e) => return Err(Status::internal(e.to_string())),
                 }
             }
         }
