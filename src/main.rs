@@ -94,10 +94,10 @@ async fn main() -> Result<(), Error> {
 
             select! {
                 _ = signal::ctrl_c() => {
-                    return Ok(());
+                    Ok(())
                 }
                 _ = server => {
-                    return Err(anyhow::anyhow!("GRPC server task failed"));
+                    Err(anyhow::anyhow!("GRPC server task failed"))
                 }
             }
         }
@@ -108,6 +108,6 @@ async fn main() -> Result<(), Error> {
 
     let _ = consumer_result.expect("Consumer task failed");
     let _ = grpc_server_result.expect("GRPC server task failed");
-    let _ = upkeep_result.expect("Upkeep task failed");
+    upkeep_result.expect("Upkeep task failed");
     Ok(())
 }
