@@ -39,8 +39,8 @@ async fn test_set_task_status() {
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
-    assert_eq!(resp.get_ref().task.is_none(), true);
-    assert_eq!(resp.get_ref().error.is_none(), true);
+    assert!(resp.get_ref().task.is_none());
+    assert!(resp.get_ref().error.is_none());
 }
 
 #[tokio::test]
