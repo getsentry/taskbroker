@@ -31,7 +31,3 @@ metrics = "0.24.0"
 
 [dev-dependencies]
 rand = "0.8.5"
-
-# This shouldn't be needed, since the sentry-protos repo should generate this
-[build-dependencies]
-tonic-build = "0.12"

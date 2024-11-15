@@ -32,12 +32,6 @@ impl ConsumerService for MyConsumerService {
             },
             Ok(None) => {
                 return Err(Status::not_found("No pending activation"))
-                /*let resp = GetTaskResponse {
-                    task: None,
-                    error: Some(Error { code: 404, message: "No pending activation".to_string(), details: vec![] }),
-                };
-                Ok(Response::new(resp))
-                */
             },
             Err(e) => {
                 Err(Status::internal(e.to_string()))
@@ -54,12 +48,10 @@ impl ConsumerService for MyConsumerService {
 
         let id = request.get_ref().id.clone();
         let status = match request.get_ref().status {
-            1 => TaskActivationStatus::Pending,
-            2 => TaskActivationStatus::Processing,
             3 => TaskActivationStatus::Failure,
             4 => TaskActivationStatus::Retry,
             5 => TaskActivationStatus::Complete, // TODO: Do we care about any state besides this one?
-            _ => return Err(Status::invalid_argument("Invalid status"))
+            _ => return Err(Status::invalid_argument("Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)"))
         };
 
         let inflight = self.store.set_status(&id, status).await;

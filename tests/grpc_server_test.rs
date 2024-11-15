@@ -36,3 +36,19 @@ async fn test_set_task_status() {
     assert_eq!(resp.get_ref().task.is_none(), true);
     assert_eq!(resp.get_ref().error.is_none(), true);
 }
+
+#[tokio::test]
+async fn test_set_task_status_invalid() {
+    let store = Arc::new(InflightActivationStore::new("test_db.sqlite").await.unwrap());
+    let service = MyConsumerService{ store };
+    let request = SetTaskStatusRequest {
+        id: "test_task".to_string(),
+        status: 1, // Invalid
+        fetch_next: Some(false),
+    };
+    let response = service.set_task_status(Request::new(request)).await;
+    assert!(response.is_err());
+    let e = response.unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+    assert_eq!(e.message(), "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)");
+}
