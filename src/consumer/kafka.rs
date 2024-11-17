@@ -25,12 +25,13 @@ use std::{
     time::Duration,
 };
 use tokio::{
+    runtime::Handle,
     select, signal,
     sync::{
         mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
-    task::JoinSet,
+    task::{self, JoinSet},
     time::{self, sleep, MissedTickBehavior},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -84,18 +85,20 @@ pub fn handle_consumer_client(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     shutdown: oneshot::Receiver<()>,
 ) {
-    tokio::spawn(async move {
-        select! {
-            biased;
-            _ = shutdown => {
-                debug!("Received shutdown signal, commiting state in sync mode...");
-                let _ = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync);
+    task::spawn_blocking(|| {
+        Handle::current().block_on(async move {
+            select! {
+                biased;
+                _ = shutdown => {
+                    debug!("Received shutdown signal, commiting state in sync mode...");
+                    let _ = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync);
+                }
+                msg = consumer.recv() => {
+                    error!("Got unexpected message from consumer client: {:?}", msg);
+                }
             }
-            msg = consumer.recv() => {
-                error!("Got unexpected message from consumer client: {:?}", msg);
-            }
-        }
-        debug!("Shutdown complete");
+            debug!("Shutdown complete");
+        });
     });
 }
 

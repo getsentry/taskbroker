@@ -76,7 +76,7 @@ impl Default for Config {
         Self {
             sentry_dsn: None,
             sentry_env: None,
-            log_level: LogLevel::Info,
+            log_level: LogLevel::Debug,
             log_format: LogFormat::Text,
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
@@ -159,7 +159,7 @@ mod tests {
         };
         assert_eq!(config.sentry_dsn, None);
         assert_eq!(config.sentry_env, None);
-        assert_eq!(config.log_level, LogLevel::Info);
+        assert_eq!(config.log_level, LogLevel::Debug);
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
