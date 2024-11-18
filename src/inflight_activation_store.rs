@@ -313,6 +313,77 @@ impl InflightActivationStore {
         Err(anyhow!("Could not update tasks past processing_deadline"))
     }
 
+    /// Perform upkeep work related to status=failure
+    ///
+    /// Activations that are status=failure need to either be discarded by setting status=complete
+    /// or need to be moved to deadletter and are returned in the Result.
+    /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
+    /// complete.
+    pub async fn handle_failed_tasks(&self) -> Result<Vec<TaskActivation>, Error> {
+        let mut atomic = self.sqlite_pool.begin().await?;
+
+        let failed_tasks: Vec<SqliteRow> =
+            sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
+                .bind(TaskActivationStatus::Failure)
+                .fetch_all(&mut *atomic)
+                .await?
+                .into_iter()
+                .collect();
+
+        let mut to_discard: Vec<String> = vec![];
+        let mut to_deadletter: Vec<TaskActivation> = vec![];
+
+        for record in failed_tasks.iter() {
+            let activation_data: &[u8] = record.get("activation");
+            let activation = TaskActivation::decode(activation_data)?;
+
+            // Without a retry state, tasks are discarded
+            if activation.retry_state.as_ref().is_none() {
+                to_discard.push(activation.id);
+                continue;
+            }
+            let retry_state = &activation.retry_state.as_ref().unwrap();
+            if let Some(_) = retry_state.discard_after_attempt {
+                to_discard.push(activation.id.clone());
+            }
+            if let Some(_) = retry_state.deadletter_after_attempt {
+                to_deadletter.push(activation);
+            }
+        }
+
+        if !to_discard.is_empty() {
+            let mut query_builder = QueryBuilder::new(
+                "UPDATE inflight_taskactivations
+                SET status = $1
+                WHERE id IN (",
+            );
+            let mut separated = query_builder.separated(", ");
+            for id in to_discard.iter() {
+                separated.push_bind(id);
+            }
+            separated.push_unseparated(")");
+            query_builder.build().execute(&mut *atomic).await?;
+        }
+
+        atomic.commit().await?;
+
+        Ok(to_deadletter)
+    }
+
+    /// Mark a collection of tasks as complete by id
+    pub async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        let mut query_builder =
+            QueryBuilder::new("UPDATE inflight_taskactivations SET status = $1 WHERE id IN (");
+        let mut separated = query_builder.separated(", ");
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        let result = query_builder.build().execute(&self.sqlite_pool).await?;
+
+        Ok(result.rows_affected())
+    }
+
     /// Remove completed tasks that do not have an incomplete record following
     /// them in offset order.
     ///
@@ -359,7 +430,7 @@ mod tests {
 
     use chrono::{DateTime, TimeZone, Utc};
     use rand::Rng;
-    use sentry_protos::sentry::v1::TaskActivation;
+    use sentry_protos::sentry::v1::{RetryState, TaskActivation};
     use sqlx::{Row, SqlitePool};
 
     use crate::inflight_activation_store::{
@@ -732,5 +803,73 @@ mod tests {
             .await
             .expect("no error")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_failed_tasks() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut records = make_activations(4);
+        // deadletter
+        records[0].status = TaskActivationStatus::Failure;
+        records[0].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+        });
+        // discard
+        records[1].status = TaskActivationStatus::Failure;
+        records[1].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: Some(1),
+            deadletter_after_attempt: None,
+        });
+        // no retry state = discard
+        records[2].status = TaskActivationStatus::Failure;
+        assert!(records[2].activation.retry_state.is_none());
+
+        // Another deadletter
+        records[3].status = TaskActivationStatus::Failure;
+        records[3].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+        });
+        assert!(store.store(records.clone()).await.is_ok());
+
+        let result = store.handle_failed_tasks().await;
+        assert!(result.is_ok(), "handle_failed_tasks should be ok");
+        let deadletter = result.unwrap();
+
+        assert_eq!(deadletter.len(), 2);
+        assert_eq!(deadletter[0].id, records[0].activation.id);
+        assert_eq!(deadletter[1].id, records[3].activation.id);
+    }
+
+    #[tokio::test]
+    async fn test_mark_completed() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let records = make_activations(3);
+        assert!(store.store(records.clone()).await.is_ok());
+        assert_eq!(store.count_pending_activations().await.unwrap(), 3);
+        let ids = records
+            .iter()
+            .map(|item| item.activation.id.clone())
+            .collect();
+        let result = store.mark_completed(ids).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 3, "three records removed");
+        assert_eq!(
+            store.count_pending_activations().await.unwrap(),
+            0,
+            "no pending tasks left"
+        );
     }
 }
