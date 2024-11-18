@@ -3,6 +3,7 @@ use clap::Parser;
 use std::{sync::Arc, time::Duration};
 use tokio::{select, signal, time};
 use tonic::transport::Server;
+use tonic_health::server::health_reporter;
 use tracing::info;
 
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
@@ -83,6 +84,10 @@ async fn main() -> Result<(), Error> {
         let grpc_store = store.clone();
         let grpc_config = config.clone();
         async move {
+            let (mut health_reporter_fn, health_service) = health_reporter();
+            health_reporter_fn
+                .set_serving::<ConsumerServiceServer<MyConsumerService>>()
+                .await;
             let addr = format!("[::1]:{}", grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
@@ -90,13 +95,18 @@ async fn main() -> Result<(), Error> {
 
             let server = Server::builder()
                 .add_service(ConsumerServiceServer::new(service))
+                .add_service(health_service)
                 .serve(addr);
 
             select! {
                 _ = signal::ctrl_c() => {
+                    info!("Cancel received, shutting down GRPC server");
+                    health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
                     Ok(())
                 }
                 _ = server => {
+                    info!("GRPC server task failed, shutting down");
+                    health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
                     Err(anyhow::anyhow!("GRPC server task failed"))
                 }
             }

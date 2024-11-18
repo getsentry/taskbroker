@@ -11,6 +11,7 @@ anyhow = "1.0.92"
 chrono = { version = "0.4.26" }
 sqlx = { version = "0.8.2", features = ["sqlite", "runtime-tokio", "chrono"] }
 tonic = "0.12"
+tonic-health = "0.12.3"
 prost = "0.13"
 prost-types = "0.13.3"
 tokio = { version = "1.41.0", features = ["full"] }
