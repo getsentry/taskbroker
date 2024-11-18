@@ -350,10 +350,10 @@ impl InflightActivationStore {
                 continue;
             }
             let retry_state = &activation.retry_state.as_ref().unwrap();
-            if let Some(_) = retry_state.discard_after_attempt {
+            if retry_state.discard_after_attempt.is_some() {
                 to_discard.push(activation.id.clone());
             }
-            if let Some(_) = retry_state.deadletter_after_attempt {
+            if retry_state.deadletter_after_attempt.is_some() {
                 to_deadletter.push(activation);
             }
         }
