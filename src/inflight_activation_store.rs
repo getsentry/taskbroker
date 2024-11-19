@@ -47,7 +47,7 @@ impl From<SqliteQueryResult> for QueryResult {
     }
 }
 
-#[derive(FromRow)]
+#[derive(Debug, FromRow)]
 struct TableRow {
     id: String,
     activation: Vec<u8>,
@@ -330,6 +330,43 @@ impl InflightActivationStore {
         }
 
         Err(anyhow!("Could not update tasks past processing_deadline"))
+    }
+
+    /// Perform upkeep work for tasks that are past deadletter_at deadlines
+    ///
+    /// Tasks that are pending and past their deadletter_at deadline are updated
+    /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
+    /// The number of impacted records is returned in a Result.
+    pub async fn handle_deadletter_at(&self) -> Result<u64, Error> {
+        let mut atomic = self.sqlite_pool.begin().await?;
+        let max_result: SqliteRow = sqlx::query(
+            r#"SELECT MAX("offset") AS max_offset
+            FROM inflight_taskactivations
+            WHERE status = $1
+            "#,
+        )
+        .bind(TaskActivationStatus::Complete)
+        .fetch_one(&mut *atomic)
+        .await?;
+
+        let max_offset: u32 = max_result.get("max_offset");
+        let now = Utc::now();
+        let update_result = sqlx::query(
+            r#"UPDATE inflight_taskactivations
+            SET status = $1
+            WHERE deadletter_at < $2 AND "offset" < $3 AND status = $4
+            "#,
+        )
+        .bind(TaskActivationStatus::Failure)
+        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(max_offset)
+        .bind(TaskActivationStatus::Pending)
+        .execute(&mut *atomic)
+        .await?;
+
+        atomic.commit().await?;
+
+        Ok(update_result.rows_affected())
     }
 
     /// Perform upkeep work related to status=failure
@@ -937,6 +974,53 @@ mod tests {
         );
         let result = store.count_by_status(TaskActivationStatus::Complete).await;
         assert_eq!(result.unwrap(), 3, "all tasks should be complete");
+    }
+
+    #[tokio::test]
+    async fn test_handle_deadletter_at_no_complete() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+        let mut batch = make_activations(3);
+
+        // While two records are past deadlines, there are no completed tasks with higher offsets
+        // no tasks should be updated as we could have no workers available.
+        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+
+        assert!(store.store(batch.clone()).await.is_ok());
+        let result = store.handle_deadletter_at().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+
+        let failure_count = store.count_by_status(TaskActivationStatus::Failure).await;
+        assert_eq!(failure_count.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_deadletter_at_with_complete() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+        let mut batch = make_activations(3);
+
+        // Because 1 is complete and has a higher offset than 0 1 will be moved to failure
+        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].status = TaskActivationStatus::Complete;
+        batch[2].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        let result = store.handle_deadletter_at().await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1, "only one record should be updated");
+
+        let failure_count = store.count_by_status(TaskActivationStatus::Failure).await;
+        assert_eq!(failure_count.unwrap(), 1);
+
+        let failed = store.get_by_id(&batch[0].activation.id).await;
+        assert_eq!(
+            failed.unwrap().unwrap().status,
+            TaskActivationStatus::Failure
+        );
     }
 
     #[tokio::test]
