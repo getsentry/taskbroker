@@ -881,6 +881,7 @@ mod tests {
         assert_eq!(deadletter.len(), 2);
         assert_eq!(deadletter[0].id, records[0].activation.id);
         assert_eq!(deadletter[1].id, records[3].activation.id);
+        assert_eq!(store.count_by_status(TaskActivationStatus::Failure).await.unwrap(), 2);
     }
 
     #[tokio::test]
