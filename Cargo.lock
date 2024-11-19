@@ -544,6 +544,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "elegant-departure"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "259261d0b72dc618a177af380b2944fa44e22fedbdabb920f7b47edffb1df337"
+dependencies = [
+ "futures",
+ "lazy_static",
+ "pin-project-lite",
+ "tokio-util",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2679,9 +2691,9 @@ name = "taskbroker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-stream",
  "chrono",
  "clap",
+ "elegant-departure",
  "figment",
  "futures",
  "metrics",
