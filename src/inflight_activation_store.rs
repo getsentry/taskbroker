@@ -145,7 +145,7 @@ impl InflightActivationStore {
                 b.push_bind(row.deadletter_at);
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
-                    b.push_bind(deadline.format("%Y-%m-%D %H:%M:%S").to_string());
+                    b.push_bind(deadline);
                 } else {
                     // Add a literal null
                     b.push("null");
@@ -266,7 +266,7 @@ impl InflightActivationStore {
             WHERE processing_deadline < $1 AND status = $2
             ",
         )
-        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(now)
         .bind(TaskActivationStatus::Processing)
         .fetch_all(&mut *atomic)
         .await?
@@ -358,7 +358,7 @@ impl InflightActivationStore {
             "#,
         )
         .bind(TaskActivationStatus::Failure)
-        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(now)
         .bind(max_offset)
         .bind(TaskActivationStatus::Pending)
         .execute(&mut *atomic)
