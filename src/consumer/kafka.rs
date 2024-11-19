@@ -26,7 +26,7 @@ use std::{
 };
 use tokio::{
     runtime::Handle,
-    select, signal,
+    select,
     sync::{
         mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
         oneshot,
@@ -73,8 +73,10 @@ pub async fn start_consumer(
 }
 
 pub fn handle_os_signals(event_sender: UnboundedSender<(Event, SyncSender<()>)>) {
+    let guard = elegant_departure::get_shutdown_guard();
     tokio::spawn(async move {
-        let _ = signal::ctrl_c().await;
+        let _ = guard.wait().await;
+        info!("Cancellation token received, shutting down consumer");
         let (rendezvous_sender, _) = sync_channel(0);
         let _ = event_sender.send((Event::Shutdown, rendezvous_sender));
     });
