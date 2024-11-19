@@ -185,11 +185,22 @@ impl InflightActivationStore {
     }
 
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
+        self.count_by_status(TaskActivationStatus::Pending).await
+    }
+
+    pub async fn count_by_status(&self, status: TaskActivationStatus) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
-                .bind(TaskActivationStatus::Pending)
+                .bind(status)
                 .fetch_one(&self.sqlite_pool)
                 .await?;
+        Ok(result.get::<u64, _>("count") as usize)
+    }
+
+    pub async fn count(&self) -> Result<usize, Error> {
+        let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
+            .fetch_one(&self.sqlite_pool)
+            .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
 
@@ -297,19 +308,20 @@ impl InflightActivationStore {
         }
 
         // Clear processing deadlines and make tasks available again.
-        let mut query_builder = QueryBuilder::new(
-            "UPDATE inflight_taskactivations
-            SET status = $1, processing_deadline = null
-            WHERE id IN (",
-        );
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
+
+        query_builder
+            .push("SET status = ")
+            .push_bind(TaskActivationStatus::Pending)
+            .push(", processing_deadline = null WHERE id IN (");
+
         let mut separated = query_builder.separated(", ");
         for id in to_update.iter() {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
 
-        let query = query_builder.build();
-        let result = query.execute(&mut *atomic).await;
+        let result = query_builder.build().execute(&mut *atomic).await;
 
         atomic.commit().await?;
 
@@ -318,6 +330,82 @@ impl InflightActivationStore {
         }
 
         Err(anyhow!("Could not update tasks past processing_deadline"))
+    }
+
+    /// Perform upkeep work related to status=failure
+    ///
+    /// Activations that are status=failure need to either be discarded by setting status=complete
+    /// or need to be moved to deadletter and are returned in the Result.
+    /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
+    /// complete.
+    pub async fn handle_failed_tasks(&self) -> Result<Vec<TaskActivation>, Error> {
+        let mut atomic = self.sqlite_pool.begin().await?;
+
+        let failed_tasks: Vec<SqliteRow> =
+            sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
+                .bind(TaskActivationStatus::Failure)
+                .fetch_all(&mut *atomic)
+                .await?
+                .into_iter()
+                .collect();
+
+        let mut to_discard: Vec<String> = vec![];
+        let mut to_deadletter: Vec<TaskActivation> = vec![];
+
+        for record in failed_tasks.iter() {
+            let activation_data: &[u8] = record.get("activation");
+            let activation = TaskActivation::decode(activation_data)?;
+
+            // Without a retry state, tasks are discarded
+            if activation.retry_state.as_ref().is_none() {
+                to_discard.push(activation.id);
+                continue;
+            }
+            let retry_state = &activation.retry_state.as_ref().unwrap();
+            if retry_state.discard_after_attempt.is_some() {
+                to_discard.push(activation.id);
+            } else if retry_state.deadletter_after_attempt.is_some() {
+                to_deadletter.push(activation);
+            }
+        }
+
+        if !to_discard.is_empty() {
+            let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
+            query_builder
+                .push("SET status = ")
+                .push_bind(TaskActivationStatus::Complete)
+                .push(" WHERE id IN (");
+
+            let mut separated = query_builder.separated(", ");
+            for id in to_discard.iter() {
+                separated.push_bind(id);
+            }
+            separated.push_unseparated(")");
+
+            query_builder.build().execute(&mut *atomic).await?;
+        }
+
+        atomic.commit().await?;
+
+        Ok(to_deadletter)
+    }
+
+    /// Mark a collection of tasks as complete by id
+    pub async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
+        query_builder
+            .push("SET status = ")
+            .push_bind(TaskActivationStatus::Complete)
+            .push(" WHERE id IN (");
+
+        let mut separated = query_builder.separated(", ");
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        let result = query_builder.build().execute(&self.sqlite_pool).await?;
+
+        Ok(result.rows_affected())
     }
 
     /// Remove completed tasks that do not have an incomplete record following
@@ -366,7 +454,7 @@ mod tests {
 
     use chrono::{DateTime, TimeZone, Utc};
     use rand::Rng;
-    use sentry_protos::sentry::v1::TaskActivation;
+    use sentry_protos::sentry::v1::{RetryState, TaskActivation};
     use sqlx::{Row, SqlitePool};
 
     use crate::inflight_activation_store::{
@@ -425,15 +513,8 @@ mod tests {
         let batch = make_activations(2);
         assert!(store.store(batch).await.is_ok());
 
-        let result = sqlx::query(
-            "SELECT count() as count
-             FROM inflight_taskactivations;",
-        )
-        .fetch_one(&SqlitePool::connect(&url).await.unwrap())
-        .await
-        .unwrap();
-
-        assert_eq!(result.get::<u32, &str>("count"), 2);
+        let result = store.count().await;
+        assert_eq!(result.unwrap(), 2);
     }
 
     #[tokio::test]
@@ -510,6 +591,13 @@ mod tests {
         assert!(store.store(batch).await.is_ok());
 
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -581,44 +669,20 @@ mod tests {
         let batch = make_activations(2);
         assert!(store.store(batch).await.is_ok());
 
-        let result = sqlx::query(
-            "SELECT count() as count
-             FROM inflight_taskactivations;",
-        )
-        .fetch_one(&SqlitePool::connect(&url).await.unwrap())
-        .await
-        .unwrap();
-        assert_eq!(result.get::<u32, &str>("count"), 2);
+        let result = store.count().await;
+        assert_eq!(result.unwrap(), 2);
 
         assert!(store.delete_activation("id_0").await.is_ok());
-        let result = sqlx::query(
-            "SELECT count() as count
-             FROM inflight_taskactivations;",
-        )
-        .fetch_one(&SqlitePool::connect(&url).await.unwrap())
-        .await
-        .unwrap();
-        assert_eq!(result.get::<u32, &str>("count"), 1);
+        let result = store.count().await;
+        assert_eq!(result.unwrap(), 1);
 
         assert!(store.delete_activation("id_0").await.is_ok());
-        let result = sqlx::query(
-            "SELECT count() as count
-             FROM inflight_taskactivations;",
-        )
-        .fetch_one(&SqlitePool::connect(&url).await.unwrap())
-        .await
-        .unwrap();
-        assert_eq!(result.get::<u32, &str>("count"), 1);
+        let result = store.count().await;
+        assert_eq!(result.unwrap(), 1);
 
         assert!(store.delete_activation("id_1").await.is_ok());
-        let result = sqlx::query(
-            "SELECT count() as count
-             FROM inflight_taskactivations;",
-        )
-        .fetch_one(&SqlitePool::connect(&url).await.unwrap())
-        .await
-        .unwrap();
-        assert_eq!(result.get::<u32, &str>("count"), 0);
+        let result = store.count().await;
+        assert_eq!(result.unwrap(), 0);
     }
 
     #[tokio::test]
@@ -629,12 +693,24 @@ mod tests {
         let batch = make_activations(2);
         assert!(store.store(batch.clone()).await.is_ok());
 
-        assert_eq!(store.count_pending_activations().await.unwrap(), 2);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            2
+        );
         assert!(store
             .set_status("id_0", TaskActivationStatus::Retry)
             .await
             .is_ok());
-        assert_eq!(store.count_pending_activations().await.unwrap(), 1);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
         assert!(store
             .set_status("id_1", TaskActivationStatus::Retry)
             .await
@@ -662,6 +738,20 @@ mod tests {
         let past_deadline = store.handle_processing_deadline().await;
         assert!(past_deadline.is_ok());
         assert_eq!(past_deadline.unwrap(), 1);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Processing)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            2
+        );
 
         // Run again to check early return
         let past_deadline = store.handle_processing_deadline().await;
@@ -700,6 +790,20 @@ mod tests {
             .await
             .expect("no error")
             .is_some());
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Complete)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -739,6 +843,100 @@ mod tests {
             .await
             .expect("no error")
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_handle_failed_tasks() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut records = make_activations(4);
+        // deadletter
+        records[0].status = TaskActivationStatus::Failure;
+        records[0].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+        });
+        // discard
+        records[1].status = TaskActivationStatus::Failure;
+        records[1].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: Some(1),
+            deadletter_after_attempt: None,
+        });
+        // no retry state = discard
+        records[2].status = TaskActivationStatus::Failure;
+        assert!(records[2].activation.retry_state.is_none());
+
+        // Another deadletter
+        records[3].status = TaskActivationStatus::Failure;
+        records[3].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+        });
+        assert!(store.store(records.clone()).await.is_ok());
+
+        let result = store.handle_failed_tasks().await;
+        assert!(result.is_ok(), "handle_failed_tasks should be ok");
+        let deadletter = result.unwrap();
+
+        assert_eq!(deadletter.len(), 2, "should have two tasks to deadletter");
+        assert!(
+            store.get_by_id(&deadletter[0].id).await.is_ok(),
+            "deadletter records still in sqlite"
+        );
+        assert!(
+            store.get_by_id(&deadletter[1].id).await.is_ok(),
+            "deadletter records still in sqlite"
+        );
+        assert_eq!(deadletter[0].id, records[0].activation.id);
+        assert_eq!(deadletter[1].id, records[3].activation.id);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Failure)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mark_completed() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let records = make_activations(3);
+        assert!(store.store(records.clone()).await.is_ok());
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            3
+        );
+        let ids: Vec<String> = records
+            .iter()
+            .map(|item| item.activation.id.clone())
+            .collect();
+        let result = store.mark_completed(ids.clone()).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 3, "three records updated");
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            0,
+            "no pending tasks left"
+        );
+        let result = store.count_by_status(TaskActivationStatus::Complete).await;
+        assert_eq!(result.unwrap(), 3, "all tasks should be complete");
     }
 
     #[tokio::test]
