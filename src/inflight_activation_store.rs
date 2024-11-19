@@ -591,6 +591,13 @@ mod tests {
         assert!(store.store(batch).await.is_ok());
 
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -878,10 +885,24 @@ mod tests {
         assert!(result.is_ok(), "handle_failed_tasks should be ok");
         let deadletter = result.unwrap();
 
-        assert_eq!(deadletter.len(), 2);
+        assert_eq!(deadletter.len(), 2, "should have two tasks to deadletter");
+        assert!(
+            store.get_by_id(&deadletter[0].id).await.is_ok(),
+            "deadletter records still in sqlite"
+        );
+        assert!(
+            store.get_by_id(&deadletter[1].id).await.is_ok(),
+            "deadletter records still in sqlite"
+        );
         assert_eq!(deadletter[0].id, records[0].activation.id);
         assert_eq!(deadletter[1].id, records[3].activation.id);
-        assert_eq!(store.count_by_status(TaskActivationStatus::Failure).await.unwrap(), 2);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Failure)
+                .await
+                .unwrap(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -915,7 +936,7 @@ mod tests {
             "no pending tasks left"
         );
         let result = store.count_by_status(TaskActivationStatus::Complete).await;
-        assert_eq!(result.unwrap(), 3);
+        assert_eq!(result.unwrap(), 3, "all tasks should be complete");
     }
 
     #[tokio::test]
