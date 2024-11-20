@@ -552,6 +552,7 @@ dependencies = [
  "futures",
  "lazy_static",
  "pin-project-lite",
+ "tokio",
  "tokio-util",
 ]
 
