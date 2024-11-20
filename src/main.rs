@@ -56,7 +56,7 @@ async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
             error!("Task {} failed: {:?}", name, e);
         }
         Err(e) => {
-            error!("Task {} failed: {:?}", name, e);
+            error!("Task {} panicked: {:?}", name, e);
         }
     }
 }
