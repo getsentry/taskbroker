@@ -1,6 +1,7 @@
 use anyhow::Error;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
@@ -140,7 +141,8 @@ async fn main() -> Result<(), Error> {
     elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
-        .on_sigterm()
+        .on_signal(SignalKind::hangup())
+        .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
