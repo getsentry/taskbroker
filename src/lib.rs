@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::fs;
 
 #[allow(dead_code)]
 pub mod config;
@@ -11,7 +12,10 @@ pub mod inflight_activation_store;
 pub mod logging;
 pub mod metrics;
 
-pub const VERSION: &str = env!("TASKWORKER_VERSION");
+pub fn get_version() -> &'static str {
+    let release_name = fs::read_to_string(".VERSION").expect("Unable to read version");
+    Box::leak(release_name.into_boxed_str())
+}
 
 #[derive(Parser, Debug)]
 pub struct Args {

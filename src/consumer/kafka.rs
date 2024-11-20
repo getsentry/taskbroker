@@ -50,7 +50,6 @@ pub async fn start_consumer(
     let (event_sender, event_receiver) = unbounded_channel();
 
     let context = KafkaContext::new(event_sender.clone());
-
     let consumer: Arc<StreamConsumer<KafkaContext>> = Arc::new(
         kafka_client_config
             .create_with_context(context)
@@ -336,7 +335,7 @@ pub async fn handle_events(
         let Some((event, _rendezvous_guard)) = events_stream.next().await else {
             unreachable!("Unexpected end to event stream")
         };
-        info!("Recieved event: {:?}", event);
+        info!("Received event: {:?}", event);
         state = match (state, event) {
             (ConsumerState::Ready, Event::Assign(tpl)) => {
                 ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
