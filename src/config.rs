@@ -72,6 +72,10 @@ pub struct Config {
     /// are not complete. This should be a multiple of max_processing_deadline
     /// to allow temporary worker deaths to be resolved.
     pub deadletter_deadline: usize,
+
+    /// The interval to run the upkeep thread in ms. Upkeep will run once
+    /// every `upkeep_interval` ms, in order to clean up activations.
+    pub upkeep_interval: u64,
 }
 
 impl Default for Config {
@@ -95,6 +99,7 @@ impl Default for Config {
             max_pending_buffer_count: 1,
             max_processing_deadline: 300,
             deadletter_deadline: 900,
+            upkeep_interval: 200,
         }
     }
 }

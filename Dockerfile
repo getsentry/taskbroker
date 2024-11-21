@@ -9,11 +9,13 @@ RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compi
 RUN USER=root cargo new --bin taskbroker
 WORKDIR /taskbroker
 
+ARG config_file=config-sentry-dev.yaml
+
 # All these files are required to build or run the application
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
-COPY ./config/config-dev.yaml ./config.yaml
+COPY ./config/${config_file} ./config.yaml
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release

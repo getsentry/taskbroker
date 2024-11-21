@@ -3,10 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        config_file: config-dev.yaml
     volumes:
       - 'taskbroker-data:/opt/'
     ports:
     - "50051:50051"
+    networks:
+      - taskbroker
     depends_on:
       - kafka
   kafka:
@@ -53,3 +57,4 @@ volumes:
 networks:
   taskbroker:
     name: taskbroker
+

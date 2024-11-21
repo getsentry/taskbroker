@@ -47,9 +47,10 @@ async fn main() -> Result<(), Error> {
     // Upkeep thread
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
+        let upkeep_config = config.clone();
         async move {
             let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            let mut timer = time::interval(Duration::from_millis(200));
+            let mut timer = time::interval(Duration::from_millis(upkeep_config.upkeep_interval));
             loop {
                 select! {
                     _ = timer.tick() => {
