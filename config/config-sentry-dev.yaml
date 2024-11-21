@@ -1,0 +1,2 @@
+kafka_cluster: "sentry_kafka:9093"
+upkeep_interval: 2000
