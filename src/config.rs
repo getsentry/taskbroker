@@ -28,6 +28,9 @@ pub struct Config {
     /// The statsd address to report metrics to.
     pub statsd_addr: SocketAddr,
 
+    /// The hostname and port of the gRPC server.
+    pub grpc_addr: String,
+
     /// The port to bind the grpc service to
     pub grpc_port: u32,
 
@@ -85,6 +88,7 @@ impl Default for Config {
             sentry_env: None,
             log_level: LogLevel::Debug,
             log_format: LogFormat::Text,
+            grpc_addr: "[::1]".to_owned(),
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
