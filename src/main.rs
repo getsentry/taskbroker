@@ -1,9 +1,10 @@
 use anyhow::Error;
 use clap::Parser;
+use taskbroker::consumer::upkeep::start_upkeep;
 use std::{sync::Arc, time::Duration};
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
-use tokio::{select, time};
+use tokio::select;
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
 use tracing::{error, info};
@@ -47,24 +48,9 @@ async fn main() -> Result<(), Error> {
     // Upkeep thread
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
+        let upkeep_config = config.clone();
         async move {
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            let mut timer = time::interval(Duration::from_millis(200));
-            loop {
-                select! {
-                    _ = timer.tick() => {
-                        let _ = upkeep_store.get_pending_activation().await;
-                        info!(
-                            "Pending activation in store: {}",
-                            upkeep_store.count_pending_activations().await.unwrap()
-                        );
-                    }
-                    _ = guard.wait() => {
-                        info!("Cancellation token received, shutting down upkeep");
-                        break;
-                    }
-                }
-            }
+            start_upkeep(upkeep_config, upkeep_store, Duration::from_millis(200)).await;
         }
     });
 
