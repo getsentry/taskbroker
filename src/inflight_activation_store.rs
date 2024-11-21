@@ -322,6 +322,7 @@ impl InflightActivationStore {
         separated.push_unseparated(")");
 
         let result = query_builder.build().execute(&mut *atomic).await;
+        println!("did update {:?}", to_update);
 
         atomic.commit().await?;
 
@@ -490,50 +491,13 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::{DateTime, TimeZone, Utc};
-    use rand::Rng;
     use sentry_protos::sentry::v1::{RetryState, TaskActivation};
     use sqlx::{Row, SqlitePool};
 
     use crate::inflight_activation_store::{
         InflightActivation, InflightActivationStore, TaskActivationStatus,
     };
-
-    fn generate_temp_filename() -> String {
-        let mut rng = rand::thread_rng();
-        format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.gen::<u64>())
-    }
-
-    fn make_activations(count: u32) -> Vec<InflightActivation> {
-        let mut records: Vec<InflightActivation> = vec![];
-        for i in 0..count {
-            #[allow(deprecated)]
-            let item = InflightActivation {
-                activation: TaskActivation {
-                    id: format!("id_{}", i),
-                    namespace: "namespace".into(),
-                    taskname: "taskname".into(),
-                    parameters: "{}".into(),
-                    headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: Utc::now().timestamp(),
-                        nanos: 0,
-                    }),
-                    deadline: None,
-                    retry_state: None,
-                    processing_deadline_duration: 10,
-                    expires: None,
-                },
-                status: TaskActivationStatus::Pending,
-                partition: 0,
-                offset: i as i64,
-                added_at: Utc::now(),
-                deadletter_at: None,
-                processing_deadline: None,
-            };
-            records.push(item);
-        }
-        records
-    }
+    use crate::test_utils::{generate_temp_filename, make_activations};
 
     #[tokio::test]
     async fn test_create_db() {

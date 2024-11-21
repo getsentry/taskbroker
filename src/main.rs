@@ -1,10 +1,10 @@
 use anyhow::Error;
 use clap::Parser;
-use taskbroker::consumer::upkeep::start_upkeep;
 use std::{sync::Arc, time::Duration};
+use taskbroker::consumer::upkeep::start_upkeep;
+use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
-use tokio::select;
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
 use tracing::{error, info};
