@@ -138,7 +138,6 @@ mod tests {
         Arc::new(InflightActivationStore::new(&url).await.unwrap())
     }
 
-
     #[tokio::test]
     async fn test_retry_activation_is_appended_to_kafka() {
         // TODO
@@ -222,7 +221,10 @@ mod tests {
             "complete tasks were removed"
         );
 
-        assert!(store.get_by_id(&batch[0].activation.id).await.is_ok(), "first task should remain");
+        assert!(
+            store.get_by_id(&batch[0].activation.id).await.is_ok(),
+            "first task should remain"
+        );
     }
 
     #[tokio::test]
