@@ -1,16 +1,17 @@
 use rand::Rng;
-/// Helper methods for tests.
 use std::collections::HashMap;
 
 use crate::inflight_activation_store::{InflightActivation, TaskActivationStatus};
 use chrono::Utc;
 use sentry_protos::sentry::v1::TaskActivation;
 
+/// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
     let mut rng = rand::thread_rng();
     format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.gen::<u64>())
 }
 
+/// Create a collection of pending unsaved activations.
 pub fn make_activations(count: u32) -> Vec<InflightActivation> {
     let mut records: Vec<InflightActivation> = vec![];
     for i in 0..count {
