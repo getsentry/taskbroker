@@ -75,7 +75,7 @@ async fn main() -> Result<(), Error> {
         async move {
             let kafka_topic = consumer_config.kafka_topic.clone();
             let topic_list = [kafka_topic.as_str()];
-            let kafka_config = consumer_config.kafka_client_config();
+            let kafka_config = consumer_config.kafka_consumer_config();
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
             start_consumer(
