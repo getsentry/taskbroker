@@ -280,22 +280,34 @@ mod tests {
 
     #[test]
     fn test_kafka_consumer_config() {
-        let args = Args {config: None, log_level: None};
+        let args = Args {
+            config: None,
+            log_level: None,
+        };
         let config = Config::from_args(&args).unwrap();
         let consumer_config = config.kafka_consumer_config();
 
-        assert_eq!(consumer_config.get("bootstrap.servers").unwrap(), "127.0.0.1:9092");
+        assert_eq!(
+            consumer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
         assert_eq!(consumer_config.get("group.id").unwrap(), "task-worker");
         assert!(consumer_config.get("session.timeout.ms").is_some());
     }
 
     #[test]
     fn test_kafka_producer_config() {
-        let args = Args {config: None, log_level: None};
+        let args = Args {
+            config: None,
+            log_level: None,
+        };
         let config = Config::from_args(&args).unwrap();
         let producer_config = config.kafka_producer_config();
 
-        assert_eq!(producer_config.get("bootstrap.servers").unwrap(), "127.0.0.1:9092");
+        assert_eq!(
+            producer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
         assert!(producer_config.get("group.id").is_none());
         assert!(producer_config.get("session.timeout.ms").is_none());
     }
