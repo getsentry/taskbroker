@@ -37,11 +37,12 @@ async fn log_task_completion(name: &str, task: JoinHandle<()>) {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    console_subscriber::init();
     let args = Args::parse();
     let config = Arc::new(Config::from_args(&args)?);
 
-    logging::init(logging::LoggingConfig::from_config(&config));
-    metrics::init(metrics::MetricsConfig::from_config(&config));
+    // logging::init(logging::LoggingConfig::from_config(&config));
+    // metrics::init(metrics::MetricsConfig::from_config(&config));
     let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
 
     // Upkeep thread
