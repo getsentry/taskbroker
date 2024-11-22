@@ -495,7 +495,7 @@ mod tests {
     use crate::inflight_activation_store::{
         InflightActivation, InflightActivationStore, TaskActivationStatus,
     };
-    use crate::test_utils::{generate_temp_filename, make_activations, assert_count_by_status};
+    use crate::test_utils::{assert_count_by_status, generate_temp_filename, make_activations};
 
     #[tokio::test]
     async fn test_create_db() {
@@ -592,10 +592,7 @@ mod tests {
             .is_ok());
 
         let result = store.get_by_id("id_0").await.unwrap().unwrap();
-        assert_eq!(
-            result.processing_deadline,
-            Some(deadline)
-        );
+        assert_eq!(result.processing_deadline, Some(deadline));
     }
 
     #[tokio::test]

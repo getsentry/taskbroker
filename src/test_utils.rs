@@ -1,7 +1,9 @@
 use rand::Rng;
 use std::collections::HashMap;
 
-use crate::inflight_activation_store::{InflightActivation, InflightActivationStore, TaskActivationStatus};
+use crate::inflight_activation_store::{
+    InflightActivation, InflightActivationStore, TaskActivationStatus,
+};
 use chrono::Utc;
 use sentry_protos::sentry::v1::TaskActivation;
 
@@ -44,7 +46,11 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
     records
 }
 
-pub async fn assert_count_by_status(store: &InflightActivationStore, status: TaskActivationStatus, expected: usize) {
+pub async fn assert_count_by_status(
+    store: &InflightActivationStore,
+    status: TaskActivationStatus,
+    expected: usize,
+) {
     let count = store.count_by_status(status).await.unwrap();
     assert_eq!(count, expected);
 }
