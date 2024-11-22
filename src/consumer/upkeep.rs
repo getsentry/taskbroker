@@ -6,7 +6,7 @@ use rdkafka::{
 use sentry_protos::sentry::v1::TaskActivation;
 use std::{sync::Arc, time::Duration};
 use tokio::{select, time};
-use tracing::info;
+use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -42,11 +42,29 @@ pub async fn start_upkeep(
     }
 }
 
+// Debugging context
+struct UpkeepResults {
+    retried: u64,
+    processing_deadline_reset: u64,
+    deadletter_at_expired: u64,
+    deadlettered: u64,
+    completed: u64,
+}
+
+#[instrument(name = "consumer::do_upkeep", skip(store, config, producer))]
 pub async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<InflightActivationStore>,
     producer: Arc<FutureProducer>,
 ) {
+    let mut result_context = UpkeepResults {
+        retried: 0,
+        processing_deadline_reset: 0,
+        deadletter_at_expired: 0,
+        deadlettered: 0,
+        completed: 0,
+    };
+
     // 1. Handle retry tasks
     if let Ok(retries) = store.get_retry_activations().await {
         // 2. Append retries to kafka
@@ -55,21 +73,28 @@ pub async fn do_upkeep(
             let retry_activation = create_retry_activation(&inflight);
             let payload = retry_activation.encode_to_vec();
             let message = FutureRecord::<(), _>::to(&config.kafka_topic).payload(&payload);
-            let _ = producer.send(message, Timeout::Never).await;
-            // TODO handle Result<Err>
+            if let Err((err, _msg)) = producer.send(message, Timeout::Never).await {
+                error!("retry.publish.failure {}", err);
+            }
 
             ids.push(inflight.activation.id);
         }
+
         // 3. Update retry tasks to complete
-        let _ = store.mark_completed(ids).await;
-        // TODO handle Result<Err>
+        if let Ok(retried_count) = store.mark_completed(ids).await {
+            result_context.retried = retried_count;
+        }
     }
 
     // 4. Handle processing deadlines
-    let _ = store.handle_processing_deadline().await;
+    if let Ok(processing_count) = store.handle_processing_deadline().await {
+        result_context.processing_deadline_reset = processing_count;
+    }
 
     // 5. Advance state on tasks past deadletter_at
-    let _ = store.handle_deadletter_at().await;
+    if let Ok(deadletter_count) = store.handle_deadletter_at().await {
+        result_context.deadletter_at_expired = deadletter_count;
+    }
 
     // 6. Handle failure state tasks
     if let Ok(deadletter_activations) = store.handle_failed_tasks().await {
@@ -79,17 +104,30 @@ pub async fn do_upkeep(
             let payload = activation.encode_to_vec();
             let message =
                 FutureRecord::<(), _>::to(&config.kafka_deadletter_topic).payload(&payload);
-            let _ = producer.send(message, Timeout::Never).await;
-            // TODO handle Result<Err>
 
+            if let Err((err, _msg)) = producer.send(message, Timeout::Never).await {
+                error!("deadletter.publish.failure {}", err);
+            }
             ids.push(activation.id);
         }
         // 6. Update deadlettered tasks to complete
-        let _ = store.mark_completed(ids).await;
+        if let Ok(deadletter_count) = store.mark_completed(ids).await {
+            result_context.deadlettered = deadletter_count;
+        }
     }
 
     // 8. Cleanup completed tasks
-    let _ = store.remove_completed().await;
+    if let Ok(remove_count) = store.remove_completed().await {
+        result_context.completed = remove_count;
+    }
+
+    info!(
+        result_context.completed,
+        result_context.deadlettered,
+        result_context.deadletter_at_expired,
+        result_context.retried,
+        "upkeep.complete",
+    );
 }
 
 /// Create a new activation that is a 'retry' of the passed inflight_activation
@@ -111,6 +149,7 @@ mod tests {
 
     use chrono::{TimeZone, Utc};
     use rdkafka::producer::FutureProducer;
+    use sentry_protos::sentry::v1::RetryState;
 
     use crate::{
         config::Config,
@@ -145,7 +184,32 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_is_discarded_when_exhausted() {
-        // TODO
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut records = make_activations(2);
+        records[0].status = TaskActivationStatus::Retry;
+        records[0].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: Some(1),
+            deadletter_after_attempt: None,
+        });
+
+        assert!(store.store(records).await.is_ok());
+
+        do_upkeep(config, store.clone(), producer).await;
+
+        // Only 1 record left as the retry task should be discarded.
+        assert_eq!(store.count().await.unwrap(), 1);
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -234,6 +298,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_failed_discard() {
-        // TODO
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut batch = make_activations(2);
+        batch[0].status = TaskActivationStatus::Failure;
+        assert!(store.store(batch).await.is_ok());
+
+        do_upkeep(config, store.clone(), producer).await;
+
+        assert_eq!(
+            store.count().await.unwrap(),
+            1,
+            "failed task should be removed"
+        );
+        assert_eq!(
+            store
+                .count_by_status(TaskActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1,
+            "pending task should remain"
+        );
     }
 }
