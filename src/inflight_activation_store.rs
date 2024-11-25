@@ -14,8 +14,11 @@ pub struct InflightActivationStore {
     sqlite_pool: SqlitePool,
 }
 
+// This is a duplicate of the TaskActivationStatus enum in sentry-protos.
+// It should stay in sync with the proto enum, both in values and order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
 pub enum TaskActivationStatus {
+    Unspecified,
     Pending,
     Processing,
     Failure,
