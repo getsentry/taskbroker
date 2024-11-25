@@ -12,6 +12,9 @@ pub mod inflight_activation_store;
 pub mod logging;
 pub mod metrics;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub fn get_version() -> &'static str {
     let release_name = fs::read_to_string(".VERSION").expect("Unable to read version");
     Box::leak(release_name.into_boxed_str())
