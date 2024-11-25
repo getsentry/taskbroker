@@ -69,7 +69,13 @@ pub async fn do_upkeep(
             let retry_activation = create_retry_activation(&inflight);
             let payload = retry_activation.encode_to_vec();
             let message = FutureRecord::<(), _>::to(&config.kafka_topic).payload(&payload);
-            if let Err((err, _msg)) = producer.send(message, Timeout::Never).await {
+            let send_result = producer
+                .send(
+                    message,
+                    Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                )
+                .await;
+            if let Err((err, _msg)) = send_result {
                 error!("retry.publish.failure {}", err);
             }
 
@@ -101,7 +107,13 @@ pub async fn do_upkeep(
             let message =
                 FutureRecord::<(), _>::to(&config.kafka_deadletter_topic).payload(&payload);
 
-            if let Err((err, _msg)) = producer.send(message, Timeout::Never).await {
+            let send_result = producer
+                .send(
+                    message,
+                    Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                )
+                .await;
+            if let Err((err, _msg)) = send_result {
                 error!("deadletter.publish.failure {}", err);
             }
             ids.push(activation.id);
