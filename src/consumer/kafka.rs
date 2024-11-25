@@ -31,7 +31,7 @@ use tokio::{
         mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
         oneshot,
     },
-    task::{self, JoinSet},
+    task::{self, JoinError, JoinSet},
     time::{self, sleep, MissedTickBehavior},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -60,32 +60,46 @@ pub async fn start_consumer(
         .subscribe(topics)
         .expect("Can't subscribe to specified topics");
 
-    handle_os_signals(event_sender.clone());
-    handle_consumer_client(consumer.clone(), client_shutdown_receiver);
-    handle_events(
-        consumer,
-        event_receiver,
-        client_shutdown_sender,
-        spawn_actors,
-    )
-    .await
+    select! {
+        res = handle_os_signals(event_sender.clone()) => {
+            info!("Received shutdown signal, shutting down consumer");
+            match res {
+                Ok(res) => Ok(res),
+                Err(e) => Err(anyhow!("Error in OS signals handler: {}", e)),
+            }
+        }
+        res = handle_consumer_client(consumer.clone(), client_shutdown_receiver) => {
+            info!("Consumer client shutdown");
+            match res {
+                Ok(res) => Ok(res),
+                Err(e) => Err(anyhow!("Error in consumer client: {}", e)),
+            }
+        }
+        res = handle_events(consumer, event_receiver, client_shutdown_sender, spawn_actors) => {
+            info!("Events handler shutdown");
+            res
+        }
+    }
 }
 
-pub fn handle_os_signals(event_sender: UnboundedSender<(Event, SyncSender<()>)>) {
+pub async fn handle_os_signals(
+    event_sender: UnboundedSender<(Event, SyncSender<()>)>,
+) -> Result<(), JoinError> {
     let guard = elegant_departure::get_shutdown_guard();
     tokio::spawn(async move {
         let _ = guard.wait().await;
         info!("Cancellation token received, shutting down consumer");
         let (rendezvous_sender, _) = sync_channel(0);
         let _ = event_sender.send((Event::Shutdown, rendezvous_sender));
-    });
+    })
+    .await
 }
 
 #[instrument(skip(consumer, shutdown))]
-pub fn handle_consumer_client(
+pub async fn handle_consumer_client(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     shutdown: oneshot::Receiver<()>,
-) {
+) -> Result<(), JoinError> {
     task::spawn_blocking(|| {
         Handle::current().block_on(async move {
             select! {
@@ -100,7 +114,8 @@ pub fn handle_consumer_client(
             }
             debug!("Shutdown complete");
         });
-    });
+    })
+    .await
 }
 
 #[derive(Debug)]

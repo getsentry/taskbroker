@@ -1,4 +1,4 @@
-use anyhow::Error;
+use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
 use tokio::signal::unix::SignalKind;
@@ -24,13 +24,16 @@ use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::Args;
 
-async fn log_task_completion(name: &str, task: JoinHandle<()>) {
+async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     match task.await {
-        Ok(()) => {
+        Ok(Ok(())) => {
             info!("Task {} completed", name);
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!("Task {} failed: {:?}", name, e);
+        }
+        Err(e) => {
+            error!("Task {} panicked: {:?}", name, e);
         }
     }
 }
@@ -66,6 +69,7 @@ async fn main() -> Result<(), Error> {
                     }
                 }
             }
+            Ok(())
         }
     });
 
@@ -94,7 +98,7 @@ async fn main() -> Result<(), Error> {
                         OsStream::StdErr,
                     ),
                 }),
-            ).await.expect("Failed to start consumer");
+            ).await
         }
     });
 
@@ -121,12 +125,16 @@ async fn main() -> Result<(), Error> {
             select! {
                 biased;
 
-                _ = server => {
+                res = server => {
                     info!("GRPC server task failed, shutting down");
                     health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
 
                     // Wait for any running requests to drain
                     tokio::time::sleep(Duration::from_secs(5)).await;
+                    match res {
+                        Ok(()) => Ok(()),
+                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                    }
                 }
                 _ = guard.wait() => {
                     info!("Cancellation token received, shutting down GRPC server");
@@ -134,6 +142,7 @@ async fn main() -> Result<(), Error> {
 
                     // Wait for any running requests to drain
                     tokio::time::sleep(Duration::from_secs(5)).await;
+                    Ok(())
                 }
             }
         }
