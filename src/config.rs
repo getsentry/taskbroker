@@ -49,6 +49,9 @@ pub struct Config {
     /// The amount of ms that the consumer will commit at.
     pub kafka_auto_commit_interval_ms: usize,
 
+    /// The amount of ms that the consumer will commit at.
+    pub kafka_auto_offset_reset: String,
+
     /// The path to the sqlite database
     pub db_path: String,
 
@@ -86,6 +89,7 @@ impl Default for Config {
             kafka_deadletter_topic: "task-worker-dlq".to_owned(),
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
+            kafka_auto_offset_reset: "latest".to_owned(),
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             max_pending_count: 2048,
             max_pending_buffer_count: 1,
@@ -110,11 +114,11 @@ impl Config {
     }
 
     /// Convert the application Config into rdkafka::ClientConfig
-    pub fn kafka_client_config(&self) -> ClientConfig {
+    pub fn kafka_consumer_config(&self) -> ClientConfig {
         let mut new_config = ClientConfig::new();
         let config = new_config
-            .set("group.id", self.kafka_consumer_group.clone())
             .set("bootstrap.servers", self.kafka_cluster.clone())
+            .set("group.id", self.kafka_consumer_group.clone())
             .set(
                 "session.timeout.ms",
                 self.kafka_session_timeout_ms.to_string(),
@@ -125,7 +129,20 @@ impl Config {
                 "auto.commit.interval.ms",
                 self.kafka_auto_commit_interval_ms.to_string(),
             )
+            .set(
+                "auto.offset.reset",
+                self.kafka_auto_offset_reset.to_string(),
+            )
             .set("enable.auto.offset.store", "false")
+            .set_log_level(self.log_level.kafka_level());
+        config.clone()
+    }
+
+    /// Convert the application Config into rdkafka::ClientConfig
+    pub fn kafka_producer_config(&self) -> ClientConfig {
+        let mut new_config = ClientConfig::new();
+        let config = new_config
+            .set("bootstrap.servers", self.kafka_cluster.clone())
             .set_log_level(self.log_level.kafka_level());
         config.clone()
     }
@@ -181,6 +198,7 @@ mod tests {
                 kafka_cluster: 10.0.0.1:9092,10.0.0.2:9092
                 kafka_topic: error-tasks
                 kafka_deadletter_topic: error-tasks-dlq
+                kafka_auto_offset_reset: earliest
                 db_path: ./taskbroker-error.sqlite
                 max_pending_count: 512
                 max_processing_deadline: 1000
@@ -204,6 +222,7 @@ mod tests {
                 "10.0.0.1:9092,10.0.0.2:9092".to_owned()
             );
             assert_eq!(config.kafka_consumer_group, "task-worker".to_owned());
+            assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
@@ -257,5 +276,39 @@ mod tests {
 
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_kafka_consumer_config() {
+        let args = Args {
+            config: None,
+            log_level: None,
+        };
+        let config = Config::from_args(&args).unwrap();
+        let consumer_config = config.kafka_consumer_config();
+
+        assert_eq!(
+            consumer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
+        assert_eq!(consumer_config.get("group.id").unwrap(), "task-worker");
+        assert!(consumer_config.get("session.timeout.ms").is_some());
+    }
+
+    #[test]
+    fn test_kafka_producer_config() {
+        let args = Args {
+            config: None,
+            log_level: None,
+        };
+        let config = Config::from_args(&args).unwrap();
+        let producer_config = config.kafka_producer_config();
+
+        assert_eq!(
+            producer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
+        assert!(producer_config.get("group.id").is_none());
+        assert!(producer_config.get("session.timeout.ms").is_none());
     }
 }

@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
@@ -23,29 +23,6 @@ use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::Args;
-
-async fn check_for_shutdown() {
-    let (mut hangup, mut interrupt, mut terminate, mut quit) = (
-        signal(SignalKind::hangup()).expect("error creating signal stream for hangup"),
-        signal(SignalKind::interrupt()).expect("error creating signal stream for hangup"),
-        signal(SignalKind::terminate()).expect("error creating signal stream for hangup"),
-        signal(SignalKind::quit()).expect("error creating signal stream for hangup"),
-    );
-    select! {
-        _ = hangup.recv() => {
-            info!("Hangup received, shutting down");
-        }
-        _ = interrupt.recv() => {
-            info!("Interrupt received, shutting down");
-        }
-        _ = terminate.recv() => {
-            info!("Terminate received, shutting down");
-        }
-        _ = quit.recv() => {
-            info!("Quit received, shutting down");
-        }
-    }
-}
 
 async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -102,7 +79,7 @@ async fn main() -> Result<(), Error> {
         async move {
             let kafka_topic = consumer_config.kafka_topic.clone();
             let topic_list = [kafka_topic.as_str()];
-            let kafka_config = consumer_config.kafka_client_config();
+            let kafka_config = consumer_config.kafka_consumer_config();
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
             start_consumer(
@@ -170,26 +147,15 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    /*
-    This select is waiting for either:
-    - A shutdown signal, in which case it signals the tasks to shutdown
-    - A task completion, in which case it logs the completion (including if its an error)
+    elegant_departure::tokio::depart()
+        .on_termination()
+        .on_sigint()
+        .on_signal(SignalKind::hangup())
+        .on_signal(SignalKind::quit())
+        .on_completion(log_task_completion("consumer", consumer_task))
+        .on_completion(log_task_completion("grpc_server", grpc_server_task))
+        .on_completion(log_task_completion("upkeep_task", upkeep_task))
+        .await;
 
-    Each of the tasks is also using an elegant_departure guard, so if one of them shuts down,
-    it will automatically trigger the shutdown of the other tasks as well. Then the code awaits
-    the shutdown of all the remaining tasks to ensure everything has shut down cleanly.
-    */
-    select! {
-        _ = check_for_shutdown() => {
-            info!("Received shutdown signal, shutting down");
-            // Wait for the tasks to finish
-            elegant_departure::shutdown().await;
-        }
-        _ = log_task_completion("consumer", consumer_task) => { }
-        _ = log_task_completion("grpc_server", grpc_server_task) => { }
-        _ = log_task_completion("upkeep_task", upkeep_task) => { }
-    }
-
-    elegant_departure::wait_for_shutdown_complete().await;
     Ok(())
 }
