@@ -121,6 +121,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(health_service)
                 .serve(addr);
 
+            info!("GRPC server listening on {}", addr);
             select! {
                 biased;
 
