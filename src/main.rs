@@ -50,7 +50,7 @@ async fn main() -> Result<(), Error> {
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
         async move {
-            start_upkeep(upkeep_config, upkeep_store, Duration::from_millis(200)).await;
+            start_upkeep(upkeep_config, upkeep_store).await;
         }
     });
 

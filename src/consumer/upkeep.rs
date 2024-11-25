@@ -16,11 +16,7 @@ use crate::{
 
 /// Start the upkeep task that periodically performs upkeep
 /// on the inflight store
-pub async fn start_upkeep(
-    config: Arc<Config>,
-    store: Arc<InflightActivationStore>,
-    run_interval: Duration,
-) {
+pub async fn start_upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
     let kafka_config = config.kafka_producer_config();
     let producer: FutureProducer = kafka_config
         .create()
@@ -28,7 +24,7 @@ pub async fn start_upkeep(
     let producer_arc = Arc::new(producer);
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-    let mut timer = time::interval(run_interval);
+    let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
     loop {
         select! {
             _ = timer.tick() => {
