@@ -490,7 +490,7 @@ impl InflightActivationStore {
 mod tests {
     use std::collections::HashMap;
 
-    use chrono::{DateTime, TimeZone, Utc};
+    use chrono::{TimeZone, Utc};
     use sentry_protos::sentry::v1::{RetryState, TaskActivation};
 
     use crate::inflight_activation_store::{

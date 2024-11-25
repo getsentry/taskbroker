@@ -21,7 +21,7 @@ pub async fn start_upkeep(
     store: Arc<InflightActivationStore>,
     run_interval: Duration,
 ) {
-    let kafka_config = config.kafka_client_config();
+    let kafka_config = config.kafka_producer_config();
     let producer: FutureProducer = kafka_config
         .create()
         .expect("Could not create kafka producer in upkeep");
@@ -164,7 +164,7 @@ mod tests {
 
     fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
         let producer: FutureProducer = config
-            .kafka_client_config()
+            .kafka_producer_config()
             .create()
             .expect("Could not create kafka producer");
 
