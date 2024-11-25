@@ -11,6 +11,9 @@ pub mod inflight_activation_store;
 pub mod logging;
 pub mod metrics;
 
+#[cfg(test)]
+pub mod test_utils;
+
 pub const VERSION: &str = env!("TASKWORKER_VERSION");
 
 #[derive(Parser, Debug)]
