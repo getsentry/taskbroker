@@ -110,7 +110,7 @@ pub async fn do_upkeep(
             }
             ids.push(activation.id);
         }
-        // 6. Update deadlettered tasks to complete
+        // 7. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
             result_context.deadlettered = deadletter_count;
         }
