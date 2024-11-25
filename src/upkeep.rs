@@ -1,3 +1,4 @@
+use metrics::counter;
 use prost::Message;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
@@ -5,6 +6,7 @@ use rdkafka::{
 };
 use sentry_protos::sentry::v1::TaskActivation;
 use std::{sync::Arc, time::Duration};
+use tokio::sync::Mutex;
 use tokio::{select, time};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
@@ -25,10 +27,17 @@ pub async fn start_upkeep(config: Arc<Config>, store: Arc<InflightActivationStor
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
+    let mutex = Arc::new(Mutex::new(0));
     loop {
         select! {
             _ = timer.tick() => {
-                do_upkeep(config.clone(), store.clone(), producer_arc.clone()).await;
+                let lock = mutex.try_lock();
+                if lock.is_ok() {
+                    do_upkeep(config.clone(), store.clone(), producer_arc.clone()).await;
+                } else {
+                    info!("Could not acquire upkeep mutex lock");
+                    counter!("upkeep.start_upkeep.mutex.failed").increment(1);
+                }
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
