@@ -14,6 +14,8 @@ pub mod metrics;
 #[cfg(test)]
 pub mod test_utils;
 
+pub mod upkeep;
+
 pub const VERSION: &str = env!("TASKWORKER_VERSION");
 
 #[derive(Parser, Debug)]

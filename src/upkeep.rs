@@ -149,9 +149,9 @@ mod tests {
 
     use crate::{
         config::Config,
-        consumer::upkeep::do_upkeep,
         inflight_activation_store::{InflightActivationStore, TaskActivationStatus},
         test_utils::{generate_temp_filename, make_activations},
+        upkeep::do_upkeep,
     };
 
     fn create_config() -> Arc<Config> {

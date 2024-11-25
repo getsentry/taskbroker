@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
-use taskbroker::consumer::upkeep::start_upkeep;
+use taskbroker::upkeep::start_upkeep;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -54,6 +54,7 @@ async fn main() -> Result<(), Error> {
         let upkeep_config = config.clone();
         async move {
             start_upkeep(upkeep_config, upkeep_store).await;
+            Ok(())
         }
     });
 
