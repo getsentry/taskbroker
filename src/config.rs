@@ -114,11 +114,11 @@ impl Config {
     }
 
     /// Convert the application Config into rdkafka::ClientConfig
-    pub fn kafka_client_config(&self) -> ClientConfig {
+    pub fn kafka_consumer_config(&self) -> ClientConfig {
         let mut new_config = ClientConfig::new();
         let config = new_config
-            .set("group.id", self.kafka_consumer_group.clone())
             .set("bootstrap.servers", self.kafka_cluster.clone())
+            .set("group.id", self.kafka_consumer_group.clone())
             .set(
                 "session.timeout.ms",
                 self.kafka_session_timeout_ms.to_string(),
@@ -134,6 +134,15 @@ impl Config {
                 self.kafka_auto_offset_reset.to_string(),
             )
             .set("enable.auto.offset.store", "false")
+            .set_log_level(self.log_level.kafka_level());
+        config.clone()
+    }
+
+    /// Convert the application Config into rdkafka::ClientConfig
+    pub fn kafka_producer_config(&self) -> ClientConfig {
+        let mut new_config = ClientConfig::new();
+        let config = new_config
+            .set("bootstrap.servers", self.kafka_cluster.clone())
             .set_log_level(self.log_level.kafka_level());
         config.clone()
     }
@@ -267,5 +276,39 @@ mod tests {
 
             Ok(())
         });
+    }
+
+    #[test]
+    fn test_kafka_consumer_config() {
+        let args = Args {
+            config: None,
+            log_level: None,
+        };
+        let config = Config::from_args(&args).unwrap();
+        let consumer_config = config.kafka_consumer_config();
+
+        assert_eq!(
+            consumer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
+        assert_eq!(consumer_config.get("group.id").unwrap(), "task-worker");
+        assert!(consumer_config.get("session.timeout.ms").is_some());
+    }
+
+    #[test]
+    fn test_kafka_producer_config() {
+        let args = Args {
+            config: None,
+            log_level: None,
+        };
+        let config = Config::from_args(&args).unwrap();
+        let producer_config = config.kafka_producer_config();
+
+        assert_eq!(
+            producer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
+        assert!(producer_config.get("group.id").is_none());
+        assert!(producer_config.get("session.timeout.ms").is_none());
     }
 }
