@@ -155,6 +155,7 @@ impl InflightActivationStore {
                 }
                 b.push_bind(row.status);
             })
+            .push(" ON CONFLICT(id) DO NOTHING")
             .build();
         Ok(query.execute(&self.sqlite_pool).await?.into())
     }
@@ -339,6 +340,7 @@ impl InflightActivationStore {
     ///
     /// Tasks that are pending and past their deadletter_at deadline are updated
     /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
+    ///
     /// The number of impacted records is returned in a Result.
     pub async fn handle_deadletter_at(&self) -> Result<u64, Error> {
         let mut atomic = self.sqlite_pool.begin().await?;
@@ -517,6 +519,42 @@ mod tests {
 
         let result = store.count().await;
         assert_eq!(result.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_store_duplicate_id_in_batch() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        // Coerce a conflict
+        batch[0].activation.id = "id_0".into();
+        batch[1].activation.id = "id_0".into();
+
+        assert!(store.store(batch).await.is_ok());
+
+        let result = store.count().await;
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_store_duplicate_id_between_batches() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let batch = make_activations(2);
+        assert!(store.store(batch.clone()).await.is_ok());
+        let first_count = store.count().await;
+        assert_eq!(first_count.unwrap(), 2);
+
+        let new_batch = make_activations(2);
+        // Old batch and new should have conflicts
+        assert_eq!(batch[0].activation.id, new_batch[0].activation.id);
+        assert_eq!(batch[1].activation.id, new_batch[1].activation.id);
+        assert!(store.store(new_batch).await.is_ok());
+
+        let second_count = store.count().await;
+        assert_eq!(second_count.unwrap(), 2);
     }
 
     #[tokio::test]

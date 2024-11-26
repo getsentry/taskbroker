@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::upkeep::start_upkeep;
+use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
-use tokio::{select, time};
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
 use tracing::{error, info};
@@ -19,7 +20,6 @@ use taskbroker::consumer::{
 };
 use taskbroker::grpc_server::MyConsumerService;
 use taskbroker::inflight_activation_store::InflightActivationStore;
-use taskbroker::inflight_activation_store::TaskActivationStatus;
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
@@ -53,31 +53,7 @@ async fn main() -> Result<(), Error> {
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
         async move {
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            let mut timer = time::interval(Duration::from_millis(upkeep_config.upkeep_interval));
-            loop {
-                select! {
-                    _ = timer.tick() => {
-                        let pending = upkeep_store.count_pending_activations().await.unwrap();
-                        let processing = upkeep_store.count_by_status(TaskActivationStatus::Processing).await.unwrap();
-                        let total = upkeep_store.count().await.unwrap();
-
-                        if pending > 0 {
-                            info!("Pending activations in store: {}", pending);
-                        }
-                        if processing > 0 {
-                            info!("Processing activations in store: {}", processing);
-                        }
-                        if total > 0 {
-                            info!("Total activations in store: {}", total);
-                        }
-                    }
-                    _ = guard.wait() => {
-                        info!("Cancellation token received, shutting down upkeep");
-                        break;
-                    }
-                }
-            }
+            start_upkeep(upkeep_config, upkeep_store).await;
             Ok(())
         }
     });
@@ -130,6 +106,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(service))
                 .add_service(health_service)
                 .serve(addr);
+
             info!("GRPC server listening on {}", addr);
             select! {
                 biased;
