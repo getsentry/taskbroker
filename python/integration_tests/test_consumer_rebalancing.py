@@ -1,13 +1,15 @@
+import os
 import random
+import signal
 import sqlite3
 import subprocess
 import threading
 import time
-import signal
+
 from pathlib import Path
+from threading import Thread
 
 import yaml
-from threading import Thread
 
 
 def manage_consumer(
@@ -101,11 +103,11 @@ def test_rebalancing_only_processed_once():
     # Create config files for consumers
     print("Creating config files for consumers in taskbroker/tests")
     consumer_configs = {}
+    curr_time = int(time.time())
     for i in range(num_consumers):
-        curr_time = int(time.time())
         consumer_configs[f"config_{i}.yml"] = {
             "db_name": f"db_{i}_{curr_time}",
-            "db_path": f"integration_tests/tmp/db_{i}_{curr_time}.sqlite",
+            "db_path": f"{os.getcwd()}/integration_tests/tmp/db_{i}_{curr_time}.sqlite",
             "kafka_topic": "task-worker",
             "kafka_consumer_group": "task-worker-integration-test",
             "kafka_auto_offset_reset": "earliest",
@@ -146,13 +148,13 @@ def test_rebalancing_only_processed_once():
 
     attach_db_stmt = "".join(
         [
-            f"attach '{config['db_path']}' as {config['db_path'].replace('.sqlite', '')};\n"
+            f"ATTACH DATABASE '{config['db_path']}' AS {config['db_name']};\n"
             for config in consumer_configs.values()
         ]
     )
     from_stmt = "\nUNION ALL\n".join(
         [
-            f"    SELECT * FROM {config['db_path'].replace('.sqlite', '')}.inflight_taskactivations"
+            f"    SELECT * FROM {config['db_name']}.inflight_taskactivations"
             for config in consumer_configs.values()
         ]
     )
