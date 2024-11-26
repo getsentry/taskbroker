@@ -42,6 +42,10 @@ test:
 	cargo test
 .PHONY: test
 
+integration-test:
+	cd python && pytest
+.PHONY: integration-test
+
 # Help
 
 help: ## this help
