@@ -4,9 +4,10 @@ use tonic::{Request, Response, Status};
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
 use sentry_protos::sentry::v1::{
     GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
+    TaskActivationStatus,
 };
 
-use super::inflight_activation_store::{InflightActivationStore, TaskActivationStatus};
+use super::inflight_activation_store::{InflightActivationStatus, InflightActivationStore};
 use tracing::{info, instrument};
 
 pub struct MyConsumerService {
@@ -43,16 +44,17 @@ impl ConsumerService for MyConsumerService {
         info!("Got a set_task_status request: {:?}", request);
 
         let id = request.get_ref().id.clone();
-        let status = match request.get_ref().status {
-            3 => TaskActivationStatus::Failure,
-            4 => TaskActivationStatus::Retry,
-            5 => TaskActivationStatus::Complete,
-            _ => {
-                return Err(Status::invalid_argument(
-                    "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)",
-                ))
-            }
+
+        let proto_status = TaskActivationStatus::try_from(request.get_ref().status);
+        let status: InflightActivationStatus = match proto_status {
+            Ok(value) => value.into(),
+            Err(_) => return Err(Status::invalid_argument("Invalid status")),
         };
+        if !status.is_conclusion() {
+            return Err(Status::invalid_argument(
+                "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)",
+            ));
+        }
 
         let inflight = self.store.set_status(&id, status).await;
         match inflight {

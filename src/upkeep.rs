@@ -56,6 +56,16 @@ struct UpkeepResults {
     completed: u64,
 }
 
+impl UpkeepResults {
+    fn empty(&self) -> bool {
+        self.retried == 0
+            && self.processing_deadline_reset == 0
+            && self.deadletter_at_expired == 0
+            && self.deadlettered == 0
+            && self.completed == 0
+    }
+}
+
 #[instrument(name = "consumer::do_upkeep", skip(store, config, producer))]
 pub async fn do_upkeep(
     config: Arc<Config>,
@@ -138,13 +148,15 @@ pub async fn do_upkeep(
         result_context.completed = remove_count;
     }
 
-    info!(
-        result_context.completed,
-        result_context.deadlettered,
-        result_context.deadletter_at_expired,
-        result_context.retried,
-        "upkeep.complete",
-    );
+    if !result_context.empty() {
+        info!(
+            result_context.completed,
+            result_context.deadlettered,
+            result_context.deadletter_at_expired,
+            result_context.retried,
+            "upkeep.complete",
+        );
+    }
 }
 
 /// Create a new activation that is a 'retry' of the passed inflight_activation
@@ -168,7 +180,7 @@ mod tests {
     use sentry_protos::sentry::v1::RetryState;
 
     use crate::{
-        inflight_activation_store::{InflightActivationStore, TaskActivationStatus},
+        inflight_activation_store::{InflightActivationStatus, InflightActivationStore},
         test_utils::{
             consume_topic, create_config, create_integration_config, create_producer,
             generate_temp_filename, make_activations, reset_topic,
@@ -191,7 +203,7 @@ mod tests {
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
         records[0].activation.parameters = r#"{"a":"b"}"#.into();
-        records[0].status = TaskActivationStatus::Retry;
+        records[0].status = InflightActivationStatus::Retry;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
             kind: "".into(),
@@ -224,7 +236,7 @@ mod tests {
         let producer = create_producer(config.clone());
 
         let mut records = make_activations(2);
-        records[0].status = TaskActivationStatus::Retry;
+        records[0].status = InflightActivationStatus::Retry;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
             kind: "".into(),
@@ -240,7 +252,7 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert_eq!(
             store
-                .count_by_status(TaskActivationStatus::Pending)
+                .count_by_status(InflightActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
@@ -255,7 +267,7 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task past it is processing deadline
-        batch[1].status = TaskActivationStatus::Processing;
+        batch[1].status = InflightActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         assert!(store.store(batch.clone()).await.is_ok());
@@ -263,7 +275,7 @@ mod tests {
         // Should start off with one in processing
         assert_eq!(
             store
-                .count_by_status(TaskActivationStatus::Processing)
+                .count_by_status(InflightActivationStatus::Processing)
                 .await
                 .unwrap(),
             1
@@ -274,14 +286,14 @@ mod tests {
         // 0 processing, 2 pending now
         assert_eq!(
             store
-                .count_by_status(TaskActivationStatus::Processing)
+                .count_by_status(InflightActivationStatus::Processing)
                 .await
                 .unwrap(),
             0
         );
         assert_eq!(
             store
-                .count_by_status(TaskActivationStatus::Pending)
+                .count_by_status(InflightActivationStatus::Pending)
                 .await
                 .unwrap(),
             2
@@ -297,7 +309,7 @@ mod tests {
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, 2 will be discarded
         batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-        batch[1].status = TaskActivationStatus::Complete;
+        batch[1].status = InflightActivationStatus::Complete;
         batch[2].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
         assert!(store.store(batch.clone()).await.is_ok());
@@ -305,7 +317,7 @@ mod tests {
 
         assert_eq!(
             store
-                .count_by_status(TaskActivationStatus::Pending)
+                .count_by_status(InflightActivationStatus::Pending)
                 .await
                 .unwrap(),
             1,
@@ -313,7 +325,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(TaskActivationStatus::Complete)
+                .count_by_status(InflightActivationStatus::Complete)
                 .await
                 .unwrap(),
             0,
@@ -335,7 +347,7 @@ mod tests {
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
         records[0].activation.parameters = r#"{"a":"b"}"#.into();
-        records[0].status = TaskActivationStatus::Failure;
+        records[0].status = InflightActivationStatus::Failure;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
             kind: "".into(),
@@ -367,7 +379,7 @@ mod tests {
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
-        batch[0].status = TaskActivationStatus::Failure;
+        batch[0].status = InflightActivationStatus::Failure;
         assert!(store.store(batch).await.is_ok());
 
         do_upkeep(config, store.clone(), producer).await;
@@ -379,7 +391,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(TaskActivationStatus::Pending)
+                .count_by_status(InflightActivationStatus::Pending)
                 .await
                 .unwrap(),
             1,

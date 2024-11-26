@@ -85,7 +85,6 @@ impl LoggingConfig {
 pub fn init(log_config: LoggingConfig) {
     if let Some(dsn) = &log_config.sentry_dsn {
         let dsn = Some(Dsn::from_str(dsn).expect("Invalid Sentry DSN"));
-
         let guard = sentry::init(sentry::ClientOptions {
             dsn,
             release: Some(Cow::Borrowed(get_version())),
