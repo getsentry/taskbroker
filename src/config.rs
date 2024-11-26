@@ -88,7 +88,7 @@ impl Default for Config {
             sentry_env: None,
             log_level: LogLevel::Debug,
             log_format: LogFormat::Text,
-            grpc_addr: "[::1]".to_owned(),
+            grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
