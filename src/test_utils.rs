@@ -2,7 +2,7 @@ use rand::Rng;
 use std::collections::HashMap;
 
 use crate::inflight_activation_store::{
-    InflightActivation, InflightActivationStore, TaskActivationStatus,
+    InflightActivation, InflightActivationStatus, InflightActivationStore,
 };
 use chrono::Utc;
 use sentry_protos::sentry::v1::TaskActivation;
@@ -34,7 +34,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
                 processing_deadline_duration: 10,
                 expires: None,
             },
-            status: TaskActivationStatus::Pending,
+            status: InflightActivationStatus::Pending,
             partition: 0,
             offset: i as i64,
             added_at: Utc::now(),
@@ -48,7 +48,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
 
 pub async fn assert_count_by_status(
     store: &InflightActivationStore,
-    status: TaskActivationStatus,
+    status: InflightActivationStatus,
     expected: usize,
 ) {
     let count = store.count_by_status(status).await.unwrap();

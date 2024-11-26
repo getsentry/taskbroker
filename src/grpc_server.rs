@@ -6,7 +6,7 @@ use sentry_protos::sentry::v1::{
     GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
 };
 
-use super::inflight_activation_store::{InflightActivationStore, TaskActivationStatus};
+use super::inflight_activation_store::{InflightActivationStatus, InflightActivationStore};
 use tracing::{info, instrument};
 
 pub struct MyConsumerService {
@@ -44,9 +44,9 @@ impl ConsumerService for MyConsumerService {
 
         let id = request.get_ref().id.clone();
         let status = match request.get_ref().status {
-            3 => TaskActivationStatus::Failure,
-            4 => TaskActivationStatus::Retry,
-            5 => TaskActivationStatus::Complete,
+            3 => InflightActivationStatus::Failure,
+            4 => InflightActivationStatus::Retry,
+            5 => InflightActivationStatus::Complete,
             _ => {
                 return Err(Status::invalid_argument(
                     "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)",

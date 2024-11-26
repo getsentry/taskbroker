@@ -8,7 +8,7 @@ use sentry_protos::sentry::v1::TaskActivation;
 
 use crate::{
     config::Config,
-    inflight_activation_store::{InflightActivation, TaskActivationStatus},
+    inflight_activation_store::{InflightActivation, InflightActivationStatus},
 };
 
 pub struct DeserializeConfig {
@@ -34,7 +34,7 @@ pub fn new(
         let activation = TaskActivation::decode(payload)?;
         Ok(InflightActivation {
             activation,
-            status: TaskActivationStatus::Pending,
+            status: InflightActivationStatus::Pending,
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: Utc::now(),

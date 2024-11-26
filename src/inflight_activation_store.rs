@@ -14,8 +14,12 @@ pub struct InflightActivationStore {
     sqlite_pool: SqlitePool,
 }
 
+/// The members of this enum should be synced with the members
+/// of InflightActivationStatus in sentry_protos
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
-pub enum TaskActivationStatus {
+pub enum InflightActivationStatus {
+    /// Unused but necessary to align with sentry-protos
+    Unspecified,
     Pending,
     Processing,
     Failure,
@@ -26,7 +30,7 @@ pub enum TaskActivationStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InflightActivation {
     pub activation: TaskActivation,
-    pub status: TaskActivationStatus,
+    pub status: InflightActivationStatus,
     pub partition: i32,
     pub offset: i64,
     pub added_at: DateTime<Utc>,
@@ -57,7 +61,7 @@ struct TableRow {
     deadletter_at: Option<DateTime<Utc>>,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
-    status: TaskActivationStatus,
+    status: InflightActivationStatus,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -170,8 +174,8 @@ impl InflightActivationStore {
                     )
                 RETURNING id",
         )
-        .bind(TaskActivationStatus::Processing)
-        .bind(TaskActivationStatus::Pending)
+        .bind(InflightActivationStatus::Processing)
+        .bind(InflightActivationStatus::Pending)
         .fetch_optional(&self.sqlite_pool)
         .await?;
 
@@ -186,10 +190,11 @@ impl InflightActivationStore {
     }
 
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(TaskActivationStatus::Pending).await
+        self.count_by_status(InflightActivationStatus::Pending)
+            .await
     }
 
-    pub async fn count_by_status(&self, status: TaskActivationStatus) -> Result<usize, Error> {
+    pub async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
                 .bind(status)
@@ -205,7 +210,11 @@ impl InflightActivationStore {
         Ok(result.get::<u64, _>("count") as usize)
     }
 
-    pub async fn set_status(&self, id: &str, status: TaskActivationStatus) -> Result<(), Error> {
+    pub async fn set_status(
+        &self,
+        id: &str,
+        status: InflightActivationStatus,
+    ) -> Result<(), Error> {
         sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2")
             .bind(status)
             .bind(id)
@@ -238,7 +247,7 @@ impl InflightActivationStore {
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         Ok(
             sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE status = $1")
-                .bind(TaskActivationStatus::Retry)
+                .bind(InflightActivationStatus::Retry)
                 .fetch_all(&self.sqlite_pool)
                 .await?
                 .into_iter()
@@ -268,7 +277,7 @@ impl InflightActivationStore {
             ",
         )
         .bind(now)
-        .bind(TaskActivationStatus::Processing)
+        .bind(InflightActivationStatus::Processing)
         .fetch_all(&mut *atomic)
         .await?
         .into_iter()
@@ -313,7 +322,7 @@ impl InflightActivationStore {
 
         query_builder
             .push("SET status = ")
-            .push_bind(TaskActivationStatus::Pending)
+            .push_bind(InflightActivationStatus::Pending)
             .push(", processing_deadline = null WHERE id IN (");
 
         let mut separated = query_builder.separated(", ");
@@ -347,7 +356,7 @@ impl InflightActivationStore {
             WHERE status = $1
             "#,
         )
-        .bind(TaskActivationStatus::Complete)
+        .bind(InflightActivationStatus::Complete)
         .fetch_one(&mut *atomic)
         .await?;
 
@@ -359,10 +368,10 @@ impl InflightActivationStore {
             WHERE deadletter_at < $2 AND "offset" < $3 AND status = $4
             "#,
         )
-        .bind(TaskActivationStatus::Failure)
+        .bind(InflightActivationStatus::Failure)
         .bind(now)
         .bind(max_offset)
-        .bind(TaskActivationStatus::Pending)
+        .bind(InflightActivationStatus::Pending)
         .execute(&mut *atomic)
         .await?;
 
@@ -382,7 +391,7 @@ impl InflightActivationStore {
 
         let failed_tasks: Vec<SqliteRow> =
             sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
-                .bind(TaskActivationStatus::Failure)
+                .bind(InflightActivationStatus::Failure)
                 .fetch_all(&mut *atomic)
                 .await?
                 .into_iter()
@@ -412,7 +421,7 @@ impl InflightActivationStore {
             let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
             query_builder
                 .push("SET status = ")
-                .push_bind(TaskActivationStatus::Complete)
+                .push_bind(InflightActivationStatus::Complete)
                 .push(" WHERE id IN (");
 
             let mut separated = query_builder.separated(", ");
@@ -434,7 +443,7 @@ impl InflightActivationStore {
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
         query_builder
             .push("SET status = ")
-            .push_bind(TaskActivationStatus::Complete)
+            .push_bind(InflightActivationStatus::Complete)
             .push(" WHERE id IN (");
 
         let mut separated = query_builder.separated(", ");
@@ -463,7 +472,7 @@ impl InflightActivationStore {
             LIMIT 1
             "#,
         )
-        .bind(TaskActivationStatus::Complete)
+        .bind(InflightActivationStatus::Complete)
         .fetch_optional(&mut *atomic)
         .await?;
 
@@ -476,7 +485,7 @@ impl InflightActivationStore {
         let cleanup_query = sqlx::query(
             r#"DELETE FROM inflight_taskactivations WHERE status = $1 AND "offset" < $2"#,
         )
-        .bind(TaskActivationStatus::Complete)
+        .bind(InflightActivationStatus::Complete)
         .bind(lowest_incomplete_offset)
         .execute(&mut *atomic)
         .await?;
@@ -495,7 +504,7 @@ mod tests {
     use sentry_protos::sentry::v1::{RetryState, TaskActivation};
 
     use crate::inflight_activation_store::{
-        InflightActivation, InflightActivationStore, TaskActivationStatus,
+        InflightActivation, InflightActivationStatus, InflightActivationStore,
     };
     use crate::test_utils::{assert_count_by_status, generate_temp_filename, make_activations};
 
@@ -565,9 +574,9 @@ mod tests {
         let result = store.get_pending_activation().await.unwrap().unwrap();
 
         assert_eq!(result.activation.id, "id_0");
-        assert_eq!(result.status, TaskActivationStatus::Processing);
+        assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     }
 
     #[tokio::test]
@@ -576,12 +585,12 @@ mod tests {
         let store = InflightActivationStore::new(&url).await.unwrap();
 
         let mut batch = make_activations(3);
-        batch[0].status = TaskActivationStatus::Processing;
+        batch[0].status = InflightActivationStatus::Processing;
         assert!(store.store(batch).await.is_ok());
 
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
 
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 2).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
     }
 
     #[tokio::test]
@@ -594,21 +603,21 @@ mod tests {
 
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
         assert!(store
-            .set_status("id_0", TaskActivationStatus::Failure)
+            .set_status("id_0", InflightActivationStatus::Failure)
             .await
             .is_ok());
         assert_eq!(store.count_pending_activations().await.unwrap(), 1);
         assert!(store
-            .set_status("id_0", TaskActivationStatus::Pending)
+            .set_status("id_0", InflightActivationStatus::Pending)
             .await
             .is_ok());
         assert_eq!(store.count_pending_activations().await.unwrap(), 2);
         assert!(store
-            .set_status("id_0", TaskActivationStatus::Failure)
+            .set_status("id_0", InflightActivationStatus::Failure)
             .await
             .is_ok());
         assert!(store
-            .set_status("id_1", TaskActivationStatus::Failure)
+            .set_status("id_1", InflightActivationStatus::Failure)
             .await
             .is_ok());
         assert_eq!(store.count_pending_activations().await.unwrap(), 0);
@@ -665,23 +674,23 @@ mod tests {
         let batch = make_activations(2);
         assert!(store.store(batch.clone()).await.is_ok());
 
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 2).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
 
         assert!(store
-            .set_status("id_0", TaskActivationStatus::Retry)
+            .set_status("id_0", InflightActivationStatus::Retry)
             .await
             .is_ok());
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
 
         assert!(store
-            .set_status("id_1", TaskActivationStatus::Retry)
+            .set_status("id_1", InflightActivationStatus::Retry)
             .await
             .is_ok());
 
         let retries = store.get_retry_activations().await.unwrap();
         assert_eq!(retries.len(), 2);
         for record in retries.iter() {
-            assert_eq!(record.status, TaskActivationStatus::Retry);
+            assert_eq!(record.status, InflightActivationStatus::Retry);
         }
     }
 
@@ -691,7 +700,7 @@ mod tests {
         let store = InflightActivationStore::new(&url).await.unwrap();
 
         let mut batch = make_activations(2);
-        batch[1].status = TaskActivationStatus::Processing;
+        batch[1].status = InflightActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
@@ -701,8 +710,8 @@ mod tests {
         assert!(past_deadline.is_ok());
         assert_eq!(past_deadline.unwrap(), 1);
 
-        assert_count_by_status(&store, TaskActivationStatus::Processing, 0).await;
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 2).await;
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
 
         // Run again to check early return
         let past_deadline = store.handle_processing_deadline().await;
@@ -717,9 +726,9 @@ mod tests {
 
         let mut records = make_activations(3);
         // record 1 & 2 should not be removed.
-        records[0].status = TaskActivationStatus::Complete;
-        records[1].status = TaskActivationStatus::Pending;
-        records[2].status = TaskActivationStatus::Complete;
+        records[0].status = InflightActivationStatus::Complete;
+        records[1].status = InflightActivationStatus::Pending;
+        records[2].status = InflightActivationStatus::Complete;
 
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -742,8 +751,8 @@ mod tests {
             .expect("no error")
             .is_some());
 
-        assert_count_by_status(&store, TaskActivationStatus::Complete, 1).await;
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Complete, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     }
 
     #[tokio::test]
@@ -753,10 +762,10 @@ mod tests {
 
         let mut records = make_activations(4);
         // only record 1 can be removed
-        records[0].status = TaskActivationStatus::Complete;
-        records[1].status = TaskActivationStatus::Failure;
-        records[2].status = TaskActivationStatus::Complete;
-        records[3].status = TaskActivationStatus::Processing;
+        records[0].status = InflightActivationStatus::Complete;
+        records[1].status = InflightActivationStatus::Failure;
+        records[2].status = InflightActivationStatus::Complete;
+        records[3].status = InflightActivationStatus::Processing;
 
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -792,7 +801,7 @@ mod tests {
 
         let mut records = make_activations(4);
         // deadletter
-        records[0].status = TaskActivationStatus::Failure;
+        records[0].status = InflightActivationStatus::Failure;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
             kind: "".into(),
@@ -800,7 +809,7 @@ mod tests {
             deadletter_after_attempt: Some(1),
         });
         // discard
-        records[1].status = TaskActivationStatus::Failure;
+        records[1].status = InflightActivationStatus::Failure;
         records[1].activation.retry_state = Some(RetryState {
             attempts: 1,
             kind: "".into(),
@@ -808,11 +817,11 @@ mod tests {
             deadletter_after_attempt: None,
         });
         // no retry state = discard
-        records[2].status = TaskActivationStatus::Failure;
+        records[2].status = InflightActivationStatus::Failure;
         assert!(records[2].activation.retry_state.is_none());
 
         // Another deadletter
-        records[3].status = TaskActivationStatus::Failure;
+        records[3].status = InflightActivationStatus::Failure;
         records[3].activation.retry_state = Some(RetryState {
             attempts: 1,
             kind: "".into(),
@@ -837,7 +846,7 @@ mod tests {
         assert_eq!(deadletter[0].id, records[0].activation.id);
         assert_eq!(deadletter[1].id, records[3].activation.id);
 
-        assert_count_by_status(&store, TaskActivationStatus::Failure, 2).await;
+        assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
     }
 
     #[tokio::test]
@@ -847,7 +856,7 @@ mod tests {
 
         let records = make_activations(3);
         assert!(store.store(records.clone()).await.is_ok());
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 3).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 3).await;
 
         let ids: Vec<String> = records
             .iter()
@@ -859,10 +868,10 @@ mod tests {
         assert_eq!(result.unwrap(), 3, "three records updated");
 
         // No pending tasks left
-        assert_count_by_status(&store, TaskActivationStatus::Pending, 0).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 0).await;
 
         // All tasks should be complete
-        assert_count_by_status(&store, TaskActivationStatus::Complete, 3).await;
+        assert_count_by_status(&store, InflightActivationStatus::Complete, 3).await;
     }
 
     #[tokio::test]
@@ -881,7 +890,7 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
 
-        assert_count_by_status(&store, TaskActivationStatus::Failure, 0).await;
+        assert_count_by_status(&store, InflightActivationStatus::Failure, 0).await;
     }
 
     #[tokio::test]
@@ -892,7 +901,7 @@ mod tests {
 
         // Because 1 is complete and has a higher offset than 0 1 will be moved to failure
         batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-        batch[1].status = TaskActivationStatus::Complete;
+        batch[1].status = InflightActivationStatus::Complete;
         batch[2].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
         assert!(store.store(batch.clone()).await.is_ok());
@@ -901,12 +910,12 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1, "only one record should be updated");
 
-        assert_count_by_status(&store, TaskActivationStatus::Failure, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Failure, 1).await;
 
         let failed = store.get_by_id(&batch[0].activation.id).await;
         assert_eq!(
             failed.unwrap().unwrap().status,
-            TaskActivationStatus::Failure
+            InflightActivationStatus::Failure
         );
     }
 
@@ -932,7 +941,7 @@ mod tests {
                 processing_deadline_duration: 0,
                 expires: Some(1),
             },
-            status: TaskActivationStatus::Pending,
+            status: InflightActivationStatus::Pending,
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
