@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use prost::Message;
-use sentry_protos::sentry::v1::TaskActivation;
+use sentry_protos::sentry::v1::{TaskActivation, TaskActivationStatus};
 use sqlx::{
     migrate::MigrateDatabase,
     sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow},
@@ -25,6 +25,31 @@ pub enum InflightActivationStatus {
     Failure,
     Retry,
     Complete,
+}
+
+impl InflightActivationStatus {
+    /// Is the current value a 'conclusion' status that can be supplied over GRPC.
+    pub fn is_conclusion(&self) -> bool {
+        match self {
+            InflightActivationStatus::Complete => true,
+            InflightActivationStatus::Retry => true,
+            InflightActivationStatus::Failure => true,
+            _ => false,
+        }
+    }
+}
+
+impl From<TaskActivationStatus> for InflightActivationStatus {
+    fn from(item: TaskActivationStatus) -> Self {
+        match item {
+            TaskActivationStatus::Unspecified => InflightActivationStatus::Unspecified,
+            TaskActivationStatus::Pending => InflightActivationStatus::Pending,
+            TaskActivationStatus::Processing => InflightActivationStatus::Processing,
+            TaskActivationStatus::Failure => InflightActivationStatus::Failure,
+            TaskActivationStatus::Retry => InflightActivationStatus::Retry,
+            TaskActivationStatus::Complete => InflightActivationStatus::Complete,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -501,12 +526,51 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::{TimeZone, Utc};
-    use sentry_protos::sentry::v1::{RetryState, TaskActivation};
+    use sentry_protos::sentry::v1::{RetryState, TaskActivation, TaskActivationStatus};
 
     use crate::inflight_activation_store::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
     };
     use crate::test_utils::{assert_count_by_status, generate_temp_filename, make_activations};
+
+    #[test]
+    fn test_inflightactivation_status_is_completion() {
+        let mut value = InflightActivationStatus::Unspecified;
+        assert!(!value.is_conclusion());
+
+        value = InflightActivationStatus::Pending;
+        assert!(!value.is_conclusion());
+
+        value = InflightActivationStatus::Processing;
+        assert!(!value.is_conclusion());
+
+        value = InflightActivationStatus::Retry;
+        assert!(value.is_conclusion());
+
+        value = InflightActivationStatus::Failure;
+        assert!(value.is_conclusion());
+
+        value = InflightActivationStatus::Complete;
+        assert!(value.is_conclusion());
+    }
+
+    #[test]
+    fn test_inflightactivation_status_from() {
+        let mut value: InflightActivationStatus = TaskActivationStatus::Pending.into();
+        assert_eq!(value, InflightActivationStatus::Pending);
+
+        value = TaskActivationStatus::Processing.into();
+        assert_eq!(value, InflightActivationStatus::Processing);
+
+        value = TaskActivationStatus::Retry.into();
+        assert_eq!(value, InflightActivationStatus::Retry);
+
+        value = TaskActivationStatus::Failure.into();
+        assert_eq!(value, InflightActivationStatus::Failure);
+
+        value = TaskActivationStatus::Complete.into();
+        assert_eq!(value, InflightActivationStatus::Complete);
+    }
 
     #[tokio::test]
     async fn test_create_db() {
