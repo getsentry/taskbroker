@@ -41,6 +41,22 @@ jobs:
       - name: Install protoc
         uses: arduino/setup-protoc@v3
 
+      - name: Setup steps
+        id: setup
+        run: |
+          # We cannot execute actions that are not placed under .github of the main repo
+          mkdir -p .github/actions
+          cp -r sentry/.github/actions/* .github/actions
+
+      - name: Setup Sentry
+        id: setup-sentry
+        uses: ./.github/actions/setup-sentry
+        with:
+          workdir: sentry
+          snuba: false
+          kafka: true
+          clickhouse: false
+
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
           toolchain: stable
