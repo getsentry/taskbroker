@@ -8,4 +8,9 @@
 *.sqlite-shm
 *.sqlite-wal
 
+# Python
+**/__pycache__/
+**/.pytest_cache/
+**/integration_tests/tmp/
+
 .VERSION
