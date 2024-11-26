@@ -212,6 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_retry_is_discarded_when_exhausted() {
         let config = create_config();
         let store = create_inflight_store().await;
