@@ -97,7 +97,7 @@ async fn main() -> Result<(), Error> {
             health_reporter_fn
                 .set_serving::<ConsumerServiceServer<MyConsumerService>>()
                 .await;
-            let addr = format!("[::1]:{}", grpc_config.grpc_port)
+            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
             let service = MyConsumerService { store: grpc_store };
