@@ -30,12 +30,12 @@ pub enum InflightActivationStatus {
 impl InflightActivationStatus {
     /// Is the current value a 'conclusion' status that can be supplied over GRPC.
     pub fn is_conclusion(&self) -> bool {
-        match self {
-            InflightActivationStatus::Complete => true,
-            InflightActivationStatus::Retry => true,
-            InflightActivationStatus::Failure => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            InflightActivationStatus::Complete
+                | InflightActivationStatus::Retry
+                | InflightActivationStatus::Failure
+        )
     }
 }
 
