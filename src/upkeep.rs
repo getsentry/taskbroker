@@ -56,6 +56,12 @@ struct UpkeepResults {
     completed: u64,
 }
 
+impl UpkeepResults {
+    fn empty(&self) -> bool {
+        self.retried == 0 && self.processing_deadline_reset == 0 && self.deadletter_at_expired == 0 && self.deadlettered == 0 && self.completed == 0
+    }
+}
+
 #[instrument(name = "consumer::do_upkeep", skip(store, config, producer))]
 pub async fn do_upkeep(
     config: Arc<Config>,
@@ -138,13 +144,15 @@ pub async fn do_upkeep(
         result_context.completed = remove_count;
     }
 
-    info!(
-        result_context.completed,
-        result_context.deadlettered,
-        result_context.deadletter_at_expired,
-        result_context.retried,
-        "upkeep.complete",
-    );
+    if !result_context.empty() {
+        info!(
+            result_context.completed,
+            result_context.deadlettered,
+            result_context.deadletter_at_expired,
+            result_context.retried,
+            "upkeep.complete",
+      );
+    }
 }
 
 /// Create a new activation that is a 'retry' of the passed inflight_activation
