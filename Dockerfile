@@ -44,3 +44,6 @@ COPY --from=build /taskbroker/config.yaml /opt/config.yaml
 COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 ENTRYPOINT ["/opt/taskbroker"]
 CMD ["--config", "/opt/config.yaml"]
+
+# For devservices:
+# docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50051:50051 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry  taskbroker
