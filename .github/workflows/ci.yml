@@ -32,7 +32,7 @@ jobs:
         run: cargo clippy --workspace --all-features --tests -- -D clippy::all
 
   test:
-    name: Test (ubuntu)
+    name: Tests (ubuntu)
     runs-on: ubuntu-latest
 
     steps:
@@ -56,3 +56,43 @@ jobs:
         with:
           command: test
           args: --all
+
+  sentry:
+      name: Sentry End-To-End Tests
+      runs-on: ubuntu-latest
+      timeout-minutes: 60
+
+      steps:
+        - name: Checkout code
+          uses: actions/checkout@v2
+
+        - name: Registry login
+          run: |
+            echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
+
+        - name: Checkout sentry
+          uses: actions/checkout@v2
+          with:
+            repository: getsentry/sentry
+            path: sentry
+
+        - name: Setup steps
+          id: setup
+          run: |
+            pip install --upgrade pip wheel
+            # We cannot execute actions that are not placed under .github of the main repo
+            mkdir -p .github/actions
+            cp -r sentry/.github/actions/* .github/actions
+
+        - name: Setup Sentry
+          id: setup-sentry
+          uses: ./.github/actions/setup-sentry
+          with:
+            workdir: sentry
+            kafka: true
+
+        - name: Run taskbroker end-to-end tests
+          working-directory: sentry
+          run: |
+            echo "TODO: Send tasks to sentry-kafka"
+            echo "TODO: Run pytest"
