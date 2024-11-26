@@ -34,7 +34,7 @@ format: ## Run autofix mode for formatting and lint
 	@rustup component add clippy 2> /dev/null
 	@rustup component add rustfmt 2> /dev/null
 	cargo fmt --all
-	cargo clippy --workspace --all-targets --all-features --no-deps --fix --allow-dirty -- -D warnings
+	cargo clippy --workspace --all-targets --all-features --no-deps --fix --allow-dirty --allow-staged -- -D warnings
 
 # Tests
 

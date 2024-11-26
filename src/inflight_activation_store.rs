@@ -337,6 +337,7 @@ impl InflightActivationStore {
     ///
     /// Tasks that are pending and past their deadletter_at deadline are updated
     /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
+    ///
     /// The number of impacted records is returned in a Result.
     pub async fn handle_deadletter_at(&self) -> Result<u64, Error> {
         let mut atomic = self.sqlite_pool.begin().await?;

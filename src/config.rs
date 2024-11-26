@@ -52,6 +52,9 @@ pub struct Config {
     /// The amount of ms that the consumer will commit at.
     pub kafka_auto_offset_reset: String,
 
+    /// The number of ms for timeouts when publishing messages to kafka.
+    pub kafka_send_timeout_ms: u64,
+
     /// The path to the sqlite database
     pub db_path: String,
 
@@ -72,6 +75,9 @@ pub struct Config {
     /// are not complete. This should be a multiple of max_processing_deadline
     /// to allow temporary worker deaths to be resolved.
     pub deadletter_deadline: usize,
+
+    // The frequency at which upkeep tasks are spawned.
+    pub upkeep_task_interval_ms: u64,
 }
 
 impl Default for Config {
@@ -90,11 +96,13 @@ impl Default for Config {
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
+            kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             max_pending_count: 2048,
             max_pending_buffer_count: 1,
             max_processing_deadline: 300,
             deadletter_deadline: 900,
+            upkeep_task_interval_ms: 200,
         }
     }
 }
