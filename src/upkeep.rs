@@ -58,7 +58,11 @@ struct UpkeepResults {
 
 impl UpkeepResults {
     fn empty(&self) -> bool {
-        self.retried == 0 && self.processing_deadline_reset == 0 && self.deadletter_at_expired == 0 && self.deadlettered == 0 && self.completed == 0
+        self.retried == 0
+            && self.processing_deadline_reset == 0
+            && self.deadletter_at_expired == 0
+            && self.deadlettered == 0
+            && self.completed == 0
     }
 }
 
@@ -151,7 +155,7 @@ pub async fn do_upkeep(
             result_context.deadletter_at_expired,
             result_context.retried,
             "upkeep.complete",
-      );
+        );
     }
 }
 

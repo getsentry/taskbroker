@@ -5,7 +5,8 @@ use futures::{
 };
 use rdkafka::{
     consumer::{
-        stream_consumer::StreamPartitionQueue, BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer,
+        stream_consumer::StreamPartitionQueue, BaseConsumer, Consumer, ConsumerContext, Rebalance,
+        StreamConsumer,
     },
     error::{KafkaError, KafkaResult},
     message::{BorrowedMessage, OwnedMessage},
