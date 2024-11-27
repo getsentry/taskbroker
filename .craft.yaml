@@ -1,0 +1,20 @@
+minVersion: "0.27.2"
+changelogPolicy: auto
+artifactProvider:
+  name: none
+statusProvider:
+  name: github
+  config:
+    contexts:
+      - 'build-on-branch-push (sentryio)'
+targets:
+  - id: release
+    name: docker
+    source: us-central1-docker.pkg.dev/sentryio/taskbroker/image
+    target: getsentry/taskbroker
+  - id: latest
+    name: docker
+    source: us-central1-docker.pkg.dev/sentryio/taskbroker/image
+    target: getsentry/taskbroker
+    targetFormat: '{{{target}}}:latest'
+  - name: github
