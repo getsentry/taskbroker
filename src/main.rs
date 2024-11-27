@@ -1,9 +1,10 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::upkeep::start_upkeep;
+use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
-use tokio::{select, time};
 use tonic::transport::Server;
 use tonic_health::server::health_reporter;
 use tracing::{error, info};
@@ -50,24 +51,9 @@ async fn main() -> Result<(), Error> {
     // Upkeep thread
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
+        let upkeep_config = config.clone();
         async move {
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            let mut timer = time::interval(Duration::from_millis(200));
-            loop {
-                select! {
-                    _ = timer.tick() => {
-                        let _ = upkeep_store.get_pending_activation().await;
-                        info!(
-                            "Pending activation in store: {}",
-                            upkeep_store.count_pending_activations().await.unwrap()
-                        );
-                    }
-                    _ = guard.wait() => {
-                        info!("Cancellation token received, shutting down upkeep");
-                        break;
-                    }
-                }
-            }
+            start_upkeep(upkeep_config, upkeep_store).await;
             Ok(())
         }
     });
@@ -111,7 +97,7 @@ async fn main() -> Result<(), Error> {
             health_reporter_fn
                 .set_serving::<ConsumerServiceServer<MyConsumerService>>()
                 .await;
-            let addr = format!("[::1]:{}", grpc_config.grpc_port)
+            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
             let service = MyConsumerService { store: grpc_store };

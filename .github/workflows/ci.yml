@@ -38,6 +38,28 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Checkout sentry
+        uses: actions/checkout@v4
+        with:
+          repository: getsentry/sentry
+          path: sentry
+
+      - name: Setup steps
+        id: setup
+        run: |
+          # We cannot execute actions that are not placed under .github of the main repo
+          mkdir -p .github/actions
+          cp -r sentry/.github/actions/* .github/actions
+
+      - name: Setup Sentry
+        id: setup-sentry
+        uses: ./.github/actions/setup-sentry
+        with:
+          workdir: sentry
+          snuba: false
+          kafka: true
+          clickhouse: false
+
       - name: Install protoc
         uses: arduino/setup-protoc@v3
 

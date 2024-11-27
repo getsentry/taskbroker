@@ -11,6 +11,7 @@ pub mod grpc_server;
 pub mod inflight_activation_store;
 pub mod logging;
 pub mod metrics;
+pub mod upkeep;
 
 #[cfg(test)]
 pub mod test_utils;

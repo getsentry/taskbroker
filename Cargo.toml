@@ -18,7 +18,7 @@ tokio = { version = "1.41.0", features = ["full"] }
 tokio-util = "0.7.12"
 tokio-stream = { version = "0.1.16", features = ["full"] }
 futures = "0.3.31"
-rdkafka = { version = "0.36.2", features = ["cmake-build"] }
+rdkafka = { version = "0.37.0", features = ["cmake-build"] }
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
@@ -29,6 +29,7 @@ tracing-subscriber = { version = "0.3.18", features = ["json"] }
 metrics-exporter-statsd = "0.9.0"
 metrics = "0.24.0"
 elegant-departure = { version = "0.3.1", features = ["tokio"] }
+uuid = { version = "1.11.0", features = ["v4"] }
 
 [dev-dependencies]
 rand = "0.8.5"

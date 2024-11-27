@@ -28,6 +28,9 @@ pub struct Config {
     /// The statsd address to report metrics to.
     pub statsd_addr: SocketAddr,
 
+    /// The hostname and port of the gRPC server.
+    pub grpc_addr: String,
+
     /// The port to bind the grpc service to
     pub grpc_port: u32,
 
@@ -52,6 +55,9 @@ pub struct Config {
     /// The amount of ms that the consumer will commit at.
     pub kafka_auto_offset_reset: String,
 
+    /// The number of ms for timeouts when publishing messages to kafka.
+    pub kafka_send_timeout_ms: u64,
+
     /// The path to the sqlite database
     pub db_path: String,
 
@@ -72,6 +78,9 @@ pub struct Config {
     /// are not complete. This should be a multiple of max_processing_deadline
     /// to allow temporary worker deaths to be resolved.
     pub deadletter_deadline: usize,
+
+    // The frequency at which upkeep tasks are spawned.
+    pub upkeep_task_interval_ms: u64,
 }
 
 impl Default for Config {
@@ -81,6 +90,7 @@ impl Default for Config {
             sentry_env: None,
             log_level: LogLevel::Debug,
             log_format: LogFormat::Text,
+            grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
@@ -90,11 +100,13 @@ impl Default for Config {
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
+            kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             max_pending_count: 2048,
             max_pending_buffer_count: 1,
             max_processing_deadline: 300,
             deadletter_deadline: 900,
+            upkeep_task_interval_ms: 200,
         }
     }
 }
