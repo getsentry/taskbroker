@@ -4,8 +4,9 @@ fn emit_version() {
     let package_name = env::var("CARGO_PKG_NAME").unwrap();
     let package_version = env::var("CARGO_PKG_VERSION").unwrap();
 
-    let git_commit_sha = env::var("TASKWORKER_GIT_REVISION").unwrap_or_else(|_| {
-        Command::new("git")
+    let mut git_commit_sha = env::var("TASKWORKER_GIT_REVISION").unwrap_or_default();
+    if git_commit_sha.is_empty() {
+        git_commit_sha = Command::new("git")
             .args(["rev-parse", "HEAD"])
             .output()
             .inspect_err(|_e| {
@@ -13,7 +14,7 @@ fn emit_version() {
             })
             .map(|cmd| String::from_utf8(cmd.stdout).unwrap())
             .unwrap_or("unknown-rev".to_string())
-    });
+    };
 
     let release_name = format!("{}@{}+{}", package_name, package_version, git_commit_sha);
     fs::write("src/.VERSION", &release_name).expect("Unable to write version");

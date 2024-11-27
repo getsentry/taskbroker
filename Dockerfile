@@ -17,6 +17,10 @@ COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
 COPY ./config/${config_file} ./config.yaml
 
+# This is set by the cloudbuild.yaml file
+ARG TASKWORKER_GIT_REVISION=""
+ENV TASKWORKER_GIT_REVISION=${TASKWORKER_GIT_REVISION}
+
 # Build dependencies in a way they can be cached
 RUN cargo build --release
 RUN rm src/*.rs
