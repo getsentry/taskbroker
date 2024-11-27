@@ -25,7 +25,9 @@ def manage_consumer(
         print(f"Starting consumer {consumer_index}, writing log file to {log_file_path}")
         for i in range(iterations):
             config_file_path = f"integration_tests/tmp/{config_file}"
-            process = subprocess.Popen([consumer_path, "-c", config_file_path], stderr=log_file)
+            process = subprocess.Popen(
+                [consumer_path, "-c", config_file_path], stderr=subprocess.STDOUT, stdout=log_file
+            )
             time.sleep(random.randint(min_sleep, max_sleep))
             print(
                 f"Sending SIGINT to consumer {consumer_index}, {iterations - i - 1} SIGINTs remaining"
@@ -37,18 +39,17 @@ def manage_consumer(
             except Exception:
                 process.kill()
 
-
-def test_rebalancing_only_processed_once():
+def test_tasks_written_once_during_rebalancing():
     # Test configuration
     consumer_path = "../target/debug/taskbroker"
     num_consumers = 8
     num_messages = 80_000
-    num_restarts = 1
+    num_restarts = 4
     min_restart_duration = 5
     max_restart_duration = 20
 
-    # First check if taskdemo topic exists
-    print("Checking if taskdemo topic already exists")
+    # First check if task-worker topic exists
+    print("Checking if task-worker topic already exists")
     check_topic_cmd = [
         "docker",
         "exec",
@@ -61,9 +62,9 @@ def test_rebalancing_only_processed_once():
     result = subprocess.run(check_topic_cmd, check=True, capture_output=True, text=True)
     topics = result.stdout.strip().split("\n")
 
-    # Create taskdemo Kafka topic with 32 partitions
+    # Create/Update task-worker Kafka topic with 32 partitions
     if "task-worker" not in topics:
-        print("task-worker topic does not exist, creating it with 32 partitions")
+        print("Task-worker topic does not exist, creating it with 32 partitions")
         create_topic_cmd = [
             "docker",
             "exec",
@@ -81,7 +82,7 @@ def test_rebalancing_only_processed_once():
         ]
         subprocess.run(create_topic_cmd, check=True)
     else:
-        print("Taskdemo topic already exists, making sure it has 32 partitions")
+        print("Task-worker topic already exists, making sure it has 32 partitions")
         try:
             create_topic_cmd = [
                 "docker",
@@ -123,6 +124,7 @@ def test_rebalancing_only_processed_once():
 
     try:
         # TODO: Use sentry run CLI to produce messages to topic
+
         threads: list[Thread] = []
         for i in range(num_consumers):
             thread = threading.Thread(
@@ -146,6 +148,7 @@ def test_rebalancing_only_processed_once():
     except Exception:
         raise
 
+    # Validate that all tasks were written once during rebalancing
     attach_db_stmt = "".join(
         [
             f"ATTACH DATABASE '{config['db_path']}' AS {config['db_name']};\n"

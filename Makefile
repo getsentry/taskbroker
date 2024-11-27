@@ -42,6 +42,10 @@ test:
 	cargo test
 .PHONY: test
 
+install-py-dev:
+	pip install -r python/requirements-dev.txt
+.PHONY: install-py-dev
+
 integration-test:
 	cd python && pytest
 .PHONY: integration-test
