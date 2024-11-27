@@ -177,28 +177,16 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::{TimeZone, Utc};
-    use rdkafka::producer::FutureProducer;
     use sentry_protos::sentry::v1::RetryState;
 
     use crate::{
-        config::Config,
         inflight_activation_store::{InflightActivationStatus, InflightActivationStore},
-        test_utils::{generate_temp_filename, make_activations},
+        test_utils::{
+            consume_topic, create_config, create_integration_config, create_producer,
+            generate_temp_filename, make_activations, reset_topic,
+        },
         upkeep::do_upkeep,
     };
-
-    fn create_config() -> Arc<Config> {
-        Arc::new(Config::default())
-    }
-
-    fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
-        let producer: FutureProducer = config
-            .kafka_producer_config()
-            .create()
-            .expect("Could not create kafka producer");
-
-        Arc::new(producer)
-    }
 
     async fn create_inflight_store() -> Arc<InflightActivationStore> {
         let url = generate_temp_filename();
@@ -208,7 +196,37 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_activation_is_appended_to_kafka() {
-        // TODO
+        let config = create_integration_config();
+        reset_topic(config.clone()).await;
+
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+        let mut records = make_activations(2);
+        records[0].activation.parameters = r#"{"a":"b"}"#.into();
+        records[0].status = InflightActivationStatus::Retry;
+        records[0].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: Some(2),
+            deadletter_after_attempt: None,
+        });
+        assert!(store.store(records.clone()).await.is_ok());
+
+        do_upkeep(config.clone(), store.clone(), producer).await;
+
+        // Only 1 record left as the retry task should be appended as a new task
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        let messages = consume_topic(config.clone(), config.kafka_topic.as_ref(), 1).await;
+        assert_eq!(messages.len(), 1);
+        let activation = &messages[0];
+
+        // Should spawn a new task
+        assert_ne!(activation.id, records[0].activation.id);
+        // Should increment the attempt counter
+        assert_eq!(activation.retry_state.as_ref().unwrap().attempts, 2);
+        // Retry should retain parameters of original task
+        assert_eq!(activation.parameters, records[0].activation.parameters);
     }
 
     #[tokio::test]
@@ -322,7 +340,36 @@ mod tests {
 
     #[tokio::test]
     async fn test_remove_failed_publish_to_kafka() {
-        // TODO
+        let config = create_integration_config();
+        reset_topic(config.clone()).await;
+
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+        let mut records = make_activations(2);
+        records[0].activation.parameters = r#"{"a":"b"}"#.into();
+        records[0].status = InflightActivationStatus::Failure;
+        records[0].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+        });
+        assert!(store.store(records.clone()).await.is_ok());
+
+        do_upkeep(config.clone(), store.clone(), producer).await;
+
+        // Only 1 record left as the failure task should be appended to dlq
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        let messages =
+            consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
+        assert_eq!(messages.len(), 1);
+        let activation = &messages[0];
+
+        // Should move the task without changing the id
+        assert_eq!(activation.id, records[0].activation.id);
+        // DLQ should retain parameters of original task
+        assert_eq!(activation.parameters, records[0].activation.parameters);
     }
 
     #[tokio::test]
