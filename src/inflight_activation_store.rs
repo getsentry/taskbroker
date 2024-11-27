@@ -235,12 +235,13 @@ impl InflightActivationStore {
         Ok(result.get::<u64, _>("count") as usize)
     }
 
+    /// Update the status of a specific activation
     pub async fn set_status(
         &self,
         id: &str,
         status: InflightActivationStatus,
     ) -> Result<(), Error> {
-        sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2")
+        sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *")
             .bind(status)
             .bind(id)
             .execute(&self.sqlite_pool)

@@ -5,7 +5,10 @@ use rdkafka::{
     util::Timeout,
 };
 use sentry_protos::sentry::v1::TaskActivation;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::Mutex;
 use tokio::{select, time};
 use tracing::{error, info, instrument};
@@ -72,6 +75,7 @@ pub async fn do_upkeep(
     store: Arc<InflightActivationStore>,
     producer: Arc<FutureProducer>,
 ) {
+    let upkeep_start = Instant::now();
     let mut result_context = UpkeepResults {
         retried: 0,
         processing_deadline_reset: 0,
@@ -157,6 +161,12 @@ pub async fn do_upkeep(
             "upkeep.complete",
         );
     }
+    metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
+    metrics::counter!("upkeep.completed").increment(result_context.completed);
+    metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
+    metrics::counter!("upkeep.deadletter_at_expired")
+        .increment(result_context.deadletter_at_expired);
+    metrics::counter!("upkeep.retried").increment(result_context.retried);
 }
 
 /// Create a new activation that is a 'retry' of the passed inflight_activation
