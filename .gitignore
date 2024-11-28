@@ -11,6 +11,6 @@
 # Python
 **/__pycache__/
 **/.pytest_cache/
-**/integration_tests/tmp/
+**/integration_tests/.tests_output/
 
 .VERSION
