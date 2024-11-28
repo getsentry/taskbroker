@@ -1,4 +1,3 @@
-import os
 import random
 import shutil
 import signal
@@ -11,7 +10,14 @@ from threading import Thread
 
 import yaml
 
-from python.integration_tests.helpers import TASKBROKER_BIN, TESTS_OUTPUT_PATH, check_topic_exists, create_topic, update_topic_partitions
+from python.integration_tests.helpers import (
+    TASKBROKER_BIN,
+    TESTS_OUTPUT_PATH,
+    check_topic_exists,
+    create_topic,
+    update_topic_partitions,
+    send_messages_to_kafka
+)
 
 
 def manage_consumer(
@@ -41,27 +47,29 @@ def manage_consumer(
                 process.kill()
 
 
-def test_tasks_written_once_during_rebalancing():
+def test_tasks_written_once_during_rebalancing() -> None:
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 80_000
-    num_restarts = 1
+    num_restarts = 4
+    num_partitions = 32
     min_restart_duration = 5
-    max_restart_duration = 25
+    max_restart_duration = 20
     topic_name = "task-worker"
     curr_time = int(time.time())
 
-    # Check if topic exists, and create/update it with 32 partitions if it doesn't
+    # Ensure topic has correct number of partitions
     if not check_topic_exists("task-worker"):
-        print("Task-worker topic does not exist, creating it with 32 partitions")
-        create_topic(topic_name, 32)
+        print(f"Task-worker topic does not exist, creating it with {num_partitions} partitions")
+        create_topic(topic_name, num_partitions)
     else:
-        print("Task-worker topic already exists, making sure it has 32 partitions")
-        update_topic_partitions(topic_name, 32)
+        print(f"Task-worker topic already exists, making sure it has {num_partitions} partitions")
+        update_topic_partitions(topic_name, num_partitions)
 
     # Create config files for consumers
     print("Creating config files for consumers")
+    TESTS_OUTPUT_PATH.mkdir(exist_ok=True)
     consumer_configs = {}
     for i in range(num_consumers):
         db_name = f"db_{i}_{curr_time}"
@@ -79,7 +87,7 @@ def test_tasks_written_once_during_rebalancing():
             yaml.safe_dump(config, f)
 
     try:
-        # TODO: Use sentry run CLI to produce messages to topic
+        send_messages_to_kafka(num_messages)
         threads: list[Thread] = []
         for i in range(num_consumers):
             thread = threading.Thread(
@@ -100,8 +108,8 @@ def test_tasks_written_once_during_rebalancing():
         for t in threads:
             t.join()
 
-    except Exception:
-        raise
+    except Exception as e:
+        raise Exception(f"Error running taskbroker: {e}")
 
     # Validate that all tasks were written once during rebalancing
     attach_db_stmt = "".join(
@@ -110,7 +118,6 @@ def test_tasks_written_once_during_rebalancing():
             for config in consumer_configs.values()
         ]
     )
-    print(attach_db_stmt)
     from_stmt = "\nUNION ALL\n".join(
         [
             f"    SELECT * FROM {config['db_name']}.inflight_taskactivations"
