@@ -241,7 +241,7 @@ impl InflightActivationStore {
         id: &str,
         status: InflightActivationStatus,
     ) -> Result<(), Error> {
-        sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *")
+        sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2")
             .bind(status)
             .bind(id)
             .execute(&self.sqlite_pool)

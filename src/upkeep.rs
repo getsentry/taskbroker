@@ -166,7 +166,7 @@ pub async fn do_upkeep(
         result_context.pending = pending_count as u32;
     }
     if let Ok(processing_count) = store
-        .count_by_status(InflightActivationStatus::Pending)
+        .count_by_status(InflightActivationStatus::Processing)
         .await
     {
         result_context.processing = processing_count as u32;
