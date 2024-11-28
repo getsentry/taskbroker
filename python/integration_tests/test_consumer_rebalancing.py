@@ -27,6 +27,7 @@ def manage_consumer(
         iterations: int,
         min_sleep: int,
         max_sleep: int,
+        random_seed: int,
         log_file_path: str,
 ) -> None:
     with open(log_file_path, "a") as log_file:
@@ -35,6 +36,7 @@ def manage_consumer(
             process = subprocess.Popen(
                 [consumer_path, "-c", config_file_path], stderr=subprocess.STDOUT, stdout=log_file
             )
+            random.seed(random_seed)
             time.sleep(random.randint(min_sleep, max_sleep))
             print(
                 f"Sending SIGINT to consumer {consumer_index}, {iterations - i - 1} SIGINTs remaining"
@@ -58,6 +60,17 @@ def test_tasks_written_once_during_rebalancing() -> None:
     max_restart_duration = 20
     topic_name = "task-worker"
     curr_time = int(time.time())
+
+    print(f"""Running test with the following configuration:
+        num of consumers: {num_consumers},
+        num of messages: {num_messages},
+        num of restarts: {num_restarts},
+        num of partitions: {num_partitions},
+        min restart duration: {min_restart_duration} seconds,
+        max restart duration: {max_restart_duration} seconds,
+        topic name: {topic_name}
+        random seed value: {curr_time}
+    """)
 
     # Ensure topic has correct number of partitions
     if not check_topic_exists("task-worker"):
@@ -99,6 +112,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
                     num_restarts,
                     min_restart_duration,
                     max_restart_duration,
+                    curr_time,
                     str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"),
                 ),
             )
