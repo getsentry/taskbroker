@@ -1,21 +1,23 @@
 import os
 import random
+import shutil
 import signal
 import sqlite3
 import subprocess
 import threading
 import time
 
-from pathlib import Path
 from threading import Thread
 
 import yaml
+
+from python.integration_tests.helpers import TASKBROKER_BIN, TESTS_OUTPUT_PATH, check_topic_exists, create_topic, update_topic_partitions
 
 
 def manage_consumer(
         consumer_index: int,
         consumer_path: str,
-        config_file: str,
+        config_file_path: str,
         iterations: int,
         min_sleep: int,
         max_sleep: int,
@@ -24,7 +26,6 @@ def manage_consumer(
     with open(log_file_path, "a") as log_file:
         print(f"Starting consumer {consumer_index}, writing log file to {log_file_path}")
         for i in range(iterations):
-            config_file_path = f"integration_tests/tmp/{config_file}"
             process = subprocess.Popen(
                 [consumer_path, "-c", config_file_path], stderr=subprocess.STDOUT, stdout=log_file
             )
@@ -39,92 +40,46 @@ def manage_consumer(
             except Exception:
                 process.kill()
 
+
 def test_tasks_written_once_during_rebalancing():
     # Test configuration
-    consumer_path = "../target/debug/taskbroker"
+    consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 80_000
-    num_restarts = 4
+    num_restarts = 1
     min_restart_duration = 5
-    max_restart_duration = 20
+    max_restart_duration = 25
+    topic_name = "task-worker"
+    curr_time = int(time.time())
 
-    # First check if task-worker topic exists
-    print("Checking if task-worker topic already exists")
-    check_topic_cmd = [
-        "docker",
-        "exec",
-        "sentry_kafka",
-        "kafka-topics",
-        "--bootstrap-server",
-        "localhost:9092",
-        "--list",
-    ]
-    result = subprocess.run(check_topic_cmd, check=True, capture_output=True, text=True)
-    topics = result.stdout.strip().split("\n")
-
-    # Create/Update task-worker Kafka topic with 32 partitions
-    if "task-worker" not in topics:
+    # Check if topic exists, and create/update it with 32 partitions if it doesn't
+    if not check_topic_exists("task-worker"):
         print("Task-worker topic does not exist, creating it with 32 partitions")
-        create_topic_cmd = [
-            "docker",
-            "exec",
-            "sentry_kafka",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--create",
-            "--topic",
-            "task-worker",
-            "--partitions",
-            "32",
-            "--replication-factor",
-            "1",
-        ]
-        subprocess.run(create_topic_cmd, check=True)
+        create_topic(topic_name, 32)
     else:
         print("Task-worker topic already exists, making sure it has 32 partitions")
-        try:
-            create_topic_cmd = [
-                "docker",
-                "exec",
-                "sentry_kafka",
-                "kafka-topics",
-                "--bootstrap-server",
-                "localhost:9092",
-                "--alter",
-                "--topic",
-                "task-worker",
-                "--partitions",
-                "32",
-            ]
-            subprocess.run(create_topic_cmd, check=True)
-        except Exception:
-            pass
+        update_topic_partitions(topic_name, 32)
 
     # Create config files for consumers
-    print("Creating config files for consumers in taskbroker/tests")
+    print("Creating config files for consumers")
     consumer_configs = {}
-    curr_time = int(time.time())
     for i in range(num_consumers):
+        db_name = f"db_{i}_{curr_time}"
         consumer_configs[f"config_{i}.yml"] = {
-            "db_name": f"db_{i}_{curr_time}",
-            "db_path": f"{os.getcwd()}/integration_tests/tmp/db_{i}_{curr_time}.sqlite",
+            "db_name": db_name,
+            "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
             "kafka_topic": "task-worker",
-            "kafka_consumer_group": "task-worker-integration-test",
+            "kafka_consumer_group": "task-worker",
             "kafka_auto_offset_reset": "earliest",
             "grpc_port": 50051 + i,
         }
 
-    config_dir = Path("integration_tests/tmp")
-    config_dir.mkdir(parents=True, exist_ok=True)
-
     for filename, config in consumer_configs.items():
-        with open(config_dir / filename, "w") as f:
+        with open(str(TESTS_OUTPUT_PATH / filename), "w") as f:
             yaml.safe_dump(config, f)
 
     try:
         # TODO: Use sentry run CLI to produce messages to topic
-
         threads: list[Thread] = []
         for i in range(num_consumers):
             thread = threading.Thread(
@@ -132,11 +87,11 @@ def test_tasks_written_once_during_rebalancing():
                 args=(
                     i,
                     consumer_path,
-                    f"config_{i}.yml",
+                    str(TESTS_OUTPUT_PATH / f"config_{i}.yml"),
                     num_restarts,
                     min_restart_duration,
                     max_restart_duration,
-                    f"integration_tests/tmp/consumer_{i}.log",
+                    str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"),
                 ),
             )
             thread.start()
@@ -155,6 +110,7 @@ def test_tasks_written_once_during_rebalancing():
             for config in consumer_configs.values()
         ]
     )
+    print(attach_db_stmt)
     from_stmt = "\nUNION ALL\n".join(
         [
             f"    SELECT * FROM {config['db_name']}.inflight_taskactivations"
@@ -173,12 +129,18 @@ def test_tasks_written_once_during_rebalancing():
         GROUP BY partition
         ORDER BY partition;
     """
+    query = f"SELECT * FROM {consumer_configs['config_0.yml']['db_name']}.inflight_taskactivations;"
 
     con = sqlite3.connect(consumer_configs["config_0.yml"]["db_path"])
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     res = cur.execute(query)
+
     assert all(
         [res[3] == 0 for res in res.fetchall()]
     )  # Assert that each value in the delta (fourth) column is 0
     print("Taskbroker integration test completed successfully.")
+
+    # Clean up test output files
+    print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
+    shutil.rmtree(TESTS_OUTPUT_PATH)

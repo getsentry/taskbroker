@@ -47,7 +47,7 @@ install-py-dev:
 .PHONY: install-py-dev
 
 integration-test:
-	cd python && pytest
+	python -m pytest python/integration_tests
 .PHONY: integration-test
 
 # Help
