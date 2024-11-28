@@ -63,11 +63,14 @@ impl ConsumerService for MyConsumerService {
         let update_result = self.store.set_status(&id, status).await;
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
-        let get_res = self.store.get_by_id(&id).await;
-
-        if let Ok(Some(inflight_activation)) = get_res {
+        if let Ok(Some(inflight_activation)) = self.store.get_by_id(&id).await {
             let duration = Utc::now() - inflight_activation.added_at;
-            metrics::histogram!("task_execution.update_lag", "namespace" => inflight_activation.activation.namespace).record(duration.num_seconds() as f64);
+            metrics::histogram!(
+                "task_execution.completion_duration",
+                "namespace" => inflight_activation.activation.namespace,
+                "taskname" => inflight_activation.activation.taskname,
+            )
+            .record(duration.num_milliseconds() as f64);
         }
 
         match update_result {
