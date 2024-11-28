@@ -296,7 +296,7 @@ impl InflightActivationStore {
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND status = $3"
+            WHERE processing_deadline < $2 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now)
@@ -740,7 +740,7 @@ mod tests {
             attempts: 0,
             kind: "".into(),
             discard_after_attempt: Some(1),
-            deadletter_after_attempt: None
+            deadletter_after_attempt: None,
         });
 
         assert!(store.store(batch).await.is_ok());
@@ -763,7 +763,7 @@ mod tests {
             attempts: 0,
             kind: "".into(),
             discard_after_attempt: None,
-            deadletter_after_attempt: Some(1)
+            deadletter_after_attempt: Some(1),
         });
 
         assert!(store.store(batch).await.is_ok());
@@ -787,7 +787,7 @@ mod tests {
             attempts: 1,
             kind: "".into(),
             discard_after_attempt: None,
-            deadletter_after_attempt: Some(1)
+            deadletter_after_attempt: Some(1),
         });
 
         assert!(store.store(batch).await.is_ok());
