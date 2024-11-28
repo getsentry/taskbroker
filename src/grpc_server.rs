@@ -9,7 +9,7 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 use super::inflight_activation_store::{InflightActivationStatus, InflightActivationStore};
-use tracing::{debug, instrument};
+use tracing::instrument;
 
 pub struct MyConsumerService {
     pub store: Arc<InflightActivationStore>,
@@ -20,9 +20,8 @@ impl ConsumerService for MyConsumerService {
     #[instrument(skip(self))]
     async fn get_task(
         &self,
-        request: Request<GetTaskRequest>,
+        _request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
-        debug!("Got a get_task request: {:?}", request);
         let start_time = Instant::now();
 
         let inflight = self.store.get_pending_activation().await;
@@ -46,7 +45,6 @@ impl ConsumerService for MyConsumerService {
         &self,
         request: Request<SetTaskStatusRequest>,
     ) -> Result<Response<SetTaskStatusResponse>, Status> {
-        debug!("Got a set_task_status request: {:?}", request);
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
