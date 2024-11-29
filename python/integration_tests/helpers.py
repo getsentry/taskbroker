@@ -1,6 +1,12 @@
+import orjson
 import subprocess
-from os import environ
+import time
+
+from kafka import KafkaProducer
 from pathlib import Path
+from uuid import uuid4
+from sentry_protos.sentry.v1.taskworker_pb2 import RetryState, TaskActivation
+from google.protobuf.timestamp_pb2 import Timestamp
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
@@ -69,27 +75,37 @@ def update_topic_partitions(topic_name: str, num_partitions: int) -> None:
         pass
 
 
-def send_messages_to_kafka(num_messages: int) -> None:
-    path_to_sentry = environ.get("SENTRY_PATH")
-    if not path_to_sentry:
-        raise Exception("SENTRY_PATH not set in environment. This is required to send messages to kafka")
+def serialize_task_activation(args: list, kwargs: dict) -> bytes:
+    retry_state = RetryState(
+        attempts=0,
+        kind="sentry.taskworker.retry.Retry",
+        discard_after_attempt=None,
+        deadletter_after_attempt=None,
+    )
+    pending_task_payload = TaskActivation(
+        id=uuid4().hex,
+        namespace="integration_tests",
+        taskname="integration_tests.say_hello",
+        parameters=orjson.dumps({"args": args, "kwargs": kwargs}),
+        retry_state=retry_state,
+        received_at=Timestamp(seconds=int(time.time())),
+    ).SerializeToString()
 
+    return pending_task_payload
+
+
+def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
     try:
-        send_tasks_cmd = [
-            "cd",
-            path_to_sentry,
-            "&&",
-            "sentry",
-            "run",
-            "taskbroker-send-tasks",
-            "--task-function-path",
-            "sentry.taskworker.tasks.examples.say_hello",
-            "--args",
-            "'[\"foobar\"]'",
-            "--repeat",
-            str(num_messages),
-        ]
-        subprocess.run(send_tasks_cmd, check=True)
+        producer = KafkaProducer(
+            bootstrap_servers=['localhost:9092'],
+        )
+
+        for _ in range(num_messages):
+            task_message = serialize_task_activation(["foobar"], {})
+            future = producer.send(topic_name, task_message)
+            future.get(timeout=10)  # make sure messages were successfully sent
+        producer.flush()
+        producer.close()
         print(f"Sent {num_messages} messages to kafka")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")

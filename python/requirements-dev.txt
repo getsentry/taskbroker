@@ -1,2 +1,6 @@
+kafka-python>=2.0.2
+orjson>=3.10.12
+protobuf>=5.29.0
 pytest>=8.3.3
 pyyaml>=6.0.2
+sentry-protos>=0.1.37

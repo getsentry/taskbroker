@@ -36,7 +36,7 @@ def manage_consumer(
             process = subprocess.Popen(
                 [consumer_path, "-c", config_file_path], stderr=subprocess.STDOUT, stdout=log_file
             )
-            random.seed(random_seed)
+            # random.seed(random_seed)
             time.sleep(random.randint(min_sleep, max_sleep))
             print(
                 f"Sending SIGINT to consumer {consumer_index}, {iterations - i - 1} SIGINTs remaining"
@@ -73,11 +73,11 @@ def test_tasks_written_once_during_rebalancing() -> None:
     """)
 
     # Ensure topic has correct number of partitions
-    if not check_topic_exists("task-worker"):
-        print(f"Task-worker topic does not exist, creating it with {num_partitions} partitions")
+    if not check_topic_exists(topic_name):
+        print(f"{topic_name} topic does not exist, creating it with {num_partitions} partitions")
         create_topic(topic_name, num_partitions)
     else:
-        print(f"Task-worker topic already exists, making sure it has {num_partitions} partitions")
+        print(f"{topic_name} topic already exists, making sure it has {num_partitions} partitions")
         update_topic_partitions(topic_name, num_partitions)
 
     # Create config files for consumers
@@ -89,8 +89,8 @@ def test_tasks_written_once_during_rebalancing() -> None:
         consumer_configs[f"config_{i}.yml"] = {
             "db_name": db_name,
             "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
-            "kafka_topic": "task-worker",
-            "kafka_consumer_group": "task-worker",
+            "kafka_topic": topic_name,
+            "kafka_consumer_group": topic_name,
             "kafka_auto_offset_reset": "earliest",
             "grpc_port": 50051 + i,
         }
@@ -100,7 +100,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
             yaml.safe_dump(config, f)
 
     try:
-        send_messages_to_kafka(num_messages)
+        send_messages_to_kafka(topic_name, num_messages)
         threads: list[Thread] = []
         for i in range(num_consumers):
             thread = threading.Thread(
@@ -150,7 +150,6 @@ def test_tasks_written_once_during_rebalancing() -> None:
         GROUP BY partition
         ORDER BY partition;
     """
-    query = f"SELECT * FROM {consumer_configs['config_0.yml']['db_name']}.inflight_taskactivations;"
 
     con = sqlite3.connect(consumer_configs["config_0.yml"]["db_path"])
     cur = con.cursor()

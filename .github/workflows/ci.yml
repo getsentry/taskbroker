@@ -79,8 +79,10 @@ jobs:
           command: test
           args: --all
 
-      - name: Run Integration Tests
-        env:
-          SENTRY_PATH: sentry/
+      - name: Install Python Dependencies
         run: |
-          python -m pytest python/integration_tests
+          make install-py-dev
+
+      - name: Run Python Integration Tests
+        run: |
+          make integration-test
