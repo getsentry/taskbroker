@@ -43,12 +43,12 @@ test:
 .PHONY: test
 
 install-py-dev:
-	source python/.venv/bin/activate
+	. python/.venv/bin/activate
 	pip install -r python/requirements-dev.txt
 .PHONY: install-py-dev
 
 integration-test:
-	source python/.venv/bin/activate
+	. python/.venv/bin/activate
 	python -m pytest python/integration_tests
 .PHONY: integration-test
 
