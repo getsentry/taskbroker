@@ -1,3 +1,4 @@
+import os
 import random
 import shutil
 import signal
@@ -36,7 +37,6 @@ def manage_consumer(
             process = subprocess.Popen(
                 [consumer_path, "-c", config_file_path], stderr=subprocess.STDOUT, stdout=log_file
             )
-            # random.seed(random_seed)
             time.sleep(random.randint(min_sleep, max_sleep))
             print(
                 f"Sending SIGINT to consumer {consumer_index}, {iterations - i - 1} SIGINTs remaining"
@@ -61,6 +61,10 @@ def test_tasks_written_once_during_rebalancing() -> None:
     topic_name = "task-worker"
     curr_time = int(time.time())
 
+    random_seed = int(os.environ.get("TEST_SEED"))
+    if not random_seed:
+        random_seed = curr_time
+
     print(f"""Running test with the following configuration:
         num of consumers: {num_consumers},
         num of messages: {num_messages},
@@ -69,8 +73,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
         min restart duration: {min_restart_duration} seconds,
         max restart duration: {max_restart_duration} seconds,
         topic name: {topic_name}
-        random seed value: {curr_time}
+        random seed value: {random_seed}
     """)
+    random.seed(curr_time)
 
     # Ensure topic has correct number of partitions
     if not check_topic_exists(topic_name):
