@@ -61,9 +61,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     topic_name = "task-worker"
     curr_time = int(time.time())
 
-    random_seed = int(os.environ.get("TEST_SEED"))
-    if not random_seed:
-        random_seed = curr_time
+    random_seed = int(os.environ.get("TEST_SEED")) if os.environ.get("TEST_SEED") else curr_time
 
     print(f"""Running test with the following configuration:
         num of consumers: {num_consumers},
