@@ -2,7 +2,7 @@ import orjson
 import subprocess
 import time
 
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 from pathlib import Path
 from uuid import uuid4
 from sentry_protos.sentry.v1.taskworker_pb2 import RetryState, TaskActivation
@@ -96,16 +96,17 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
 
 def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
     try:
-        producer = KafkaProducer(
-            bootstrap_servers=['localhost:9092'],
-        )
+        producer = Producer({
+            'bootstrap.servers': 'localhost:9092',
+            'broker.address.family': 'v4'
+        })
 
         for _ in range(num_messages):
             task_message = serialize_task_activation(["foobar"], {})
-            future = producer.send(topic_name, task_message)
-            future.get(timeout=10)  # make sure messages were successfully sent
+            producer.produce(topic_name, task_message)
+
+        producer.poll(5)  # trigger delivery reports
         producer.flush()
-        producer.close()
-        print(f"Sent {num_messages} messages to kafka")
+        print(f"Sent {num_messages} messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
