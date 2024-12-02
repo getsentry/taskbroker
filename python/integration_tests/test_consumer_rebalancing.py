@@ -146,7 +146,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
             partition,
             (max(offset) - min(offset)) + 1 AS offset_diff,
             count(*) AS occ,
-            (max(offset) - min(offset)) + 1 - count(offset) AS delta
+            (max(offset) - min(offset)) + 1 - count(*) AS delta
         FROM (
         {from_stmt}
         )
@@ -157,10 +157,11 @@ def test_tasks_written_once_during_rebalancing() -> None:
     con = sqlite3.connect(consumer_configs["config_0.yml"]["db_path"])
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
-    res = cur.execute(query)
+    res = cur.execute(query).fetchall()
+    print(res)
 
     assert all(
-        [res[3] == 0 for res in res.fetchall()]
+        [row[3] == 0 for row in res]
     )  # Assert that each value in the delta (fourth) column is 0
     print("Taskbroker integration test completed successfully.")
 
