@@ -65,9 +65,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     topic_name = "task-worker"
     curr_time = int(time.time())
 
-    random_seed = (
-        int(os.environ.get("TEST_SEED")) if os.environ.get("TEST_SEED") else curr_time
-    )
+    random_seed = 1733180863
 
     print(
         f"""Running test with the following configuration:
@@ -181,7 +179,21 @@ def test_tasks_written_once_during_rebalancing() -> None:
     assert all(
         [row[3] == 0 for row in res]
     )  # Assert that each value in the delta (fourth) column is 0
-    print("Taskbroker integration test completed successfully.")
+
+    query = f"""
+        SELECT partition, offset, count(*) as count
+        FROM (
+        {from_stmt}
+        )
+        GROUP BY partition, offset
+        HAVING count > 1
+    """
+    res = cur.execute(query).fetchall()
+    print(f"\n{'Partition'.rjust(16)}{'Offset'.rjust(16)}{'count'.rjust(16)}")
+    for partition, offset, count in res:
+        print(
+            f"{str(partition).rjust(16)}{str(offset).rjust(16)}{str(count).rjust(16)}"
+        )
 
     # Clean up test output files
     print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
