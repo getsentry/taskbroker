@@ -51,6 +51,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             added_at: Utc::now(),
             deadletter_at: None,
             processing_deadline: None,
+            at_most_once: false,
         };
         records.push(item);
     }

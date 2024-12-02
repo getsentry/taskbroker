@@ -209,6 +209,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: Some(2),
             deadletter_after_attempt: None,
+            at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -242,6 +243,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: Some(1),
             deadletter_after_attempt: None,
+            at_most_once: None,
         });
 
         assert!(store.store(records).await.is_ok());
@@ -353,6 +355,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: None,
             deadletter_after_attempt: Some(1),
+            at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());
 
