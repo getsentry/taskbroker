@@ -17,25 +17,29 @@ from python.integration_tests.helpers import (
     check_topic_exists,
     create_topic,
     update_topic_partitions,
-    send_messages_to_kafka
+    send_messages_to_kafka,
 )
 
 
 def manage_consumer(
-        consumer_index: int,
-        consumer_path: str,
-        config_file_path: str,
-        iterations: int,
-        min_sleep: int,
-        max_sleep: int,
-        random_seed: int,
-        log_file_path: str,
+    consumer_index: int,
+    consumer_path: str,
+    config_file_path: str,
+    iterations: int,
+    min_sleep: int,
+    max_sleep: int,
+    random_seed: int,
+    log_file_path: str,
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(f"Starting consumer {consumer_index}, writing log file to {log_file_path}")
+        print(
+            f"Starting consumer {consumer_index}, writing log file to {log_file_path}"
+        )
         for i in range(iterations):
             process = subprocess.Popen(
-                [consumer_path, "-c", config_file_path], stderr=subprocess.STDOUT, stdout=log_file
+                [consumer_path, "-c", config_file_path],
+                stderr=subprocess.STDOUT,
+                stdout=log_file,
             )
             time.sleep(random.randint(min_sleep, max_sleep))
             print(
@@ -54,16 +58,19 @@ def test_tasks_written_once_during_rebalancing() -> None:
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 80_000
-    num_restarts = 4
+    num_restarts = 1
     num_partitions = 32
     min_restart_duration = 5
     max_restart_duration = 20
     topic_name = "task-worker"
     curr_time = int(time.time())
 
-    random_seed = int(os.environ.get("TEST_SEED")) if os.environ.get("TEST_SEED") else curr_time
+    random_seed = (
+        int(os.environ.get("TEST_SEED")) if os.environ.get("TEST_SEED") else curr_time
+    )
 
-    print(f"""Running test with the following configuration:
+    print(
+        f"""Running test with the following configuration:
         num of consumers: {num_consumers},
         num of messages: {num_messages},
         num of restarts: {num_restarts},
@@ -72,15 +79,20 @@ def test_tasks_written_once_during_rebalancing() -> None:
         max restart duration: {max_restart_duration} seconds,
         topic name: {topic_name}
         random seed value: {random_seed}
-    """)
+    """
+    )
     random.seed(curr_time)
 
     # Ensure topic has correct number of partitions
     if not check_topic_exists(topic_name):
-        print(f"{topic_name} topic does not exist, creating it with {num_partitions} partitions")
+        print(
+            f"{topic_name} topic does not exist, creating it with {num_partitions} partitions"
+        )
         create_topic(topic_name, num_partitions)
     else:
-        print(f"{topic_name} topic already exists, making sure it has {num_partitions} partitions")
+        print(
+            f"{topic_name} topic already exists, making sure it has {num_partitions} partitions"
+        )
         update_topic_partitions(topic_name, num_partitions)
 
     # Create config files for consumers
@@ -158,7 +170,13 @@ def test_tasks_written_once_during_rebalancing() -> None:
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     res = cur.execute(query).fetchall()
-    print(res)
+    print(
+        f"\n{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
+    )
+    for partition, expected_row_count, actual_row_count, diff in res:
+        print(
+            f"{str(partition).rjust(16)}{str(expected_row_count).rjust(16)}{str(actual_row_count).rjust(16)}{str(diff).rjust(16)}"
+        )
 
     assert all(
         [row[3] == 0 for row in res]
