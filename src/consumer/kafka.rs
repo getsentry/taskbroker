@@ -748,7 +748,7 @@ impl CommitClient for StreamConsumer<KafkaContext> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct HighwaterMark {
     data: HashMap<(String, i32), i64>,
 }
@@ -793,6 +793,7 @@ pub async fn commit(
     while let Some(msgs) = receiver.recv().await {
         let mut highwater_mark = HighwaterMark::new();
         msgs.0.iter().for_each(|msg| highwater_mark.track(msg));
+        debug!("Storing {:?}", highwater_mark);
         consumer.store_offsets(&highwater_mark.into()).unwrap();
     }
     debug!("Shutdown complete");
