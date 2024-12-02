@@ -166,5 +166,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
     print("Taskbroker integration test completed successfully.")
 
     # Clean up test output files
-    print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
-    shutil.rmtree(TESTS_OUTPUT_PATH)
+    # print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
+    # shutil.rmtree(TESTS_OUTPUT_PATH)
+    for i in range(num_consumers):
+        print(f"Consumer {i} log:")
+        with open(str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log")) as f:
+            print(f.read())
