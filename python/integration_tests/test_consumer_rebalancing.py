@@ -167,18 +167,14 @@ def test_tasks_written_once_during_rebalancing() -> None:
     con = sqlite3.connect(consumer_configs["config_0.yml"]["db_path"])
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
-    res = cur.execute(query).fetchall()
+    row_count = cur.execute(query).fetchall()
     print(
         f"\n{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
     )
-    for partition, expected_row_count, actual_row_count, diff in res:
+    for partition, expected_row_count, actual_row_count, diff in row_count:
         print(
             f"{str(partition).rjust(16)}{str(expected_row_count).rjust(16)}{str(actual_row_count).rjust(16)}{str(diff).rjust(16)}"
         )
-
-    assert all(
-        [row[3] == 0 for row in res]
-    )  # Assert that each value in the delta (fourth) column is 0
 
     query = f"""
         SELECT partition, offset, count(*) as count
@@ -194,6 +190,10 @@ def test_tasks_written_once_during_rebalancing() -> None:
         print(
             f"{str(partition).rjust(16)}{str(offset).rjust(16)}{str(count).rjust(16)}"
         )
+
+    assert all(
+        [row[3] == 0 for row in row_count]
+    )  # Assert that each value in the delta (fourth) column is 0
 
     # Clean up test output files
     print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
