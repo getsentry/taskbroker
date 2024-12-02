@@ -370,6 +370,8 @@ pub async fn handle_events(
                     assigned_tpl.len()
                 );
                 actor_handles.shutdown(CALLBACK_DURATION).await;
+                debug!("Received rebalance signal, commiting state in sync mode...");
+                let _ = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync);
                 ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
             }
             (ConsumerState::Consuming(actor_handles, mut tpl), Event::Revoke(revoked_tpl)) => {
@@ -380,6 +382,8 @@ pub async fn handle_events(
                 tpl.retain(|e| !revoked_tpl.contains(e));
                 debug!("{} topic partitions remaining after revocation", tpl.len());
                 actor_handles.shutdown(CALLBACK_DURATION).await;
+                debug!("Received rebalance signal, commiting state in sync mode...");
+                let _ = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync);
                 if tpl.is_empty() {
                     ConsumerState::Ready
                 } else {
