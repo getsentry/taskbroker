@@ -791,7 +791,6 @@ pub async fn commit(
     _rendezvous_guard: oneshot::Sender<()>,
 ) -> Result<(), Error> {
     while let Some(msgs) = receiver.recv().await {
-        debug!("Storing offsets");
         let mut highwater_mark = HighwaterMark::new();
         msgs.0.iter().for_each(|msg| highwater_mark.track(msg));
         consumer.store_offsets(&highwater_mark.into()).unwrap();
