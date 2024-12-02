@@ -1,5 +1,6 @@
 use std::{mem::replace, sync::Arc, time::Duration};
 
+use chrono::DateTime;
 use tracing::debug;
 
 use crate::{
@@ -70,23 +71,21 @@ impl Reducer for InflightActivationWriter {
 
         let oldest = records
             .iter()
-            .filter(|item| item.activation.received_at.is_some())
             .map(|item| {
-                let ts = item.activation.received_at.unwrap();
+                let ts = item
+                    .activation
+                    .received_at
+                    .expect("All activations should have received_at");
 
-                Duration::new(ts.seconds as u64, ts.nanos as u32)
+                DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap()
             })
-            .reduce(|mut acc, item| {
-                if item < acc {
-                    acc = item;
-                }
-                acc
-            })
+            .min_by_key(|item| item.timestamp())
             .unwrap();
 
         let res = self.store.store(records).await?;
 
-        metrics::histogram!("consumer.inflight_activation_writer.insert_lag").record(oldest);
+        metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
+            .record(oldest.timestamp() as f64);
         metrics::counter!("consumer.inflight_activation_writer.stored")
             .increment(res.rows_affected);
         debug!("Inserted {:?} entries {:?} lag", res.rows_affected, oldest);

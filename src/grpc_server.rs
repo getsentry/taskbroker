@@ -64,7 +64,7 @@ impl ConsumerService for MyConsumerService {
         if let Ok(Some(inflight_activation)) = self.store.get_by_id(&id).await {
             let duration = Utc::now() - inflight_activation.added_at;
             metrics::histogram!(
-                "task_execution.completion_duration",
+                "task_execution.conclusion.duration",
                 "namespace" => inflight_activation.activation.namespace,
                 "taskname" => inflight_activation.activation.taskname,
             )
