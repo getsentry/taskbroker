@@ -102,6 +102,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
         consumer_configs[f"config_{i}.yml"] = {
             "db_name": db_name,
             "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
+            "max_pending_count": 8192,
             "kafka_topic": topic_name,
             "kafka_consumer_group": topic_name,
             "kafka_auto_offset_reset": "earliest",
@@ -154,9 +155,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
     query = f"""
         SELECT
             partition,
-            (max(offset) - min(offset)) + 1 AS offset_diff,
-            count(*) AS occ,
-            (max(offset) - min(offset)) + 1 - count(*) AS delta
+            (max(offset) - min(offset)) + 1 AS expected,
+            count(*) AS actual,
+            (max(offset) - min(offset)) + 1 - count(*) AS diff
         FROM (
         {from_stmt}
         )
@@ -168,6 +169,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     row_count = cur.execute(query).fetchall()
+    print(query)
     print(
         f"\n{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
     )
@@ -185,6 +187,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
         HAVING count > 1
     """
     res = cur.execute(query).fetchall()
+    print(query)
     print(f"\n{'Partition'.rjust(16)}{'Offset'.rjust(16)}{'count'.rjust(16)}")
     for partition, offset, count in res:
         print(
