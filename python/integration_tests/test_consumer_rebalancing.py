@@ -57,11 +57,11 @@ def test_tasks_written_once_during_rebalancing() -> None:
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
-    num_messages = 80_000
+    num_messages = 100_000
     num_restarts = 16
     num_partitions = 32
     min_restart_duration = 1
-    max_restart_duration = 30
+    max_restart_duration = 10
     topic_name = "task-worker"
     curr_time = int(time.time())
 
@@ -103,7 +103,7 @@ Running test with the following configuration:
         consumer_configs[f"config_{i}.yml"] = {
             "db_name": db_name,
             "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
-            "max_pending_count": 8192,
+            "max_pending_count": 16384,
             "kafka_topic": topic_name,
             "kafka_consumer_group": topic_name,
             "kafka_auto_offset_reset": "earliest",
