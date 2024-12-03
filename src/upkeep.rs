@@ -1,4 +1,3 @@
-use metrics::counter;
 use prost::Message;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
@@ -9,7 +8,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
 use tokio::{select, time};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
@@ -21,9 +19,9 @@ use crate::{
     },
 };
 
-/// Start the upkeep task that periodically performs upkeep
+/// The upkeep task that periodically performs upkeep
 /// on the inflight store
-pub async fn start_upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
+pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
     let kafka_config = config.kafka_producer_config();
     let producer: FutureProducer = kafka_config
         .create()
