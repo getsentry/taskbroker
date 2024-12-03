@@ -162,14 +162,13 @@ Running test with the following configuration:
 {from_stmt}
         )
         GROUP BY partition
-        ORDER BY partition;
-    """
+        ORDER BY partition;"""
 
     con = sqlite3.connect(consumer_configs["config_0.yml"]["db_path"])
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     row_count = cur.execute(query).fetchall()
-    print("======== Verify number of rows based on max and min offset ========")
+    print("\n======== Verify number of rows based on max and min offset ========")
     print("Query:")
     print(query)
     print("Result:")
@@ -186,10 +185,9 @@ Running test with the following configuration:
 {from_stmt}
         )
         GROUP BY partition, offset
-        HAVING count > 1
-    """
+        HAVING count > 1"""
     res = cur.execute(query).fetchall()
-    print("======== Verify all (partition, offset) are unique ========")
+    print("\n======== Verify all (partition, offset) are unique ========")
     print("Query:")
     print(query)
     print("Result:")
