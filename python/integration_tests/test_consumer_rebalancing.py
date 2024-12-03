@@ -191,15 +191,20 @@ def test_tasks_written_once_during_rebalancing() -> None:
             f"{str(partition).rjust(16)}{str(offset).rjust(16)}{str(count).rjust(16)}"
         )
 
-    for i in range(num_consumers):
-        print(f"=== consumer {i} log ===")
-        with open(str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r") as f:
-            print(f.read())
-
-    assert all(
-        [row[3] == 0 for row in row_count]
-    )  # Assert that each value in the delta (fourth) column is 0
+    if not all([row[3] == 0 for row in row_count]):
+        print(
+            "Test failed! Got duplicate/missing kafka messages in sqlite, dumping logs"
+        )
+        for i in range(num_consumers):
+            print(f"=== consumer {i} log ===")
+            with open(
+                str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r"
+            ) as f:
+                print(f.read())
 
     # Clean up test output files
     print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
     shutil.rmtree(TESTS_OUTPUT_PATH)
+
+    if not all([row[3] == 0 for row in row_count]):
+        assert False

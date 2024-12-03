@@ -63,17 +63,14 @@ impl Reducer for InflightActivationWriter {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        info!(
-            "Inserting ({}, {})",
-            self.buffer[0].partition, self.buffer[0].offset
-        );
-        let _ = self
+        let res = self
             .store
             .store(replace(
                 &mut self.buffer,
                 Vec::with_capacity(self.config.max_buf_len),
             ))
             .await?;
+        info!("Inserted {:?} entries", res.rows_affected);
         Ok(())
     }
 
