@@ -191,7 +191,7 @@ Running test with the following configuration:
     print("Query:")
     print(query)
     print("Result:")
-    print(f"\n{'Partition'.rjust(16)}{'Offset'.rjust(16)}{'count'.rjust(16)}")
+    print(f"{'Partition'.rjust(16)}{'Offset'.rjust(16)}{'count'.rjust(16)}")
     for partition, offset, count in res:
         print(
             f"{str(partition).rjust(16)}{str(offset).rjust(16)}{str(count).rjust(16)}"
