@@ -407,6 +407,7 @@ mod tests {
         batch[1].status = InflightActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].at_most_once = true;
         batch[1].activation.retry_state = Some(RetryState {
             attempts: 0,
             kind: "".into(),
