@@ -169,6 +169,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     row_count = cur.execute(query).fetchall()
+    print("======== Verify number of rows based on max and min offset ========")
     print(query)
     print(
         f"{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
@@ -187,6 +188,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
         HAVING count > 1
     """
     res = cur.execute(query).fetchall()
+    print("======== Verify all (partition, offset) are unique ========")
     print(query)
     print(f"\n{'Partition'.rjust(16)}{'Offset'.rjust(16)}{'count'.rjust(16)}")
     for partition, offset, count in res:
