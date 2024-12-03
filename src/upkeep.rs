@@ -1,4 +1,3 @@
-use metrics::counter;
 use prost::Message;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
@@ -9,7 +8,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
 use tokio::{select, time};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
@@ -21,9 +19,9 @@ use crate::{
     },
 };
 
-/// Start the upkeep task that periodically performs upkeep
+/// The upkeep task that periodically performs upkeep
 /// on the inflight store
-pub async fn start_upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
+pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
     let kafka_config = config.kafka_producer_config();
     let producer: FutureProducer = kafka_config
         .create()
@@ -32,17 +30,11 @@ pub async fn start_upkeep(config: Arc<Config>, store: Arc<InflightActivationStor
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
-    let mutex = Arc::new(Mutex::new(0));
+    timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     loop {
         select! {
             _ = timer.tick() => {
-                let lock = mutex.try_lock();
-                if lock.is_ok() {
-                    do_upkeep(config.clone(), store.clone(), producer_arc.clone()).await;
-                } else {
-                    info!("Could not acquire upkeep mutex lock");
-                    counter!("upkeep.start_upkeep.mutex.failed").increment(1);
-                }
+                do_upkeep(config.clone(), store.clone(), producer_arc.clone()).await;
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
