@@ -58,10 +58,10 @@ def test_tasks_written_once_during_rebalancing() -> None:
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 80_000
-    num_restarts = 8
+    num_restarts = 16
     num_partitions = 32
     min_restart_duration = 1
-    max_restart_duration = 12
+    max_restart_duration = 24
     topic_name = "task-worker"
     curr_time = int(time.time())
 
@@ -146,9 +146,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
             for config in consumer_configs.values()
         ]
     )
-    from_stmt = "\nUNION ALL\n".join(
+    from_stmt = "\n            UNION ALL\n".join(
         [
-            f"    SELECT * FROM {config['db_name']}.inflight_taskactivations"
+            f"            SELECT * FROM {config['db_name']}.inflight_taskactivations"
             for config in consumer_configs.values()
         ]
     )
@@ -159,7 +159,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
             count(*) AS actual,
             (max(offset) - min(offset)) + 1 - count(*) AS diff
         FROM (
-        {from_stmt}
+{from_stmt}
         )
         GROUP BY partition
         ORDER BY partition;
