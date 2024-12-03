@@ -20,7 +20,6 @@ COPY ./config/${config_file} ./config.yaml
 # This is set by the cloudbuild.yaml file
 ARG TASKWORKER_GIT_REVISION=""
 ENV TASKWORKER_GIT_REVISION=${TASKWORKER_GIT_REVISION}
-RUN echo "${TASKWORKER_GIT_REVISION}" > ./src/.VERSION
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release
@@ -33,7 +32,8 @@ COPY ./src ./src
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
-COPY ./src/.VERSION ./.VERSION
+RUN echo "${TASKWORKER_GIT_REVISION}" > ./.VERSION
+# COPY ./src/.VERSION ./.VERSION
 
 # Runtime image
 FROM debian:bookworm-slim
