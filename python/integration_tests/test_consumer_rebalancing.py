@@ -68,7 +68,8 @@ def test_tasks_written_once_during_rebalancing() -> None:
     random_seed = 1733180863
 
     print(
-        f"""Running test with the following configuration:
+        f"""
+Running test with the following configuration:
         num of consumers: {num_consumers},
         num of messages: {num_messages},
         num of restarts: {num_restarts},
@@ -152,8 +153,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
             for config in consumer_configs.values()
         ]
     )
-    query = f"""
-        SELECT
+    query = f"""        SELECT
             partition,
             (max(offset) - min(offset)) + 1 AS expected,
             count(*) AS actual,
@@ -170,7 +170,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
     cur.executescript(attach_db_stmt)
     row_count = cur.execute(query).fetchall()
     print("======== Verify number of rows based on max and min offset ========")
+    print("Query:")
     print(query)
+    print("Result:")
     print(
         f"{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
     )
@@ -179,8 +181,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
             f"{str(partition).rjust(16)}{str(expected_row_count).rjust(16)}{str(actual_row_count).rjust(16)}{str(diff).rjust(16)}"
         )
 
-    query = f"""
-        SELECT partition, offset, count(*) as count
+    query = f"""        SELECT partition, offset, count(*) as count
         FROM (
 {from_stmt}
         )
@@ -189,7 +190,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
     """
     res = cur.execute(query).fetchall()
     print("======== Verify all (partition, offset) are unique ========")
+    print("Query:")
     print(query)
+    print("Result:")
     print(f"\n{'Partition'.rjust(16)}{'Offset'.rjust(16)}{'count'.rjust(16)}")
     for partition, offset, count in res:
         print(
