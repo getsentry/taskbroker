@@ -19,9 +19,3 @@ steps:
   # https://github.com/GoogleCloudPlatform/cloud-builders-community/issues/212#issuecomment-1478828752
   - name: docker
     args: [pull, "us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA"]
-
-# This is needed for Freight to find matching builds
-images: [
-    'us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA',
-]
-timeout: 2640s
