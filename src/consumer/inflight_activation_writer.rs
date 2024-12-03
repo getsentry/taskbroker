@@ -1,6 +1,7 @@
 use std::{mem::replace, sync::Arc, time::Duration};
 
-use tracing::info;
+use chrono::DateTime;
+use tracing::debug;
 
 use crate::{
     config::Config,
@@ -63,14 +64,32 @@ impl Reducer for InflightActivationWriter {
         if self.buffer.is_empty() {
             return Ok(());
         }
-        let res = self
-            .store
-            .store(replace(
-                &mut self.buffer,
-                Vec::with_capacity(self.config.max_buf_len),
-            ))
-            .await?;
-        info!("Inserted {:?} entries", res.rows_affected);
+        let records = replace(
+            &mut self.buffer,
+            Vec::with_capacity(self.config.max_buf_len),
+        );
+
+        let oldest = records
+            .iter()
+            .map(|item| {
+                let ts = item
+                    .activation
+                    .received_at
+                    .expect("All activations should have received_at");
+
+                DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap()
+            })
+            .min_by_key(|item| item.timestamp())
+            .unwrap();
+
+        let res = self.store.store(records).await?;
+
+        metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
+            .record(oldest.timestamp() as f64);
+        metrics::counter!("consumer.inflight_activation_writer.stored")
+            .increment(res.rows_affected);
+        debug!("Inserted {:?} entries {:?} lag", res.rows_affected, oldest);
+
         Ok(())
     }
 

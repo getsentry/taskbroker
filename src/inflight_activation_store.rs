@@ -235,6 +235,7 @@ impl InflightActivationStore {
         Ok(result.get::<u64, _>("count") as usize)
     }
 
+    /// Update the status of a specific activation
     pub async fn set_status(
         &self,
         id: &str,
