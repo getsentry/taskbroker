@@ -23,7 +23,7 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     id: runtime-image
     script: |
-      docker build -t us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA .
+      docker build -t us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA --build-arg TASKWORKER_GIT_REVISION=$COMMIT_SHA .
   automapSubstitutions: true
 
   # Pull docker image again, so we can get build info.
