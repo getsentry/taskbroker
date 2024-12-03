@@ -1,4 +1,3 @@
-import os
 import random
 import shutil
 import signal
@@ -28,7 +27,6 @@ def manage_consumer(
     iterations: int,
     min_sleep: int,
     max_sleep: int,
-    random_seed: int,
     log_file_path: str,
 ) -> None:
     with open(log_file_path, "a") as log_file:
@@ -65,8 +63,6 @@ def test_tasks_written_once_during_rebalancing() -> None:
     topic_name = "task-worker"
     curr_time = int(time.time())
 
-    random_seed = 1733180863
-
     print(
         f"""
 Running test with the following configuration:
@@ -77,10 +73,10 @@ Running test with the following configuration:
         min restart duration: {min_restart_duration} seconds,
         max restart duration: {max_restart_duration} seconds,
         topic name: {topic_name}
-        random seed value: {random_seed}
+        random seed value: 42
     """
     )
-    random.seed(curr_time)
+    random.seed(42)
 
     # Ensure topic has correct number of partitions
     if not check_topic_exists(topic_name):
@@ -127,7 +123,6 @@ Running test with the following configuration:
                     num_restarts,
                     min_restart_duration,
                     max_restart_duration,
-                    curr_time,
                     str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"),
                 ),
             )
