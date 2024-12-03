@@ -58,10 +58,10 @@ def test_tasks_written_once_during_rebalancing() -> None:
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 80_000
-    num_restarts = 1
+    num_restarts = 8
     num_partitions = 32
-    min_restart_duration = 5
-    max_restart_duration = 20
+    min_restart_duration = 1
+    max_restart_duration = 12
     topic_name = "task-worker"
     curr_time = int(time.time())
 
