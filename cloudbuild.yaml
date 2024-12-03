@@ -1,20 +1,35 @@
+# steps:
+#   - name: "gcr.io/kaniko-project/executor:v1.16.0"
+#     id: runtime-image
+#     waitFor: ["-"]
+#     args:
+#       [
+#         "--cache=true",
+#         "--use-new-run",
+#         "--build-arg",
+#         "TASKWORKER_GIT_REVISION=$COMMIT_SHA",
+#         "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA",
+#         "-f",
+#         "./Dockerfile",
+#       ]
+#     timeout: 1200s
+
+  
+
+
+
+
 steps:
-  - name: "gcr.io/kaniko-project/executor:v1.16.0"
+  - name: 'gcr.io/cloud-builders/docker'
     id: runtime-image
-    waitFor: ["-"]
-    args:
-      [
-        "--cache=true",
-        "--use-new-run",
-        "--build-arg",
-        "TASKWORKER_GIT_REVISION=$COMMIT_SHA",
-        "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA",
-        "-f",
-        "./Dockerfile",
-      ]
-    timeout: 1200s
+    script: |
+      docker build -t us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA .
+  automapSubstitutions: true
 
   # Pull docker image again, so we can get build info.
   # https://github.com/GoogleCloudPlatform/cloud-builders-community/issues/212#issuecomment-1478828752
   - name: docker
     args: [pull, "us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA"]
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA'
