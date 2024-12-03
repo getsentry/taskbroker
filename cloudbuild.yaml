@@ -9,7 +9,6 @@ steps:
         "--build-arg",
         "TASKWORKER_GIT_REVISION=$COMMIT_SHA",
         "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA",
-        "--target=application",
         "-f",
         "./Dockerfile",
       ]
