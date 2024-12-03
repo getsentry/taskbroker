@@ -24,7 +24,7 @@ steps:
     id: runtime-image
     script: |
       docker build -t us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA --build-arg TASKWORKER_GIT_REVISION=$COMMIT_SHA .
-  automapSubstitutions: true
+    automapSubstitutions: true
 
   # Pull docker image again, so we can get build info.
   # https://github.com/GoogleCloudPlatform/cloud-builders-community/issues/212#issuecomment-1478828752
