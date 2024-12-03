@@ -43,7 +43,7 @@ def manage_consumer(
             )
             time.sleep(random.randint(min_sleep, max_sleep))
             print(
-                f"Sending SIGINT to consumer {consumer_index}, {iterations - i - 1} SIGINTs remaining"
+                f"Sending SIGINT to consumer {consumer_index}, {iterations - i - 1} SIGINTs remaining for that consumer"
             )
             process.send_signal(signal.SIGINT)
             try:
@@ -61,7 +61,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     num_restarts = 16
     num_partitions = 32
     min_restart_duration = 1
-    max_restart_duration = 24
+    max_restart_duration = 30
     topic_name = "task-worker"
     curr_time = int(time.time())
 
@@ -171,7 +171,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     row_count = cur.execute(query).fetchall()
     print(query)
     print(
-        f"\n{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
+        f"{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
     )
     for partition, expected_row_count, actual_row_count, diff in row_count:
         print(
@@ -181,7 +181,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     query = f"""
         SELECT partition, offset, count(*) as count
         FROM (
-        {from_stmt}
+{from_stmt}
         )
         GROUP BY partition, offset
         HAVING count > 1
