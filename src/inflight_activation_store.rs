@@ -61,6 +61,7 @@ pub struct InflightActivation {
     pub added_at: DateTime<Utc>,
     pub deadletter_at: Option<DateTime<Utc>>,
     pub processing_deadline: Option<DateTime<Utc>>,
+    pub at_most_once: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +88,7 @@ struct TableRow {
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
+    at_most_once: bool,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -103,6 +105,7 @@ impl TryFrom<InflightActivation> for TableRow {
             processing_deadline_duration: value.activation.processing_deadline_duration as u32,
             processing_deadline: value.processing_deadline,
             status: value.status,
+            at_most_once: value.at_most_once,
         })
     }
 }
@@ -119,6 +122,7 @@ impl From<TableRow> for InflightActivation {
             added_at: value.added_at,
             deadletter_at: value.deadletter_at,
             processing_deadline: value.processing_deadline,
+            at_most_once: value.at_most_once,
         }
     }
 }
@@ -158,7 +162,7 @@ impl InflightActivationStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status)",
+            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status, at_most_once)",
         );
         let rows = batch
             .into_iter()
@@ -180,6 +184,7 @@ impl InflightActivationStore {
                     b.push("null");
                 }
                 b.push_bind(row.status);
+                b.push_bind(row.at_most_once);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -187,29 +192,28 @@ impl InflightActivationStore {
     }
 
     pub async fn get_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
-        let result = sqlx::query(
+        let now = Utc::now();
+        let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations
-            
-                SET 
+                SET
                     processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
                     status = $1
-                WHERE
-                    id = (
-                        SELECT id FROM inflight_taskactivations WHERE status = $2 LIMIT 1
-                    )
-                RETURNING id",
+                WHERE id = (
+                    SELECT id
+                    FROM inflight_taskactivations 
+                    WHERE status = $2
+                    AND (deadletter_at IS NULL OR deadletter_at > $3)
+                    LIMIT 1
+                )
+                RETURNING *",
         )
         .bind(InflightActivationStatus::Processing)
         .bind(InflightActivationStatus::Pending)
+        .bind(now)
         .fetch_optional(&self.sqlite_pool)
         .await?;
 
         let Some(row) = result else { return Ok(None) };
-
-        let row: TableRow = sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = ?")
-            .bind(row.get::<String, _>("id"))
-            .fetch_one(&self.sqlite_pool)
-            .await?;
 
         Ok(Some(row.into()))
     }
@@ -235,6 +239,7 @@ impl InflightActivationStore {
         Ok(result.get::<u64, _>("count") as usize)
     }
 
+    /// Update the status of a specific activation
     pub async fn set_status(
         &self,
         id: &str,
@@ -289,79 +294,43 @@ impl InflightActivationStore {
     }
 
     /// Update tasks that are in processing and have exceeded their processing deadline
+    /// Exceeding a processing deadline does not consume a retry as we don't know
+    /// if a worker took the task and was killed, or failed.
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
-        // Find rows past processing deadlines
         let now = Utc::now();
-
-        let mut atomic = self.sqlite_pool.begin().await?;
-
-        let expired: Vec<SqliteRow> = sqlx::query(
-            "SELECT id, activation
-            FROM inflight_taskactivations
-            WHERE processing_deadline < $1 AND status = $2
-            ",
+        // Idempotent tasks that fail their processing deadlines go directly to failure
+        // there are no retries, as the worker will reject the task due to idempotency keys.
+        let most_once_result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = $1
+            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
         )
+        .bind(InflightActivationStatus::Failure)
         .bind(now)
         .bind(InflightActivationStatus::Processing)
-        .fetch_all(&mut *atomic)
-        .await?
-        .into_iter()
-        .collect();
+        .execute(&self.sqlite_pool)
+        .await;
 
-        let mut to_update: Vec<String> = vec![];
-        for record in expired {
-            let activation_data: &[u8] = record.get("activation");
-            let row_id: String = record.get("id");
-
-            let activation = TaskActivation::decode(activation_data)?;
-            let retry_state_option = activation.retry_state;
-            if retry_state_option.is_none() {
-                to_update.push(row_id);
-                continue;
-            }
-            // Determine if there are retries remaining. Exceeding a processing deadline
-            // does not increment the number of retry attempts.
-            let retry_state = retry_state_option.unwrap();
-            let mut has_retries_remaining = false;
-            if let Some(deadletter_after_attempt) = retry_state.deadletter_after_attempt {
-                if deadletter_after_attempt < retry_state.attempts {
-                    has_retries_remaining = true;
-                }
-            }
-            if let Some(discard_after_attempt) = retry_state.discard_after_attempt {
-                if discard_after_attempt < retry_state.attempts {
-                    has_retries_remaining = true;
-                }
-            }
-            if has_retries_remaining {
-                to_update.push(row_id);
-            }
+        let mut modified_rows = 0;
+        if let Ok(query_res) = most_once_result {
+            modified_rows = query_res.rows_affected();
         }
 
-        if to_update.is_empty() {
-            return Ok(0);
-        }
-
-        // Clear processing deadlines and make tasks available again.
-        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
-
-        query_builder
-            .push("SET status = ")
-            .push_bind(InflightActivationStatus::Pending)
-            .push(", processing_deadline = null WHERE id IN (");
-
-        let mut separated = query_builder.separated(", ");
-        for id in to_update.iter() {
-            separated.push_bind(id);
-        }
-        separated.push_unseparated(")");
-
-        let result = query_builder.build().execute(&mut *atomic).await;
-
-        atomic.commit().await?;
+        // Update non-idempotent tasks
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = $1
+            WHERE processing_deadline < $2 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now)
+        .bind(InflightActivationStatus::Processing)
+        .execute(&self.sqlite_pool)
+        .await;
 
         if let Ok(query_res) = result {
-            return Ok(query_res.rows_affected());
+            modified_rows += query_res.rows_affected();
+            return Ok(modified_rows);
         }
 
         Err(anyhow!("Could not update tasks past processing_deadline"))
@@ -644,6 +613,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_pending_activation_no_deadletter() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(1);
+        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        let result = store.get_pending_activation().await;
+        assert!(result.is_ok());
+        let res_option = result.unwrap();
+        assert!(res_option.is_none());
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    }
+
+    #[tokio::test]
     async fn test_count_pending_activations() {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
@@ -784,6 +769,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_handle_processing_at_most_once() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        // Both records are past processing deadlines
+        let mut batch = make_activations(2);
+        batch[0].status = InflightActivationStatus::Processing;
+        batch[0].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 0,
+            kind: "".into(),
+            discard_after_attempt: Some(1),
+            deadletter_after_attempt: None,
+            at_most_once: Some(true),
+        });
+        batch[1].at_most_once = true;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 2);
+
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Failure, 1).await;
+
+        let task = store
+            .get_by_id(&batch[1].activation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, InflightActivationStatus::Failure);
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_discard_after() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 0,
+            kind: "".into(),
+            discard_after_attempt: Some(1),
+            deadletter_after_attempt: None,
+            at_most_once: None,
+        });
+
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_deadletter_after() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 0,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+            at_most_once: None,
+        });
+
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_no_retries_remaining() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+            at_most_once: None,
+        });
+
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
+    }
+
+    #[tokio::test]
     async fn test_remove_completed() {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
@@ -871,6 +971,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: None,
             deadletter_after_attempt: Some(1),
+            at_most_once: None,
         });
         // discard
         records[1].status = InflightActivationStatus::Failure;
@@ -879,6 +980,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: Some(1),
             deadletter_after_attempt: None,
+            at_most_once: None,
         });
         // no retry state = discard
         records[2].status = InflightActivationStatus::Failure;
@@ -891,6 +993,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: None,
             deadletter_after_attempt: Some(1),
+            at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -1011,6 +1114,7 @@ mod tests {
             added_at: Utc::now(),
             deadletter_at: None,
             processing_deadline: None,
+            at_most_once: false,
         }];
         assert!(store.store(batch).await.is_ok());
         assert_eq!(store.count().await.unwrap(), 1);

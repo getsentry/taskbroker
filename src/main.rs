@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::grpc_middleware::MetricsLayer;
 use taskbroker::upkeep::start_upkeep;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
@@ -100,10 +101,16 @@ async fn main() -> Result<(), Error> {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
-            let service = MyConsumerService { store: grpc_store };
+
+            let layers = tower::ServiceBuilder::new()
+                .layer(MetricsLayer::default())
+                .into_inner();
 
             let server = Server::builder()
-                .add_service(ConsumerServiceServer::new(service))
+                .layer(layers)
+                .add_service(ConsumerServiceServer::new(MyConsumerService {
+                    store: grpc_store,
+                }))
                 .add_service(health_service)
                 .serve(addr);
 

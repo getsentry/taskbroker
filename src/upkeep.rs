@@ -5,7 +5,10 @@ use rdkafka::{
     util::Timeout,
 };
 use sentry_protos::sentry::v1::TaskActivation;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::sync::Mutex;
 use tokio::{select, time};
 use tracing::{error, info, instrument};
@@ -13,7 +16,9 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    inflight_activation_store::{InflightActivation, InflightActivationStore},
+    inflight_activation_store::{
+        InflightActivation, InflightActivationStatus, InflightActivationStore,
+    },
 };
 
 /// Start the upkeep task that periodically performs upkeep
@@ -54,6 +59,8 @@ struct UpkeepResults {
     deadletter_at_expired: u64,
     deadlettered: u64,
     completed: u64,
+    pending: u32,
+    processing: u32,
 }
 
 impl UpkeepResults {
@@ -63,6 +70,8 @@ impl UpkeepResults {
             && self.deadletter_at_expired == 0
             && self.deadlettered == 0
             && self.completed == 0
+            && self.pending == 0
+            && self.processing == 0
     }
 }
 
@@ -72,12 +81,15 @@ pub async fn do_upkeep(
     store: Arc<InflightActivationStore>,
     producer: Arc<FutureProducer>,
 ) {
+    let upkeep_start = Instant::now();
     let mut result_context = UpkeepResults {
         retried: 0,
         processing_deadline_reset: 0,
         deadletter_at_expired: 0,
         deadlettered: 0,
         completed: 0,
+        pending: 0,
+        processing: 0,
     };
 
     // 1. Handle retry tasks
@@ -144,8 +156,20 @@ pub async fn do_upkeep(
     }
 
     // 8. Cleanup completed tasks
-    if let Ok(remove_count) = store.remove_completed().await {
-        result_context.completed = remove_count;
+    if let Ok(count) = store.remove_completed().await {
+        result_context.completed = count;
+    }
+    if let Ok(pending_count) = store
+        .count_by_status(InflightActivationStatus::Pending)
+        .await
+    {
+        result_context.pending = pending_count as u32;
+    }
+    if let Ok(processing_count) = store
+        .count_by_status(InflightActivationStatus::Processing)
+        .await
+    {
+        result_context.processing = processing_count as u32;
     }
 
     if !result_context.empty() {
@@ -154,9 +178,21 @@ pub async fn do_upkeep(
             result_context.deadlettered,
             result_context.deadletter_at_expired,
             result_context.retried,
+            result_context.pending,
+            result_context.processing,
             "upkeep.complete",
         );
     }
+    metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
+
+    metrics::counter!("upkeep.completed").increment(result_context.completed);
+    metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
+    metrics::counter!("upkeep.deadletter_at_expired")
+        .increment(result_context.deadletter_at_expired);
+    metrics::counter!("upkeep.retried").increment(result_context.retried);
+
+    metrics::gauge!("upkeep.pending_count").increment(result_context.pending);
+    metrics::gauge!("upkeep.processing_count").increment(result_context.processing);
 }
 
 /// Create a new activation that is a 'retry' of the passed inflight_activation
@@ -209,6 +245,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: Some(2),
             deadletter_after_attempt: None,
+            at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -242,6 +279,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: Some(1),
             deadletter_after_attempt: None,
+            at_most_once: None,
         });
 
         assert!(store.store(records).await.is_ok());
@@ -353,6 +391,7 @@ mod tests {
             kind: "".into(),
             discard_after_attempt: None,
             deadletter_after_attempt: Some(1),
+            at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());
 

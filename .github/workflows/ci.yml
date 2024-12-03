@@ -32,7 +32,7 @@ jobs:
         run: cargo clippy --workspace --all-features --tests -- -D clippy::all
 
   test:
-    name: Test (ubuntu)
+    name: Tests (ubuntu)
     runs-on: ubuntu-latest
 
     steps:
@@ -78,4 +78,14 @@ jobs:
         with:
           command: test
           args: --all
-          
+
+      - name: Install Python Dependencies
+        run: |
+          python -m venv python/.venv
+          . python/.venv/bin/activate
+          pip install -r python/requirements-dev.txt
+
+      - name: Run Python Integration Tests
+        run: |
+          export PYTEST_ADDOPTS=""
+          python -m pytest python/integration_tests -s -vv

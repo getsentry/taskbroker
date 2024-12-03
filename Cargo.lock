@@ -2229,9 +2229,9 @@ dependencies = [
 
 [[package]]
 name = "sentry_protos"
-version = "0.1.36"
+version = "0.1.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed7662e67745356957bf264a00c25539036c568f7bc760816335b503b81c0dec"
+checksum = "a1b790b1a532c699eaff863e4258e1606fd589d35d6202631c9a95cb6146ce51"
 dependencies = [
  "glob",
  "prost",
@@ -2686,6 +2686,7 @@ dependencies = [
  "elegant-departure",
  "figment",
  "futures",
+ "http",
  "metrics",
  "metrics-exporter-statsd",
  "prost",
@@ -2702,6 +2703,7 @@ dependencies = [
  "tokio-util",
  "tonic",
  "tonic-health",
+ "tower 0.5.1",
  "tracing",
  "tracing-subscriber",
  "uuid",

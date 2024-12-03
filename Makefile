@@ -38,9 +38,22 @@ format: ## Run autofix mode for formatting and lint
 
 # Tests
 
-test:
+unit-test:
 	cargo test
 .PHONY: test
+
+install-py-dev:
+	python -m venv python/.venv
+	. python/.venv/bin/activate
+	pip install -r python/requirements-dev.txt
+.PHONY: install-py-dev
+
+integration-test:
+	cargo build
+	python -m venv python/.venv
+	. python/.venv/bin/activate
+	python -m pytest python/integration_tests -s -vv
+.PHONY: integration-test
 
 # Help
 

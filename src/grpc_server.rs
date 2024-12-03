@@ -1,14 +1,15 @@
-use std::sync::Arc;
-use tonic::{Request, Response, Status};
-
+use chrono::Utc;
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
 use sentry_protos::sentry::v1::{
     GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivationStatus,
 };
+use std::sync::Arc;
+use std::time::Instant;
+use tonic::{Request, Response, Status};
 
 use super::inflight_activation_store::{InflightActivationStatus, InflightActivationStore};
-use tracing::{info, instrument};
+use tracing::instrument;
 
 pub struct MyConsumerService {
     pub store: Arc<InflightActivationStore>,
@@ -19,9 +20,10 @@ impl ConsumerService for MyConsumerService {
     #[instrument(skip(self))]
     async fn get_task(
         &self,
-        request: Request<GetTaskRequest>,
+        _request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
-        info!("Got a get_taskrequest: {:?}", request);
+        let start_time = Instant::now();
+
         let inflight = self.store.get_pending_activation().await;
         match inflight {
             Ok(Some(inflight)) => {
@@ -29,6 +31,8 @@ impl ConsumerService for MyConsumerService {
                     task: Some(inflight.activation),
                     error: None,
                 };
+                metrics::histogram!("grpc_server.get_task.duration").record(start_time.elapsed());
+
                 Ok(Response::new(resp))
             }
             Ok(None) => return Err(Status::not_found("No pending activation")),
@@ -41,8 +45,7 @@ impl ConsumerService for MyConsumerService {
         &self,
         request: Request<SetTaskStatusRequest>,
     ) -> Result<Response<SetTaskStatusResponse>, Status> {
-        info!("Got a set_task_status request: {:?}", request);
-
+        let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
         let proto_status = TaskActivationStatus::try_from(request.get_ref().status);
@@ -55,9 +58,20 @@ impl ConsumerService for MyConsumerService {
                 "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)",
             ));
         }
+        let update_result = self.store.set_status(&id, status).await;
+        metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
-        let inflight = self.store.set_status(&id, status).await;
-        match inflight {
+        if let Ok(Some(inflight_activation)) = self.store.get_by_id(&id).await {
+            let duration = Utc::now() - inflight_activation.added_at;
+            metrics::histogram!(
+                "task_execution.conclusion.duration",
+                "namespace" => inflight_activation.activation.namespace,
+                "taskname" => inflight_activation.activation.taskname,
+            )
+            .record(duration.num_milliseconds() as f64);
+        }
+
+        match update_result {
             Ok(()) => {}
             Err(e) => return Err(Status::internal(e.to_string())),
         }
@@ -69,7 +83,10 @@ impl ConsumerService for MyConsumerService {
 
         if let Some(fetch_next) = request.get_ref().fetch_next {
             if fetch_next {
+                let start_time = Instant::now();
                 let inflight = self.store.get_pending_activation().await;
+                metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
+
                 match inflight {
                     Ok(Some(inflight)) => {
                         response.task = Some(inflight.activation);

@@ -32,6 +32,14 @@ pub fn new(
             return Err(anyhow!("Message has no payload"));
         };
         let activation = TaskActivation::decode(payload)?;
+
+        let mut at_most_once = false;
+        if let Some(ref retry_state) = activation.retry_state {
+            at_most_once = retry_state
+                .at_most_once
+                .or(Some(false))
+                .expect("could not access at_most_once");
+        }
         Ok(InflightActivation {
             activation,
             status: InflightActivationStatus::Pending,
@@ -42,6 +50,7 @@ pub fn new(
                 .deadletter_deadline
                 .map(|duration| Utc::now() + duration),
             processing_deadline: None,
+            at_most_once,
         })
     }
 }
