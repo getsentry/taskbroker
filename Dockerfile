@@ -20,6 +20,7 @@ COPY ./config/${config_file} ./config.yaml
 # This is set by the cloudbuild.yaml file
 ARG TASKWORKER_GIT_REVISION=""
 ENV TASKWORKER_GIT_REVISION=${TASKWORKER_GIT_REVISION}
+RUN echo "${TASKWORKER_GIT_REVISION}" > ./src/.VERSION
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release
