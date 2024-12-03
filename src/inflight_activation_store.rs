@@ -187,29 +187,28 @@ impl InflightActivationStore {
     }
 
     pub async fn get_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
-        let result = sqlx::query(
+        let now = Utc::now();
+        let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations
-            
-                SET 
+                SET
                     processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
                     status = $1
-                WHERE
-                    id = (
-                        SELECT id FROM inflight_taskactivations WHERE status = $2 LIMIT 1
-                    )
-                RETURNING id",
+                WHERE id = (
+                    SELECT id
+                    FROM inflight_taskactivations 
+                    WHERE status = $2
+                    AND (deadletter_at IS NULL OR deadletter_at > $3)
+                    LIMIT 1
+                )
+                RETURNING *",
         )
         .bind(InflightActivationStatus::Processing)
         .bind(InflightActivationStatus::Pending)
+        .bind(now)
         .fetch_optional(&self.sqlite_pool)
         .await?;
 
         let Some(row) = result else { return Ok(None) };
-
-        let row: TableRow = sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = ?")
-            .bind(row.get::<String, _>("id"))
-            .fetch_one(&self.sqlite_pool)
-            .await?;
 
         Ok(Some(row.into()))
     }
@@ -585,6 +584,22 @@ mod tests {
         assert_eq!(result.activation.id, "id_0");
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_activation_no_deadletter() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(1);
+        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        let result = store.get_pending_activation().await;
+        assert!(result.is_ok());
+        let res_option = result.unwrap();
+        assert!(res_option.is_none());
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     }
 
