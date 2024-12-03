@@ -290,76 +290,20 @@ impl InflightActivationStore {
     }
 
     /// Update tasks that are in processing and have exceeded their processing deadline
+    /// Exceeding a processing deadline does not consume a retry as we don't know
+    /// if a worker took the task and was killed, or failed.
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
-        // Find rows past processing deadlines
         let now = Utc::now();
-
-        let mut atomic = self.sqlite_pool.begin().await?;
-
-        let expired: Vec<SqliteRow> = sqlx::query(
-            "SELECT id, activation
-            FROM inflight_taskactivations
-            WHERE processing_deadline < $1 AND status = $2
-            ",
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = $1
+            WHERE processing_deadline < $2 AND status = $3",
         )
+        .bind(InflightActivationStatus::Pending)
         .bind(now)
         .bind(InflightActivationStatus::Processing)
-        .fetch_all(&mut *atomic)
-        .await?
-        .into_iter()
-        .collect();
-
-        let mut to_update: Vec<String> = vec![];
-        for record in expired {
-            let activation_data: &[u8] = record.get("activation");
-            let row_id: String = record.get("id");
-
-            let activation = TaskActivation::decode(activation_data)?;
-            let retry_state_option = activation.retry_state;
-            if retry_state_option.is_none() {
-                to_update.push(row_id);
-                continue;
-            }
-            // Determine if there are retries remaining. Exceeding a processing deadline
-            // does not increment the number of retry attempts.
-            let retry_state = retry_state_option.unwrap();
-            let mut has_retries_remaining = false;
-            if let Some(deadletter_after_attempt) = retry_state.deadletter_after_attempt {
-                if deadletter_after_attempt < retry_state.attempts {
-                    has_retries_remaining = true;
-                }
-            }
-            if let Some(discard_after_attempt) = retry_state.discard_after_attempt {
-                if discard_after_attempt < retry_state.attempts {
-                    has_retries_remaining = true;
-                }
-            }
-            if has_retries_remaining {
-                to_update.push(row_id);
-            }
-        }
-
-        if to_update.is_empty() {
-            return Ok(0);
-        }
-
-        // Clear processing deadlines and make tasks available again.
-        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
-
-        query_builder
-            .push("SET status = ")
-            .push_bind(InflightActivationStatus::Pending)
-            .push(", processing_deadline = null WHERE id IN (");
-
-        let mut separated = query_builder.separated(", ");
-        for id in to_update.iter() {
-            separated.push_bind(id);
-        }
-        separated.push_unseparated(")");
-
-        let result = query_builder.build().execute(&mut *atomic).await;
-
-        atomic.commit().await?;
+        .execute(&self.sqlite_pool)
+        .await;
 
         if let Ok(query_res) = result {
             return Ok(query_res.rows_affected());
@@ -782,6 +726,77 @@ mod tests {
         let past_deadline = store.handle_processing_deadline().await;
         assert!(past_deadline.is_ok());
         assert_eq!(past_deadline.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_discard_after() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 0,
+            kind: "".into(),
+            discard_after_attempt: Some(1),
+            deadletter_after_attempt: None,
+        });
+
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_deadletter_after() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 0,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+        });
+
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_no_retries_remaining() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            kind: "".into(),
+            discard_after_attempt: None,
+            deadletter_after_attempt: Some(1),
+        });
+
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
     }
 
     #[tokio::test]
