@@ -49,6 +49,7 @@ install-py-dev:
 .PHONY: install-py-dev
 
 integration-test:
+	cargo build
 	python -m venv python/.venv
 	. python/.venv/bin/activate
 	python -m pytest python/integration_tests -s -vv
