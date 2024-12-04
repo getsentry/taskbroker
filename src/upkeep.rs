@@ -202,9 +202,10 @@ fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActi
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Add;
     use std::sync::Arc;
 
-    use chrono::{TimeZone, Utc};
+    use chrono::{TimeDelta, TimeZone, Utc};
     use sentry_protos::sentry::v1::RetryState;
 
     use crate::{
@@ -254,12 +255,14 @@ mod tests {
         assert_ne!(activation.id, records[0].activation.id);
         // Should increment the attempt counter
         assert_eq!(activation.retry_state.as_ref().unwrap().attempts, 2);
-        // Retry should retain parameters of original task
+        // Retry should retain task and parameters of original task
+        assert_eq!(activation.taskname, records[0].activation.taskname);
+        assert_eq!(activation.namespace, records[0].activation.namespace);
         assert_eq!(activation.parameters, records[0].activation.parameters);
     }
 
     #[tokio::test]
-    async fn test_retry_is_discarded_when_exhausted() {
+    async fn test_retry_is_discarded_when_exhausted_with_retry() {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
@@ -290,13 +293,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_processing_deadline_updates() {
+    async fn test_retry_is_discarded_with_no_retry_state() {
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut records = make_activations(2);
+        records[0].status = InflightActivationStatus::Retry;
+        records[0].activation.retry_state = None;
+
+        assert!(store.store(records.clone()).await.is_ok());
+
+        do_upkeep(config, store.clone(), producer).await;
+
+        // Only 1 record left as the retry task should be discarded.
+        assert_eq!(store.count().await.unwrap(), 1);
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
+        // retry task should be removed.
+        assert!(store
+            .get_by_id(&records[0].activation.id)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_processing_deadline_retains_future_deadline() {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
-        // Make a task past it is processing deadline
+        // Make a task past with a future processing deadline
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline = Some(Utc::now().add(TimeDelta::minutes(5)));
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        do_upkeep(config, store.clone(), producer).await;
+
+        // Should retain the processing record
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Processing)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn test_processing_deadline_updates_past_deadline() {
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut batch = make_activations(2);
+        // Make a task past with a processing deadline in the past
         batch[1].status = InflightActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
@@ -331,13 +389,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_processing_deadline_discard_at_most_once() {
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut batch = make_activations(2);
+        // Make a task past with a processing deadline in the past
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].at_most_once = true;
+        batch[1].activation.retry_state = Some(RetryState {
+            attempts: 0,
+            kind: "".into(),
+            deadletter_after_attempt: None,
+            discard_after_attempt: Some(1),
+            at_most_once: Some(true),
+        });
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        do_upkeep(config, store.clone(), producer).await;
+
+        // 0 processing, 1 pending, 1 discarded
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Processing)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn test_past_deadletter_at_discard() {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(3);
-        // Because 1 is complete and has a higher offset than 0, 2 will be discarded
+        // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
         batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].status = InflightActivationStatus::Complete;
         batch[2].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
@@ -369,7 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_failed_publish_to_kafka() {
+    async fn test_deadletter_at_remove_failed_publish_to_kafka() {
         let config = create_integration_config();
         reset_topic(config.clone()).await;
 

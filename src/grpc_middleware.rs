@@ -2,7 +2,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tower::{Layer, Service};
-use tracing::debug;
 
 #[derive(Debug, Clone, Default)]
 pub struct MetricsLayer {}
@@ -43,7 +42,6 @@ where
         Box::pin(async move {
             let start = Instant::now();
             let path = req.uri().path().to_string();
-            debug!("request to path={:?}", path);
 
             let response = inner.call(req).await?;
 
