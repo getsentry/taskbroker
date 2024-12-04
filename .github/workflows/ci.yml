@@ -32,7 +32,7 @@ jobs:
         run: cargo clippy --workspace --all-features --tests -- -D clippy::all
 
   test:
-    name: Test (ubuntu)
+    name: Tests (ubuntu)
     runs-on: ubuntu-latest
 
     steps:
