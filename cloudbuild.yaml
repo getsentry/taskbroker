@@ -31,5 +31,5 @@ steps:
 #   - name: docker
 #     args: [pull, "us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA"]
 
-images:
-  - 'us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA'
+# images:
+#   - 'us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA'
