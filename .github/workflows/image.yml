@@ -26,7 +26,9 @@ jobs:
             --push
           )
         else
-          args=()
+          args=(
+            --push
+          )
         fi
 
         docker buildx build \
