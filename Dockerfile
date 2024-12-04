@@ -1,7 +1,7 @@
 # Build image
 # Note that it is important which debian image is used, because not all of them have a
 # recent enough version of protobuf-compiler
-FROM rust:1-bookworm as build
+FROM rust:1-bookworm AS build
 
 RUN apt-get update && apt-get upgrade -y 
 RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
@@ -17,6 +17,10 @@ COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
 COPY ./config/${config_file} ./config.yaml
 
+# This is set by the cloudbuild.yaml file
+ARG TASKWORKER_GIT_REVISION=""
+ENV TASKWORKER_GIT_REVISION=${TASKWORKER_GIT_REVISION}
+
 # Build dependencies in a way they can be cached
 RUN cargo build --release
 RUN rm src/*.rs
@@ -28,7 +32,7 @@ COPY ./src ./src
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
-COPY ./src/.VERSION ./.VERSION
+RUN echo "${TASKWORKER_GIT_REVISION}" > ./.VERSION
 
 # Runtime image
 FROM debian:bookworm-slim
@@ -45,5 +49,5 @@ COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 ENTRYPOINT ["/opt/taskbroker"]
 CMD ["--config", "/opt/config.yaml"]
 
-# For devservices:
+# To build and run locally:
 # docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50051:50051 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry  taskbroker

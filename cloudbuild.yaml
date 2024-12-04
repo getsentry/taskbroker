@@ -1,0 +1,15 @@
+steps:
+  - name: "gcr.io/kaniko-project/executor:v1.16.0"
+    id: runtime-image
+    waitFor: ["-"]
+    args:
+      [
+        "--cache=true",
+        "--use-new-run",
+        "--build-arg",
+        "TASKWORKER_GIT_REVISION=$COMMIT_SHA",
+        "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA",
+        "-f",
+        "./Dockerfile",
+      ]
+    timeout: 1200s
