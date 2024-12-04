@@ -1,7 +1,7 @@
 # Build image
 # Note that it is important which debian image is used, because not all of them have a
 # recent enough version of protobuf-compiler
-FROM rust:1-bookworm as build
+FROM rust:1-bookworm AS build
 
 RUN apt-get update && apt-get upgrade -y 
 RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
