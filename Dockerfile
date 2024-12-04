@@ -33,7 +33,6 @@ RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
 RUN echo "${TASKWORKER_GIT_REVISION}" > ./.VERSION
-# COPY ./src/.VERSION ./.VERSION
 
 # Runtime image
 FROM debian:bookworm-slim
