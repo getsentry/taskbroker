@@ -88,6 +88,7 @@ pub fn poll_consumer_client(
 ) {
     task::spawn_blocking(|| {
         Handle::current().block_on(async move {
+            let _guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
             select! {
                 biased;
                 _ = shutdown => {
