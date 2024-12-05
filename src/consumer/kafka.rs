@@ -172,7 +172,7 @@ pub struct ActorHandles {
 impl ActorHandles {
     #[instrument(skip(self))]
     async fn shutdown(mut self, deadline: Duration) {
-        error!("Signaling shutdown to actors...");
+        debug!("Signaling shutdown to actors...");
         self.shutdown.cancel();
         info!("Actor shutdown signaled, waiting for rendezvous...");
 

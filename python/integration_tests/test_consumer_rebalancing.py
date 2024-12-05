@@ -56,7 +56,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 100_000
-    num_restarts = 1
+    num_restarts = 16
     num_partitions = 32
     min_restart_duration = 1
     max_restart_duration = 30
