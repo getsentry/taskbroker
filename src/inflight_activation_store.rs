@@ -200,7 +200,6 @@ impl InflightActivationStore {
         let now = Utc::now();
         let result: Option<TableRow> = match namespace {
             Some(namespace) => {
-                println!("Querying pending task with namespace: {:?}", namespace);
                 sqlx::query_as(
                     "UPDATE inflight_taskactivations
                         SET
@@ -224,7 +223,6 @@ impl InflightActivationStore {
                 .await?
             },
             None => {
-                println!("Querying pending task without namespace");
                 sqlx::query_as(
                     "UPDATE inflight_taskactivations
                         SET
@@ -246,7 +244,7 @@ impl InflightActivationStore {
                 .await?
             },
         };
-        println!("Found pending task: {:?}", result);
+
         let Some(row) = result else { return Ok(None) };
 
         Ok(Some(row.into()))
