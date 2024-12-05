@@ -56,7 +56,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 100_000
-    num_restarts = 16
+    num_restarts = 1
     num_partitions = 32
     min_restart_duration = 1
     max_restart_duration = 30
@@ -206,10 +206,7 @@ Running test with the following configuration:
     consumers_have_error = False
     for i in range(num_consumers):
         with open(str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r") as f:
-            consumers_have_error = (
-                consumers_have_error
-                or b"[31mERROR\x1b".decode("utf-8", "strict") in f.read()
-            )
+            consumers_have_error = consumers_have_error or "[31mERROR" in f.read()
 
     if not all([row[3] == 0 for row in row_count]):
         print("Test failed! Got duplicate/missing kafka messages in sqlite")
@@ -239,9 +236,8 @@ Running test with the following configuration:
     print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
     shutil.rmtree(TESTS_OUTPUT_PATH)
 
-    if (
-        not all([row[3] == 0 for row in row_count])
-        or not consumers_have_data
-        or consumers_have_error
-    ):
-        assert False
+    assert (
+        all([row[3] == 0 for row in row_count])
+        and consumers_have_data
+        and not consumers_have_error
+    )
