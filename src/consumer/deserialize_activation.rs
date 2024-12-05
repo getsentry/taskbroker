@@ -52,7 +52,7 @@ pub fn new(
                 .map(|duration| Utc::now() + duration),
             processing_deadline: None,
             at_most_once,
-            namespace
+            namespace,
         })
     }
 }

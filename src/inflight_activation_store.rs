@@ -196,7 +196,10 @@ impl InflightActivationStore {
         Ok(query.execute(&self.sqlite_pool).await?.into())
     }
 
-    pub async fn get_pending_activation(&self, namespace: Option<&str>) -> Result<Option<InflightActivation>, Error> {
+    pub async fn get_pending_activation(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Option<InflightActivation>, Error> {
         let now = Utc::now();
         let result: Option<TableRow> = match namespace {
             Some(namespace) => {
@@ -656,14 +659,22 @@ mod tests {
         assert!(store.store(batch.clone()).await.is_ok());
 
         // Get activation from specific namespace
-        let result = store.get_pending_activation(Some("namespace")).await.unwrap().unwrap();
+        let result = store
+            .get_pending_activation(Some("namespace"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.activation.id, "id_0");
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
 
         // Get activation from other namespace
-        let result = store.get_pending_activation(Some("other_namespace")).await.unwrap().unwrap();
+        let result = store
+            .get_pending_activation(Some("other_namespace"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(result.activation.id, "id_1");
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
