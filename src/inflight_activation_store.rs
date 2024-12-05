@@ -645,6 +645,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_pending_activation_with_namespace() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].namespace = "other_namespace".into();
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        // Get activation from specific namespace
+        let result = store.get_pending_activation(Some("namespace")).await.unwrap().unwrap();
+        assert_eq!(result.activation.id, "id_0");
+        assert_eq!(result.status, InflightActivationStatus::Processing);
+        assert!(result.processing_deadline.unwrap() > Utc::now());
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+
+        // Get activation from other namespace
+        let result = store.get_pending_activation(Some("other_namespace")).await.unwrap().unwrap();
+        assert_eq!(result.activation.id, "id_1");
+        assert_eq!(result.status, InflightActivationStatus::Processing);
+        assert!(result.processing_deadline.unwrap() > Utc::now());
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 0).await;
+    }
+
+    #[tokio::test]
     async fn test_get_pending_activation_no_deadletter() {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
@@ -1147,6 +1171,7 @@ mod tests {
             deadletter_at: None,
             processing_deadline: None,
             at_most_once: false,
+            namespace: "namespace".into(),
         }];
         assert!(store.store(batch).await.is_ok());
         assert_eq!(store.count().await.unwrap(), 1);
