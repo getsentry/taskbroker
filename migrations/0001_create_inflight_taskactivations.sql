@@ -7,5 +7,7 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     deadletter_at DATETIME,
     processing_deadline_duration INTEGER NOT NULL,
     processing_deadline DATETIME,
-    status INTEGER NOT NULL
+    status INTEGER NOT NULL,
+    at_most_once BOOLEAN NOT NULL DEFAULT FALSE,
+    namespace TEXT
 );

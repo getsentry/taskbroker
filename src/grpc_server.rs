@@ -20,11 +20,12 @@ impl ConsumerService for MyConsumerService {
     #[instrument(skip(self))]
     async fn get_task(
         &self,
-        _request: Request<GetTaskRequest>,
+        request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
         let start_time = Instant::now();
+        let namespace = &request.get_ref().namespace;
+        let inflight = self.store.get_pending_activation(namespace.as_deref()).await;
 
-        let inflight = self.store.get_pending_activation().await;
         match inflight {
             Ok(Some(inflight)) => {
                 let resp = GetTaskResponse {
@@ -84,7 +85,8 @@ impl ConsumerService for MyConsumerService {
         if let Some(fetch_next) = request.get_ref().fetch_next {
             if fetch_next {
                 let start_time = Instant::now();
-                let inflight = self.store.get_pending_activation().await;
+                let namespace = &request.get_ref().fetch_next_namespace;
+                let inflight = self.store.get_pending_activation(namespace.as_deref()).await;
                 metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
 
                 match inflight {

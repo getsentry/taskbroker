@@ -62,6 +62,7 @@ pub struct InflightActivation {
     pub deadletter_at: Option<DateTime<Utc>>,
     pub processing_deadline: Option<DateTime<Utc>>,
     pub at_most_once: bool,
+    pub namespace: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +90,7 @@ struct TableRow {
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
     at_most_once: bool,
+    namespace: String,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -106,6 +108,7 @@ impl TryFrom<InflightActivation> for TableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
+            namespace: value.activation.namespace.clone(),
         })
     }
 }
@@ -123,6 +126,7 @@ impl From<TableRow> for InflightActivation {
             deadletter_at: value.deadletter_at,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
+            namespace: value.namespace,
         }
     }
 }
@@ -162,7 +166,7 @@ impl InflightActivationStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status, at_most_once)",
+            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
         );
         let rows = batch
             .into_iter()
@@ -185,34 +189,64 @@ impl InflightActivationStore {
                 }
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
+                b.push_bind(row.namespace);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
         Ok(query.execute(&self.sqlite_pool).await?.into())
     }
 
-    pub async fn get_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
+    pub async fn get_pending_activation(&self, namespace: Option<&str>) -> Result<Option<InflightActivation>, Error> {
         let now = Utc::now();
-        let result: Option<TableRow> = sqlx::query_as(
-            "UPDATE inflight_taskactivations
-                SET
-                    processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
-                    status = $1
-                WHERE id = (
-                    SELECT id
-                    FROM inflight_taskactivations 
-                    WHERE status = $2
-                    AND (deadletter_at IS NULL OR deadletter_at > $3)
-                    LIMIT 1
+        let result: Option<TableRow> = match namespace {
+            Some(namespace) => {
+                println!("Querying pending task with namespace: {:?}", namespace);
+                sqlx::query_as(
+                    "UPDATE inflight_taskactivations
+                        SET
+                            processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
+                            status = $1
+                        WHERE id = (
+                            SELECT id
+                            FROM inflight_taskactivations 
+                            WHERE status = $2
+                            AND (deadletter_at IS NULL OR deadletter_at > $3)
+                            AND namespace = $4
+                            LIMIT 1
+                        )
+                        RETURNING *",
                 )
-                RETURNING *",
-        )
-        .bind(InflightActivationStatus::Processing)
-        .bind(InflightActivationStatus::Pending)
-        .bind(now)
-        .fetch_optional(&self.sqlite_pool)
-        .await?;
-
+                .bind(InflightActivationStatus::Processing)
+                .bind(InflightActivationStatus::Pending)
+                .bind(now)
+                .bind(namespace)
+                .fetch_optional(&self.sqlite_pool)
+                .await?
+            },
+            None => {
+                println!("Querying pending task without namespace");
+                sqlx::query_as(
+                    "UPDATE inflight_taskactivations
+                        SET
+                            processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
+                            status = $1
+                        WHERE id = (
+                            SELECT id
+                            FROM inflight_taskactivations 
+                            WHERE status = $2
+                            AND (deadletter_at IS NULL OR deadletter_at > $3)
+                            LIMIT 1
+                        )
+                        RETURNING *",
+                )
+                .bind(InflightActivationStatus::Processing)
+                .bind(InflightActivationStatus::Pending)
+                .bind(now)
+                .fetch_optional(&self.sqlite_pool)
+                .await?
+            },
+        };
+        println!("Found pending task: {:?}", result);
         let Some(row) = result else { return Ok(None) };
 
         Ok(Some(row.into()))
@@ -604,7 +638,7 @@ mod tests {
         let batch = make_activations(2);
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result = store.get_pending_activation().await.unwrap().unwrap();
+        let result = store.get_pending_activation(None).await.unwrap().unwrap();
 
         assert_eq!(result.activation.id, "id_0");
         assert_eq!(result.status, InflightActivationStatus::Processing);
@@ -621,7 +655,7 @@ mod tests {
         batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result = store.get_pending_activation().await;
+        let result = store.get_pending_activation(None).await;
         assert!(result.is_ok());
         let res_option = result.unwrap();
         assert!(res_option.is_none());
@@ -670,7 +704,7 @@ mod tests {
             .await
             .is_ok());
         assert_eq!(store.count_pending_activations().await.unwrap(), 0);
-        assert!(store.get_pending_activation().await.unwrap().is_none());
+        assert!(store.get_pending_activation(None).await.unwrap().is_none());
     }
 
     #[tokio::test]
