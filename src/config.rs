@@ -79,7 +79,7 @@ pub struct Config {
     /// to allow temporary worker deaths to be resolved.
     pub deadletter_deadline: usize,
 
-    // The frequency at which upkeep tasks are spawned.
+    /// The frequency at which upkeep tasks are spawned.
     pub upkeep_task_interval_ms: u64,
 }
 

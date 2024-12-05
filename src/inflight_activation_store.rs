@@ -54,13 +54,30 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InflightActivation {
+    /// The protobuf activation that was received from kafka
     pub activation: TaskActivation,
+
+    /// The current status of the activation
     pub status: InflightActivationStatus,
+
+    /// The partition the activation was received from
     pub partition: i32,
+
+    /// The offset the activation had
     pub offset: i64,
+
+    /// The timestamp when the activation was stored in activation store.
     pub added_at: DateTime<Utc>,
+
+    /// The timestamp after which a task should be deadlettered/discarded
     pub deadletter_at: Option<DateTime<Utc>>,
+
+    /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
+
+    /// Whether or not the activation uses at_most_once.
+    /// When enabled activations are not retried when processing_deadlines
+    /// are exceeded.
     pub at_most_once: bool,
 }
 
@@ -403,6 +420,8 @@ impl InflightActivationStore {
                 to_discard.push(activation.id);
                 continue;
             }
+            // We could be deadlettering because of activation.expires
+            // when a task expires we still deadletter if configured.
             let retry_state = &activation.retry_state.as_ref().unwrap();
             if retry_state.discard_after_attempt.is_some() {
                 to_discard.push(activation.id);
