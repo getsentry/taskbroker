@@ -1,2 +1,4 @@
+* @getsentry/taskworker
+
 src/         @getsentry/taskworker
 migrations/  @getsentry/taskworker

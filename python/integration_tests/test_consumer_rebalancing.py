@@ -59,7 +59,8 @@ def test_tasks_written_once_during_rebalancing() -> None:
     num_restarts = 16
     num_partitions = 32
     min_restart_duration = 1
-    max_restart_duration = 10
+    max_restart_duration = 30
+    max_pending_count = 15_000
     topic_name = "task-worker"
     curr_time = int(time.time())
 
@@ -99,7 +100,7 @@ Running test with the following configuration:
         consumer_configs[f"config_{i}.yml"] = {
             "db_name": db_name,
             "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
-            "max_pending_count": 16384,
+            "max_pending_count": max_pending_count,
             "kafka_topic": topic_name,
             "kafka_consumer_group": topic_name,
             "kafka_auto_offset_reset": "earliest",
@@ -192,9 +193,30 @@ Running test with the following configuration:
             f"{str(partition).rjust(16)}{str(offset).rjust(16)}{str(count).rjust(16)}"
         )
 
+    consumers_have_data = True
+    print("\n======== Number of rows in each consumer ========")
+    for i, config in enumerate(consumer_configs.values()):
+        query = f"""SELECT count(*) as count from {config['db_name']}.inflight_taskactivations"""
+        res = cur.execute(query).fetchall()[0][0]
+        print(
+            f"Consumer {i}: {res}, {str(int(res / max_pending_count * 100))}% of capacity"
+        )
+        consumers_have_data = consumers_have_data and res >= max_pending_count // 3
+
     if not all([row[3] == 0 for row in row_count]):
         print(
             "Test failed! Got duplicate/missing kafka messages in sqlite, dumping logs"
+        )
+        for i in range(num_consumers):
+            print(f"=== consumer {i} log ===")
+            with open(
+                str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r"
+            ) as f:
+                print(f.read())
+
+    if not consumers_have_data:
+        print(
+            "Test failed! Lower than expected amount of kafka messages in sqlite, dumping logs"
         )
         for i in range(num_consumers):
             print(f"=== consumer {i} log ===")
@@ -207,5 +229,5 @@ Running test with the following configuration:
     print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
     shutil.rmtree(TESTS_OUTPUT_PATH)
 
-    if not all([row[3] == 0 for row in row_count]):
+    if not all([row[3] == 0 for row in row_count]) or not consumers_have_data:
         assert False

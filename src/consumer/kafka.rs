@@ -61,7 +61,7 @@ pub async fn start_consumer(
         .expect("Can't subscribe to specified topics");
 
     handle_os_signals(event_sender.clone());
-    handle_consumer_client(consumer.clone(), client_shutdown_receiver);
+    poll_consumer_client(consumer.clone(), client_shutdown_receiver);
     handle_events(
         consumer,
         event_receiver,
@@ -81,13 +81,14 @@ pub fn handle_os_signals(event_sender: UnboundedSender<(Event, SyncSender<()>)>)
     });
 }
 
-#[instrument(skip(consumer, shutdown))]
-pub fn handle_consumer_client(
+#[instrument(skip_all)]
+pub fn poll_consumer_client(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     shutdown: oneshot::Receiver<()>,
 ) {
     task::spawn_blocking(|| {
         Handle::current().block_on(async move {
+            let _guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
             select! {
                 biased;
                 _ = shutdown => {
@@ -117,7 +118,7 @@ impl KafkaContext {
 impl ClientContext for KafkaContext {}
 
 impl ConsumerContext for KafkaContext {
-    #[instrument(skip(self, rebalance))]
+    #[instrument(skip_all)]
     fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
         let (rendezvous_sender, rendezvous_receiver) = sync_channel(0);
         match rebalance {
@@ -314,7 +315,7 @@ enum ConsumerState {
     Stopped,
 }
 
-#[instrument(skip(consumer, events, shutdown_client, spawn_actors))]
+#[instrument(skip_all)]
 pub async fn handle_events(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     events: UnboundedReceiver<(Event, SyncSender<()>)>,
@@ -412,7 +413,7 @@ impl MessageQueue for StreamPartitionQueue<KafkaContext> {
     }
 }
 
-#[instrument(skip(queue, transform, ok, err, shutdown))]
+#[instrument(skip_all)]
 pub async fn map<T>(
     queue: impl MessageQueue,
     transform: impl Fn(Arc<OwnedMessage>) -> Result<T, Error>,
@@ -521,7 +522,7 @@ async fn handle_reducer_failure<T>(
     reducer.reset();
 }
 
-#[instrument(skip(reducer, inflight_msgs, ok, err))]
+#[instrument(skip_all)]
 async fn flush_reducer<T, U>(
     reducer: &mut impl Reducer<Input = T, Output = U>,
     inflight_msgs: &mut Vec<OwnedMessage>,
@@ -544,7 +545,7 @@ async fn flush_reducer<T, U>(
     Ok(())
 }
 
-#[instrument(skip(reducer, receiver, ok, err, shutdown))]
+#[instrument(skip_all)]
 pub async fn reduce<T, U>(
     mut reducer: impl Reducer<Input = T, Output = U>,
     mut receiver: mpsc::Receiver<(impl IntoIterator<Item = OwnedMessage>, T)>,
@@ -554,8 +555,8 @@ pub async fn reduce<T, U>(
 ) -> Result<(), Error> {
     let config = reducer.get_reduce_config();
     let mut flush_timer = config.flush_interval.map(time::interval);
-    let mut loop_timer = time::interval(Duration::from_secs(1));
-    loop_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut repoll_timer = time::interval(Duration::from_secs(1));
+    repoll_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut inflight_msgs = Vec::new();
 
     loop {
@@ -629,7 +630,7 @@ pub async fn reduce<T, U>(
                 }
             }
 
-            _ = loop_timer.tick() => { }
+            _ = repoll_timer.tick() => { }
         }
     }
 
@@ -637,7 +638,7 @@ pub async fn reduce<T, U>(
     Ok(())
 }
 
-#[instrument(skip(reducer, receiver, ok, shutdown))]
+#[instrument(skip_all)]
 pub async fn reduce_err(
     mut reducer: impl Reducer<Input = OwnedMessage, Output = ()>,
     mut receiver: mpsc::Receiver<OwnedMessage>,
@@ -769,7 +770,7 @@ impl From<HighwaterMark> for TopicPartitionList {
     }
 }
 
-#[instrument(skip(receiver, consumer, _rendezvous_guard))]
+#[instrument(skip_all)]
 pub async fn commit(
     mut receiver: mpsc::Receiver<(Vec<OwnedMessage>, ())>,
     consumer: Arc<impl CommitClient>,
