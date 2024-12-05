@@ -203,6 +203,7 @@ impl InflightActivationStore {
                     FROM inflight_taskactivations 
                     WHERE status = $2
                     AND (deadletter_at IS NULL OR deadletter_at > $3)
+                    ORDER BY added_at
                     LIMIT 1
                 )
                 RETURNING *",
@@ -626,6 +627,23 @@ mod tests {
         let res_option = result.unwrap();
         assert!(res_option.is_none());
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_activation_earliest() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[0].added_at = Utc.with_ymd_and_hms(2024, 6, 24, 0, 0, 0).unwrap();
+        batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        let result = store.get_pending_activation().await.unwrap().unwrap();
+        assert_eq!(
+            result.added_at,
+            Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
+        );
     }
 
     #[tokio::test]
