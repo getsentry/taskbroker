@@ -85,10 +85,11 @@ impl ConsumerService for MyConsumerService {
             error: None,
         };
 
-        if let Some(fetch_next) = request.get_ref().fetch_next {
-            if fetch_next {
+        let fetch_next = &request.get_ref().fetch_next;
+        match fetch_next {
+            Some(fetch_next) => {
                 let start_time = Instant::now();
-                let namespace = &request.get_ref().fetch_next_namespace;
+                let namespace = &fetch_next.namespace;
                 let inflight = self
                     .store
                     .get_pending_activation(namespace.as_deref())
@@ -102,7 +103,8 @@ impl ConsumerService for MyConsumerService {
                     Ok(None) => return Err(Status::not_found("No pending activation")),
                     Err(e) => return Err(Status::internal(e.to_string())),
                 }
-            }
+            },
+            _ => (),
         }
 
         Ok(Response::new(response))
