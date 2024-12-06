@@ -15,7 +15,7 @@ use crate::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
     },
 };
-use chrono::Utc;
+use chrono::{Timelike, Utc};
 use sentry_protos::sentry::v1::TaskActivation;
 
 /// Generate a unique filename for isolated SQLite databases.
@@ -28,6 +28,7 @@ pub fn generate_temp_filename() -> String {
 pub fn make_activations(count: u32) -> Vec<InflightActivation> {
     let mut records: Vec<InflightActivation> = vec![];
     for i in 0..count {
+        let now = Utc::now();
         #[allow(deprecated)]
         let item = InflightActivation {
             activation: TaskActivation {
@@ -37,8 +38,8 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
                 parameters: "{}".into(),
                 headers: HashMap::new(),
                 received_at: Some(prost_types::Timestamp {
-                    seconds: Utc::now().timestamp(),
-                    nanos: 0,
+                    seconds: now.timestamp(),
+                    nanos: now.nanosecond() as i32,
                 }),
                 deadline: None,
                 retry_state: None,
