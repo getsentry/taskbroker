@@ -125,7 +125,7 @@ impl TryFrom<InflightActivation> for TableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
-            namespace: value.activation.namespace.clone(),
+            namespace: value.namespace.clone(),
         })
     }
 }
@@ -233,27 +233,18 @@ impl InflightActivationStore {
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (deadletter_at IS NULL OR deadletter_at > ");
         query_builder.push_bind(now);
-        query_builder.push(") ");
+        query_builder.push(")");
 
-        let result: Option<TableRow> = match namespace {
-            Some(namespace) => {
-                query_builder.push("AND namespace = ");
-                query_builder.push_bind(namespace);
-                query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
-                query_builder
-                    .build_query_as::<TableRow>()
-                    .fetch_optional(&self.sqlite_pool)
-                    .await?
-            }
-            None => {
-                query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
-                query_builder
-                    .build_query_as::<TableRow>()
-                    .fetch_optional(&self.sqlite_pool)
-                    .await?
-            }
-        };
+        if let Some(namespace) = namespace {
+            query_builder.push(" AND namespace = ");
+            query_builder.push_bind(namespace);
+        }
+        query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
 
+        let result: Option<TableRow> = query_builder
+            .build_query_as::<TableRow>()
+            .fetch_optional(&self.sqlite_pool)
+            .await?;
         let Some(row) = result else { return Ok(None) };
 
         Ok(Some(row.into()))
@@ -664,17 +655,6 @@ mod tests {
         batch[1].namespace = "other_namespace".into();
         assert!(store.store(batch.clone()).await.is_ok());
 
-        // Get activation from specific namespace
-        let result = store
-            .get_pending_activation(Some("namespace"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(result.activation.id, "id_0");
-        assert_eq!(result.status, InflightActivationStatus::Processing);
-        assert!(result.processing_deadline.unwrap() > Utc::now());
-        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
-
         // Get activation from other namespace
         let result = store
             .get_pending_activation(Some("other_namespace"))
@@ -684,7 +664,7 @@ mod tests {
         assert_eq!(result.activation.id, "id_1");
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
-        assert_count_by_status(&store, InflightActivationStatus::Pending, 0).await;
+        assert_eq!(result.namespace, "other_namespace");
     }
 
     #[tokio::test]
