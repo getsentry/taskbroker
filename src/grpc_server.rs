@@ -85,7 +85,7 @@ impl ConsumerService for MyConsumerService {
             error: None,
         };
 
-        let fetch_next = &request.get_ref().fetch_next;
+        let fetch_next = &request.get_ref().fetch_next_task;
         match fetch_next {
             Some(fetch_next) => {
                 let start_time = Instant::now();
