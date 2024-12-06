@@ -207,10 +207,11 @@ impl InflightActivationStore {
             SET processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'), status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Processing);
-        query_builder.push(" WHERE id = (
+        query_builder.push(
+            " WHERE id = (
             SELECT id
             FROM inflight_taskactivations
-            WHERE status = "
+            WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (deadletter_at IS NULL OR deadletter_at > ");
@@ -222,12 +223,18 @@ impl InflightActivationStore {
                 query_builder.push("AND namespace = ");
                 query_builder.push_bind(namespace);
                 query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
-                query_builder.build_query_as::<TableRow>().fetch_optional(&self.sqlite_pool).await?
-            },
+                query_builder
+                    .build_query_as::<TableRow>()
+                    .fetch_optional(&self.sqlite_pool)
+                    .await?
+            }
             None => {
                 query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
-                query_builder.build_query_as::<TableRow>().fetch_optional(&self.sqlite_pool).await?
-            },
+                query_builder
+                    .build_query_as::<TableRow>()
+                    .fetch_optional(&self.sqlite_pool)
+                    .await?
+            }
         };
 
         let Some(row) = result else { return Ok(None) };

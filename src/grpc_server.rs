@@ -103,7 +103,7 @@ impl ConsumerService for MyConsumerService {
                     Ok(None) => return Err(Status::not_found("No pending activation")),
                     Err(e) => return Err(Status::internal(e.to_string())),
                 }
-            },
+            }
             _ => (),
         }
 
