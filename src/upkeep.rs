@@ -1,4 +1,6 @@
+use chrono::{Timelike, Utc};
 use prost::Message;
+use prost_types::Timestamp;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
@@ -192,7 +194,12 @@ pub async fn do_upkeep(
 fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActivation {
     let mut new_activation = inflight_activation.activation.clone();
 
+    let now = Utc::now();
     new_activation.id = Uuid::new_v4().into();
+    new_activation.received_at = Some(Timestamp {
+        seconds: now.timestamp(),
+        nanos: now.nanosecond() as i32,
+    });
     if new_activation.retry_state.is_some() {
         new_activation.retry_state.as_mut().unwrap().attempts += 1;
     }
@@ -206,6 +213,7 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::{TimeDelta, TimeZone, Utc};
+    use prost_types::Timestamp;
     use sentry_protos::sentry::v1::RetryState;
 
     use crate::{
@@ -231,6 +239,12 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
+
+        let old = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();
+        records[0].activation.received_at = Some(Timestamp {
+            seconds: old.timestamp(),
+            nanos: 0,
+        });
         records[0].activation.parameters = r#"{"a":"b"}"#.into();
         records[0].status = InflightActivationStatus::Retry;
         records[0].activation.retry_state = Some(RetryState {
@@ -255,10 +269,17 @@ mod tests {
         assert_ne!(activation.id, records[0].activation.id);
         // Should increment the attempt counter
         assert_eq!(activation.retry_state.as_ref().unwrap().attempts, 2);
+
         // Retry should retain task and parameters of original task
         assert_eq!(activation.taskname, records[0].activation.taskname);
         assert_eq!(activation.namespace, records[0].activation.namespace);
         assert_eq!(activation.parameters, records[0].activation.parameters);
+        // received_at should be set be later than the original activation
+        assert!(
+            activation.received_at.unwrap().seconds
+                > records[0].activation.received_at.unwrap().seconds,
+            "retry activation should have a later timestamp"
+        );
     }
 
     #[tokio::test]
