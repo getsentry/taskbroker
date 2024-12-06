@@ -30,6 +30,8 @@ metrics-exporter-statsd = "0.9.0"
 metrics = "0.24.0"
 elegant-departure = { version = "0.3.1", features = ["tokio"] }
 uuid = { version = "1.11.0", features = ["v4"] }
+tower = "0.5.1"
+http = "1.1.0"
 
 [dev-dependencies]
 rand = "0.8.5"
