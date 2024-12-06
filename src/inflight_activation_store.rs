@@ -201,52 +201,32 @@ impl InflightActivationStore {
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
         let now = Utc::now();
+
+        let mut query_builder = QueryBuilder::new(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'), status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Processing);
+        query_builder.push(" WHERE id = (
+            SELECT id
+            FROM inflight_taskactivations
+            WHERE status = "
+        );
+        query_builder.push_bind(InflightActivationStatus::Pending);
+        query_builder.push(" AND (deadletter_at IS NULL OR deadletter_at > ");
+        query_builder.push_bind(now);
+        query_builder.push(") ");
+
         let result: Option<TableRow> = match namespace {
             Some(namespace) => {
-                sqlx::query_as(
-                    "UPDATE inflight_taskactivations
-                        SET
-                            processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
-                            status = $1
-                        WHERE id = (
-                            SELECT id
-                            FROM inflight_taskactivations 
-                            WHERE status = $2
-                            AND (deadletter_at IS NULL OR deadletter_at > $3)
-                            AND namespace = $4
-                            ORDER BY added_at
-                            LIMIT 1
-                        )
-                        RETURNING *",
-                )
-                .bind(InflightActivationStatus::Processing)
-                .bind(InflightActivationStatus::Pending)
-                .bind(now)
-                .bind(namespace)
-                .fetch_optional(&self.sqlite_pool)
-                .await?
+                query_builder.push("AND namespace = ");
+                query_builder.push_bind(namespace);
+                query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
+                query_builder.build_query_as::<TableRow>().fetch_optional(&self.sqlite_pool).await?
             },
             None => {
-                sqlx::query_as(
-                    "UPDATE inflight_taskactivations
-                        SET
-                            processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
-                            status = $1
-                        WHERE id = (
-                            SELECT id
-                            FROM inflight_taskactivations 
-                            WHERE status = $2
-                            AND (deadletter_at IS NULL OR deadletter_at > $3)
-                            ORDER BY added_at
-                            LIMIT 1
-                        )
-                        RETURNING *",
-                )
-                .bind(InflightActivationStatus::Processing)
-                .bind(InflightActivationStatus::Pending)
-                .bind(now)
-                .fetch_optional(&self.sqlite_pool)
-                .await?
+                query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
+                query_builder.build_query_as::<TableRow>().fetch_optional(&self.sqlite_pool).await?
             },
         };
 
