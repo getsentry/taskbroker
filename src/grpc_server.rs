@@ -20,11 +20,15 @@ impl ConsumerService for MyConsumerService {
     #[instrument(skip(self))]
     async fn get_task(
         &self,
-        _request: Request<GetTaskRequest>,
+        request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
         let start_time = Instant::now();
+        let namespace = &request.get_ref().namespace;
+        let inflight = self
+            .store
+            .get_pending_activation(namespace.as_deref())
+            .await;
 
-        let inflight = self.store.get_pending_activation().await;
         match inflight {
             Ok(Some(inflight)) => {
                 let resp = GetTaskResponse {
@@ -81,19 +85,22 @@ impl ConsumerService for MyConsumerService {
             error: None,
         };
 
-        if let Some(fetch_next) = request.get_ref().fetch_next {
-            if fetch_next {
-                let start_time = Instant::now();
-                let inflight = self.store.get_pending_activation().await;
-                metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
+        let fetch_next = &request.get_ref().fetch_next_task;
+        if let Some(fetch_next) = fetch_next {
+            let start_time = Instant::now();
+            let namespace = &fetch_next.namespace;
+            let inflight = self
+                .store
+                .get_pending_activation(namespace.as_deref())
+                .await;
+            metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
 
-                match inflight {
-                    Ok(Some(inflight)) => {
-                        response.task = Some(inflight.activation);
-                    }
-                    Ok(None) => return Err(Status::not_found("No pending activation")),
-                    Err(e) => return Err(Status::internal(e.to_string())),
+            match inflight {
+                Ok(Some(inflight)) => {
+                    response.task = Some(inflight.activation);
                 }
+                Ok(None) => return Err(Status::not_found("No pending activation")),
+                Err(e) => return Err(Status::internal(e.to_string())),
             }
         }
 

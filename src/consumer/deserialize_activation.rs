@@ -33,6 +33,7 @@ pub fn new(
             return Err(anyhow!("Message has no payload"));
         };
         let activation = TaskActivation::decode(payload)?;
+        let namespace = activation.namespace.clone();
 
         let mut at_most_once = false;
         if let Some(ref retry_state) = activation.retry_state {
@@ -69,6 +70,7 @@ pub fn new(
             deadletter_at: Some(deadletter_at),
             processing_deadline: None,
             at_most_once,
+            namespace,
         })
     }
 }

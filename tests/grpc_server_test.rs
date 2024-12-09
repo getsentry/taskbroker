@@ -18,7 +18,7 @@ async fn test_get_task() {
     let url = generate_temp_filename();
     let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
     let service = MyConsumerService { store };
-    let request = GetTaskRequest {};
+    let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_err());
     let e = response.unwrap_err();
@@ -27,6 +27,7 @@ async fn test_get_task() {
 }
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn test_set_task_status() {
     let url = generate_temp_filename();
     let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
@@ -34,7 +35,9 @@ async fn test_set_task_status() {
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 5, // Complete
-        fetch_next: Some(false),
+        fetch_next_task: None,
+        fetch_next: None,
+        fetch_next_namespace: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -44,6 +47,7 @@ async fn test_set_task_status() {
 }
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn test_set_task_status_invalid() {
     let url = generate_temp_filename();
     let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
@@ -51,7 +55,9 @@ async fn test_set_task_status_invalid() {
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 1, // Invalid
-        fetch_next: Some(false),
+        fetch_next_task: None,
+        fetch_next: None,
+        fetch_next_namespace: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_err());
