@@ -47,7 +47,7 @@ contains a `Makefile` with frequently run development commands:
 ## Building and Running
 
 The simplest way to run taskbroker is with `cargo`. You'll also need
-`kafka` running via [devservices](https://github.com/getsentry/devservices):
+`kafka` running. Kafka is typically managed with [devservices](https://github.com/getsentry/devservices):
 
 ```bash
 cargo run -- -c ./config/config-sentry-dev.yaml
