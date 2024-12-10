@@ -114,13 +114,14 @@ impl Default for Config {
 impl Config {
     /// Build a config instance from defaults, env vars, file + CLI options
     pub fn from_args(args: &Args) -> Result<Self, figment::Error> {
-        let mut builder = Figment::from(Config::default()).merge(Env::prefixed("TASKBROKER_"));
+        let mut builder = Figment::from(Config::default());
         if let Some(path) = &args.config {
             builder = builder.merge(Yaml::file(path));
         }
         if let Some(log_level) = &args.log_level {
             builder = builder.merge(Serialized::default("log_level", log_level));
         }
+        builder = builder.merge(Env::prefixed("TASKBROKER_"));
         let config = builder.extract()?;
         Ok(config)
     }
@@ -217,7 +218,7 @@ mod tests {
                 deadletter_deadline: 2000
             "#,
             )?;
-            // Env vars are not used if config file sets same key
+            // Env vars always override config file
             jail.set_env("TASKBROKER_LOG_LEVEL", "error");
 
             let args = Args {
@@ -227,7 +228,7 @@ mod tests {
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, Some("fake_dsn".to_owned()));
             assert_eq!(config.sentry_env, Some(Cow::Borrowed("prod")));
-            assert_eq!(config.log_level, LogLevel::Info);
+            assert_eq!(config.log_level, LogLevel::Error);
             assert_eq!(config.log_format, LogFormat::Json);
             assert_eq!(
                 config.kafka_cluster,
@@ -258,7 +259,7 @@ mod tests {
                 log_level: Some("debug".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.log_level, LogLevel::Debug);
+            assert_eq!(config.log_level, LogLevel::Error);
             assert_eq!(config.deadletter_deadline, 2000);
 
             Ok(())
