@@ -123,7 +123,6 @@ impl Config {
         }
         builder = builder.merge(Env::prefixed("TASKBROKER_"));
         let config = builder.extract()?;
-        println!("config: {:?}", config);
         Ok(config)
     }
 
