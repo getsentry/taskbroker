@@ -18,7 +18,7 @@ def check_topic_exists(topic_name: str) -> bool:
         check_topic_cmd = [
             "docker",
             "exec",
-            "sentry_kafka",
+            "kafka-kafka-1",
             "kafka-topics",
             "--bootstrap-server",
             "localhost:9092",
@@ -37,7 +37,7 @@ def create_topic(topic_name: str, num_partitions: int) -> None:
         create_topic_cmd = [
             "docker",
             "exec",
-            "sentry_kafka",
+            "kafka-kafka-1",
             "kafka-topics",
             "--bootstrap-server",
             "localhost:9092",
@@ -59,7 +59,7 @@ def update_topic_partitions(topic_name: str, num_partitions: int) -> None:
         create_topic_cmd = [
             "docker",
             "exec",
-            "sentry_kafka",
+            "kafka-kafka-1",
             "kafka-topics",
             "--bootstrap-server",
             "localhost:9092",
