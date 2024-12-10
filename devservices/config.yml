@@ -1,0 +1,19 @@
+# Ignored by docker compose, used by devservices
+x-sentry-service-config:
+  version: 0.1
+  service_name: taskbroker
+  dependencies:
+    kafka:
+      description: Shared instance of kafka used by sentry services
+      remote:
+        repo_name: sentry-shared-kafka
+        branch: main
+        repo_link: git@github.com:getsentry/sentry-shared-kafka.git
+  modes:
+    default: [kafka]
+    containerized: [kafka]
+
+networks:
+  devservices:
+    name: devservices
+    external: true

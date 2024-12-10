@@ -1,5 +1,5 @@
 # Development
-setup: setup-git ## run setup tasks to create and configure a development environment
+setup: setup-git install-py-dev ## run setup tasks to create and configure a development environment
 .PHONY: setup
 
 setup-git: .git/hooks/pre-commit ## Setup git-hooks
