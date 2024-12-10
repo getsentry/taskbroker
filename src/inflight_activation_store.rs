@@ -79,6 +79,7 @@ pub struct InflightActivation {
     /// When enabled activations are not retried when processing_deadlines
     /// are exceeded.
     pub at_most_once: bool,
+    pub namespace: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -106,6 +107,7 @@ struct TableRow {
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
     at_most_once: bool,
+    namespace: String,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -123,6 +125,7 @@ impl TryFrom<InflightActivation> for TableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
+            namespace: value.namespace.clone(),
         })
     }
 }
@@ -140,6 +143,7 @@ impl From<TableRow> for InflightActivation {
             deadletter_at: value.deadletter_at,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
+            namespace: value.namespace,
         }
     }
 }
@@ -179,7 +183,7 @@ impl InflightActivationStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status, at_most_once)",
+            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
         );
         let rows = batch
             .into_iter()
@@ -202,35 +206,45 @@ impl InflightActivationStore {
                 }
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
+                b.push_bind(row.namespace);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
         Ok(query.execute(&self.sqlite_pool).await?.into())
     }
 
-    pub async fn get_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
+    pub async fn get_pending_activation(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Option<InflightActivation>, Error> {
         let now = Utc::now();
-        let result: Option<TableRow> = sqlx::query_as(
-            "UPDATE inflight_taskactivations
-                SET
-                    processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'),
-                    status = $1
-                WHERE id = (
-                    SELECT id
-                    FROM inflight_taskactivations 
-                    WHERE status = $2
-                    AND (deadletter_at IS NULL OR deadletter_at > $3)
-                    ORDER BY added_at
-                    LIMIT 1
-                )
-                RETURNING *",
-        )
-        .bind(InflightActivationStatus::Processing)
-        .bind(InflightActivationStatus::Pending)
-        .bind(now)
-        .fetch_optional(&self.sqlite_pool)
-        .await?;
 
+        let mut query_builder = QueryBuilder::new(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'), status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Processing);
+        query_builder.push(
+            " WHERE id = (
+            SELECT id
+            FROM inflight_taskactivations
+            WHERE status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Pending);
+        query_builder.push(" AND (deadletter_at IS NULL OR deadletter_at > ");
+        query_builder.push_bind(now);
+        query_builder.push(")");
+
+        if let Some(namespace) = namespace {
+            query_builder.push(" AND namespace = ");
+            query_builder.push_bind(namespace);
+        }
+        query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
+
+        let result: Option<TableRow> = query_builder
+            .build_query_as::<TableRow>()
+            .fetch_optional(&self.sqlite_pool)
+            .await?;
         let Some(row) = result else { return Ok(None) };
 
         Ok(Some(row.into()))
@@ -624,12 +638,33 @@ mod tests {
         let batch = make_activations(2);
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result = store.get_pending_activation().await.unwrap().unwrap();
+        let result = store.get_pending_activation(None).await.unwrap().unwrap();
 
         assert_eq!(result.activation.id, "id_0");
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    }
+
+    #[tokio::test]
+    async fn test_get_pending_activation_with_namespace() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[1].namespace = "other_namespace".into();
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        // Get activation from other namespace
+        let result = store
+            .get_pending_activation(Some("other_namespace"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.activation.id, "id_1");
+        assert_eq!(result.status, InflightActivationStatus::Processing);
+        assert!(result.processing_deadline.unwrap() > Utc::now());
+        assert_eq!(result.namespace, "other_namespace");
     }
 
     #[tokio::test]
@@ -641,7 +676,7 @@ mod tests {
         batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result = store.get_pending_activation().await;
+        let result = store.get_pending_activation(None).await;
         assert!(result.is_ok());
         let res_option = result.unwrap();
         assert!(res_option.is_none());
@@ -658,7 +693,7 @@ mod tests {
         batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result = store.get_pending_activation().await.unwrap().unwrap();
+        let result = store.get_pending_activation(None).await.unwrap().unwrap();
         assert_eq!(
             result.added_at,
             Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
@@ -707,7 +742,7 @@ mod tests {
             .await
             .is_ok());
         assert_eq!(store.count_pending_activations().await.unwrap(), 0);
-        assert!(store.get_pending_activation().await.unwrap().is_none());
+        assert!(store.get_pending_activation(None).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -1152,6 +1187,7 @@ mod tests {
             deadletter_at: None,
             processing_deadline: None,
             at_most_once: false,
+            namespace: "namespace".into(),
         }];
         assert!(store.store(batch).await.is_ok());
         assert_eq!(store.count().await.unwrap(), 1);
