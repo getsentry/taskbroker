@@ -92,7 +92,7 @@ Running test with the following configuration:
         update_topic_partitions(topic_name, num_partitions)
 
     # Create config files for consumers
-    print("Creating config files for consumers")
+    print("\nCreating config files for consumers")
     TESTS_OUTPUT_PATH.mkdir(exist_ok=True)
     consumer_configs = {}
     for i in range(num_consumers):
@@ -216,13 +216,13 @@ Running test with the following configuration:
                     consumer_error_logs.append("")
 
     if not all([row[3] == 0 for row in row_count]):
-        print("Test failed! Got duplicate/missing kafka messages in sqlite")
+        print("\nTest failed! Got duplicate/missing kafka messages in sqlite")
 
     if not consumers_have_data:
-        print("Test failed! Lower than expected amount of kafka messages in sqlite")
+        print("\nTest failed! Lower than expected amount of kafka messages in sqlite")
 
     if consumer_error_logs:
-        print("Test failed! Errors in consumer logs")
+        print("\nTest failed! Errors in consumer logs")
         for log in consumer_error_logs:
             print(log)
 
