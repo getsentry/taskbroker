@@ -22,6 +22,9 @@ services:
       TASKBROKER_KAFKA_CLUSTER: "kafka-kafka-1:9093"
     ports:
       - 127.0.0.1:50051:50051
+    networks:
+      - devservices
+    restart: unless-stopped
     platform: linux/amd64
 
 networks:
