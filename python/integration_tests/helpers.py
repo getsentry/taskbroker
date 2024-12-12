@@ -75,6 +75,31 @@ def update_topic_partitions(topic_name: str, num_partitions: int) -> None:
         pass
 
 
+def recreate_topic(topic_name: str, num_partitions: int) -> None:
+    # Delete and recreate a Kafka topic to ensure a clean state.
+    try:
+        delete_topic_cmd = [
+            "docker",
+            "exec",
+            "sentry_kafka",
+            "kafka-topics",
+            "--bootstrap-server",
+            "localhost:9092",
+            "--delete",
+            "--topic",
+            topic_name
+        ]
+        subprocess.run(
+            delete_topic_cmd,
+            check=True
+        )
+
+        time.sleep(2)
+        create_topic(topic_name, num_partitions)
+    except Exception as e:
+        raise Exception(f"Failed to recreate topic: {e}")
+
+
 def serialize_task_activation(args: list, kwargs: dict) -> bytes:
     retry_state = RetryState(
         attempts=0,
@@ -110,3 +135,7 @@ def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
         print(f"Sent {num_messages} messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
+
+
+class TaskworkerClientClone:
+    pass
