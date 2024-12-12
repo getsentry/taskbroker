@@ -226,10 +226,6 @@ Running test with the following configuration:
         for log in consumer_error_logs:
             print(log)
 
-    # Clean up test output files
-    print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
-    shutil.rmtree(TESTS_OUTPUT_PATH)
-
     assert all([row[3] == 0 for row in row_count])
     assert consumers_have_data
     assert not consumer_error_logs
