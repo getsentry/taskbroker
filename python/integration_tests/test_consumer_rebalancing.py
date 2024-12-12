@@ -17,7 +17,6 @@ from python.integration_tests.helpers import (
     create_topic,
     update_topic_partitions,
     send_messages_to_kafka,
-    recreate_topic
 )
 
 
@@ -80,8 +79,17 @@ Running test with the following configuration:
     )
     random.seed(42)
 
-    # Recreate the topic to ensure a clean state
-    recreate_topic(topic_name, num_partitions)
+    # Ensure topic exists and has correct number of partitions
+    if not check_topic_exists(topic_name):
+        print(
+            f"{topic_name} topic does not exist, creating it with {num_partitions} partitions"
+        )
+        create_topic(topic_name, num_partitions)
+    else:
+        print(
+            f"{topic_name} topic already exists, making sure it has {num_partitions} partitions"
+        )
+        update_topic_partitions(topic_name, num_partitions)
 
     # Create config files for consumers
     print("Creating config files for consumers")

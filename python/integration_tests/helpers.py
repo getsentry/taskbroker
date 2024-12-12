@@ -81,7 +81,7 @@ def recreate_topic(topic_name: str, num_partitions: int) -> None:
         delete_topic_cmd = [
             "docker",
             "exec",
-            "sentry_kafka",
+            "kafka-kafka-1",
             "kafka-topics",
             "--bootstrap-server",
             "localhost:9092",

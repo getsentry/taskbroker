@@ -10,6 +10,9 @@ from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_PATH,
     send_messages_to_kafka,
+    check_topic_exists,
+    create_topic,
+    update_topic_partitions,
     recreate_topic,
 )
 
@@ -47,6 +50,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
     num_messages = 3_000
+    num_partitions = 1
     max_pending_count = 15_000
     consumer_timeout = 30
     topic_name = "task-worker"
@@ -61,14 +65,23 @@ Running test with the following configuration:
     """
     )
 
-    # Recreate the topic to ensure a clean state
-    recreate_topic(topic_name, 1)
+    # Ensure topic exists, if it does, ensure a clean state
+    if not check_topic_exists(topic_name):
+        print(
+            f"{topic_name} topic does not exist, creating it with {num_partitions} partition"
+        )
+        create_topic(topic_name, num_partitions)
+    else:
+        print(
+            f"recreating {topic_name} topic with {num_partitions} partition"
+        )
+        recreate_topic(topic_name, num_partitions)
 
     # Create config file for consumer
     print("Creating config file for consumer")
     TESTS_OUTPUT_PATH.mkdir(exist_ok=True)
-    db_name = f"db_0_{curr_time}"
-    config_filename = "config_0.yml"
+    db_name = f"db_0_{curr_time}_test_tasks_written_once_during_rebalancing"
+    config_filename = "config_0_test_tasks_written_once_during_rebalancing.yml"
     consumer_config = {
         "db_name": db_name,
         "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
@@ -89,7 +102,7 @@ Running test with the following configuration:
             args=(
                 consumer_path,
                 str(TESTS_OUTPUT_PATH / config_filename),
-                str(TESTS_OUTPUT_PATH / f"consumer_0_{curr_time}.log"),
+                str(TESTS_OUTPUT_PATH / f"consumer_0_{curr_time}_test_tasks_written_once_during_rebalancing.log"),
                 consumer_timeout,
             ),
         )
@@ -114,3 +127,27 @@ FROM {consumer_config['db_name']}.inflight_taskactivations;"""
     print(f"{'count'.rjust(16)}")
     for (count,) in row_count:
         print(f"{str(count).rjust(16)}")
+
+
+    test_query = f"""        SELECT
+            partition,
+            (max(offset) - min(offset)) + 1 AS expected,
+            count(*) AS actual,
+            (max(offset) - min(offset)) + 1 - count(*) AS diff
+        FROM {consumer_config['db_name']}.inflight_taskactivations
+        GROUP BY partition
+        ORDER BY partition;"""
+
+
+    test_row_count = cur.execute(test_query).fetchall()
+    print("\n======== Verify number of rows based on max and min offset ========")
+    print("Query:")
+    print(test_query)
+    print("Result:")
+    print(
+        f"{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
+    )
+    for partition, expected_row_count, actual_row_count, diff in test_row_count:
+        print(
+            f"{str(partition).rjust(16)}{str(expected_row_count).rjust(16)}{str(actual_row_count).rjust(16)}{str(diff).rjust(16)}"
+        )
