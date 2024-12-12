@@ -1,5 +1,5 @@
 # Development
-setup: setup-git ## run setup tasks to create and configure a development environment
+setup: setup-git install-py-dev ## run setup tasks to create and configure a development environment
 .PHONY: setup
 
 setup-git: .git/hooks/pre-commit ## Setup git-hooks
@@ -27,7 +27,7 @@ style: ## Run style checking tools (cargo-fmt)
 
 lint: ## Run linting tools (cargo-clippy)
 	@rustup component add clippy 2> /dev/null
-	cargo clippy --workspace --all-targets --all-features --no-deps --allow-dirty -- -D warnings
+	cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings
 .PHONY: format
 
 format: ## Run autofix mode for formatting and lint

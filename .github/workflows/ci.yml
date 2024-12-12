@@ -26,10 +26,10 @@ jobs:
       - uses: swatinem/rust-cache@v2
 
       - name: Run Rustfmt
-        run: cargo fmt --all -- --check
+        run: make style
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-features --tests -- -D clippy::all
+        run: make lint
 
   test:
     name: Tests (ubuntu)
@@ -38,27 +38,14 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - name: Checkout sentry
-        uses: actions/checkout@v4
-        with:
-          repository: getsentry/sentry
-          path: sentry
+      - name: Install Python Dependencies
+        run: |
+          make install-py-dev
 
-      - name: Setup steps
+      - name: Start services
         id: setup
         run: |
-          # We cannot execute actions that are not placed under .github of the main repo
-          mkdir -p .github/actions
-          cp -r sentry/.github/actions/* .github/actions
-
-      - name: Setup Sentry
-        id: setup-sentry
-        uses: ./.github/actions/setup-sentry
-        with:
-          workdir: sentry
-          snuba: false
-          kafka: true
-          clickhouse: false
+          devservices up
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -78,12 +65,6 @@ jobs:
         with:
           command: test
           args: --all
-
-      - name: Install Python Dependencies
-        run: |
-          python -m venv python/.venv
-          . python/.venv/bin/activate
-          pip install -r python/requirements-dev.txt
 
       - name: Run Python Integration Tests
         run: |
