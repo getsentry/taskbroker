@@ -45,34 +45,11 @@ def create_topic(topic_name: str, num_partitions: int) -> None:
             "--topic",
             topic_name,
             "--partitions",
-            str(num_partitions),
-            "--replication-factor",
-            "1",
+            str(num_partitions)
         ]
         subprocess.run(create_topic_cmd, check=True)
     except Exception as e:
         raise Exception(f"Failed to create topic: {e}")
-
-
-def update_topic_partitions(topic_name: str, num_partitions: int) -> None:
-    try:
-        create_topic_cmd = [
-            "docker",
-            "exec",
-            "kafka-kafka-1",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--alter",
-            "--topic",
-            topic_name,
-            "--partitions",
-            str(num_partitions),
-        ]
-        subprocess.run(create_topic_cmd, check=True)
-    except Exception:
-        # Command fails topic already has the correct number of partitions. Try to continue.
-        pass
 
 
 def recreate_topic(topic_name: str, num_partitions: int) -> None:
@@ -94,7 +71,7 @@ def recreate_topic(topic_name: str, num_partitions: int) -> None:
             check=True
         )
 
-        time.sleep(2)
+        time.sleep(3)
         create_topic(topic_name, num_partitions)
     except Exception as e:
         raise Exception(f"Failed to recreate topic: {e}")
@@ -122,8 +99,8 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
 def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
     try:
         producer = Producer({
-            'bootstrap.servers': 'localhost:9092',
-            'broker.address.family': 'v4'
+            'bootstrap.servers': '127.0.0.1:9092',
+            'broker.address.family': 'v4',
         })
 
         for _ in range(num_messages):
@@ -135,7 +112,3 @@ def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
         print(f"Sent {num_messages} messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
-
-
-class TaskworkerClientClone:
-    pass

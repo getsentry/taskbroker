@@ -15,7 +15,7 @@ from python.integration_tests.helpers import (
     TESTS_OUTPUT_PATH,
     check_topic_exists,
     create_topic,
-    update_topic_partitions,
+    recreate_topic,
     send_messages_to_kafka,
 )
 
@@ -89,7 +89,7 @@ Running test with the following configuration:
         print(
             f"{topic_name} topic already exists, making sure it has {num_partitions} partitions"
         )
-        update_topic_partitions(topic_name, num_partitions)
+        recreate_topic(topic_name, num_partitions)
 
     # Create config files for consumers
     print("Creating config files for consumers")

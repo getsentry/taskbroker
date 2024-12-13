@@ -1,3 +1,4 @@
+import pytest
 import signal
 import sqlite3
 import subprocess
@@ -12,32 +13,95 @@ from python.integration_tests.helpers import (
     send_messages_to_kafka,
     check_topic_exists,
     create_topic,
-    update_topic_partitions,
     recreate_topic,
 )
+
+from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
+
+
+def manage_taskworker(worker_id: int, consumer_config: dict, log_file_path: str, num_messages: int, tasks_written_event: threading.Event, shutdown_event: threading.Event) -> None:
+    print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
+    worker = SimpleTaskWorker(TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}"))
+    fetched_tasks = 0
+    completed_tasks = 0
+
+    next_task = None
+    task = None
+
+    # Wait for consumer to initialize sqlite and write tasks to it
+    while not tasks_written_event.is_set():
+        print(f"[taskworker_{worker_id}]: Waiting for consumer to initialize sqlite and write tasks to it...")
+        time.sleep(1)
+
+    print(f"[taskworker_{worker_id}]: Processing tasks...")
+    try:
+        while not shutdown_event.is_set():
+            if next_task:
+                task = next_task
+                next_task = None
+            else:
+                task = worker.fetch_task()
+                fetched_tasks += 1
+
+            if not task:
+                if get_num_tasks_by_status(consumer_config, 'Pending') > 0:
+                    time.sleep(1)
+                    continue
+                if get_num_tasks_by_status(consumer_config, 'Complete') == num_messages:
+                    print(f"[taskworker_{worker_id}]: All tasks completed, shutting down taskworker_{worker_id}")
+                    shutdown_event.set()
+                    break
+            else:
+                print(f"[taskworker_{worker_id}]: Fetched task {task.id}")
+                next_task = worker.process_task(task)
+                completed_tasks += 1
+                print(f"[taskworker_{worker_id}]: Completed task {task.id}")
+    except Exception as e:
+        print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
+        return 2
 
 
 def manage_consumer(
     consumer_path: str,
     config_file_path: str,
+    consumer_config: dict,
     log_file_path: str,
     timeout: int,
+    num_messages: int,
+    tasks_written_event: threading.Event,
+    shutdown_event: threading.Event
 ) -> None:
     with open(log_file_path, "a") as log_file:
         print(
-            f"Starting consumer, writing log file to {log_file_path}"
+            f"[consumer_0] Starting consumer, writing log file to {log_file_path}"
         )
         process = subprocess.Popen(
             [consumer_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
             stdout=log_file,
         )
+        time.sleep(3)  # give the consumer some time to start
+
+        # Let the consumer write the messages to sqlite
         end = time.time() + timeout
-        all_messages_written = False
-        while (time.time() < end) and (not all_messages_written):
-            # TODO: make sure consumer writes all messages in the topic to sqlite
-            # TODO: gracefully terminate the consumer
-            pass
+        while (time.time() < end) and (not tasks_written_event.is_set()):
+            if check_num_tasks_written(consumer_config) == num_messages:
+                print(f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite")
+                tasks_written_event.set()
+            time.sleep(1)
+
+        # Keep gRPC consumer alive until taskworker is done processing
+        if tasks_written_event.is_set():
+            print("[consumer_0]: Waiting for taskworker to finish processing...")
+            while not shutdown_event.is_set():
+                time.sleep(1)
+            print("[consumer_0]: Received shutdown signal from taskworker")
+        else:
+            print("[consumer_0]: Timeout elapse and not all tasks have been written to sqlite. Signalling taskworker to stop")
+            shutdown_event.set()
+
+        # Stop the consumer
+        print("[consumer_0]: Shutting down consumer")
         process.send_signal(signal.SIGINT)
         try:
             return_code = process.wait(timeout=10)
@@ -46,13 +110,61 @@ def manage_consumer(
             process.kill()
 
 
-def test_tasks_written_once_during_rebalancing() -> None:
+def check_num_tasks_written(consumer_config: dict) -> bool:
+    attach_db_stmt = f"ATTACH DATABASE '{consumer_config['db_path']}' AS {consumer_config['db_name']};\n"
+    query = f"""SELECT count(*) as count FROM {consumer_config['db_name']}.inflight_taskactivations;"""
+    con = sqlite3.connect(consumer_config["db_path"])
+    cur = con.cursor()
+    cur.executescript(attach_db_stmt)
+    rows = cur.execute(query).fetchall()
+    count = rows[0][0]
+    return count
+
+
+def get_num_tasks_by_status(consumer_config: dict, status: str) -> int:
+    attach_db_stmt = f"ATTACH DATABASE '{consumer_config['db_path']}' AS {consumer_config['db_name']};\n"
+    query = f"""SELECT count(*) as count FROM {consumer_config['db_name']}.inflight_taskactivations WHERE status = '{status}';"""
+    con = sqlite3.connect(consumer_config["db_path"])
+    cur = con.cursor()
+    cur.executescript(attach_db_stmt)
+    rows = cur.execute(query).fetchall()
+    count = rows[0][0]
+    return count
+
+
+def test_task_worker_processing() -> None:
+    """
+    This tests is responsible for ensuring that all sent to taskbroker are processed and completed by taskworker only once.
+
+    Sequence diagram of test:
+    [Thread 1: Consumer]                                     [Thread 2-N: Taskworker(s)]
+             |                                                           |
+             |                                                           |
+    Start consumer                                              Start taskworker(s)
+             |                                                           |
+             |                                                           |
+    Consume kafka and write to sqlite                                    |
+             .                                                           |
+             .                                                           |
+    Done initializing and writing to sqlite --------Send signal--------->|
+             |                                                           |
+             |                                                     Process tasks
+             |                                                           .
+             |                                                           .
+             |                                                           .
+             |<---------send shutdown signal--------------Completed processing all tasks
+             |                                                           |
+             |                                                           |
+    Stop consumer                                                Stop taskworker(s)
+    """
+
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
-    num_messages = 3_000
+    num_messages = 1
     num_partitions = 1
-    max_pending_count = 15_000
-    consumer_timeout = 30
+    num_workers = 1
+    max_pending_count = 100_000
+    consumer_timeout = 15  # the time in seconds to wait for all messages to be written to sqlite
     topic_name = "task-worker"
     curr_time = int(time.time())
 
@@ -60,6 +172,8 @@ def test_tasks_written_once_during_rebalancing() -> None:
         f"""
 Running test with the following configuration:
         num of messages: {num_messages},
+        num of partitions: {num_partitions},
+        num of workers: {num_workers},
         max pending count: {max_pending_count},
         topic name: {topic_name}
     """
@@ -73,15 +187,15 @@ Running test with the following configuration:
         create_topic(topic_name, num_partitions)
     else:
         print(
-            f"recreating {topic_name} topic with {num_partitions} partition"
+            f"{topic_name} topic already exists, recreating it with {num_partitions} partition to ensure a clean state"
         )
         recreate_topic(topic_name, num_partitions)
 
     # Create config file for consumer
     print("Creating config file for consumer")
     TESTS_OUTPUT_PATH.mkdir(exist_ok=True)
-    db_name = f"db_0_{curr_time}_test_tasks_written_once_during_rebalancing"
-    config_filename = "config_0_test_tasks_written_once_during_rebalancing.yml"
+    db_name = f"db_0_{curr_time}_test_task_worker_processing"
+    config_filename = "config_0_test_task_worker_processing.yml"
     consumer_config = {
         "db_name": db_name,
         "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
@@ -97,57 +211,41 @@ Running test with the following configuration:
 
     try:
         send_messages_to_kafka(topic_name, num_messages)
-        thread = threading.Thread(
+        tasks_written_event = threading.Event()
+        shutdown_event = threading.Event()
+        consumer_thread = threading.Thread(
             target=manage_consumer,
             args=(
                 consumer_path,
                 str(TESTS_OUTPUT_PATH / config_filename),
-                str(TESTS_OUTPUT_PATH / f"consumer_0_{curr_time}_test_tasks_written_once_during_rebalancing.log"),
+                consumer_config,
+                str(TESTS_OUTPUT_PATH / f"consumer_0_{curr_time}_test_task_worker_processing.log"),
                 consumer_timeout,
+                num_messages,
+                tasks_written_event,
+                shutdown_event
             ),
         )
-        thread.start()
-        thread.join()
+        consumer_thread.start()
+
+        worker_threads = []
+        for i in range(num_workers):
+            worker_thread = threading.Thread(
+                target=manage_taskworker,
+                args=(i, consumer_config, str(TESTS_OUTPUT_PATH / f"taskworker_{i}_{curr_time}_test_task_worker_processing.log"), num_messages, tasks_written_event, shutdown_event),
+            )
+            worker_thread.start()
+            worker_threads.append(worker_thread)
+
+        consumer_thread.join()
+        for t in worker_threads:
+            t.join()
     except Exception as e:
         raise Exception(f"Error running taskbroker: {e}")
 
-    # Validate that all tasks were written once during rebalancing
-    attach_db_stmt = f"ATTACH DATABASE '{consumer_config['db_path']}' AS {consumer_config['db_name']};\n"
-    query = f"""SELECT count(*) as count
-FROM {consumer_config['db_name']}.inflight_taskactivations;"""
+    num_tasks_written = check_num_tasks_written(consumer_config)
+    if not num_tasks_written == num_messages:
+        pytest.fail(f"Not all messages were written to sqlite. Produced to kafka: {num_messages}, Written to sqlite: {num_tasks_written}")
 
-    con = sqlite3.connect(consumer_config["db_path"])
-    cur = con.cursor()
-    cur.executescript(attach_db_stmt)
-    row_count = cur.execute(query).fetchall()
-    print("\n======== Verify all messages were written ========")
-    print("Query:")
-    print(query)
-    print("Result:")
-    print(f"{'count'.rjust(16)}")
-    for (count,) in row_count:
-        print(f"{str(count).rjust(16)}")
-
-
-    test_query = f"""        SELECT
-            partition,
-            (max(offset) - min(offset)) + 1 AS expected,
-            count(*) AS actual,
-            (max(offset) - min(offset)) + 1 - count(*) AS diff
-        FROM {consumer_config['db_name']}.inflight_taskactivations
-        GROUP BY partition
-        ORDER BY partition;"""
-
-
-    test_row_count = cur.execute(test_query).fetchall()
-    print("\n======== Verify number of rows based on max and min offset ========")
-    print("Query:")
-    print(test_query)
-    print("Result:")
-    print(
-        f"{'Partition'.rjust(16)}{'Expected'.rjust(16)}{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
-    )
-    for partition, expected_row_count, actual_row_count, diff in test_row_count:
-        print(
-            f"{str(partition).rjust(16)}{str(expected_row_count).rjust(16)}{str(actual_row_count).rjust(16)}{str(diff).rjust(16)}"
-        )
+    assert tasks_written_event.is_set()
+    assert get_num_tasks_by_status(consumer_config, 'Complete') == num_messages
