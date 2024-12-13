@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{select, time};
-use tracing::{error, info, instrument};
+use tracing::{error, info, info_span, instrument, Instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -87,7 +87,11 @@ pub async fn do_upkeep(
     };
 
     // 1. Handle retry tasks
-    if let Ok(retries) = store.get_retry_activations().await {
+    if let Ok(retries) = store
+        .get_retry_activations()
+        .instrument(info_span!("get_retry_activations"))
+        .await
+    {
         // 2. Append retries to kafka
         let mut ids: Vec<String> = vec![];
         for inflight in retries {
@@ -114,17 +118,29 @@ pub async fn do_upkeep(
     }
 
     // 4. Handle processing deadlines
-    if let Ok(processing_count) = store.handle_processing_deadline().await {
+    if let Ok(processing_count) = store
+        .handle_processing_deadline()
+        .instrument(info_span!("handle_processing_deadline"))
+        .await
+    {
         result_context.processing_deadline_reset = processing_count;
     }
 
     // 5. Advance state on tasks past deadletter_at
-    if let Ok(deadletter_count) = store.handle_deadletter_at().await {
+    if let Ok(deadletter_count) = store
+        .handle_deadletter_at()
+        .instrument(info_span!("handle_deadletter_at"))
+        .await
+    {
         result_context.deadletter_at_expired = deadletter_count;
     }
 
     // 6. Handle failure state tasks
-    if let Ok(deadletter_activations) = store.handle_failed_tasks().await {
+    if let Ok(deadletter_activations) = store
+        .handle_failed_tasks()
+        .instrument(info_span!("handle_failed_tasks"))
+        .await
+    {
         let mut ids: Vec<String> = vec![];
         // Submit deadlettered tasks to dlq.
         for activation in deadletter_activations {
@@ -150,9 +166,14 @@ pub async fn do_upkeep(
     }
 
     // 8. Cleanup completed tasks
-    if let Ok(count) = store.remove_completed().await {
+    if let Ok(count) = store
+        .remove_completed()
+        .instrument(info_span!("remove_completed"))
+        .await
+    {
         result_context.completed = count;
     }
+
     if let Ok(pending_count) = store
         .count_by_status(InflightActivationStatus::Pending)
         .await
@@ -191,6 +212,7 @@ pub async fn do_upkeep(
 
 /// Create a new activation that is a 'retry' of the passed inflight_activation
 /// The retry_state.attempts is advanced as part of the retry state machine.
+#[instrument(skip_all)]
 fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActivation {
     let mut new_activation = inflight_activation.activation.clone();
 
