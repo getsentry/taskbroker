@@ -79,7 +79,7 @@ impl LoggingConfig {
         LoggingConfig {
             sentry_dsn: config.sentry_dsn.clone(),
             sentry_env: config.sentry_env.clone(),
-            traces_sample_rate: config.traces_sample_rate.or(Some(0.0)).unwrap(),
+            traces_sample_rate: config.traces_sample_rate.unwrap_or(0.0),
             log_level: config.log_level,
             log_format: config.log_format,
         }
