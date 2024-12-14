@@ -24,6 +24,8 @@ services:
       - 127.0.0.1:50051:50051
     networks:
       - devservices
+    labels:
+      - orchestrator=devservices
     restart: unless-stopped
     platform: linux/amd64
 
