@@ -168,10 +168,10 @@ def test_task_worker_processing() -> None:
              |                                                              .
              |<-------------[send shutdown signal]-------------Completed processing all tasks
              |                                                              |
-             |                                                              |
+             |                                                      Stop taskworker
              |                                                              |
     Once received shutdown signal(s)                                        |
-    from all workers, Stop consumer                                  Stop taskworker(s)
+    from all workers, Stop consumer                                         |
     """
 
     # Test configuration

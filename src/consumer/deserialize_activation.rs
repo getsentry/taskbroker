@@ -60,7 +60,6 @@ pub fn new(
                 deadletter_at = activation_received + expires_duration;
             }
         }
-        println!("partition for this message is {}", msg.partition());
 
         Ok(InflightActivation {
             activation,
