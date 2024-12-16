@@ -1,7 +1,7 @@
 use std::{mem::replace, sync::Arc, time::Duration};
 
 use chrono::DateTime;
-use tracing::debug;
+use tracing::{debug, instrument};
 
 use crate::{
     config::Config,
@@ -60,6 +60,7 @@ impl Reducer for InflightActivationWriter {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     async fn flush(&mut self) -> Result<Self::Output, anyhow::Error> {
         if self.buffer.is_empty() {
             return Ok(());
