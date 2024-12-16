@@ -1,9 +1,9 @@
 import grpc
 import time
 
-from sentry_protos.sentry.v1.taskworker_pb2 import RetryState, TaskActivation, FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivationStatus, TASK_ACTIVATION_STATUS_COMPLETE
-from google.protobuf.timestamp_pb2 import Timestamp
+from sentry_protos.sentry.v1.taskworker_pb2 import TaskActivation, FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivationStatus, TASK_ACTIVATION_STATUS_COMPLETE
 from sentry_protos.sentry.v1.taskworker_pb2_grpc import ConsumerServiceStub
+
 
 class TaskWorkerClient:
     """
@@ -62,36 +62,11 @@ class SimpleTaskWorker:
     A simple TaskWorker that is used for integration tests. This taskworker does not
     actually execute tasks, it simply fetches tasks from the taskworker gRPC server
     and updates their status depending on the test scenario.
-
-    To use SimpleTaskWorker in tests, call start() in a separate thread. Upon completion/exit,
-    the SimpleTaskWorker will log the number of tasks fetched and completed tasks into a file.
     """
 
     def __init__(self, client: TaskWorkerClient, namespace: str | None = None) -> None:
         self.client = client
         self._namespace: str | None = namespace
-
-    def start(self) -> None:
-        next_task: TaskActivation | None = None
-        task: TaskActivation | None = None
-        try:
-            while True:
-                if next_task:
-                    task = next_task
-                    next_task = None
-                else:
-                    task = self.fetch_task()
-
-                if not task:
-                    time.sleep(1)
-                    continue
-
-                next_task = self.process_task(task)
-        except KeyboardInterrupt:
-            return 1
-        except Exception as e:
-            print(f"Worker process crashed: {e}")
-            return 2
 
     def fetch_task(self) -> TaskActivation | None:
         try:
