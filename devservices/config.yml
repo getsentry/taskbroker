@@ -9,9 +9,25 @@ x-sentry-service-config:
         repo_name: sentry-shared-kafka
         branch: main
         repo_link: https://github.com/getsentry/sentry-shared-kafka
+    taskbroker:
+      description: Taskbroker service
   modes:
     default: [kafka]
-    containerized: [kafka]
+    containerized: [kafka, taskbroker]
+
+services:
+  taskbroker:
+    image: ghcr.io/getsentry/taskbroker:latest
+    environment:
+      TASKBROKER_KAFKA_CLUSTER: "kafka-kafka-1:9093"
+    ports:
+      - 127.0.0.1:50051:50051
+    networks:
+      - devservices
+    labels:
+      - orchestrator=devservices
+    restart: unless-stopped
+    platform: linux/amd64
 
 networks:
   devservices:

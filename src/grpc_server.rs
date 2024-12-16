@@ -17,7 +17,7 @@ pub struct MyConsumerService {
 
 #[tonic::async_trait]
 impl ConsumerService for MyConsumerService {
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn get_task(
         &self,
         request: Request<GetTaskRequest>,
@@ -44,7 +44,7 @@ impl ConsumerService for MyConsumerService {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip_all)]
     async fn set_task_status(
         &self,
         request: Request<SetTaskStatusRequest>,

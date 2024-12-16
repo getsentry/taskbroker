@@ -56,12 +56,16 @@ pub enum LogFormat {
     Text,
 }
 
+#[derive(Debug)]
 pub struct LoggingConfig {
     /// The sentry DSN to use for error reporting.
     pub sentry_dsn: Option<String>,
 
     /// The environment to report to sentry errors to.
     pub sentry_env: Option<Cow<'static, str>>,
+
+    /// The tracing sample rate
+    pub traces_sample_rate: f32,
 
     /// The log level to filter logging to.
     pub log_level: LogLevel,
@@ -75,6 +79,7 @@ impl LoggingConfig {
         LoggingConfig {
             sentry_dsn: config.sentry_dsn.clone(),
             sentry_env: config.sentry_env.clone(),
+            traces_sample_rate: config.traces_sample_rate.unwrap_or(0.0),
             log_level: config.log_level,
             log_format: config.log_format,
         }
@@ -89,6 +94,7 @@ pub fn init(log_config: LoggingConfig) {
             dsn,
             release: Some(Cow::Borrowed(get_version())),
             environment: log_config.sentry_env.clone(),
+            traces_sample_rate: log_config.traces_sample_rate,
             ..Default::default()
         });
 
