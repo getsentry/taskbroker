@@ -98,7 +98,7 @@ pub fn poll_consumer_client(
                 msg = consumer.recv() => {
                     error!("Got unexpected message from consumer client: {:?}", msg);
                 }
-            }
+            };
             debug!("Shutdown complete");
         });
     });
@@ -119,7 +119,19 @@ impl ClientContext for KafkaContext {}
 
 impl ConsumerContext for KafkaContext {
     #[instrument(skip_all)]
-    fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
+    fn pre_rebalance(&self, base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance) {
+        if let Rebalance::Assign(tpl) = rebalance {
+            if tpl.count() == 0 {
+                return;
+            }
+        }
+        base_consumer
+            .pause(
+                &base_consumer
+                    .assignment()
+                    .expect("Unable to fetch assigned TPL"),
+            )
+            .expect("Unable to pause consumer");
         let (rendezvous_sender, rendezvous_receiver) = sync_channel(0);
         match rebalance {
             Rebalance::Assign(tpl) => {
@@ -146,6 +158,31 @@ impl ConsumerContext for KafkaContext {
                 debug!("Got pre-rebalance callback, kind: Error");
                 error!("Got rebalance error: {}", err);
             }
+        }
+    }
+
+    #[instrument(skip(self, base_consumer))]
+    fn post_rebalance(&self, base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance) {
+        if let Rebalance::Assign(tpl) = rebalance {
+            if tpl.count() == 0 {
+                return;
+            }
+        }
+        let assignment = base_consumer
+            .assignment()
+            .expect("Failed to get assigned TPL");
+        if assignment.count() != 0 {
+            base_consumer
+                .seek_partitions(
+                    base_consumer
+                        .committed(rdkafka::util::Timeout::Never)
+                        .expect("Failed to get commited TPL"),
+                    rdkafka::util::Timeout::Never,
+                )
+                .expect("Failed to seek to commited offset");
+            base_consumer
+                .resume(&assignment)
+                .expect("Failed to resume consumer");
         }
     }
 
@@ -336,7 +373,7 @@ pub async fn handle_events(
 
     let mut state = ConsumerState::Ready;
 
-    while let ConsumerState::Ready { .. } | ConsumerState::Consuming { .. } = state {
+    while let ConsumerState::Ready | ConsumerState::Consuming { .. } = state {
         select! {
             res = match state {
                 ConsumerState::Consuming(ref mut handles, _) => Either::Left(handles.join_next()),
@@ -352,8 +389,8 @@ pub async fn handle_events(
                 };
                 info!("Received event: {:?}", event);
                 state = match (state, event) {
-                    (ConsumerState::Ready, Event::Assign(assigned)) => {
-                        ConsumerState::Consuming(spawn_actors(consumer.clone(), &assigned), assigned)
+                    (ConsumerState::Ready, Event::Assign(tpl)) => {
+                        ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
                         unreachable!("Got partition revocation before the consumer has started")
@@ -364,17 +401,17 @@ pub async fn handle_events(
                             tpl.is_disjoint(&assigned),
                             "Newly assigned TPL should be disjoint from TPL we're consuming from"
                         );
-                        tpl.append(&mut assigned);
                         debug!(
                             "{} additional topic partitions added after assignment",
                             assigned.len()
                         );
+                        tpl.append(&mut assigned);
                         handles.shutdown(CALLBACK_DURATION).await;
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Consuming(handles, mut tpl), Event::Revoke(revoked)) => {
                         assert!(
-                            tpl.is_subset(&revoked),
+                            revoked.is_subset(&tpl),
                             "Revoked TPL should be a subset of TPL we're consuming from"
                         );
                         tpl.retain(|e| !revoked.contains(e));
@@ -750,7 +787,7 @@ impl CommitClient for StreamConsumer<KafkaContext> {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct HighwaterMark {
     data: HashMap<(String, i32), i64>,
 }
@@ -795,6 +832,7 @@ pub async fn commit(
     while let Some(msgs) = receiver.recv().await {
         let mut highwater_mark = HighwaterMark::new();
         msgs.0.iter().for_each(|msg| highwater_mark.track(msg));
+        debug!("Store: {:?}", highwater_mark);
         consumer.store_offsets(&highwater_mark.into()).unwrap();
     }
     debug!("Shutdown complete");

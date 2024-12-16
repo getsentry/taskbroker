@@ -1,16 +1,9 @@
-use anyhow::{anyhow, Error};
+use anyhow::Error;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
-use taskbroker::grpc_middleware::MetricsLayer;
-use taskbroker::upkeep::upkeep;
-use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
-use tonic::transport::Server;
-use tonic_health::server::health_reporter;
 use tracing::{error, info};
-
-use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::config::Config;
 use taskbroker::consumer::{
@@ -19,7 +12,6 @@ use taskbroker::consumer::{
     kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
-use taskbroker::grpc_server::MyConsumerService;
 use taskbroker::inflight_activation_store::InflightActivationStore;
 use taskbroker::logging;
 use taskbroker::metrics;
@@ -50,14 +42,14 @@ async fn main() -> Result<(), Error> {
     let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
 
     // Upkeep thread
-    let upkeep_task = tokio::spawn({
-        let upkeep_store = store.clone();
-        let upkeep_config = config.clone();
-        async move {
-            upkeep(upkeep_config, upkeep_store).await;
-            Ok(())
-        }
-    });
+    // let upkeep_task = tokio::spawn({
+    //     let upkeep_store = store.clone();
+    //     let upkeep_config = config.clone();
+    //     async move {
+    //         upkeep(upkeep_config, upkeep_store).await;
+    //         Ok(())
+    //     }
+    // });
 
     // Consumer from kafka
     let consumer_task = tokio::spawn({
@@ -89,57 +81,57 @@ async fn main() -> Result<(), Error> {
     });
 
     // GRPC server
-    let grpc_server_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
-        async move {
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            let (mut health_reporter_fn, health_service) = health_reporter();
-            health_reporter_fn
-                .set_serving::<ConsumerServiceServer<MyConsumerService>>()
-                .await;
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
-                .parse()
-                .expect("Failed to parse address");
+    // let grpc_server_task = tokio::spawn({
+    //     let grpc_store = store.clone();
+    //     let grpc_config = config.clone();
+    //     async move {
+    //         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+    //         let (mut health_reporter_fn, health_service) = health_reporter();
+    //         health_reporter_fn
+    //             .set_serving::<ConsumerServiceServer<MyConsumerService>>()
+    //             .await;
+    //         let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
+    //             .parse()
+    //             .expect("Failed to parse address");
 
-            let layers = tower::ServiceBuilder::new()
-                .layer(MetricsLayer::default())
-                .into_inner();
+    //         let layers = tower::ServiceBuilder::new()
+    //             .layer(MetricsLayer::default())
+    //             .into_inner();
 
-            let server = Server::builder()
-                .layer(layers)
-                .add_service(ConsumerServiceServer::new(MyConsumerService {
-                    store: grpc_store,
-                }))
-                .add_service(health_service)
-                .serve(addr);
+    //         let server = Server::builder()
+    //             .layer(layers)
+    //             .add_service(ConsumerServiceServer::new(MyConsumerService {
+    //                 store: grpc_store,
+    //             }))
+    //             .add_service(health_service)
+    //             .serve(addr);
 
-            info!("GRPC server listening on {}", addr);
-            select! {
-                biased;
+    //         info!("GRPC server listening on {}", addr);
+    //         select! {
+    //             biased;
 
-                res = server => {
-                    info!("GRPC server task failed, shutting down");
-                    health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
+    //             res = server => {
+    //                 info!("GRPC server task failed, shutting down");
+    //                 health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    match res {
-                        Ok(()) => Ok(()),
-                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
-                    }
-                }
-                _ = guard.wait() => {
-                    info!("Cancellation token received, shutting down GRPC server");
-                    health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
+    //                 // Wait for any running requests to drain
+    //                 tokio::time::sleep(Duration::from_secs(5)).await;
+    //                 match res {
+    //                     Ok(()) => Ok(()),
+    //                     Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+    //                 }
+    //             }
+    //             _ = guard.wait() => {
+    //                 info!("Cancellation token received, shutting down GRPC server");
+    //                 health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok(())
-                }
-            }
-        }
-    });
+    //                 // Wait for any running requests to drain
+    //                 tokio::time::sleep(Duration::from_secs(5)).await;
+    //                 Ok(())
+    //             }
+    //         }
+    //     }
+    // });
 
     elegant_departure::tokio::depart()
         .on_termination()
@@ -147,8 +139,8 @@ async fn main() -> Result<(), Error> {
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
-        .on_completion(log_task_completion("grpc_server", grpc_server_task))
-        .on_completion(log_task_completion("upkeep_task", upkeep_task))
+        // .on_completion(log_task_completion("grpc_server", grpc_server_task))
+        // .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .await;
 
     Ok(())

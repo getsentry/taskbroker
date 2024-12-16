@@ -210,8 +210,13 @@ Running test with the following configuration:
             for log_line_index, line in enumerate(lines):
                 if "[31mERROR" in line:
                     # If there is an error in log file, capture 10 lines before and after the error line
-                    consumer_error_logs.append(f"Error found in consumer_{i}. Logging 10 lines before and after the error line:")
-                    for j in range(max(0, log_line_index - 10), min(len(lines) - 1, log_line_index + 10)):
+                    consumer_error_logs.append(
+                        f"Error found in consumer_{i}. Logging 10 lines before and after the error line:"
+                    )
+                    for j in range(
+                        max(0, log_line_index - 10),
+                        min(len(lines) - 1, log_line_index + 10),
+                    ):
                         consumer_error_logs.append(lines[j].strip())
                     consumer_error_logs.append("")
 
