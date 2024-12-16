@@ -6,18 +6,20 @@ import subprocess
 import threading
 import time
 
+from pathlib import Path
 from threading import Thread
 
 import yaml
 
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
-    TESTS_OUTPUT_PATH,
     check_topic_exists,
     create_topic,
     recreate_topic,
     send_messages_to_kafka,
 )
+
+TEST_OUTPUT_PATH = Path(__file__).parent / ".output_from_test_consumer_rebalancing"
 
 
 def manage_consumer(
@@ -93,13 +95,13 @@ Running test with the following configuration:
 
     # Create config files for consumers
     print("Creating config files for consumers")
-    TESTS_OUTPUT_PATH.mkdir(exist_ok=True)
+    TEST_OUTPUT_PATH.mkdir(exist_ok=True)
     consumer_configs = {}
     for i in range(num_consumers):
         db_name = f"db_{i}_{curr_time}"
         consumer_configs[f"config_{i}.yml"] = {
             "db_name": db_name,
-            "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
+            "db_path": str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
             "max_pending_count": max_pending_count,
             "kafka_topic": topic_name,
             "kafka_consumer_group": topic_name,
@@ -108,7 +110,7 @@ Running test with the following configuration:
         }
 
     for filename, config in consumer_configs.items():
-        with open(str(TESTS_OUTPUT_PATH / filename), "w") as f:
+        with open(str(TEST_OUTPUT_PATH / filename), "w") as f:
             yaml.safe_dump(config, f)
 
     try:
@@ -120,11 +122,11 @@ Running test with the following configuration:
                 args=(
                     i,
                     consumer_path,
-                    str(TESTS_OUTPUT_PATH / f"config_{i}.yml"),
+                    str(TEST_OUTPUT_PATH / f"config_{i}.yml"),
                     num_restarts,
                     min_restart_duration,
                     max_restart_duration,
-                    str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"),
+                    str(TEST_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"),
                 ),
             )
             thread.start()
@@ -205,7 +207,7 @@ Running test with the following configuration:
 
     consumers_have_error = False
     for i in range(num_consumers):
-        with open(str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r") as f:
+        with open(str(TEST_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r") as f:
             consumers_have_error = consumers_have_error or "[31mERROR" in f.read()
 
     if not all([row[3] == 0 for row in row_count]):
@@ -228,13 +230,13 @@ Running test with the following configuration:
         for i in range(num_consumers):
             print(f"=== consumer {i} log ===")
             with open(
-                str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r"
+                str(TEST_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r"
             ) as f:
                 print(f.read())
 
     # Clean up test output files
-    print(f"Cleaning up test output files in {TESTS_OUTPUT_PATH}")
-    shutil.rmtree(TESTS_OUTPUT_PATH)
+    print(f"Cleaning up test output files in {TEST_OUTPUT_PATH}")
+    shutil.rmtree(TEST_OUTPUT_PATH)
 
     assert (
         all([row[3] == 0 for row in row_count])

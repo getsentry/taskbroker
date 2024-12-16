@@ -10,7 +10,6 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
-TESTS_OUTPUT_PATH = Path(__file__).parent / ".tests_output"
 
 
 def check_topic_exists(topic_name: str) -> bool:

@@ -7,9 +7,9 @@ import time
 
 import yaml
 
+from pathlib import Path
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
-    TESTS_OUTPUT_PATH,
     send_messages_to_kafka,
     check_topic_exists,
     create_topic,
@@ -17,6 +17,9 @@ from python.integration_tests.helpers import (
 )
 
 from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
+
+
+TEST_OUTPUT_PATH = Path(__file__).parent / ".output_from_test_task_worker_processing"
 
 
 def manage_taskworker(
@@ -204,12 +207,12 @@ Running test with the following configuration:
 
     # Create config file for consumer
     print("Creating config file for consumer")
-    TESTS_OUTPUT_PATH.mkdir(exist_ok=True)
+    TEST_OUTPUT_PATH.mkdir(exist_ok=True)
     db_name = f"db_0_{curr_time}_test_task_worker_processing"
     config_filename = "config_0_test_task_worker_processing.yml"
     consumer_config = {
         "db_name": db_name,
-        "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
+        "db_path": str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
         "max_pending_count": max_pending_count,
         "kafka_topic": topic_name,
         "kafka_consumer_group": topic_name,
@@ -217,7 +220,7 @@ Running test with the following configuration:
         "grpc_port": 50051,
     }
 
-    with open(str(TESTS_OUTPUT_PATH / config_filename), "w") as f:
+    with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
         yaml.safe_dump(consumer_config, f)
 
     try:
@@ -228,9 +231,9 @@ Running test with the following configuration:
             target=manage_consumer,
             args=(
                 consumer_path,
-                str(TESTS_OUTPUT_PATH / config_filename),
+                str(TEST_OUTPUT_PATH / config_filename),
                 consumer_config,
-                str(TESTS_OUTPUT_PATH / f"consumer_0_{curr_time}_test_task_worker_processing.log"),
+                str(TEST_OUTPUT_PATH / f"consumer_0_{curr_time}_test_task_worker_processing.log"),
                 consumer_timeout,
                 num_messages,
                 tasks_written_event,
@@ -242,7 +245,7 @@ Running test with the following configuration:
         worker_threads = []
         worker_log_files = []
         for i in range(num_workers):
-            log_file = str(TESTS_OUTPUT_PATH / f"taskworker_{i}_output_{curr_time}_test_task_worker_processing.log")
+            log_file = str(TEST_OUTPUT_PATH / f"taskworker_{i}_output_{curr_time}_test_task_worker_processing.log")
             worker_log_files.append(log_file)
             worker_thread = threading.Thread(
                 target=manage_taskworker,
