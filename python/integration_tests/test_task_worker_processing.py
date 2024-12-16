@@ -19,7 +19,14 @@ from python.integration_tests.helpers import (
 from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
 
 
-def manage_taskworker(worker_id: int, consumer_config: dict, log_file_path: str, num_messages: int, tasks_written_event: threading.Event, shutdown_event: threading.Event) -> None:
+def manage_taskworker(
+    worker_id: int,
+    consumer_config: dict,
+    log_file_path: str,
+    num_messages: int,
+    tasks_written_event: threading.Event,
+    shutdown_event: threading.Event
+) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
     worker = SimpleTaskWorker(TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}"))
     fetched_tasks = 0
@@ -29,8 +36,8 @@ def manage_taskworker(worker_id: int, consumer_config: dict, log_file_path: str,
     task = None
 
     # Wait for consumer to initialize sqlite and write tasks to it
+    print(f"[taskworker_{worker_id}]: Waiting for consumer to initialize sqlite and write tasks to it...")
     while not tasks_written_event.is_set():
-        print(f"[taskworker_{worker_id}]: Waiting for consumer to initialize sqlite and write tasks to it...")
         time.sleep(1)
 
     print(f"[taskworker_{worker_id}]: Processing tasks...")
@@ -41,24 +48,27 @@ def manage_taskworker(worker_id: int, consumer_config: dict, log_file_path: str,
                 next_task = None
             else:
                 task = worker.fetch_task()
-                fetched_tasks += 1
+                if task:
+                    fetched_tasks += 1
 
             if not task:
-                if get_num_tasks_by_status(consumer_config, 'Pending') > 0:
-                    time.sleep(1)
-                    continue
-                if get_num_tasks_by_status(consumer_config, 'Complete') == num_messages:
-                    print(f"[taskworker_{worker_id}]: All tasks completed, shutting down taskworker_{worker_id}")
+                if get_num_tasks_by_status(consumer_config, 'Pending') == 0:
+                    print(f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}")
                     shutdown_event.set()
                     break
+                time.sleep(1)
+                continue
             else:
-                print(f"[taskworker_{worker_id}]: Fetched task {task.id}")
                 next_task = worker.process_task(task)
+                if next_task:
+                    fetched_tasks += 1
                 completed_tasks += 1
-                print(f"[taskworker_{worker_id}]: Completed task {task.id}")
     except Exception as e:
         print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
         return 2
+
+    with open(log_file_path, "a") as log_file:
+        log_file.write(f"Fetched:{fetched_tasks}, Completed:{completed_tasks}")
 
 
 def manage_consumer(
@@ -85,8 +95,9 @@ def manage_consumer(
         # Let the consumer write the messages to sqlite
         end = time.time() + timeout
         while (time.time() < end) and (not tasks_written_event.is_set()):
-            if check_num_tasks_written(consumer_config) == num_messages:
-                print(f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite")
+            written_tasks = check_num_tasks_written(consumer_config)
+            if written_tasks == num_messages:
+                print(f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite. Sending signal to taskworker(s) to start processing")
                 tasks_written_event.set()
             time.sleep(1)
 
@@ -97,7 +108,7 @@ def manage_consumer(
                 time.sleep(1)
             print("[consumer_0]: Received shutdown signal from taskworker")
         else:
-            print("[consumer_0]: Timeout elapse and not all tasks have been written to sqlite. Signalling taskworker to stop")
+            print("[consumer_0]: Timeout elapse and not all tasks have been written to sqlite. Signalling taskworker(s) to stop")
             shutdown_event.set()
 
         # Stop the consumer
@@ -110,7 +121,7 @@ def manage_consumer(
             process.kill()
 
 
-def check_num_tasks_written(consumer_config: dict) -> bool:
+def check_num_tasks_written(consumer_config: dict) -> int:
     attach_db_stmt = f"ATTACH DATABASE '{consumer_config['db_path']}' AS {consumer_config['db_name']};\n"
     query = f"""SELECT count(*) as count FROM {consumer_config['db_name']}.inflight_taskactivations;"""
     con = sqlite3.connect(consumer_config["db_path"])
@@ -136,33 +147,33 @@ def test_task_worker_processing() -> None:
     """
     This tests is responsible for ensuring that all sent to taskbroker are processed and completed by taskworker only once.
 
-    Sequence diagram of test:
-    [Thread 1: Consumer]                                     [Thread 2-N: Taskworker(s)]
-             |                                                           |
-             |                                                           |
-    Start consumer                                              Start taskworker(s)
-             |                                                           |
-             |                                                           |
-    Consume kafka and write to sqlite                                    |
-             .                                                           |
-             .                                                           |
-    Done initializing and writing to sqlite --------Send signal--------->|
-             |                                                           |
-             |                                                     Process tasks
-             |                                                           .
-             |                                                           .
-             |                                                           .
-             |<---------send shutdown signal--------------Completed processing all tasks
-             |                                                           |
-             |                                                           |
-    Stop consumer                                                Stop taskworker(s)
+    Sequence diagram:
+    [Thread 1: Consumer]                                        [Thread 2-N: Taskworker(s)]
+             |                                                              |
+             |                                                              |
+    Start consumer                                                 Start taskworker(s)
+             |                                                              |
+             |                                                              |
+    Consume kafka and write to sqlite                                       |
+             .                                                              |
+             .                                                              |
+    Done initializing and writing to sqlite ---------[Send signal]--------->|
+             |                                                              |
+             |                                                        Process tasks
+             |                                                              .
+             |                                                              .
+             |                                                              .
+             |<-------------[send shutdown signal]-------------Completed processing all tasks
+             |                                                              |
+             |                                                              |
+    Stop consumer                                                   Stop taskworker(s)
     """
 
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
-    num_messages = 1
+    num_messages = 1000
     num_partitions = 1
-    num_workers = 1
+    num_workers = 2
     max_pending_count = 100_000
     consumer_timeout = 15  # the time in seconds to wait for all messages to be written to sqlite
     topic_name = "task-worker"
@@ -229,10 +240,13 @@ Running test with the following configuration:
         consumer_thread.start()
 
         worker_threads = []
+        worker_log_files = []
         for i in range(num_workers):
+            log_file = str(TESTS_OUTPUT_PATH / f"taskworker_{i}_output_{curr_time}_test_task_worker_processing.log")
+            worker_log_files.append(log_file)
             worker_thread = threading.Thread(
                 target=manage_taskworker,
-                args=(i, consumer_config, str(TESTS_OUTPUT_PATH / f"taskworker_{i}_{curr_time}_test_task_worker_processing.log"), num_messages, tasks_written_event, shutdown_event),
+                args=(i, consumer_config, log_file, num_messages, tasks_written_event, shutdown_event),
             )
             worker_thread.start()
             worker_threads.append(worker_thread)
@@ -243,9 +257,17 @@ Running test with the following configuration:
     except Exception as e:
         raise Exception(f"Error running taskbroker: {e}")
 
-    num_tasks_written = check_num_tasks_written(consumer_config)
-    if not num_tasks_written == num_messages:
+    if not tasks_written_event.is_set():
         pytest.fail(f"Not all messages were written to sqlite. Produced to kafka: {num_messages}, Written to sqlite: {num_tasks_written}")
 
-    assert tasks_written_event.is_set()
-    assert get_num_tasks_by_status(consumer_config, 'Complete') == num_messages
+    total_fetched = 0
+    total_completed = 0
+    for log_file in worker_log_files:
+        with open(log_file, "r") as log_file:
+            line = log_file.readline()
+            total_fetched += int(line.split(',')[0].split(':')[1])
+            total_completed += int(line.split(',')[1].split(':')[1])
+
+    print(f"Total tasks fetched: {total_fetched}, Total tasks completed: {total_completed}")
+    assert total_fetched == num_messages
+    assert total_completed == num_messages
