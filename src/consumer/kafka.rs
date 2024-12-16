@@ -362,11 +362,12 @@ pub async fn handle_events(
                     (ConsumerState::Consuming(_, _), Event::Assign(_)) => {
                         unreachable!("Got partition assignment after the consumer has started")
                     }
-                    (ConsumerState::Consuming(_, tpl), Event::Revoke(revoked)) => {
+                    (ConsumerState::Consuming(handles, tpl), Event::Revoke(revoked)) => {
                         assert!(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
+                        handles.shutdown(CALLBACK_DURATION).await;
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
