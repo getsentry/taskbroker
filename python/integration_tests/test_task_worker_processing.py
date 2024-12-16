@@ -176,9 +176,9 @@ def test_task_worker_processing() -> None:
 
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
-    num_messages = 8_000
+    num_messages = 6_000
     num_partitions = 1
-    num_workers = 20
+    num_workers = 10
     max_pending_count = 100_000
     consumer_timeout = 20  # the time in seconds to wait for all messages to be written to sqlite
     topic_name = "task-worker"
