@@ -19,6 +19,9 @@ pub struct Config {
     /// The environment to report to sentry errors to.
     pub sentry_env: Option<Cow<'static, str>>,
 
+    /// The sampling rate for tracing data.
+    pub traces_sample_rate: Option<f32>,
+
     /// The log level to filter logging to.
     pub log_level: LogLevel,
 
@@ -88,6 +91,7 @@ impl Default for Config {
         Self {
             sentry_dsn: None,
             sentry_env: None,
+            traces_sample_rate: Some(0.0),
             log_level: LogLevel::Debug,
             log_format: LogFormat::Text,
             grpc_addr: "0.0.0.0".to_owned(),
