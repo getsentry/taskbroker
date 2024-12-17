@@ -49,6 +49,9 @@ pub struct Config {
     /// The kafka topic to publish dead letter messages on
     pub kafka_deadletter_topic: String,
 
+    /// The default number of partitions for a topic
+    pub default_topic_partitions: i32,
+
     /// The kafka session timeout in ms
     pub kafka_session_timeout_ms: usize,
 
@@ -101,6 +104,7 @@ impl Default for Config {
             kafka_consumer_group: "task-worker".to_owned(),
             kafka_topic: "task-worker".to_owned(),
             kafka_deadletter_topic: "task-worker-dlq".to_owned(),
+            default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),

@@ -72,6 +72,7 @@ async fn main() -> Result<(), Error> {
             start_consumer(
                 &topic_list,
                 &kafka_config,
+                consumer_config.default_topic_partitions,
                 processing_strategy!({
                     map: deserialize_activation::new(DeserializeConfig::from_config(&consumer_config)),
                     reduce: InflightActivationWriter::new(
