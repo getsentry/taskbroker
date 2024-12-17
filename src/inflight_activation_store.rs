@@ -528,11 +528,13 @@ impl InflightActivationStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
     use chrono::{TimeZone, Utc};
     use sentry_protos::sentry::v1::{RetryState, TaskActivation, TaskActivationStatus};
+    use tokio::sync::broadcast;
+    use tokio::task::JoinSet;
 
     use crate::inflight_activation_store::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
@@ -649,53 +651,38 @@ mod tests {
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
     async fn test_get_pending_activation_with_race() {
-        use tokio::sync::broadcast;
-        let (tx, mut rx1) = broadcast::channel(1);
-        let mut rx2 = tx.subscribe();
-        let mut rx3 = tx.subscribe();
-        let mut rx4 = tx.subscribe();
-
         let url = generate_temp_filename();
         let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
 
-        let batch = make_activations(4);
-        assert!(store.store(batch.clone()).await.is_ok());
-        let store1 = store.clone();
-        let store2 = store.clone();
-        let store3 = store.clone();
-        let store4 = store.clone();
-        let res1 = tokio::spawn(async move {
-            rx1.recv().await.unwrap();
-            store1.get_pending_activation(None).await.unwrap().unwrap()
-        });
+        const NUM_CONCURRENT_WRITES: u32 = 2000;
 
-        let res2 = tokio::spawn(async move {
-            rx2.recv().await.unwrap();
-            store2.get_pending_activation(None).await.unwrap().unwrap()
-        });
+        let batch = make_activations(NUM_CONCURRENT_WRITES);
+        store.store(batch).await.unwrap();
 
-        let res3 = tokio::spawn(async move {
-            rx3.recv().await.unwrap();
-            store3.get_pending_activation(None).await.unwrap().unwrap()
-        });
+        let (tx, _) = broadcast::channel::<()>(1);
+        let mut join_set = JoinSet::new();
 
-        let res4 = tokio::spawn(async move {
-            rx4.recv().await.unwrap();
-            store4.get_pending_activation(None).await.unwrap().unwrap()
-        });
+        for _ in 0..NUM_CONCURRENT_WRITES {
+            let mut rx = tx.subscribe();
+            let store = store.clone();
+            join_set.spawn(async move {
+                rx.recv().await.unwrap();
+                store.get_pending_activation(None).await.unwrap().unwrap()
+            });
+        }
 
         tx.send(()).unwrap();
 
-        let result = res1.await.unwrap();
-        let result2 = res2.await.unwrap();
-        let result3 = res3.await.unwrap();
-        let result4 = res4.await.unwrap();
+        let res: HashSet<_> = join_set
+            .join_all()
+            .await
+            .iter()
+            .map(|ifa| ifa.activation.id.clone())
+            .collect();
 
-        assert_ne!(result.activation.id, result2.activation.id);
-        assert_ne!(result2.activation.id, result3.activation.id);
-        assert_ne!(result3.activation.id, result4.activation.id);
+        assert_eq!(res.len(), NUM_CONCURRENT_WRITES as usize);
     }
 
     #[tokio::test]
