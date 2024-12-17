@@ -150,7 +150,14 @@ def get_num_tasks_by_status(consumer_config: dict, status: str) -> int:
 
 def test_task_worker_processing() -> None:
     """
-    This tests is responsible for ensuring that all sent to taskbroker are processed and completed by taskworker only once.
+    This tests is responsible for ensuring that all sent to taskbroker are
+    processed and completed by taskworker only once. To accomplish this,
+    the test starts N number of taskworker(s) and a consumer in separate.
+    threads. Synchronization events are use to instruct the taskworker(s)
+    when start processing and shutdown. A shared dictionary is used to
+    collect duplicate processed tasks. Finally, the total number of
+    fetched and completed tasks are compared to the number of messages sent
+    to taskbroker.
 
     Sequence diagram:
     [Thread 1: Consumer]                                        [Thread 2-N: Taskworker(s)]
@@ -168,7 +175,7 @@ def test_task_worker_processing() -> None:
              |                                                              .
              |                                                              .
              |                                                              .
-             |<-------------[send shutdown signal]-------------Completed processing all tasks
+             |<-------------[send shutdown signal(s)]----------Completed processing all tasks
              |                                                              |
              |                                                      Stop taskworker
              |                                                              |
