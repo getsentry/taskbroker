@@ -7,6 +7,7 @@ import time
 
 import yaml
 
+from collections import defaultdict
 from pathlib import Path
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
@@ -20,7 +21,8 @@ from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
 
 
 TEST_OUTPUT_PATH = Path(__file__).parent / ".output_from_test_task_worker_processing"
-processed_tasks = set()
+processed_tasks = defaultdict(list)  # key: task_id, value: worker_id
+mutex = threading.Lock()
 
 
 def manage_taskworker(
@@ -56,15 +58,15 @@ def manage_taskworker(
                 if task:
                     fetched_tasks += 1
             if not task:
-                if get_num_tasks_by_status(consumer_config, 'Pending') == 0:
-                    print(f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}")
-                    shutdown_event.set()
-                    break
-                time.sleep(1)
-                continue
+                print(f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}")
+                shutdown_event.set()
+                break
             else:
                 next_task = worker.process_task(task)
                 completed_tasks += 1
+                with mutex:
+                    processed_tasks[task.id].append(worker_id)
+
     except Exception as e:
         print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
         return
@@ -105,7 +107,7 @@ def manage_consumer(
 
         # Keep gRPC consumer alive until taskworker is done processing
         if tasks_written_event.is_set():
-            print("[consumer_0]: Waiting for taskworker to finish processing...")
+            print("[consumer_0]: Waiting for taskworker(s) to finish processing...")
             while not all(shutdown_event.is_set() for shutdown_event in shutdown_events):
                 time.sleep(1)
             print("[consumer_0]: Received shutdown signal from all taskworker(s)")
@@ -273,6 +275,11 @@ Running test with the following configuration:
             total_fetched += int(line.split(',')[0].split(':')[1])
             total_completed += int(line.split(',')[1].split(':')[1])
 
-    print(f"Total tasks fetched: {total_fetched}, Total tasks completed: {total_completed}")
+    print(f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: {total_completed}")
+    duplicate_tasks = [(task_id, worker_ids) for task_id, worker_ids in processed_tasks.items() if len(worker_ids) > 1] 
+    if duplicate_tasks:
+        print("Duplicate processed and completedtasksfound:")
+        for task_id, worker_ids in duplicate_tasks:
+            print(f"Task ID: {task_id}, Worker IDs: {worker_ids}")
     assert total_fetched == num_messages
     assert total_completed == num_messages
