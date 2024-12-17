@@ -11,6 +11,10 @@ spec:
   clusterIP: None
   selector:
     app: taskbroker
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 86400 # default is 10800
 ---
 apiVersion: apps/v1
 kind: StatefulSet
