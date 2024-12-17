@@ -10,7 +10,6 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
-TESTS_OUTPUT_PATH = Path(__file__).parent / ".tests_output"
 
 
 def check_topic_exists(topic_name: str) -> bool:
@@ -45,34 +44,36 @@ def create_topic(topic_name: str, num_partitions: int) -> None:
             "--topic",
             topic_name,
             "--partitions",
-            str(num_partitions),
-            "--replication-factor",
-            "1",
+            str(num_partitions)
         ]
         subprocess.run(create_topic_cmd, check=True)
     except Exception as e:
         raise Exception(f"Failed to create topic: {e}")
 
 
-def update_topic_partitions(topic_name: str, num_partitions: int) -> None:
+def recreate_topic(topic_name: str, num_partitions: int) -> None:
+    # Delete and recreate a Kafka topic to ensure a clean state.
     try:
-        create_topic_cmd = [
+        delete_topic_cmd = [
             "docker",
             "exec",
             "kafka-kafka-1",
             "kafka-topics",
             "--bootstrap-server",
             "localhost:9092",
-            "--alter",
+            "--delete",
             "--topic",
-            topic_name,
-            "--partitions",
-            str(num_partitions),
+            topic_name
         ]
-        subprocess.run(create_topic_cmd, check=True)
-    except Exception:
-        # Command fails topic already has the correct number of partitions. Try to continue.
-        pass
+        subprocess.run(
+            delete_topic_cmd,
+            check=True
+        )
+
+        time.sleep(3)
+        create_topic(topic_name, num_partitions)
+    except Exception as e:
+        raise Exception(f"Failed to recreate topic: {e}")
 
 
 def serialize_task_activation(args: list, kwargs: dict) -> bytes:
@@ -97,8 +98,8 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
 def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
     try:
         producer = Producer({
-            'bootstrap.servers': 'localhost:9092',
-            'broker.address.family': 'v4'
+            'bootstrap.servers': '127.0.0.1:9092',
+            'broker.address.family': 'v4',
         })
 
         for _ in range(num_messages):
