@@ -651,15 +651,16 @@ mod tests {
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
     async fn test_get_pending_activation_with_race() {
         let url = generate_temp_filename();
         let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
 
         const NUM_CONCURRENT_WRITES: u32 = 2000;
 
-        let batch = make_activations(NUM_CONCURRENT_WRITES);
-        store.store(batch).await.unwrap();
+        for chunk in make_activations(NUM_CONCURRENT_WRITES).chunks(1024) {
+            store.store(chunk.to_vec()).await.unwrap();
+        }
 
         let (tx, _) = broadcast::channel::<()>(1);
         let mut join_set = JoinSet::new();
@@ -669,7 +670,11 @@ mod tests {
             let store = store.clone();
             join_set.spawn(async move {
                 rx.recv().await.unwrap();
-                store.get_pending_activation(None).await.unwrap().unwrap()
+                store
+                    .get_pending_activation(Some("namespace"))
+                    .await
+                    .unwrap()
+                    .unwrap()
             });
         }
 
