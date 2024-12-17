@@ -9,6 +9,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow},
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
+use tracing::debug;
 
 pub struct InflightActivationStore {
     sqlite_pool: SqlitePool,
@@ -246,6 +247,7 @@ impl InflightActivationStore {
             .fetch_optional(&self.sqlite_pool)
             .await?;
         let Some(row) = result else { return Ok(None) };
+        debug!("task: {:?} {:?} {:?}", row.id, row.partition, row.offset);
 
         Ok(Some(row.into()))
     }
@@ -527,6 +529,7 @@ impl InflightActivationStore {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use chrono::{TimeZone, Utc};
     use sentry_protos::sentry::v1::{RetryState, TaskActivation, TaskActivationStatus};
@@ -644,6 +647,55 @@ mod tests {
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_get_pending_activation_with_race() {
+        use tokio::sync::broadcast;
+        let (tx, mut rx1) = broadcast::channel(1);
+        let mut rx2 = tx.subscribe();
+        let mut rx3 = tx.subscribe();
+        let mut rx4 = tx.subscribe();
+
+        let url = generate_temp_filename();
+        let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
+
+        let batch = make_activations(4);
+        assert!(store.store(batch.clone()).await.is_ok());
+        let store1 = store.clone();
+        let store2 = store.clone();
+        let store3 = store.clone();
+        let store4 = store.clone();
+        let res1 = tokio::spawn(async move {
+            rx1.recv().await.unwrap();
+            store1.get_pending_activation(None).await.unwrap().unwrap()
+        });
+
+        let res2 = tokio::spawn(async move {
+            rx2.recv().await.unwrap();
+            store2.get_pending_activation(None).await.unwrap().unwrap()
+        });
+
+        let res3 = tokio::spawn(async move {
+            rx3.recv().await.unwrap();
+            store3.get_pending_activation(None).await.unwrap().unwrap()
+        });
+
+        let res4 = tokio::spawn(async move {
+            rx4.recv().await.unwrap();
+            store4.get_pending_activation(None).await.unwrap().unwrap()
+        });
+
+        tx.send(()).unwrap();
+
+        let result = res1.await.unwrap();
+        let result2 = res2.await.unwrap();
+        let result3 = res3.await.unwrap();
+        let result4 = res4.await.unwrap();
+
+        assert_ne!(result.activation.id, result2.activation.id);
+        assert_ne!(result2.activation.id, result3.activation.id);
+        assert_ne!(result3.activation.id, result4.activation.id);
     }
 
     #[tokio::test]
