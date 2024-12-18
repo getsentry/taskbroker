@@ -14,9 +14,10 @@ use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::config::Config;
 use taskbroker::consumer::{
+    admin::create_missing_topics,
     deserialize_activation::{self, DeserializeConfig},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
-    kafka::{create_missing_topics, start_consumer},
+    kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
 use taskbroker::grpc_server::MyConsumerService;
