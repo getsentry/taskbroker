@@ -46,6 +46,9 @@ pub struct Config {
     /// The topic to fetch task messages from.
     pub kafka_topic: String,
 
+    /// Whether to create missing topics if they don't exist.
+    pub create_missing_topics: bool,
+
     /// The kafka topic to publish dead letter messages on
     pub kafka_deadletter_topic: String,
 
@@ -103,6 +106,7 @@ impl Default for Config {
             kafka_cluster: "127.0.0.1:9092".to_owned(),
             kafka_consumer_group: "task-worker".to_owned(),
             kafka_topic: "task-worker".to_owned(),
+            create_missing_topics: false,
             kafka_deadletter_topic: "task-worker-dlq".to_owned(),
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,

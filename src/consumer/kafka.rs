@@ -44,20 +44,11 @@ use tracing::{debug, error, info, instrument};
 pub async fn start_consumer(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
-    default_topic_partitions: i32,
     spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,
         &BTreeSet<(String, i32)>,
     ) -> ActorHandles,
 ) -> Result<(), Error> {
-    create_missing_topics(
-        kafka_client_config.clone(),
-        topics,
-        default_topic_partitions,
-    )
-    .await
-    .expect("Failed to find/create topics");
-
     let (client_shutdown_sender, client_shutdown_receiver) = oneshot::channel();
     let (event_sender, event_receiver) = unbounded_channel();
     let context = KafkaContext::new(event_sender.clone());
@@ -82,7 +73,7 @@ pub async fn start_consumer(
     .await
 }
 
-async fn create_missing_topics(
+pub async fn create_missing_topics(
     kafka_client_config: ClientConfig,
     topics: &[&str],
     default_topic_partitions: i32,
