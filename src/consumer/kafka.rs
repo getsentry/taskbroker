@@ -60,7 +60,7 @@ pub async fn start_consumer(
         .subscribe(topics)
         .expect("Can't subscribe to specified topics");
 
-    handle_os_signals(event_sender.clone());
+    handle_shutdown_signals(event_sender.clone());
     poll_consumer_client(consumer.clone(), client_shutdown_receiver);
     handle_events(
         consumer,
@@ -71,7 +71,7 @@ pub async fn start_consumer(
     .await
 }
 
-pub fn handle_os_signals(event_sender: UnboundedSender<(Event, SyncSender<()>)>) {
+pub fn handle_shutdown_signals(event_sender: UnboundedSender<(Event, SyncSender<()>)>) {
     let guard = elegant_departure::get_shutdown_guard();
     tokio::spawn(async move {
         let _ = guard.wait().await;
@@ -331,6 +331,7 @@ pub async fn handle_events(
 ) -> Result<(), anyhow::Error> {
     const CALLBACK_DURATION: Duration = Duration::from_secs(4);
 
+    let _guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut shutdown_client = Some(shutdown_client);
     let mut events_stream = UnboundedReceiverStream::new(events);
 
@@ -352,8 +353,8 @@ pub async fn handle_events(
                 };
                 info!("Received event: {:?}", event);
                 state = match (state, event) {
-                    (ConsumerState::Ready, Event::Assign(assigned)) => {
-                        ConsumerState::Consuming(spawn_actors(consumer.clone(), &assigned), assigned)
+                    (ConsumerState::Ready, Event::Assign(tpl)) => {
+                        ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
                         unreachable!("Got partition revocation before the consumer has started")
