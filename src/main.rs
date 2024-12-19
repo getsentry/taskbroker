@@ -14,6 +14,7 @@ use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::config::Config;
 use taskbroker::consumer::{
+    admin::create_missing_topics,
     deserialize_activation::{self, DeserializeConfig},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     kafka::start_consumer,
@@ -48,6 +49,19 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
     let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
+
+    // If this is an environment where the topics might not exist, check and create them.
+    if config.create_missing_topics {
+        let kafka_topic = config.kafka_topic.clone();
+        let topic_list = [kafka_topic.as_str()];
+        let kafka_client_config = config.kafka_consumer_config();
+        create_missing_topics(
+            kafka_client_config,
+            &topic_list,
+            config.default_topic_partitions,
+        )
+        .await?;
+    }
 
     // Upkeep thread
     let upkeep_task = tokio::spawn({

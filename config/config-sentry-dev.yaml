@@ -1,2 +1,3 @@
 upkeep_task_interval_ms: 2000
 kafka_cluster: 127.0.0.1:9092
+create_missing_topics: true
