@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: taskbroker-service
+  labels:
+    app: taskbroker-service
+spec:
+  ports:
+  - port: 50051
+    name: grpc
+  clusterIP: None
+  selector:
+    app: taskbroker
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 86400 # default is 10800
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: taskbroker
+spec:
+  selector:
+    matchLabels:
+      app: taskbroker # has to match .spec.template.metadata.labels
+  serviceName: "taskbroker"
+  replicas: 1 # by default is 1
+  minReadySeconds: 10 # by default is 0
+  template:
+    metadata:
+      labels:
+        app: taskbroker # has to match .spec.selector.matchLabels
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: taskbroker
+        image: us-central1-docker.pkg.dev/sentryio/taskbroker/image:ab1f14a7701cddf3113bab70d4367f1172be68cd
+        env:
+          - name: TASKBROKER_KAFKA_CLUSTER
+            value: "kafka-001:9092"
+        ports:
+        - containerPort: 50051
+          name: grpc
+        volumeMounts:
+        - name: sqlite
+          mountPath: /opt/sqlite
+  volumeClaimTemplates:
+  - metadata:
+      name: sqlite
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: taskbroker-sqlite
+      resources:
+        requests:
+          storage: 100Mi

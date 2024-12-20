@@ -14,6 +14,7 @@ use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::config::Config;
 use taskbroker::consumer::{
+    admin::create_missing_topics,
     deserialize_activation::{self, DeserializeConfig},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     kafka::start_consumer,
@@ -49,6 +50,17 @@ async fn main() -> Result<(), Error> {
     metrics::init(metrics::MetricsConfig::from_config(&config));
     let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
 
+    // If this is an environment where the topics might not exist, check and create them.
+    if config.create_missing_topics {
+        let kafka_client_config = config.kafka_consumer_config();
+        create_missing_topics(
+            kafka_client_config,
+            &config.kafka_topic,
+            config.default_topic_partitions,
+        )
+        .await?;
+    }
+
     // Upkeep thread
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
@@ -64,14 +76,11 @@ async fn main() -> Result<(), Error> {
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         async move {
-            let kafka_topic = consumer_config.kafka_topic.clone();
-            let topic_list = [kafka_topic.as_str()];
-            let kafka_config = consumer_config.kafka_consumer_config();
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
             start_consumer(
-                &topic_list,
-                &kafka_config,
+                &[&consumer_config.kafka_topic],
+                &consumer_config.kafka_consumer_config(),
                 processing_strategy!({
                     map: deserialize_activation::new(DeserializeConfig::from_config(&consumer_config)),
                     reduce: InflightActivationWriter::new(
