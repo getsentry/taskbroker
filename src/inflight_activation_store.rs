@@ -337,7 +337,7 @@ impl InflightActivationStore {
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND at_most_once = TRUE AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
         .bind(now)
@@ -354,7 +354,7 @@ impl InflightActivationStore {
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now)
