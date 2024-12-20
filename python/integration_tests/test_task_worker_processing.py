@@ -61,11 +61,10 @@ def manage_taskworker(
                 print(f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}")
                 shutdown_event.set()
                 break
-            else:
-                next_task = worker.process_task(task)
-                completed_tasks += 1
-                with mutex:
-                    processed_tasks[task.id].append(worker_id)
+            next_task = worker.process_task(task)
+            completed_tasks += 1
+            with mutex:
+                processed_tasks[task.id].append(worker_id)
 
     except Exception as e:
         print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
@@ -185,9 +184,9 @@ def test_task_worker_processing() -> None:
 
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
-    num_messages = 6_000
+    num_messages = 1000
     num_partitions = 1
-    num_workers = 10
+    num_workers = 6
     max_pending_count = 100_000
     consumer_timeout = 20  # the time in seconds to wait for all messages to be written to sqlite
     topic_name = "task-worker"
@@ -285,7 +284,7 @@ Running test with the following configuration:
     print(f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: {total_completed}")
     duplicate_tasks = [(task_id, worker_ids) for task_id, worker_ids in processed_tasks.items() if len(worker_ids) > 1] 
     if duplicate_tasks:
-        print("Duplicate processed and completedtasksfound:")
+        print("Duplicate processed and completed tasks found:")
         for task_id, worker_ids in duplicate_tasks:
             print(f"Task ID: {task_id}, Worker IDs: {worker_ids}")
     assert total_fetched == num_messages

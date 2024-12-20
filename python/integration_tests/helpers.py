@@ -89,6 +89,7 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
         taskname="integration_tests.say_hello",
         parameters=orjson.dumps({"args": args, "kwargs": kwargs}),
         retry_state=retry_state,
+        processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),
     ).SerializeToString()
 
