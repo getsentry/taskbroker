@@ -136,17 +136,6 @@ def check_num_tasks_written(consumer_config: dict) -> int:
     return count
 
 
-def get_num_tasks_by_status(consumer_config: dict, status: str) -> int:
-    attach_db_stmt = f"ATTACH DATABASE '{consumer_config['db_path']}' AS {consumer_config['db_name']};\n"
-    query = f"""SELECT count(*) as count FROM {consumer_config['db_name']}.inflight_taskactivations WHERE status = '{status}';"""
-    con = sqlite3.connect(consumer_config["db_path"])
-    cur = con.cursor()
-    cur.executescript(attach_db_stmt)
-    rows = cur.execute(query).fetchall()
-    count = rows[0][0]
-    return count
-
-
 def test_task_worker_processing() -> None:
     """
     This tests is responsible for ensuring that all sent to taskbroker are
@@ -184,9 +173,9 @@ def test_task_worker_processing() -> None:
 
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
-    num_messages = 1000
+    num_messages = 10_000
     num_partitions = 1
-    num_workers = 6
+    num_workers = 20
     max_pending_count = 100_000
     consumer_timeout = 20  # the time in seconds to wait for all messages to be written to sqlite
     topic_name = "task-worker"
