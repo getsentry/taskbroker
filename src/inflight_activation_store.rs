@@ -231,9 +231,9 @@ impl InflightActivationStore {
             WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
-        query_builder.push(" AND (deadletter_at IS NULL OR deadletter_at > ");
+        query_builder.push(" AND (deadletter_at IS NULL OR datetime(deadletter_at) > datetime(");
         query_builder.push_bind(now);
-        query_builder.push(")");
+        query_builder.push("))");
 
         if let Some(namespace) = namespace {
             query_builder.push(" AND namespace = ");
@@ -335,7 +335,7 @@ impl InflightActivationStore {
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < datetime($2) AND at_most_once = TRUE AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND at_most_once = TRUE AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
         .bind(now)
@@ -352,7 +352,7 @@ impl InflightActivationStore {
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < datetime($2) AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now)
@@ -391,7 +391,7 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE deadletter_at < datetime($2) AND "offset" < $3 AND status = $4
+            WHERE datetime(deadletter_at) < datetime($2) AND "offset" < $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
