@@ -9,6 +9,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow},
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
+use tracing::debug;
 
 pub struct InflightActivationStore {
     sqlite_pool: SqlitePool,
@@ -246,6 +247,7 @@ impl InflightActivationStore {
             .fetch_optional(&self.sqlite_pool)
             .await?;
         let Some(row) = result else { return Ok(None) };
+        debug!("task: {:?} {:?} {:?}", row.id, row.partition, row.offset);
 
         Ok(Some(row.into()))
     }
@@ -335,7 +337,7 @@ impl InflightActivationStore {
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND at_most_once = TRUE AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
         .bind(now)
@@ -352,7 +354,7 @@ impl InflightActivationStore {
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now)
@@ -526,10 +528,13 @@ impl InflightActivationStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
 
     use chrono::{TimeZone, Utc};
     use sentry_protos::sentry::v1::{RetryState, TaskActivation, TaskActivationStatus};
+    use tokio::sync::broadcast;
+    use tokio::task::JoinSet;
 
     use crate::inflight_activation_store::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
@@ -644,6 +649,45 @@ mod tests {
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
+    async fn test_get_pending_activation_with_race() {
+        let url = generate_temp_filename();
+        let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
+
+        const NUM_CONCURRENT_WRITES: u32 = 2000;
+
+        for chunk in make_activations(NUM_CONCURRENT_WRITES).chunks(1024) {
+            store.store(chunk.to_vec()).await.unwrap();
+        }
+
+        let (tx, _) = broadcast::channel::<()>(1);
+        let mut join_set = JoinSet::new();
+
+        for _ in 0..NUM_CONCURRENT_WRITES {
+            let mut rx = tx.subscribe();
+            let store = store.clone();
+            join_set.spawn(async move {
+                rx.recv().await.unwrap();
+                store
+                    .get_pending_activation(Some("namespace"))
+                    .await
+                    .unwrap()
+                    .unwrap()
+            });
+        }
+
+        tx.send(()).unwrap();
+
+        let res: HashSet<_> = join_set
+            .join_all()
+            .await
+            .iter()
+            .map(|ifa| ifa.activation.id.clone())
+            .collect();
+
+        assert_eq!(res.len(), NUM_CONCURRENT_WRITES as usize);
     }
 
     #[tokio::test]

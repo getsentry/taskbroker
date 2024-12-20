@@ -6,18 +6,20 @@ import subprocess
 import threading
 import time
 
+from pathlib import Path
 from threading import Thread
 
 import yaml
 
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
-    TESTS_OUTPUT_PATH,
     check_topic_exists,
     create_topic,
-    update_topic_partitions,
+    recreate_topic,
     send_messages_to_kafka,
 )
+
+TEST_OUTPUT_PATH = Path(__file__).parent / ".output_from_test_consumer_rebalancing"
 
 
 def manage_consumer(
@@ -79,7 +81,7 @@ Running test with the following configuration:
     )
     random.seed(42)
 
-    # Ensure topic has correct number of partitions
+    # Ensure topic exists and has correct number of partitions
     if not check_topic_exists(topic_name):
         print(
             f"{topic_name} topic does not exist, creating it with {num_partitions} partitions"
@@ -89,17 +91,17 @@ Running test with the following configuration:
         print(
             f"{topic_name} topic already exists, making sure it has {num_partitions} partitions"
         )
-        update_topic_partitions(topic_name, num_partitions)
+        recreate_topic(topic_name, num_partitions)
 
     # Create config files for consumers
-    print("\nCreating config files for consumers")
-    TESTS_OUTPUT_PATH.mkdir(exist_ok=True)
+    print("Creating config files for consumers")
+    TEST_OUTPUT_PATH.mkdir(exist_ok=True)
     consumer_configs = {}
     for i in range(num_consumers):
         db_name = f"db_{i}_{curr_time}"
         consumer_configs[f"config_{i}.yml"] = {
             "db_name": db_name,
-            "db_path": str(TESTS_OUTPUT_PATH / f"{db_name}.sqlite"),
+            "db_path": str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
             "max_pending_count": max_pending_count,
             "kafka_topic": topic_name,
             "kafka_consumer_group": topic_name,
@@ -108,7 +110,7 @@ Running test with the following configuration:
         }
 
     for filename, config in consumer_configs.items():
-        with open(str(TESTS_OUTPUT_PATH / filename), "w") as f:
+        with open(str(TEST_OUTPUT_PATH / filename), "w") as f:
             yaml.safe_dump(config, f)
 
     try:
@@ -120,11 +122,11 @@ Running test with the following configuration:
                 args=(
                     i,
                     consumer_path,
-                    str(TESTS_OUTPUT_PATH / f"config_{i}.yml"),
+                    str(TEST_OUTPUT_PATH / f"config_{i}.yml"),
                     num_restarts,
                     min_restart_duration,
                     max_restart_duration,
-                    str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"),
+                    str(TEST_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"),
                 ),
             )
             thread.start()
@@ -205,7 +207,7 @@ Running test with the following configuration:
 
     consumer_error_logs = []
     for i in range(num_consumers):
-        with open(str(TESTS_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r") as f:
+        with open(str(TEST_OUTPUT_PATH / f"consumer_{i}_{curr_time}.log"), "r") as f:
             lines = f.readlines()
             for log_line_index, line in enumerate(lines):
                 if "[31mERROR" in line:
