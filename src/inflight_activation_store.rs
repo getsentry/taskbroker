@@ -232,9 +232,9 @@ impl InflightActivationStore {
             WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
-        query_builder.push(" AND (deadletter_at IS NULL OR deadletter_at > ");
+        query_builder.push(" AND (deadletter_at IS NULL OR datetime(deadletter_at) > datetime(");
         query_builder.push_bind(now);
-        query_builder.push(")");
+        query_builder.push("))");
 
         if let Some(namespace) = namespace {
             query_builder.push(" AND namespace = ");
@@ -393,7 +393,7 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE deadletter_at < $2 AND "offset" < $3 AND status = $4
+            WHERE datetime(deadletter_at) < datetime($2) AND "offset" < $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
@@ -882,6 +882,26 @@ mod tests {
         let past_deadline = store.handle_processing_deadline().await;
         assert!(past_deadline.is_ok());
         assert_eq!(past_deadline.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_multiple_tasks() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[0].status = InflightActivationStatus::Processing;
+        batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     }
 
     #[tokio::test]
