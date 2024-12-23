@@ -23,36 +23,44 @@ release: ## Build a release profile with all features
 style: ## Run style checking tools (cargo-fmt)
 	@rustup component add rustfmt 2> /dev/null
 	cargo fmt --all --check
-.PHONY: format
+.PHONY: style
 
 lint: ## Run linting tools (cargo-clippy)
 	@rustup component add clippy 2> /dev/null
 	cargo clippy --workspace --all-targets --all-features --no-deps -- -D warnings
-.PHONY: format
+.PHONY: lint
 
 format: ## Run autofix mode for formatting and lint
 	@rustup component add clippy 2> /dev/null
 	@rustup component add rustfmt 2> /dev/null
 	cargo fmt --all
 	cargo clippy --workspace --all-targets --all-features --no-deps --fix --allow-dirty --allow-staged -- -D warnings
+.PHONY: format
 
 # Tests
 
-unit-test:
+unit-test: ## Run unit tests
 	cargo test
-.PHONY: test
+.PHONY: unit-test
 
-install-py-dev:
+install-py-dev: ## Install python dependencies
 	python -m venv python/.venv
 	. python/.venv/bin/activate
 	pip install -r python/requirements-dev.txt
 .PHONY: install-py-dev
 
-integration-test:
-	cargo build
-	python -m venv python/.venv
-	. python/.venv/bin/activate
-	python -m pytest python/integration_tests -s -vv
+reset-kafka: install-py-dev ## Reset kafka
+	devservices down
+	-docker volume rm kafka_kafka-data
+	devservices up
+.PHONY: reset-kafka
+
+test-rebalace: build reset-kafka ## Run the rebalace integration tests
+	python -m pytest python/integration_tests/test_consumer_rebalancing.py -s
+	rm -r python/integration_tests/.tests_output/test_consumer_rebalancing
+.PHONY: test-rebalace
+
+integration-test test-rebalace: ## Run all integration tests
 .PHONY: integration-test
 
 # Help

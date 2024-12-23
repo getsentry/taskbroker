@@ -10,26 +10,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
-
-
-def delete_topic(topic_name: str) -> None:
-    print(f"Deleting topic: {topic_name}")
-    delete_topic_cmd = [
-        "docker",
-        "exec",
-        "kafka-kafka-1",
-        "kafka-topics",
-        "--bootstrap-server",
-        "localhost:9092",
-        "--delete",
-        "--topic",
-        topic_name,
-    ]
-    res = subprocess.run(delete_topic_cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"Got return code: {res.returncode}, when deleting topic")
-        print(f"Stdout: {res.stdout}")
-        print(f"Stderr: {res.stderr}")
+TESTS_OUTPUT_ROOT = Path(__file__).parent / ".tests_output"
 
 
 def create_topic(topic_name: str, num_partitions: int) -> None:
@@ -52,13 +33,6 @@ def create_topic(topic_name: str, num_partitions: int) -> None:
         print(f"Got return code: {res.returncode}, when creating topic")
         print(f"Stdout: {res.stdout}")
         print(f"Stderr: {res.stderr}")
-
-
-def recreate_topic(topic_name: str, num_partitions: int) -> None:
-    # Delete and recreate a Kafka topic to ensure a clean state.
-    delete_topic(topic_name)
-    time.sleep(3)
-    create_topic(topic_name, num_partitions)
 
 
 def serialize_task_activation(args: list, kwargs: dict) -> bytes:

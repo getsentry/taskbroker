@@ -60,13 +60,30 @@ jobs:
         with:
           key: ${{ github.job }}
 
-      - name: Run Cargo Tests
-        uses: actions-rs/cargo@844f36862e911db73fe0815f00a4a2602c279505 # pin@v1
-        with:
-          command: test
-          args: --all
-
-      - name: Run Python Integration Tests
+      - name: Run unit tests
         run: |
-          export PYTEST_ADDOPTS=""
-          python -m pytest python/integration_tests -s -vv
+          make unit-test
+
+  rebalance-integration-test:
+    name: Rebalance integration test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+
+      - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - uses: swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # pin@v1
+        with:
+          key: ${{ github.job }}
+
+      - name: Run Rebalance Integration Test
+        run: |
+          make test-rebalace

@@ -13,11 +13,12 @@ import yaml
 
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
-    recreate_topic,
+    TESTS_OUTPUT_ROOT,
+    create_topic,
     send_messages_to_kafka,
 )
 
-TEST_OUTPUT_PATH = Path(__file__).parent / ".output_from_test_consumer_rebalancing"
+TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_consumer_rebalancing"
 
 
 def manage_consumer(
@@ -56,9 +57,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 100_000
-    num_restarts = 2
+    num_restarts = 16
     num_partitions = 32
-    min_restart_duration = 1
+    min_restart_duration = 4
     max_restart_duration = 30
     max_pending_count = 15_000
     topic_name = "task-worker"
@@ -80,11 +81,11 @@ Running test with the following configuration:
     random.seed(42)
 
     # Ensure topic exists and has correct number of partitions
-    recreate_topic(topic_name, num_partitions)
+    create_topic(topic_name, num_partitions)
 
     # Create config files for consumers
     print("Creating config files for consumers")
-    TEST_OUTPUT_PATH.mkdir(exist_ok=True)
+    TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     consumer_configs = {}
     for i in range(num_consumers):
         db_name = f"db_{i}_{curr_time}"
