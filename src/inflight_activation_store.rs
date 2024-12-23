@@ -231,9 +231,9 @@ impl InflightActivationStore {
             WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
-        query_builder.push(" AND (deadletter_at IS NULL OR deadletter_at > ");
+        query_builder.push(" AND (deadletter_at IS NULL OR datetime(deadletter_at) > datetime(");
         query_builder.push_bind(now);
-        query_builder.push(")");
+        query_builder.push("))");
 
         if let Some(namespace) = namespace {
             query_builder.push(" AND namespace = ");
@@ -335,7 +335,7 @@ impl InflightActivationStore {
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND at_most_once = TRUE AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
         .bind(now)
@@ -352,7 +352,7 @@ impl InflightActivationStore {
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND status = $3",
+            WHERE datetime(processing_deadline) < datetime($2) AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now)
@@ -391,7 +391,7 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE deadletter_at < $2 AND "offset" < $3 AND status = $4
+            WHERE datetime(deadletter_at) < datetime($2) AND "offset" < $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
@@ -526,10 +526,13 @@ impl InflightActivationStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
 
     use chrono::{TimeZone, Utc};
     use sentry_protos::sentry::v1::{RetryState, TaskActivation, TaskActivationStatus};
+    use tokio::sync::broadcast;
+    use tokio::task::JoinSet;
 
     use crate::inflight_activation_store::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
@@ -644,6 +647,45 @@ mod tests {
         assert_eq!(result.status, InflightActivationStatus::Processing);
         assert!(result.processing_deadline.unwrap() > Utc::now());
         assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
+    async fn test_get_pending_activation_with_race() {
+        let url = generate_temp_filename();
+        let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
+
+        const NUM_CONCURRENT_WRITES: u32 = 2000;
+
+        for chunk in make_activations(NUM_CONCURRENT_WRITES).chunks(1024) {
+            store.store(chunk.to_vec()).await.unwrap();
+        }
+
+        let (tx, _) = broadcast::channel::<()>(1);
+        let mut join_set = JoinSet::new();
+
+        for _ in 0..NUM_CONCURRENT_WRITES {
+            let mut rx = tx.subscribe();
+            let store = store.clone();
+            join_set.spawn(async move {
+                rx.recv().await.unwrap();
+                store
+                    .get_pending_activation(Some("namespace"))
+                    .await
+                    .unwrap()
+                    .unwrap()
+            });
+        }
+
+        tx.send(()).unwrap();
+
+        let res: HashSet<_> = join_set
+            .join_all()
+            .await
+            .iter()
+            .map(|ifa| ifa.activation.id.clone())
+            .collect();
+
+        assert_eq!(res.len(), NUM_CONCURRENT_WRITES as usize);
     }
 
     #[tokio::test]
@@ -838,6 +880,26 @@ mod tests {
         let past_deadline = store.handle_processing_deadline().await;
         assert!(past_deadline.is_ok());
         assert_eq!(past_deadline.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_handle_processing_deadline_multiple_tasks() {
+        let url = generate_temp_filename();
+        let store = InflightActivationStore::new(&url).await.unwrap();
+
+        let mut batch = make_activations(2);
+        batch[0].status = InflightActivationStatus::Processing;
+        batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
+        assert!(store.store(batch).await.is_ok());
+
+        let past_deadline = store.handle_processing_deadline().await;
+        assert!(past_deadline.is_ok());
+        assert_eq!(past_deadline.unwrap(), 1);
+
+        assert_count_by_status(&store, InflightActivationStatus::Processing, 1).await;
+        assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     }
 
     #[tokio::test]
