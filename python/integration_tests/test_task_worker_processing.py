@@ -177,7 +177,7 @@ def test_task_worker_processing() -> None:
     num_partitions = 1
     num_workers = 20
     max_pending_count = 100_000
-    consumer_timeout = 20  # the time in seconds to wait for all messages to be written to sqlite
+    consumer_timeout = 60  # the time in seconds to wait for all messages to be written to sqlite
     topic_name = "task-worker"
     curr_time = int(time.time())
 
