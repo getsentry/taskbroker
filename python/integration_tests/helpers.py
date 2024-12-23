@@ -10,69 +10,55 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
-TESTS_OUTPUT_PATH = Path(__file__).parent / ".tests_output"
 
 
-def check_topic_exists(topic_name: str) -> bool:
-    try:
-        check_topic_cmd = [
-            "docker",
-            "exec",
-            "kafka-kafka-1",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--list",
-        ]
-        result = subprocess.run(check_topic_cmd, check=True, capture_output=True, text=True)
-        topics = result.stdout.strip().split("\n")
-
-        return topic_name in topics
-    except Exception as e:
-        raise Exception(f"Failed to check if topic exists: {e}")
+def delete_topic(topic_name: str) -> None:
+    print(f"Deleting topic: {topic_name}")
+    delete_topic_cmd = [
+        "docker",
+        "exec",
+        "kafka-kafka-1",
+        "kafka-topics",
+        "--bootstrap-server",
+        "localhost:9092",
+        "--delete",
+        "--topic",
+        topic_name,
+    ]
+    res = subprocess.run(delete_topic_cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"Got return code: {res.returncode}, when deleting topic")
+        print(f"Stdout: {res.stdout}")
+        print(f"Stderr: {res.stderr}")
 
 
 def create_topic(topic_name: str, num_partitions: int) -> None:
-    try:
-        create_topic_cmd = [
-            "docker",
-            "exec",
-            "kafka-kafka-1",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--create",
-            "--topic",
-            topic_name,
-            "--partitions",
-            str(num_partitions),
-            "--replication-factor",
-            "1",
-        ]
-        subprocess.run(create_topic_cmd, check=True)
-    except Exception as e:
-        raise Exception(f"Failed to create topic: {e}")
+    print(f"Creating topic: {topic_name}, with {num_partitions} partitions")
+    create_topic_cmd = [
+        "docker",
+        "exec",
+        "kafka-kafka-1",
+        "kafka-topics",
+        "--bootstrap-server",
+        "localhost:9092",
+        "--create",
+        "--topic",
+        topic_name,
+        "--partitions",
+        str(num_partitions),
+    ]
+    res = subprocess.run(create_topic_cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"Got return code: {res.returncode}, when creating topic")
+        print(f"Stdout: {res.stdout}")
+        print(f"Stderr: {res.stderr}")
 
 
-def update_topic_partitions(topic_name: str, num_partitions: int) -> None:
-    try:
-        create_topic_cmd = [
-            "docker",
-            "exec",
-            "kafka-kafka-1",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--alter",
-            "--topic",
-            topic_name,
-            "--partitions",
-            str(num_partitions),
-        ]
-        subprocess.run(create_topic_cmd, check=True)
-    except Exception:
-        # Command fails topic already has the correct number of partitions. Try to continue.
-        pass
+def recreate_topic(topic_name: str, num_partitions: int) -> None:
+    # Delete and recreate a Kafka topic to ensure a clean state.
+    delete_topic(topic_name)
+    time.sleep(3)
+    create_topic(topic_name, num_partitions)
 
 
 def serialize_task_activation(args: list, kwargs: dict) -> bytes:
@@ -88,6 +74,7 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
         taskname="integration_tests.say_hello",
         parameters=orjson.dumps({"args": args, "kwargs": kwargs}),
         retry_state=retry_state,
+        processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),
     ).SerializeToString()
 
@@ -96,10 +83,12 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
 
 def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
     try:
-        producer = Producer({
-            'bootstrap.servers': 'localhost:9092',
-            'broker.address.family': 'v4'
-        })
+        producer = Producer(
+            {
+                "bootstrap.servers": "127.0.0.1:9092",
+                "broker.address.family": "v4",
+            }
+        )
 
         for _ in range(num_messages):
             task_message = serialize_task_activation(["foobar"], {})
