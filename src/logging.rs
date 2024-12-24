@@ -64,14 +64,17 @@ pub struct LoggingConfig {
     /// The environment to report to sentry errors to.
     pub sentry_env: Option<Cow<'static, str>>,
 
-    /// The tracing sample rate
+    /// The tracing sample rate.
     pub traces_sample_rate: f32,
 
     /// The log level to filter logging to.
     pub log_level: LogLevel,
 
-    /// The log format to use
+    /// The log format to use.
     pub log_format: LogFormat,
+
+    /// Enable ANSI encoding for formatted events.
+    pub with_ansi: bool,
 }
 
 impl LoggingConfig {
@@ -82,6 +85,7 @@ impl LoggingConfig {
             traces_sample_rate: config.traces_sample_rate.unwrap_or(0.0),
             log_level: config.log_level,
             log_format: config.log_format,
+            with_ansi: config.log_with_ansi,
         }
     }
 }
@@ -114,8 +118,9 @@ pub fn init(log_config: LoggingConfig) {
             .with_span_list(true)
             .with_file(true)
             .with_line_number(true)
+            .with_ansi(log_config.with_ansi)
             .boxed(),
-        LogFormat::Text => subscriber.compact().boxed(),
+        LogFormat::Text => subscriber.compact().with_ansi(log_config.with_ansi).boxed(),
     };
 
     let logs_subscriber = tracing_subscriber::registry()
