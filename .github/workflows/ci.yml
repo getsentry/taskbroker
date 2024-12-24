@@ -86,4 +86,4 @@ jobs:
 
       - name: Run Rebalance Integration Test
         run: |
-          make test-rebalace
+          make test-rebalance

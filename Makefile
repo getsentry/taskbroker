@@ -55,12 +55,12 @@ reset-kafka: install-py-dev ## Reset kafka
 	devservices up
 .PHONY: reset-kafka
 
-test-rebalace: build reset-kafka ## Run the rebalace integration tests
+test-rebalance: build reset-kafka ## Run the rebalance integration tests
 	python -m pytest python/integration_tests/test_consumer_rebalancing.py -s
 	rm -r python/integration_tests/.tests_output/test_consumer_rebalancing
-.PHONY: test-rebalace
+.PHONY: test-rebalance
 
-integration-test test-rebalace: ## Run all integration tests
+integration-test test-rebalance: ## Run all integration tests
 .PHONY: integration-test
 
 # Help
