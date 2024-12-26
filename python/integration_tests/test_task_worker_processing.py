@@ -207,7 +207,7 @@ Running test with the following configuration:
 
     # Create config file for consumer
     print("Creating config file for consumer")
-    TEST_OUTPUT_PATH.mkdir(exist_ok=True)
+    TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     db_name = f"db_0_{curr_time}_test_task_worker_processing"
     config_filename = "config_0_test_task_worker_processing.yml"
     consumer_config = {
