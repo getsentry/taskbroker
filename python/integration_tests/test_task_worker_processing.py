@@ -11,6 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
+    TESTS_OUTPUT_ROOT,
     send_messages_to_kafka,
     create_topic,
 )
@@ -18,7 +19,7 @@ from python.integration_tests.helpers import (
 from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
 
 
-TEST_OUTPUT_PATH = Path(__file__).parent / "test_task_worker_processing"
+TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
 processed_tasks = defaultdict(list)  # key: task_id, value: worker_id
 mutex = threading.Lock()
 
