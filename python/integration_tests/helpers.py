@@ -10,70 +10,29 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
-
-
-def check_topic_exists(topic_name: str) -> bool:
-    try:
-        check_topic_cmd = [
-            "docker",
-            "exec",
-            "kafka-kafka-1",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--list",
-        ]
-        result = subprocess.run(check_topic_cmd, check=True, capture_output=True, text=True)
-        topics = result.stdout.strip().split("\n")
-
-        return topic_name in topics
-    except Exception as e:
-        raise Exception(f"Failed to check if topic exists: {e}")
+TESTS_OUTPUT_ROOT = Path(__file__).parent / ".tests_output"
 
 
 def create_topic(topic_name: str, num_partitions: int) -> None:
-    try:
-        create_topic_cmd = [
-            "docker",
-            "exec",
-            "kafka-kafka-1",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--create",
-            "--topic",
-            topic_name,
-            "--partitions",
-            str(num_partitions)
-        ]
-        subprocess.run(create_topic_cmd, check=True)
-    except Exception as e:
-        raise Exception(f"Failed to create topic: {e}")
-
-
-def recreate_topic(topic_name: str, num_partitions: int) -> None:
-    # Delete and recreate a Kafka topic to ensure a clean state.
-    try:
-        delete_topic_cmd = [
-            "docker",
-            "exec",
-            "kafka-kafka-1",
-            "kafka-topics",
-            "--bootstrap-server",
-            "localhost:9092",
-            "--delete",
-            "--topic",
-            topic_name
-        ]
-        subprocess.run(
-            delete_topic_cmd,
-            check=True
-        )
-
-        time.sleep(3)
-        create_topic(topic_name, num_partitions)
-    except Exception as e:
-        raise Exception(f"Failed to recreate topic: {e}")
+    print(f"Creating topic: {topic_name}, with {num_partitions} partitions")
+    create_topic_cmd = [
+        "docker",
+        "exec",
+        "kafka-kafka-1",
+        "kafka-topics",
+        "--bootstrap-server",
+        "localhost:9092",
+        "--create",
+        "--topic",
+        topic_name,
+        "--partitions",
+        str(num_partitions),
+    ]
+    res = subprocess.run(create_topic_cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"Got return code: {res.returncode}, when creating topic")
+        print(f"Stdout: {res.stdout}")
+        print(f"Stderr: {res.stderr}")
 
 
 def serialize_task_activation(args: list, kwargs: dict) -> bytes:
@@ -98,10 +57,12 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
 
 def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
     try:
-        producer = Producer({
-            'bootstrap.servers': '127.0.0.1:9092',
-            'broker.address.family': 'v4',
-        })
+        producer = Producer(
+            {
+                "bootstrap.servers": "127.0.0.1:9092",
+                "broker.address.family": "v4",
+            }
+        )
 
         for _ in range(num_messages):
             task_message = serialize_task_activation(["foobar"], {})

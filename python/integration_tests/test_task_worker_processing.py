@@ -12,15 +12,13 @@ from pathlib import Path
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     send_messages_to_kafka,
-    check_topic_exists,
     create_topic,
-    recreate_topic,
 )
 
 from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
 
 
-TEST_OUTPUT_PATH = Path(__file__).parent / ".output_from_test_task_worker_processing"
+TEST_OUTPUT_PATH = Path(__file__).parent / "test_task_worker_processing"
 processed_tasks = defaultdict(list)  # key: task_id, value: worker_id
 mutex = threading.Lock()
 
@@ -30,10 +28,12 @@ def manage_taskworker(
     consumer_config: dict,
     log_file_path: str,
     tasks_written_event: threading.Event,
-    shutdown_event: threading.Event
+    shutdown_event: threading.Event,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
-    worker = SimpleTaskWorker(TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}"))
+    worker = SimpleTaskWorker(
+        TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}")
+    )
     fetched_tasks = 0
     completed_tasks = 0
 
@@ -41,7 +41,9 @@ def manage_taskworker(
     task = None
 
     # Wait for consumer to initialize sqlite and write tasks to it
-    print(f"[taskworker_{worker_id}]: Waiting for consumer to initialize sqlite and write tasks to it...")
+    print(
+        f"[taskworker_{worker_id}]: Waiting for consumer to initialize sqlite and write tasks to it..."
+    )
     while not tasks_written_event.is_set() and not shutdown_event.is_set():
         time.sleep(1)
 
@@ -58,7 +60,9 @@ def manage_taskworker(
                 if task:
                     fetched_tasks += 1
             if not task:
-                print(f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}")
+                print(
+                    f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}"
+                )
                 shutdown_event.set()
                 break
             next_task = worker.process_task(task)
@@ -82,12 +86,10 @@ def manage_consumer(
     timeout: int,
     num_messages: int,
     tasks_written_event: threading.Event,
-    shutdown_events: list[threading.Event]
+    shutdown_events: list[threading.Event],
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(
-            f"[consumer_0] Starting consumer, writing log file to {log_file_path}"
-        )
+        print(f"[consumer_0] Starting consumer, writing log file to {log_file_path}")
         process = subprocess.Popen(
             [consumer_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
@@ -100,18 +102,24 @@ def manage_consumer(
         while (time.time() < end) and (not tasks_written_event.is_set()):
             written_tasks = check_num_tasks_written(consumer_config)
             if written_tasks == num_messages:
-                print(f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite. Sending signal to taskworker(s) to start processing")
+                print(
+                    f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite. Sending signal to taskworker(s) to start processing"
+                )
                 tasks_written_event.set()
             time.sleep(1)
 
         # Keep gRPC consumer alive until taskworker is done processing
         if tasks_written_event.is_set():
             print("[consumer_0]: Waiting for taskworker(s) to finish processing...")
-            while not all(shutdown_event.is_set() for shutdown_event in shutdown_events):
+            while not all(
+                shutdown_event.is_set() for shutdown_event in shutdown_events
+            ):
                 time.sleep(1)
             print("[consumer_0]: Received shutdown signal from all taskworker(s)")
         else:
-            print("[consumer_0]: Timeout elapse and not all tasks have been written to sqlite. Signalling taskworker(s) to stop")
+            print(
+                "[consumer_0]: Timeout elapse and not all tasks have been written to sqlite. Signalling taskworker(s) to stop"
+            )
             for shutdown_event in shutdown_events:
                 shutdown_event.set()
 
@@ -177,7 +185,9 @@ def test_task_worker_processing() -> None:
     num_partitions = 1
     num_workers = 20
     max_pending_count = 100_000
-    consumer_timeout = 60  # the time in seconds to wait for all messages to be written to sqlite
+    consumer_timeout = (
+        60  # the time in seconds to wait for all messages to be written to sqlite
+    )
     topic_name = "task-worker"
     curr_time = int(time.time())
 
@@ -192,17 +202,7 @@ Running test with the following configuration:
     """
     )
 
-    # Ensure topic exists, if it does, ensure a clean state
-    if not check_topic_exists(topic_name):
-        print(
-            f"{topic_name} topic does not exist, creating it with {num_partitions} partition"
-        )
-        create_topic(topic_name, num_partitions)
-    else:
-        print(
-            f"{topic_name} topic already exists, recreating it with {num_partitions} partition to ensure a clean state"
-        )
-        recreate_topic(topic_name, num_partitions)
+    create_topic(topic_name, num_partitions)
 
     # Create config file for consumer
     print("Creating config file for consumer")
@@ -232,11 +232,14 @@ Running test with the following configuration:
                 consumer_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 consumer_config,
-                str(TEST_OUTPUT_PATH / f"consumer_0_{curr_time}_test_task_worker_processing.log"),
+                str(
+                    TEST_OUTPUT_PATH
+                    / f"consumer_0_{curr_time}_test_task_worker_processing.log"
+                ),
                 consumer_timeout,
                 num_messages,
                 tasks_written_event,
-                shutdown_events
+                shutdown_events,
             ),
         )
         consumer_thread.start()
@@ -244,11 +247,20 @@ Running test with the following configuration:
         worker_threads = []
         worker_log_files = []
         for i in range(num_workers):
-            log_file = str(TEST_OUTPUT_PATH / f"taskworker_{i}_output_{curr_time}_test_task_worker_processing.log")
+            log_file = str(
+                TEST_OUTPUT_PATH
+                / f"taskworker_{i}_output_{curr_time}_test_task_worker_processing.log"
+            )
             worker_log_files.append(log_file)
             worker_thread = threading.Thread(
                 target=manage_taskworker,
-                args=(i, consumer_config, log_file, tasks_written_event, shutdown_events[i]),
+                args=(
+                    i,
+                    consumer_config,
+                    log_file,
+                    tasks_written_event,
+                    shutdown_events[i],
+                ),
             )
             worker_thread.start()
             worker_threads.append(worker_thread)
@@ -267,11 +279,17 @@ Running test with the following configuration:
     for log_file in worker_log_files:
         with open(log_file, "r") as log_file:
             line = log_file.readline()
-            total_fetched += int(line.split(',')[0].split(':')[1])
-            total_completed += int(line.split(',')[1].split(':')[1])
+            total_fetched += int(line.split(",")[0].split(":")[1])
+            total_completed += int(line.split(",")[1].split(":")[1])
 
-    print(f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: {total_completed}")
-    duplicate_tasks = [(task_id, worker_ids) for task_id, worker_ids in processed_tasks.items() if len(worker_ids) > 1] 
+    print(
+        f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: {total_completed}"
+    )
+    duplicate_tasks = [
+        (task_id, worker_ids)
+        for task_id, worker_ids in processed_tasks.items()
+        if len(worker_ids) > 1
+    ]
     if duplicate_tasks:
         print("Duplicate processed and completed tasks found:")
         for task_id, worker_ids in duplicate_tasks:

@@ -138,7 +138,7 @@ impl ConsumerContext for KafkaContext {
                     Event::Revoke(tpl.to_topic_map().keys().cloned().collect()),
                     rendezvous_sender,
                 ));
-                info!("Parition assignment event sent, waiting for rendezvous...");
+                info!("Partition assignment event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
             }
@@ -268,7 +268,7 @@ macro_rules! processing_strategy {
             for (topic, partition) in tpl.iter() {
                 let queue = consumer
                     .split_partition_queue(topic, *partition)
-                    .expect("Unable to split topic by parition");
+                    .expect("Unable to split topic by Partition");
 
                 handles.spawn($crate::consumer::kafka::map(
                     queue,
