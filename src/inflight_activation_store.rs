@@ -9,7 +9,6 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow},
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
-use tracing::debug;
 
 pub struct InflightActivationStore {
     sqlite_pool: SqlitePool,
@@ -247,7 +246,6 @@ impl InflightActivationStore {
             .fetch_optional(&self.sqlite_pool)
             .await?;
         let Some(row) = result else { return Ok(None) };
-        debug!("task: {:?} {:?} {:?}", row.id, row.partition, row.offset);
 
         Ok(Some(row.into()))
     }
