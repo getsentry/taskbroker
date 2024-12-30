@@ -148,6 +148,7 @@ impl Config {
                 "session.timeout.ms",
                 self.kafka_session_timeout_ms.to_string(),
             )
+            .set("partition.assignment.strategy", "cooperative-sticky")
             .set("enable.partition.eof", "false")
             .set("enable.auto.commit", "true")
             .set(

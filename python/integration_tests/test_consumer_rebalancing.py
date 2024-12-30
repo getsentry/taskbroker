@@ -46,7 +46,7 @@ def manage_consumer(
             )
             process.send_signal(signal.SIGINT)
             try:
-                return_code = process.wait(timeout=10)
+                return_code = process.wait(timeout=30)
                 assert return_code == 0
             except Exception:
                 process.kill()
