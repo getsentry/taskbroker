@@ -15,7 +15,7 @@ steps:
     timeout: 1200s
 
   - name: "gcr.io/kaniko-project/executor:v1.16.0"
-    id: runtime-image
+    id: runtime-worker-image
     waitFor: ["-"]
     args:
       [
