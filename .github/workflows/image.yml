@@ -37,3 +37,38 @@ jobs:
           --tag ghcr.io/getsentry/taskbroker:${{ github.sha }} \
           "${args[@]}" \
           .
+
+  build-runner:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - run: docker login --username '${{ github.actor }}' --password-stdin ghcr.io <<< "$GHCR_TOKEN"
+      env:
+        GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      if: github.event_name != 'pull_request'
+
+    - run: docker buildx create --driver docker-container --use
+
+    - name: build
+      run: |
+        set -euxo pipefail
+
+        if [ ${{ github.event_name }} = 'push' ]; then
+          args=(
+            --tag ghcr.io/getsentry/taskbroker-runner:latest
+            --tag ghcr.io/getsentry/taskbroker-runner:amd64-latest
+            --push
+          )
+        else
+          args=()
+        fi
+
+        docker buildx build \
+          --pull \
+          --platform linux/amd64 \
+          --cache-from ghcr.io/getsentry/taskbroker-runner:latest \
+          --cache-to type=inline \
+          --tag ghcr.io/getsentry/taskbroker-runner:${{ github.sha }} \
+          "${args[@]}" \
+          ./python

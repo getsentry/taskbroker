@@ -1,7 +1,9 @@
 import grpc
 import time
+import random
+import logging
 
-from sentry_protos.sentry.v1.taskworker_pb2 import TaskActivation, FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivationStatus, TASK_ACTIVATION_STATUS_COMPLETE
+from sentry_protos.sentry.v1.taskworker_pb2 import TaskActivation, FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivationStatus, TASK_ACTIVATION_STATUS_COMPLETE, TASK_ACTIVATION_STATUS_FAILURE
 from sentry_protos.sentry.v1.taskworker_pb2_grpc import ConsumerServiceStub
 
 
@@ -85,5 +87,46 @@ class SimpleTaskWorker:
         return self.client.update_task(
             task_id=activation.id,
             status=TASK_ACTIVATION_STATUS_COMPLETE,
+            fetch_next_task=FetchNextTask(namespace=self._namespace),
+        )
+
+
+class ConfigurableTaskWorker:
+    """
+    A taskworker that can be configured to fail/timeout while processing tasks.
+    """
+
+    def __init__(self, client: TaskWorkerClient, namespace: str | None = None, failure_rate: float = 0.0, timeout_rate: float = 0.0) -> None:
+        self.client = client
+        self._namespace: str | None = namespace
+        self._failure_rate: float = failure_rate
+        self._timeout_rate: float = timeout_rate
+
+    def fetch_task(self) -> TaskActivation | None:
+        try:
+            activation = self.client.get_task(self._namespace)
+        except grpc.RpcError:
+            print("get_task failed. Retrying in 1 second")
+            time.sleep(1)
+            return None
+
+        if not activation:
+            print("No task fetched")
+            return None
+
+        return activation
+
+    def process_task(self, activation: TaskActivation) -> TaskActivation | None:
+        if self._timeout_rate and random.random() < self._timeout_rate:
+            return None  # Pretend that the task was dropped
+        
+        if self._failure_rate and random.random() < self._failure_rate:
+            update_status = TASK_ACTIVATION_STATUS_FAILURE
+        else:
+            update_status = TASK_ACTIVATION_STATUS_COMPLETE
+
+        return self.client.update_task(
+            task_id=activation.id,
+            status=update_status,
             fetch_next_task=FetchNextTask(namespace=self._namespace),
         )
