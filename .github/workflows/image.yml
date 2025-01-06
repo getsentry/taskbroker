@@ -56,8 +56,8 @@ jobs:
 
         if [ ${{ github.event_name }} = 'push' ]; then
           args=(
-            --tag ghcr.io/getsentry/taskbroker-runner:latest
-            --tag ghcr.io/getsentry/taskbroker-runner:amd64-latest
+            --tag ghcr.io/getsentry/taskworker:latest
+            --tag ghcr.io/getsentry/taskworker:amd64-latest
             --push
           )
         else
@@ -67,8 +67,8 @@ jobs:
         docker buildx build \
           --pull \
           --platform linux/amd64 \
-          --cache-from ghcr.io/getsentry/taskbroker-runner:latest \
+          --cache-from ghcr.io/getsentry/taskworker:latest \
           --cache-to type=inline \
-          --tag ghcr.io/getsentry/taskbroker-runner:${{ github.sha }} \
+          --tag ghcr.io/getsentry/taskworker:${{ github.sha }} \
           "${args[@]}" \
           ./python
