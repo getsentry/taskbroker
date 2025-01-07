@@ -24,6 +24,6 @@ steps:
         "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskworker/image:$COMMIT_SHA",
         "--context=dir:///python",
         "-f",
-        "./Dockerfile",
+        "./python/Dockerfile",
       ]
     timeout: 1200s
