@@ -23,6 +23,6 @@ steps:
         "--use-new-run",
         "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskworker/image:$COMMIT_SHA",
         "--context=dir://./python",
-        "--dockerfile=Dockerfile",
+        "--dockerfile=./python/Dockerfile",
       ]
     timeout: 1200s
