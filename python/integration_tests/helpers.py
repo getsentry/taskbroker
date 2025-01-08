@@ -35,7 +35,7 @@ def create_topic(topic_name: str, num_partitions: int) -> None:
         print(f"Stderr: {res.stderr}")
 
 
-def serialize_task_activation(args: list, kwargs: dict) -> bytes:
+def serialize_task_activation(i, args: list, kwargs: dict) -> bytes:
     retry_state = RetryState(
         attempts=0,
         kind="sentry.taskworker.retry.Retry",
@@ -45,7 +45,7 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
     pending_task_payload = TaskActivation(
         id=uuid4().hex,
         namespace="integration_tests",
-        taskname="integration_tests.say_hello",
+        taskname=f"integration_tests.say_hello_{i}",
         parameters=orjson.dumps({"args": args, "kwargs": kwargs}),
         retry_state=retry_state,
         processing_deadline_duration=3000,
@@ -56,6 +56,9 @@ def serialize_task_activation(args: list, kwargs: dict) -> bytes:
 
 
 def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
+    """
+    Send num_messages to kafka topic using unique task names.
+    """
     try:
         producer = Producer(
             {
@@ -64,8 +67,8 @@ def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
             }
         )
 
-        for _ in range(num_messages):
-            task_message = serialize_task_activation(["foobar"], {})
+        for i in range(num_messages):
+            task_message = serialize_task_activation(i, ["foobar"], {})
             producer.produce(topic_name, task_message)
 
         producer.poll(5)  # trigger delivery reports
