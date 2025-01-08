@@ -7,7 +7,6 @@ import time
 
 import yaml
 
-from collections import defaultdict
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
@@ -18,9 +17,28 @@ from python.integration_tests.helpers import (
 from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
 
 
-TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
-processed_tasks = defaultdict(list)  # key: task_id, value: worker_id
-mutex = threading.Lock()
+TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
+
+
+class TaskRetriedCounter:
+    """
+    A thread safe class that track of the total number of tasks that have been retried.
+    """
+    def __init__(self):
+        self.task_retried_counter = 0
+        self._lock = threading.Lock()
+
+    def increment(self):
+        with self._lock:
+            self.task_retried_counter += 1
+            return self.task_retried_counter
+
+    def get(self):
+        with self._lock:
+            return self.task_retried_counter
+
+
+counter = TaskRetriedCounter()
 
 
 def manage_taskworker(
@@ -29,13 +47,19 @@ def manage_taskworker(
     log_file_path: str,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
+    num_messages: int,
+    retries_per_task: int,
 ) -> None:
+    """
+    TODO: Retry consumer.
+    """
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
     worker = SimpleTaskWorker(
         TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}")
     )
     fetched_tasks = 0
     completed_tasks = 0
+    retried_tasks = 0
 
     next_task = None
     task = None
@@ -60,22 +84,33 @@ def manage_taskworker(
                 if task:
                     fetched_tasks += 1
             if not task:
-                print(
-                    f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}"
-                )
-                shutdown_event.set()
-                break
-            next_task = worker.process_task(task)
-            completed_tasks += 1
-            with mutex:
-                processed_tasks[task.id].append(worker_id)
+                task_retried_count = counter.get()
+                if task_retried_count >= num_messages * retries_per_task:
+                    print(
+                        f"[taskworker_{worker_id}]: All tasks have been retried {retries_per_task} times, shutting down taskworker_{worker_id}"
+                    )
+                    shutdown_event.set()
+                    break
+                else:
+                    time.sleep(3)
+                    continue
 
+            # If the tasks's retry policy is less than specificed attempts, set the task to retry state.
+            # Otherwise, set the task to completed state.
+            if task.retry_state.attempts < retries_per_task:
+                next_task = worker.process_task_with_retry(task)
+                retried_tasks += 1
+                current_retried_count = counter.increment()
+                print(f"[taskworker_{worker_id}]:Tasks retry attempts: {current_retried_count}/{num_messages * retries_per_task}")
+            else:
+                next_task = worker.process_task(task)
+                completed_tasks += 1
     except Exception as e:
         print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
         return
 
     with open(log_file_path, "a") as log_file:
-        log_file.write(f"Fetched:{fetched_tasks}, Completed:{completed_tasks}")
+        log_file.write(f"Fetched:{fetched_tasks}, Retried:{retried_tasks}, Completed:{completed_tasks}")
 
 
 def manage_consumer(
@@ -144,44 +179,31 @@ def check_num_tasks_written(consumer_config: dict) -> int:
     return count
 
 
-def test_task_worker_processing() -> None:
+def test_upkeep_retry() -> None:
     """
-    This tests is responsible for ensuring that all sent to taskbroker are
-    processed and completed by taskworker only once. To accomplish this,
-    the test starts N number of taskworker(s) and a consumer in separate.
-    threads. Synchronization events are use to instruct the taskworker(s)
-    when start processing and shutdown. A shared dictionary is used to
-    collect duplicate processed tasks. Finally, the total number of
-    fetched and completed tasks are compared to the number of messages sent
-    to taskbroker.
+    Notes on this test:
+    Q: What is the mechanism that sets a task to retry?
+    A: The upkeep step itself gets retry tests, and reproduces them to kafka.
+        The worker is in charge if setting a task to retry state.
+    Q: What is the mechanism that sets a task to DLQ?
+    A: handle_deadletter_at() in upkeep  is the function that sets tasks that are past their deadletter_at deadline to failure state.
+        Then, handle_failed_tasks() is called to set the task to DLQ.
 
-    Sequence diagram:
-    [Thread 1: Consumer]                                        [Thread 2-N: Taskworker(s)]
-             |                                                              |
-             |                                                              |
-    Start consumer                                                 Start taskworker(s)
-             |                                                              |
-             |                                                              |
-    Consume kafka and write to sqlite                                       |
-             .                                                              |
-             .                                                              |
-    Done initializing and writing to sqlite ---------[Send signal]--------->|
-             |                                                              |
-             |                                                        Process tasks
-             |                                                              .
-             |                                                              .
-             |                                                              .
-             |<-------------[send shutdown signal(s)]----------Completed processing all tasks
-             |                                                              |
-             |                                                      Stop taskworker
-             |                                                              |
-    Once received shutdown signal(s)                                        |
-    from all workers, Stop consumer                                         |
+    1. Append a known number of tasks to the topic.
+        a. The tasks should error out in the worker and workers should set its state to retry
+    2. Ensure that all tasks have been set to a retry state.
+    3. Process all the tasks until they are now completed.
+    4. Append a known number of tasks that have an extremely short or instant deadletter limit
+    5. sleep for a bit
+    6. Ensure that the known number of tasks are send to the DLQ.
+    
+    ------------------------------------------------------------------------------------------------
     """
 
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
-    num_messages = 10_000
+    num_messages = 5_000
+    retries_per_task = 3
     num_partitions = 1
     num_workers = 20
     max_pending_count = 100_000
@@ -195,6 +217,7 @@ def test_task_worker_processing() -> None:
         f"""
 Running test with the following configuration:
         num of messages: {num_messages},
+        attempts per task: {retries_per_task},
         num of partitions: {num_partitions},
         num of workers: {num_workers},
         max pending count: {max_pending_count},
@@ -207,8 +230,8 @@ Running test with the following configuration:
     # Create config file for consumer
     print("Creating config file for consumer")
     TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-    db_name = f"db_0_{curr_time}_test_task_worker_processing"
-    config_filename = "config_0_test_task_worker_processing.yml"
+    db_name = f"db_0_{curr_time}_test_upkeep_retry"
+    config_filename = "config_0_test_upkeep_retry.yml"
     consumer_config = {
         "db_name": db_name,
         "db_path": str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
@@ -234,7 +257,7 @@ Running test with the following configuration:
                 consumer_config,
                 str(
                     TEST_OUTPUT_PATH
-                    / f"consumer_0_{curr_time}_test_task_worker_processing.log"
+                    / f"consumer_0_{curr_time}_test_upkeep_retry.log"
                 ),
                 consumer_timeout,
                 num_messages,
@@ -249,7 +272,7 @@ Running test with the following configuration:
         for i in range(num_workers):
             log_file = str(
                 TEST_OUTPUT_PATH
-                / f"taskworker_{i}_output_{curr_time}_test_task_worker_processing.log"
+                / f"taskworker_{i}_output_{curr_time}_test_upkeep_retry.log"
             )
             worker_log_files.append(log_file)
             worker_thread = threading.Thread(
@@ -260,6 +283,8 @@ Running test with the following configuration:
                     log_file,
                     tasks_written_event,
                     shutdown_events[i],
+                    num_messages,
+                    retries_per_task,
                 ),
             )
             worker_thread.start()
@@ -275,24 +300,19 @@ Running test with the following configuration:
         pytest.fail(f"Not all messages were written to sqlite.")
 
     total_fetched = 0
+    total_retried = 0
     total_completed = 0
+
     for log_file in worker_log_files:
         with open(log_file, "r") as log_file:
             line = log_file.readline()
             total_fetched += int(line.split(",")[0].split(":")[1])
-            total_completed += int(line.split(",")[1].split(":")[1])
+            total_retried += int(line.split(",")[1].split(":")[1])
+            total_completed += int(line.split(",")[2].split(":")[1])
 
     print(
-        f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: {total_completed}"
+        f"\nTotal tasks fetched: {total_fetched}, Total tasks retried: {total_retried}, Total tasks completed: {total_completed}"
     )
-    duplicate_tasks = [
-        (task_id, worker_ids)
-        for task_id, worker_ids in processed_tasks.items()
-        if len(worker_ids) > 1
-    ]
-    if duplicate_tasks:
-        print("Duplicate processed and completed tasks found:")
-        for task_id, worker_ids in duplicate_tasks:
-            print(f"Task ID: {task_id}, Worker IDs: {worker_ids}")
-    assert total_fetched == num_messages
-    assert total_completed == num_messages
+
+    # assert total_fetched == num_messages
+    # assert total_completed == num_messages

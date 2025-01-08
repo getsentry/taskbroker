@@ -1,7 +1,7 @@
 import grpc
 import time
 
-from sentry_protos.sentry.v1.taskworker_pb2 import TaskActivation, FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivationStatus, TASK_ACTIVATION_STATUS_COMPLETE
+from sentry_protos.sentry.v1.taskworker_pb2 import TaskActivation, FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivationStatus, TASK_ACTIVATION_STATUS_COMPLETE, TASK_ACTIVATION_STATUS_RETRY
 from sentry_protos.sentry.v1.taskworker_pb2_grpc import ConsumerServiceStub
 
 
@@ -85,5 +85,12 @@ class SimpleTaskWorker:
         return self.client.update_task(
             task_id=activation.id,
             status=TASK_ACTIVATION_STATUS_COMPLETE,
+            fetch_next_task=FetchNextTask(namespace=self._namespace),
+        )
+
+    def process_task_with_retry(self, activation: TaskActivation) -> TaskActivation | None:
+        return self.client.update_task(
+            task_id=activation.id,
+            status=TASK_ACTIVATION_STATUS_RETRY,
             fetch_next_task=FetchNextTask(namespace=self._namespace),
         )
