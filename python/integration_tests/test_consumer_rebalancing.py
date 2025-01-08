@@ -53,6 +53,22 @@ def manage_consumer(
 
 
 def test_tasks_written_once_during_rebalancing() -> None:
+    """
+    What does this test do?
+    This test is responsible for ensuring that a collection of
+    taskbroker consumers only write a single task to sqlite
+    once during a rebalancing storm.
+
+    How does it accomplish this?
+    Firstly, the topic is created with a set number of partitions (e.g. 32).
+    After a set number of messages are sent to kafka, the test starts N number
+    of taskbroker consumers (e.g. 8). These consumers will consume messages
+    from kafka and write to sqlite in parallel. At random, the test then sends
+    a SIGINT to each consumer, which will trigger a rebalancing event. This
+    process continues until all tasks have been written to sqlite. By using the
+    task's offset, we can validate that all tasks have been written to sqlite
+    only once.
+    """
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
     num_consumers = 8

@@ -23,7 +23,8 @@ TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
 
 class TaskRetriedCounter:
     """
-    A thread safe class that track of the total number of tasks that have been retried.
+    A thread safe class that track of the total number of tasks that have
+    been retried.
     """
     def __init__(self):
         self.task_retried_counter = 0
@@ -56,9 +57,6 @@ def manage_taskworker(
     num_messages: int,
     retries_per_task: int,
 ) -> None:
-    """
-    TODO: Retry consumer description.
-    """
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
     worker = SimpleTaskWorker(
         TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}")
@@ -186,13 +184,12 @@ def test_upkeep_retry() -> None:
     """
     What does this test do?
     This tests is responsible for checking the integrity of the retry
-    mechanism implemented in the upkeep thread of taskbroker. This is
-    accomplished by producing an initial set amount of messages to kafka
-    with a set number of retries in its retry policy. Then, the taskworkers
-    fetches and updates the task's status to retry. During a set interval,
-    the upkeep thread will collect these tasks and re-produce the task to
-    kafka. This process continues until all tasks have been retried the
-    specified number of times.
+    mechanism implemented in the upkeep thread of taskbroker. An initial
+    amount of messages is produced to kafka with a set number of retries
+    in its retry policy. Then, the taskworkers fetches and updates the
+    task's status to retry. During an interval, the upkeep thread will
+    collect these tasks and re-produce the task to kafka. This process
+    continues until all tasks have been retried the specified number of times.
 
     How does it accomplish this?
     The test starts N number of taskworker(s) and a consumer in separate

@@ -146,14 +146,21 @@ def check_num_tasks_written(consumer_config: dict) -> int:
 
 def test_task_worker_processing() -> None:
     """
-    This tests is responsible for ensuring that all sent to taskbroker are
-    processed and completed by taskworker only once. To accomplish this,
-    the test starts N number of taskworker(s) and a consumer in separate.
-    threads. Synchronization events are use to instruct the taskworker(s)
-    when start processing and shutdown. A shared dictionary is used to
-    collect duplicate processed tasks. Finally, the total number of
-    fetched and completed tasks are compared to the number of messages sent
-    to taskbroker.
+    What does this test do?
+    This tests is responsible for ensuring that all tasks sent to taskbroker
+    are processed and completed by taskworker only once. An initial
+    amount of messages is produced to kafka. Then, mock taskworkers fetches
+    and completes the task (without actually running the activation).
+    This process continues until all tasks have been completed only once.
+
+
+    How does it accomplish this?
+    To accomplish this, the test starts N number of taskworker(s) and a
+    consumer in separate. threads. Synchronization events are use to
+    instruct the taskworker(s) when start processing and shutdown.
+    A shared dictionary is used to collect duplicate processed tasks.
+    Finally, the total number of fetched and completed tasks are compared
+    to the number of messages sent to taskbroker.
 
     Sequence diagram:
     [Thread 1: Consumer]                                        [Thread 2-N: Taskworker(s)]

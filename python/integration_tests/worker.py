@@ -59,9 +59,10 @@ class TaskWorkerClient:
 
 class SimpleTaskWorker:
     """
-    A simple TaskWorker that is used for integration tests. This taskworker does not
-    actually execute tasks, it simply fetches tasks from the taskworker gRPC server
-    and updates their status depending on the test scenario.
+    A simple TaskWorker that is used for integration tests. This taskworker
+    does not actually execute tasks, it simply fetches tasks from the
+    taskworker gRPC serverand updates their status depending on the test
+    scenario.
     """
 
     def __init__(self, client: TaskWorkerClient, namespace: str | None = None) -> None:
