@@ -153,14 +153,13 @@ def test_task_worker_processing() -> None:
     and completes the task (without actually running the activation).
     This process continues until all tasks have been completed only once.
 
-
     How does it accomplish this?
     To accomplish this, the test starts N number of taskworker(s) and a
     consumer in separate. threads. Synchronization events are use to
     instruct the taskworker(s) when start processing and shutdown.
-    A shared dictionary is used to collect duplicate processed tasks.
-    Finally, the total number of fetched and completed tasks are compared
-    to the number of messages sent to taskbroker.
+    A shared dictionary accessed by a mutex is used to collect duplicate
+    processed tasks. Finally, the total number of fetched and completed
+    tasks are compared to the number of messages sent to taskbroker.
 
     Sequence diagram:
     [Thread 1: Consumer]                                        [Thread 2-N: Taskworker(s)]

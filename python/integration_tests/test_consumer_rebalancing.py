@@ -56,7 +56,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     """
     What does this test do?
     This test is responsible for ensuring that a collection of
-    taskbroker consumers only write a single task to sqlite
+    taskbroker consumers only writes a single task to sqlite
     once during a rebalancing storm.
 
     How does it accomplish this?
@@ -66,7 +66,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     from kafka and write to sqlite in parallel. At random, the test then sends
     a SIGINT to each consumer, which will trigger a rebalancing event. This
     process continues until all tasks have been written to sqlite. By using the
-    task's offset, we can validate that all tasks have been written to sqlite
+    task's offset, we validate that all tasks have been written to sqlite
     only once.
     """
     # Test configuration
