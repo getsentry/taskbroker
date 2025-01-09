@@ -104,11 +104,12 @@ class ConfigurableTaskWorker:
     A taskworker that can be configured to fail/timeout while processing tasks.
     """
 
-    def __init__(self, client: TaskWorkerClient, namespace: str | None = None, failure_rate: float = 0.0, timeout_rate: float = 0.0) -> None:
+    def __init__(self, client: TaskWorkerClient, namespace: str | None = None, failure_rate: float = 0.0, timeout_rate: float = 0.0, retry_rate: float = 0.0) -> None:
         self.client = client
         self._namespace: str | None = namespace
         self._failure_rate: float = failure_rate
         self._timeout_rate: float = timeout_rate
+        self._retry_rate: float = retry_rate
 
     def fetch_task(self) -> TaskActivation | None:
         try:
@@ -125,16 +126,26 @@ class ConfigurableTaskWorker:
         return activation
 
     def process_task(self, activation: TaskActivation) -> TaskActivation | None:
+        update_status = TASK_ACTIVATION_STATUS_COMPLETE
+
         if self._timeout_rate and random.random() < self._timeout_rate:
             return None  # Pretend that the task was dropped
 
         if self._failure_rate and random.random() < self._failure_rate:
             update_status = TASK_ACTIVATION_STATUS_FAILURE
-        else:
-            update_status = TASK_ACTIVATION_STATUS_COMPLETE
+
+        if self._retry_rate and random.random() < self._retry_rate:
+            update_status = TASK_ACTIVATION_STATUS_RETRY
 
         return self.client.update_task(
             task_id=activation.id,
             status=update_status,
+            fetch_next_task=FetchNextTask(namespace=self._namespace),
+        )
+
+    def complete_task(self, activation: TaskActivation) -> TaskActivation | None:
+        return self.client.update_task(
+            task_id=activation.id,
+            status=TASK_ACTIVATION_STATUS_COMPLETE,
             fetch_next_task=FetchNextTask(namespace=self._namespace),
         )

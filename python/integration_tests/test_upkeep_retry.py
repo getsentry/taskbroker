@@ -15,7 +15,7 @@ from python.integration_tests.helpers import (
     create_topic,
 )
 
-from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
+from python.integration_tests.worker import ConfigurableTaskWorker, SimpleTaskWorker, TaskWorkerClient
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
@@ -59,9 +59,7 @@ def manage_taskworker(
     retries_per_task: int,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
-    worker = SimpleTaskWorker(
-        TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}")
-    )
+    worker = ConfigurableTaskWorker(TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}"), retry_rate=1)
     retried_tasks = 0
     next_task = None
     task = None
@@ -100,12 +98,12 @@ def manage_taskworker(
             # If the tasks's retry policy is less than specificed attempts, set the task to retry state.
             # Otherwise, complete the task.
             if task.retry_state.attempts < retries_per_task:
-                next_task = worker.process_task_with_retry(task)
+                next_task = worker.process_task(task)
                 retried_tasks += 1
                 curr_retried = counter.increment(task.taskname)
                 print(f"[taskworker_{worker_id}]: Total tasks retried: {curr_retried}/{num_messages * retries_per_task}")
             else:
-                next_task = worker.process_task(task)
+                next_task = worker.complete_task(task)
     except Exception as e:
         print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
         return
