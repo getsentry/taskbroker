@@ -1,6 +1,5 @@
 import pytest
 import signal
-import sqlite3
 import subprocess
 import threading
 import time
@@ -13,6 +12,8 @@ from python.integration_tests.helpers import (
     TESTS_OUTPUT_ROOT,
     send_messages_to_kafka,
     create_topic,
+    check_num_tasks_written,
+    ConsumerConfig,
 )
 
 from python.integration_tests.worker import ConfigurableTaskWorker, SimpleTaskWorker, TaskWorkerClient
@@ -51,18 +52,20 @@ counter = TasksRetriedCounter()
 
 def manage_taskworker(
     worker_id: int,
-    consumer_config: dict,
+    consumer_config: ConsumerConfig,
     log_file_path: str,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
     num_messages: int,
     retries_per_task: int,
+    timeout: int,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
-    worker = ConfigurableTaskWorker(TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}"), retry_rate=1)
+    worker = ConfigurableTaskWorker(TaskWorkerClient(f"127.0.0.1:{consumer_config.grpc_port}"), retry_rate=1)
     retried_tasks = 0
     next_task = None
     task = None
+    end = time.time() + timeout
 
     # Wait for consumer to initialize sqlite and write tasks to it
     print(
@@ -75,6 +78,10 @@ def manage_taskworker(
         print(f"[taskworker_{worker_id}]: Processing tasks...")
     try:
         while not shutdown_event.is_set():
+            if time.time() > end:
+                print(f"[taskworker_{worker_id}]: Timeout elapse. Shutting down taskworker_{worker_id}")
+                shutdown_event.set()
+                break
             if next_task:
                 task = next_task
                 next_task = None
@@ -115,7 +122,7 @@ def manage_taskworker(
 def manage_consumer(
     consumer_path: str,
     config_file_path: str,
-    consumer_config: dict,
+    consumer_config: ConsumerConfig,
     log_file_path: str,
     timeout: int,
     num_messages: int,
@@ -167,17 +174,6 @@ def manage_consumer(
             process.kill()
 
 
-def check_num_tasks_written(consumer_config: dict) -> int:
-    attach_db_stmt = f"ATTACH DATABASE '{consumer_config['db_path']}' AS {consumer_config['db_name']};\n"
-    query = f"""SELECT count(*) as count FROM {consumer_config['db_name']}.inflight_taskactivations;"""
-    con = sqlite3.connect(consumer_config["db_path"])
-    cur = con.cursor()
-    cur.executescript(attach_db_stmt)
-    rows = cur.execute(query).fetchall()
-    count = rows[0][0]
-    return count
-
-
 def test_upkeep_retry() -> None:
     """
     What does this test do?
@@ -227,7 +223,7 @@ def test_upkeep_retry() -> None:
 
     # Test configuration
     consumer_path = str(TASKBROKER_BIN)
-    num_messages = 3000
+    num_messages = 5000
     retries_per_task = 3
     num_partitions = 1
     num_workers = 20
@@ -235,6 +231,7 @@ def test_upkeep_retry() -> None:
     consumer_timeout = (
         60  # the time in seconds to wait for all messages to be written to sqlite
     )
+    taskworker_timeout = 600  # the time in seconds for taskworker to finish processing
     topic_name = "task-worker"
     curr_time = int(time.time())
 
@@ -257,18 +254,10 @@ Running test with the following configuration:
     TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     db_name = f"db_0_{curr_time}_test_upkeep_retry"
     config_filename = "config_0_test_upkeep_retry.yml"
-    consumer_config = {
-        "db_name": db_name,
-        "db_path": str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
-        "max_pending_count": max_pending_count,
-        "kafka_topic": topic_name,
-        "kafka_consumer_group": topic_name,
-        "kafka_auto_offset_reset": "earliest",
-        "grpc_port": 50051,
-    }
+    consumer_config = ConsumerConfig(db_name, str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"), max_pending_count, topic_name, topic_name, "earliest", 50051)
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
-        yaml.safe_dump(consumer_config, f)
+        yaml.safe_dump(consumer_config.to_dict(), f)
 
     try:
         send_messages_to_kafka(topic_name, num_messages)
@@ -310,6 +299,7 @@ Running test with the following configuration:
                     shutdown_events[i],
                     num_messages,
                     retries_per_task,
+                    taskworker_timeout,
                 ),
             )
             worker_thread.start()

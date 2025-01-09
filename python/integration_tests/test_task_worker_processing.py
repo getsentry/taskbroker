@@ -1,6 +1,5 @@
 import pytest
 import signal
-import sqlite3
 import subprocess
 import threading
 import time
@@ -13,6 +12,8 @@ from python.integration_tests.helpers import (
     TESTS_OUTPUT_ROOT,
     send_messages_to_kafka,
     create_topic,
+    check_num_tasks_written,
+    ConsumerConfig
 )
 
 from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
@@ -25,14 +26,14 @@ mutex = threading.Lock()
 
 def manage_taskworker(
     worker_id: int,
-    consumer_config: dict,
+    consumer_config: ConsumerConfig,
     log_file_path: str,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
     worker = SimpleTaskWorker(
-        TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}")
+        TaskWorkerClient(f"127.0.0.1:{consumer_config.grpc_port}")
     )
     fetched_tasks = 0
     completed_tasks = 0
@@ -81,7 +82,7 @@ def manage_taskworker(
 def manage_consumer(
     consumer_path: str,
     config_file_path: str,
-    consumer_config: dict,
+    consumer_config: ConsumerConfig,
     log_file_path: str,
     timeout: int,
     num_messages: int,
@@ -131,17 +132,6 @@ def manage_consumer(
             assert return_code == 0
         except Exception:
             process.kill()
-
-
-def check_num_tasks_written(consumer_config: dict) -> int:
-    attach_db_stmt = f"ATTACH DATABASE '{consumer_config['db_path']}' AS {consumer_config['db_name']};\n"
-    query = f"""SELECT count(*) as count FROM {consumer_config['db_name']}.inflight_taskactivations;"""
-    con = sqlite3.connect(consumer_config["db_path"])
-    cur = con.cursor()
-    cur.executescript(attach_db_stmt)
-    rows = cur.execute(query).fetchall()
-    count = rows[0][0]
-    return count
 
 
 def test_task_worker_processing() -> None:
@@ -215,18 +205,10 @@ Running test with the following configuration:
     TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     db_name = f"db_0_{curr_time}_test_task_worker_processing"
     config_filename = "config_0_test_task_worker_processing.yml"
-    consumer_config = {
-        "db_name": db_name,
-        "db_path": str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
-        "max_pending_count": max_pending_count,
-        "kafka_topic": topic_name,
-        "kafka_consumer_group": topic_name,
-        "kafka_auto_offset_reset": "earliest",
-        "grpc_port": 50051,
-    }
+    consumer_config = ConsumerConfig(db_name, str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"), max_pending_count, topic_name, topic_name, "earliest", 50051)
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
-        yaml.safe_dump(consumer_config, f)
+        yaml.safe_dump(consumer_config.to_dict(), f)
 
     try:
         send_messages_to_kafka(topic_name, num_messages)

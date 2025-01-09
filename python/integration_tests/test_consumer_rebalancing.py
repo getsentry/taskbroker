@@ -16,6 +16,7 @@ from python.integration_tests.helpers import (
     TESTS_OUTPUT_ROOT,
     create_topic,
     send_messages_to_kafka,
+    ConsumerConfig
 )
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_consumer_rebalancing"
@@ -102,22 +103,15 @@ Running test with the following configuration:
     # Create config files for consumers
     print("Creating config files for consumers")
     TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-    consumer_configs = {}
+    consumer_configs: dict[str, ConsumerConfig] = {}
     for i in range(num_consumers):
+        filename = f"config_{i}.yml"
         db_name = f"db_{i}_{curr_time}"
-        consumer_configs[f"config_{i}.yml"] = {
-            "db_name": db_name,
-            "db_path": str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
-            "max_pending_count": max_pending_count,
-            "kafka_topic": topic_name,
-            "kafka_consumer_group": topic_name,
-            "kafka_auto_offset_reset": "earliest",
-            "grpc_port": 50051 + i,
-        }
+        consumer_configs[filename] = ConsumerConfig(db_name, str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"), max_pending_count, topic_name, topic_name, "earliest", 50051 + i)
 
     for filename, config in consumer_configs.items():
         with open(str(TEST_OUTPUT_PATH / filename), "w") as f:
-            yaml.safe_dump(config, f)
+            yaml.safe_dump(config.to_dict(), f)
 
     try:
         send_messages_to_kafka(topic_name, num_messages)
@@ -147,13 +141,13 @@ Running test with the following configuration:
     # Validate that all tasks were written once during rebalancing
     attach_db_stmt = "".join(
         [
-            f"ATTACH DATABASE '{config['db_path']}' AS {config['db_name']};\n"
+            f"ATTACH DATABASE '{config.db_path}' AS {config.db_name};\n"
             for config in consumer_configs.values()
         ]
     )
     from_stmt = "\n            UNION ALL\n".join(
         [
-            f"            SELECT * FROM {config['db_name']}.inflight_taskactivations"
+            f"            SELECT * FROM {config.db_name}.inflight_taskactivations"
             for config in consumer_configs.values()
         ]
     )
@@ -168,7 +162,7 @@ Running test with the following configuration:
         GROUP BY partition
         ORDER BY partition;"""
 
-    con = sqlite3.connect(consumer_configs["config_0.yml"]["db_path"])
+    con = sqlite3.connect(consumer_configs["config_0.yml"].db_path)
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     row_count = cur.execute(query).fetchall()
@@ -204,7 +198,7 @@ Running test with the following configuration:
     consumers_have_data = True
     print("\n======== Number of rows in each consumer ========")
     for i, config in enumerate(consumer_configs.values()):
-        query = f"""SELECT count(*) as count from {config['db_name']}.inflight_taskactivations"""
+        query = f"""SELECT count(*) as count from {config.db_name}.inflight_taskactivations"""
         res = cur.execute(query).fetchall()[0][0]
         print(
             f"Consumer {i}: {res}, {str(int(res / max_pending_count * 100))}% of capacity"
