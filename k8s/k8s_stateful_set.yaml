@@ -35,7 +35,7 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
       - name: taskbroker
-        image: us-central1-docker.pkg.dev/sentryio/taskbroker/image:ab1f14a7701cddf3113bab70d4367f1172be68cd
+        image: us-central1-docker.pkg.dev/sentryio/taskbroker/image:8ff9bdee7be16ecf73bc9a20a7db6f2d9dda2e95
         env:
           - name: TASKBROKER_KAFKA_CLUSTER
             value: "kafka-001:9092"

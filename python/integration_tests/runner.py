@@ -18,12 +18,16 @@ def main() -> None:
         namespace=namespace,
         failure_rate=failure_rate,
         timeout_rate=timeout_rate,
+        enable_backoff=True,
     )
 
+    task = None
     while True:
-        task = worker.fetch_task()
+        if task is None:
+            task = worker.fetch_task()
+
         if task:
-            worker.process_task(task)
+            task = worker.process_task(task)
 
 
 if __name__ == "__main__":
