@@ -21,31 +21,32 @@ from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
 
 
-class TaskRetriedCounter:
+class TasksRetriedCounter:
     """
-    A thread safe class that track of the total number of tasks that have
+    A thread safe class that tracks the total number of tasks that have
     been retried.
     """
     def __init__(self):
-        self.task_retried_counter = 0
-        self.tasks_retried = defaultdict(int)  # key: task_id, value: number of retries
+        self.total_retried = 0
+        self.tasks_retried = defaultdict(int)  # key: task_name, value: number of retries
         self._lock = threading.Lock()
 
     def increment(self, task_name: str):
         with self._lock:
-            self.task_retried_counter += 1
+            self.total_retried += 1
             self.tasks_retried[task_name] += 1
+            return self.total_retried
 
-    def get(self):
+    def get_total_retried(self):
         with self._lock:
-            return self.task_retried_counter
+            return self.total_retried
 
     def get_tasks_retried(self):
         with self._lock:
             return self.tasks_retried
 
 
-counter = TaskRetriedCounter()
+counter = TasksRetriedCounter()
 
 
 def manage_taskworker(
@@ -62,7 +63,6 @@ def manage_taskworker(
         TaskWorkerClient(f"127.0.0.1:{consumer_config['grpc_port']}")
     )
     retried_tasks = 0
-
     next_task = None
     task = None
 
@@ -86,16 +86,15 @@ def manage_taskworker(
             # If there are no more pending task to be fetched, check if all tasks have been retried.
             # If so, shutdown the taskworker. If not, wait for upkeep to re-produce the task to kafka.
             if not task:
-                task_retried_count = counter.get()
+                task_retried_count = counter.get_total_retried()
                 if task_retried_count >= num_messages * retries_per_task:
                     print(
-                        f"[taskworker_{worker_id}]: Total number of tasks retried {task_retried_count}/{num_messages * retries_per_task}. Shutting down taskworker_{worker_id}"
+                        f"[taskworker_{worker_id}]: Total tasks retried reached: {task_retried_count}/{num_messages * retries_per_task}. Shutting down taskworker_{worker_id}"
                     )
                     shutdown_event.set()
                     break
                 else:
-                    print(f"[taskworker_{worker_id}]: Waiting for upkeep to re-produce task to kafka")
-                    time.sleep(3)
+                    time.sleep(1)
                     continue
 
             # If the tasks's retry policy is less than specificed attempts, set the task to retry state.
@@ -103,7 +102,8 @@ def manage_taskworker(
             if task.retry_state.attempts < retries_per_task:
                 next_task = worker.process_task_with_retry(task)
                 retried_tasks += 1
-                counter.increment(task.taskname)
+                curr_retried = counter.increment(task.taskname)
+                print(f"[taskworker_{worker_id}]: Total tasks retried: {curr_retried}/{num_messages * retries_per_task}")
             else:
                 next_task = worker.process_task(task)
     except Exception as e:
@@ -186,7 +186,7 @@ def test_upkeep_retry() -> None:
     This tests is responsible for checking the integrity of the retry
     mechanism implemented in the upkeep thread of taskbroker. An initial
     amount of messages is produced to kafka with a set number of retries
-    in its retry policy. Then, the taskworkers fetches and updates the
+    in its retry policy. Then, the taskworkers fetch and update the
     task's status to retry. During an interval, the upkeep thread will
     collect these tasks and re-produce the task to kafka. This process
     continues until all tasks have been retried the specified number of times.
@@ -195,7 +195,7 @@ def test_upkeep_retry() -> None:
     The test starts N number of taskworker(s) and a consumer in separate
     threads. Synchronization events are use to instruct the taskworker(s)
     when start processing and shutdown. A shared data structured access by
-    a mutex lock called TaskRetriedCounter is used to globally keep track of
+    a mutex called TaskRetriedCounter is used to globally keep track of
     every task retried. Finally, this total number is validated alongside the
     number of times each individual task was retried.
 
@@ -336,5 +336,4 @@ Running test with the following configuration:
     print(f"\nTotal tasks retried: {total_retried}")
 
     assert total_retried == num_messages * retries_per_task
-    print(counter.get_tasks_retried())
     assert all([val == retries_per_task for val in counter.get_tasks_retried().values()])
