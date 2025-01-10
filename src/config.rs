@@ -22,8 +22,11 @@ pub struct Config {
     /// The sampling rate for tracing data.
     pub traces_sample_rate: Option<f32>,
 
-    /// The log level to filter logging to.
+    /// The log level to filter application logging to.
     pub log_level: LogLevel,
+
+    /// The log level to filter rdkafka logging to.
+    pub rdkafka_log_level: LogLevel,
 
     /// The log format to use
     pub log_format: LogFormat,
@@ -99,6 +102,7 @@ impl Default for Config {
             sentry_env: None,
             traces_sample_rate: Some(0.0),
             log_level: LogLevel::Debug,
+            rdkafka_log_level: LogLevel::Warn,
             log_format: LogFormat::Text,
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
@@ -159,7 +163,7 @@ impl Config {
                 self.kafka_auto_offset_reset.to_string(),
             )
             .set("enable.auto.offset.store", "false")
-            .set_log_level(self.log_level.kafka_level());
+            .set_log_level(self.rdkafka_log_level.kafka_level());
         config.clone()
     }
 

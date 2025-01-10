@@ -59,73 +59,40 @@ class TaskWorkerClient:
         return None
 
 
-class SimpleTaskWorker:
-    """
-    A simple TaskWorker that is used for integration tests. This taskworker
-    does not actually execute tasks, it simply fetches tasks from the
-    taskworker gRPC serverand updates their status depending on the test
-    scenario.
-    """
-
-    def __init__(self, client: TaskWorkerClient, namespace: str | None = None) -> None:
-        self.client = client
-        self._namespace: str | None = namespace
-
-    def fetch_task(self) -> TaskActivation | None:
-        try:
-            activation = self.client.get_task(self._namespace)
-        except grpc.RpcError:
-            print("get_task failed. Retrying in 1 second")
-            return None
-
-        if not activation:
-            print("No task fetched")
-            return None
-
-        return activation
-
-    def process_task(self, activation: TaskActivation) -> TaskActivation | None:
-        return self.client.update_task(
-            task_id=activation.id,
-            status=TASK_ACTIVATION_STATUS_COMPLETE,
-            fetch_next_task=FetchNextTask(namespace=self._namespace),
-        )
-
-    def process_task_with_retry(self, activation: TaskActivation) -> TaskActivation | None:
-        return self.client.update_task(
-            task_id=activation.id,
-            status=TASK_ACTIVATION_STATUS_RETRY,
-            fetch_next_task=FetchNextTask(namespace=self._namespace),
-        )
-
-
 class ConfigurableTaskWorker:
     """
     A taskworker that can be configured to fail/timeout while processing tasks.
     """
 
-    def __init__(self, client: TaskWorkerClient, namespace: str | None = None, failure_rate: float = 0.0, timeout_rate: float = 0.0, retry_rate: float = 0.0) -> None:
+    def __init__(self, client: TaskWorkerClient, namespace: str | None = None, failure_rate: float = 0.0, timeout_rate: float = 0.0, retry_rate: float = 0.0, enable_backoff: bool = False) -> None:
         self.client = client
         self._namespace: str | None = namespace
         self._failure_rate: float = failure_rate
         self._timeout_rate: float = timeout_rate
         self._retry_rate: float = retry_rate
+        self._backoff_wait_time: float | None = 0.0 if enable_backoff else None
 
     def fetch_task(self) -> TaskActivation | None:
         try:
             activation = self.client.get_task(self._namespace)
-        except grpc.RpcError:
-            print("get_task failed. Retrying in 1 second")
+        except grpc.RpcError as err:
+            logging.error(f"get_task failed. Retrying in 1 second: {err}")
             time.sleep(1)
             return None
 
         if not activation:
-            print("No task fetched")
+            logging.debug("No task fetched")
+            if self._backoff_wait_time is not None:
+                logging.debug(f"Backing off for {self._backoff_wait_time} seconds")
+                time.sleep(self._backoff_wait_time)
+                self._backoff_wait_time = min(self._backoff_wait_time + 1, 10)
             return None
 
+        self._backoff_wait_time = 0.0
         return activation
 
     def process_task(self, activation: TaskActivation) -> TaskActivation | None:
+        logging.debug(f"Processing task {activation.id}")
         update_status = TASK_ACTIVATION_STATUS_COMPLETE
 
         if self._timeout_rate and random.random() < self._timeout_rate:

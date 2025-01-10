@@ -16,7 +16,7 @@ from python.integration_tests.helpers import (
     ConsumerConfig
 )
 
-from python.integration_tests.worker import SimpleTaskWorker, TaskWorkerClient
+from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
@@ -32,7 +32,7 @@ def manage_taskworker(
     shutdown_event: threading.Event,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
-    worker = SimpleTaskWorker(
+    worker = ConfigurableTaskWorker(
         TaskWorkerClient(f"127.0.0.1:{consumer_config.grpc_port}")
     )
     fetched_tasks = 0
