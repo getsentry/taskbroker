@@ -16,7 +16,7 @@ from python.integration_tests.helpers import (
     ConsumerConfig,
 )
 
-from python.integration_tests.worker import ConfigurableTaskWorker, SimpleTaskWorker, TaskWorkerClient
+from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
