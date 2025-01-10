@@ -65,6 +65,11 @@ test-worker-processing: build reset-kafka ## Run the worker processing integrati
 	rm -r python/integration_tests/.tests_output/test_task_worker_processing
 .PHONY: test-worker-processing
 
+test-upkeep-retry: build reset-kafka ## Run the upkeep retry integration test
+	python -m pytest python/integration_tests/test_upkeep_retry.py -s
+	rm -r python/integration_tests/.tests_output/test_upkeep_retry
+.PHONY: test-upkeep-retry
+
 integration-test: test-rebalance test-worker-processing ## Run all integration tests
 .PHONY: integration-test
 
