@@ -31,6 +31,9 @@ pub struct Config {
     /// The log format to use
     pub log_format: LogFormat,
 
+    /// Enable ANSI encoding for logs
+    pub log_with_ansi: bool,
+
     /// The statsd address to report metrics to.
     pub statsd_addr: SocketAddr,
 
@@ -104,6 +107,7 @@ impl Default for Config {
             log_level: LogLevel::Debug,
             rdkafka_log_level: LogLevel::Warn,
             log_format: LogFormat::Text,
+            log_with_ansi: true,
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
@@ -207,6 +211,7 @@ mod tests {
         assert_eq!(config.sentry_env, None);
         assert_eq!(config.log_level, LogLevel::Debug);
         assert_eq!(config.log_format, LogFormat::Text);
+        assert!(config.log_with_ansi);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
@@ -223,6 +228,7 @@ mod tests {
                 sentry_env: prod
                 log_level: info
                 log_format: json
+                log_with_ansi: false
                 statsd_addr: 127.0.0.1:8126
                 kafka_cluster: 10.0.0.1:9092,10.0.0.2:9092
                 kafka_topic: error-tasks
@@ -246,6 +252,7 @@ mod tests {
             assert_eq!(config.sentry_env, Some(Cow::Borrowed("prod")));
             assert_eq!(config.log_level, LogLevel::Error);
             assert_eq!(config.log_format, LogFormat::Json);
+            assert!(!config.log_with_ansi);
             assert_eq!(
                 config.kafka_cluster,
                 "10.0.0.1:9092,10.0.0.2:9092".to_owned()
