@@ -85,11 +85,12 @@ pub struct Config {
     /// does not have a processing deadline set, this will be used.
     pub max_processing_deadline: usize,
 
-    /// The maximum duration a task can be in InflightTaskStore
-    /// After this time, messages will be deadlettered if they
-    /// are not complete. This should be a multiple of max_processing_deadline
-    /// to allow temporary worker deaths to be resolved.
-    pub deadletter_deadline: usize,
+    /// The maximum number of seconds that a TaskActivation
+    /// can be in InflightTaskStore. After this time, activations
+    /// will be removed if they are not complete. This should
+    /// be a multiple of max_processing_deadline to allow
+    /// temporary worker deaths to be resolved.
+    pub remove_deadline: usize,
 
     /// The frequency at which upkeep tasks are spawned.
     pub upkeep_task_interval_ms: u64,
@@ -121,7 +122,7 @@ impl Default for Config {
             max_pending_count: 2048,
             max_pending_buffer_count: 1,
             max_processing_deadline: 300,
-            deadletter_deadline: 900,
+            remove_deadline: 900,
             upkeep_task_interval_ms: 200,
         }
     }
@@ -231,7 +232,7 @@ mod tests {
                 db_path: ./taskbroker-error.sqlite
                 max_pending_count: 512
                 max_processing_deadline: 1000
-                deadletter_deadline: 2000
+                remove_deadline: 2000
             "#,
             )?;
             // Env vars always override config file
@@ -258,7 +259,7 @@ mod tests {
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 512);
             assert_eq!(config.max_processing_deadline, 1000);
-            assert_eq!(config.deadletter_deadline, 2000);
+            assert_eq!(config.remove_deadline, 2000);
 
             Ok(())
         });
@@ -268,7 +269,7 @@ mod tests {
     fn test_from_args_env_and_args() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_LEVEL", "error");
-            jail.set_env("TASKBROKER_DEADLETTER_DEADLINE", "2000");
+            jail.set_env("TASKBROKER_REMOVE_DEADLINE", "2000");
 
             let args = Args {
                 config: None,
@@ -276,7 +277,7 @@ mod tests {
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.log_level, LogLevel::Error);
-            assert_eq!(config.deadletter_deadline, 2000);
+            assert_eq!(config.remove_deadline, 2000);
 
             Ok(())
         });
@@ -286,7 +287,7 @@ mod tests {
     fn test_from_args_env_test() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_LEVEL", "error");
-            jail.set_env("TASKBROKER_DEADLETTER_DEADLINE", "2000");
+            jail.set_env("TASKBROKER_REMOVE_DEADLINE", "2000");
 
             let args = Args {
                 config: None,
@@ -301,7 +302,7 @@ mod tests {
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 2048);
             assert_eq!(config.max_processing_deadline, 300);
-            assert_eq!(config.deadletter_deadline, 2000);
+            assert_eq!(config.remove_deadline, 2000);
 
             Ok(())
         });
