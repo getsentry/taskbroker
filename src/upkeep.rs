@@ -478,9 +478,9 @@ mod tests {
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
         batch[1].status = InflightActivationStatus::Complete;
-        batch[2].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
 
         assert!(store.store(batch.clone()).await.is_ok());
         do_upkeep(config, store.clone(), producer).await;
