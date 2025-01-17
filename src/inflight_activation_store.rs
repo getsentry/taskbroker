@@ -69,8 +69,9 @@ pub struct InflightActivation {
     /// The timestamp when the activation was stored in activation store.
     pub added_at: DateTime<Utc>,
 
-    /// The timestamp after which a task should be deadlettered/discarded
-    pub deadletter_at: Option<DateTime<Utc>>,
+    /// The timestamp after which a task should be removed from inflight store
+    /// depending on the retry policy of an activation it will either be deadlettered or discarded.
+    pub remove_at: Option<DateTime<Utc>>,
 
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
@@ -102,7 +103,7 @@ struct TableRow {
     partition: i32,
     offset: i64,
     added_at: DateTime<Utc>,
-    deadletter_at: Option<DateTime<Utc>>,
+    remove_at: Option<DateTime<Utc>>,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
@@ -120,7 +121,7 @@ impl TryFrom<InflightActivation> for TableRow {
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
-            deadletter_at: value.deadletter_at,
+            remove_at: value.remove_at,
             processing_deadline_duration: value.activation.processing_deadline_duration as u32,
             processing_deadline: value.processing_deadline,
             status: value.status,
@@ -140,7 +141,7 @@ impl From<TableRow> for InflightActivation {
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
-            deadletter_at: value.deadletter_at,
+            remove_at: value.remove_at,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
             namespace: value.namespace,
@@ -183,7 +184,7 @@ impl InflightActivationStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, deadletter_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
+            (id, activation, partition, offset, added_at, remove_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
         );
         let rows = batch
             .into_iter()
@@ -196,7 +197,7 @@ impl InflightActivationStore {
                 b.push_bind(row.partition);
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at);
-                b.push_bind(row.deadletter_at);
+                b.push_bind(row.remove_at);
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline);
@@ -231,7 +232,7 @@ impl InflightActivationStore {
             WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
-        query_builder.push(" AND (deadletter_at IS NULL OR datetime(deadletter_at) > datetime(");
+        query_builder.push(" AND (remove_at IS NULL OR datetime(remove_at) > datetime(");
         query_builder.push_bind(now);
         query_builder.push("))");
 
@@ -368,13 +369,13 @@ impl InflightActivationStore {
         Err(anyhow!("Could not update tasks past processing_deadline"))
     }
 
-    /// Perform upkeep work for tasks that are past deadletter_at deadlines
+    /// Perform upkeep work for tasks that are past remove_at deadlines
     ///
-    /// Tasks that are pending and past their deadletter_at deadline are updated
+    /// Tasks that are pending and past their remove_at deadline are updated
     /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
     ///
     /// The number of impacted records is returned in a Result.
-    pub async fn handle_deadletter_at(&self) -> Result<u64, Error> {
+    pub async fn handle_remove_at(&self) -> Result<u64, Error> {
         let mut atomic = self.sqlite_pool.begin().await?;
         let max_result: SqliteRow = sqlx::query(
             r#"SELECT MAX("offset") AS max_offset
@@ -391,7 +392,7 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE datetime(deadletter_at) < datetime($2) AND "offset" < $3 AND status = $4
+            WHERE datetime(remove_at) < datetime($2) AND "offset" < $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
@@ -715,7 +716,7 @@ mod tests {
         let store = InflightActivationStore::new(&url).await.unwrap();
 
         let mut batch = make_activations(1);
-        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         assert!(store.store(batch.clone()).await.is_ok());
 
         let result = store.get_pending_activation(None).await;
@@ -1176,18 +1177,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_deadletter_at_no_complete() {
+    async fn test_handle_remove_at_no_complete() {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
         let mut batch = make_activations(3);
 
         // While two records are past deadlines, there are no completed tasks with higher offsets
         // no tasks should be updated as we could have no workers available.
-        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-        batch[1].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
         assert!(store.store(batch.clone()).await.is_ok());
-        let result = store.handle_deadletter_at().await;
+        let result = store.handle_remove_at().await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
 
@@ -1195,19 +1196,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_deadletter_at_with_complete() {
+    async fn test_handle_remove_at_with_complete() {
         let url = generate_temp_filename();
         let store = InflightActivationStore::new(&url).await.unwrap();
         let mut batch = make_activations(3);
 
         // Because 1 is complete and has a higher offset than 0 1 will be moved to failure
-        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].status = InflightActivationStatus::Complete;
-        batch[2].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[2].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result = store.handle_deadletter_at().await;
+        let result = store.handle_remove_at().await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 1, "only one record should be updated");
 
@@ -1246,7 +1247,7 @@ mod tests {
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
-            deadletter_at: None,
+            remove_at: None,
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".into(),
