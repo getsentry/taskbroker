@@ -50,7 +50,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             partition: 0,
             offset: i as i64,
             added_at: Utc::now(),
-            deadletter_at: None,
+            remove_at: None,
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".into(),

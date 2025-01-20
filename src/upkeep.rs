@@ -50,7 +50,7 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
 struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
-    deadletter_at_expired: u64,
+    remove_at_expired: u64,
     deadlettered: u64,
     completed: u64,
     pending: u32,
@@ -61,7 +61,7 @@ impl UpkeepResults {
     fn empty(&self) -> bool {
         self.retried == 0
             && self.processing_deadline_reset == 0
-            && self.deadletter_at_expired == 0
+            && self.remove_at_expired == 0
             && self.deadlettered == 0
             && self.completed == 0
             && self.pending == 0
@@ -79,7 +79,7 @@ pub async fn do_upkeep(
     let mut result_context = UpkeepResults {
         retried: 0,
         processing_deadline_reset: 0,
-        deadletter_at_expired: 0,
+        remove_at_expired: 0,
         deadlettered: 0,
         completed: 0,
         pending: 0,
@@ -126,13 +126,13 @@ pub async fn do_upkeep(
         result_context.processing_deadline_reset = processing_count;
     }
 
-    // 5. Advance state on tasks past deadletter_at
-    if let Ok(deadletter_count) = store
-        .handle_deadletter_at()
-        .instrument(info_span!("handle_deadletter_at"))
+    // 5. Advance state on tasks past remove_at
+    if let Ok(remove_count) = store
+        .handle_remove_at()
+        .instrument(info_span!("handle_remove_at"))
         .await
     {
-        result_context.deadletter_at_expired = deadletter_count;
+        result_context.remove_at_expired = remove_count;
     }
 
     // 6. Handle failure state tasks
@@ -191,7 +191,7 @@ pub async fn do_upkeep(
         info!(
             result_context.completed,
             result_context.deadlettered,
-            result_context.deadletter_at_expired,
+            result_context.remove_at_expired,
             result_context.retried,
             result_context.pending,
             result_context.processing,
@@ -202,8 +202,7 @@ pub async fn do_upkeep(
 
     metrics::counter!("upkeep.completed").increment(result_context.completed);
     metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
-    metrics::counter!("upkeep.deadletter_at_expired")
-        .increment(result_context.deadletter_at_expired);
+    metrics::counter!("upkeep.remove_at_expired").increment(result_context.remove_at_expired);
     metrics::counter!("upkeep.retried").increment(result_context.retried);
 
     metrics::gauge!("upkeep.pending_count").increment(result_context.pending);
@@ -472,16 +471,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_past_deadletter_at_discard() {
+    async fn test_past_remove_at_discard() {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].status = InflightActivationStatus::Complete;
-        batch[2].deadletter_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[2].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
         assert!(store.store(batch.clone()).await.is_ok());
         do_upkeep(config, store.clone(), producer).await;
@@ -510,7 +509,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_deadletter_at_remove_failed_publish_to_kafka() {
+    async fn test_remove_at_remove_failed_publish_to_kafka() {
         let config = create_integration_config();
         reset_topic(config.clone()).await;
 

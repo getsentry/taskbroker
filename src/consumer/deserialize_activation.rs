@@ -13,14 +13,14 @@ use crate::{
 };
 
 pub struct DeserializeConfig {
-    pub deadletter_deadline: Duration,
+    pub remove_deadline: Duration,
 }
 
 impl DeserializeConfig {
     /// Convert from application into service configuration
     pub fn from_config(config: &Config) -> Self {
         Self {
-            deadletter_deadline: Duration::from_secs(config.deadletter_deadline as u64),
+            remove_deadline: Duration::from_secs(config.remove_deadline as u64),
         }
     }
 }
@@ -45,10 +45,10 @@ pub fn new(
         let now = Utc::now();
 
         // Determine the deadletter_at time using config and activation expires time.
-        let mut deadletter_at = now.add(config.deadletter_deadline);
+        let mut remove_at = now.add(config.remove_deadline);
         if let Some(expires) = activation.expires {
             let expires_duration = Duration::from_secs(expires);
-            if expires_duration < config.deadletter_deadline {
+            if expires_duration < config.remove_deadline {
                 // Expiry times are based on the time the task was received
                 // not the time it was dequeued from Kafka.
                 let activation_received = activation.received_at.map_or(now, |ts| {
@@ -57,7 +57,7 @@ pub fn new(
                         _ => now,
                     }
                 });
-                deadletter_at = activation_received + expires_duration;
+                remove_at = activation_received + expires_duration;
             }
         }
 
@@ -67,7 +67,7 @@ pub fn new(
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: Utc::now(),
-            deadletter_at: Some(deadletter_at),
+            remove_at: Some(remove_at),
             processing_deadline: None,
             at_most_once,
             namespace,
@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn test_deadletter_from_config() {
         let config = DeserializeConfig {
-            deadletter_deadline: Duration::from_secs(900),
+            remove_deadline: Duration::from_secs(900),
         };
         let deserializer = new(config);
         let now = Utc::now();
@@ -126,7 +126,7 @@ mod tests {
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
-        let delta = inflight.deadletter_at.unwrap() - now;
+        let delta = inflight.remove_at.unwrap() - now;
         assert!(
             delta.num_seconds() >= 900,
             "Should have at least 900 seconds of delay from now"
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn test_expires_deadletter() {
         let config = DeserializeConfig {
-            deadletter_deadline: Duration::from_secs(900),
+            remove_deadline: Duration::from_secs(900),
         };
         let deserializer = new(config);
         let now = Utc::now();
@@ -173,7 +173,7 @@ mod tests {
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
-        let delta = inflight.deadletter_at.unwrap() - the_past;
+        let delta = inflight.remove_at.unwrap() - the_past;
         assert!(
             delta.num_seconds() >= 99,
             "Should have ~100 seconds of delay from received_at"
