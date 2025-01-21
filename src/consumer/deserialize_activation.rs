@@ -67,8 +67,8 @@ pub fn new(
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: Utc::now(),
-            remove_at: Some(remove_at),
             processing_deadline: None,
+            remove_at,
             at_most_once,
             namespace,
         })
@@ -126,7 +126,7 @@ mod tests {
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
-        let delta = inflight.remove_at.unwrap() - now;
+        let delta = inflight.remove_at - now;
         assert!(
             delta.num_seconds() >= 900,
             "Should have at least 900 seconds of delay from now"
@@ -173,7 +173,7 @@ mod tests {
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
-        let delta = inflight.remove_at.unwrap() - the_past;
+        let delta = inflight.remove_at - the_past;
         assert!(
             delta.num_seconds() >= 99,
             "Should have ~100 seconds of delay from received_at"

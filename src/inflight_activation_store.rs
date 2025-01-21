@@ -71,7 +71,7 @@ pub struct InflightActivation {
 
     /// The timestamp after which a task should be removed from inflight store
     /// depending on the retry policy of an activation it will either be deadlettered or discarded.
-    pub remove_at: Option<DateTime<Utc>>,
+    pub remove_at: DateTime<Utc>,
 
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
@@ -103,7 +103,7 @@ struct TableRow {
     partition: i32,
     offset: i64,
     added_at: DateTime<Utc>,
-    remove_at: Option<DateTime<Utc>>,
+    remove_at: DateTime<Utc>,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
@@ -232,9 +232,9 @@ impl InflightActivationStore {
             WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
-        query_builder.push(" AND (remove_at IS NULL OR datetime(remove_at) > datetime(");
+        query_builder.push(" AND (remove_at IS NULL OR remove_at > ");
         query_builder.push_bind(now);
-        query_builder.push("))");
+        query_builder.push(")");
 
         if let Some(namespace) = namespace {
             query_builder.push(" AND namespace = ");
@@ -392,7 +392,7 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE datetime(remove_at) < datetime($2) AND "offset" < $3 AND status = $4
+            WHERE remove_at < $2 AND "offset" < $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
@@ -528,7 +528,9 @@ impl InflightActivationStore {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    use std::ops::Add;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use chrono::{TimeZone, Utc};
     use sentry_protos::sentry::v1::{RetryState, TaskActivation, TaskActivationStatus};
@@ -716,7 +718,7 @@ mod tests {
         let store = InflightActivationStore::new(&url).await.unwrap();
 
         let mut batch = make_activations(1);
-        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
         assert!(store.store(batch.clone()).await.is_ok());
 
         let result = store.get_pending_activation(None).await;
@@ -1184,8 +1186,8 @@ mod tests {
 
         // While two records are past deadlines, there are no completed tasks with higher offsets
         // no tasks should be updated as we could have no workers available.
-        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-        batch[1].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+        batch[1].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
 
         assert!(store.store(batch.clone()).await.is_ok());
         let result = store.handle_remove_at().await;
@@ -1202,9 +1204,9 @@ mod tests {
         let mut batch = make_activations(3);
 
         // Because 1 is complete and has a higher offset than 0 1 will be moved to failure
-        batch[0].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
         batch[1].status = InflightActivationStatus::Complete;
-        batch[2].remove_at = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
 
         assert!(store.store(batch.clone()).await.is_ok());
 
@@ -1247,7 +1249,7 @@ mod tests {
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
-            remove_at: None,
+            remove_at: Utc::now().add(Duration::from_secs(5 * 60)),
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".into(),
