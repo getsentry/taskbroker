@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tonic::transport::Server;
 use tracing::{error, info};
 
-use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
+use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::config::Config;
 use taskbroker::consumer::{

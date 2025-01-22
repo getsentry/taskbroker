@@ -1,7 +1,7 @@
 use chrono::Utc;
 use rand::Rng;
-use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
-use sentry_protos::sentry::v1::{GetTaskRequest, SetTaskStatusRequest};
+use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
+use sentry_protos::taskbroker::v1::{GetTaskRequest, SetTaskStatusRequest};
 use std::sync::Arc;
 use tonic::{Code, Request};
 
@@ -36,14 +36,11 @@ async fn test_set_task_status() {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
-        fetch_next: None,
-        fetch_next_namespace: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_none());
-    assert!(resp.get_ref().error.is_none());
 }
 
 #[tokio::test]
@@ -56,8 +53,6 @@ async fn test_set_task_status_invalid() {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
-        fetch_next: None,
-        fetch_next_namespace: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_err());
