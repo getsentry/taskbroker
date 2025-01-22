@@ -7,7 +7,6 @@ use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tonic::transport::Server;
-use tonic_health::server::health_reporter;
 use tracing::{error, info};
 
 use sentry_protos::sentry::v1::consumer_service_server::ConsumerServiceServer;
@@ -103,10 +102,6 @@ async fn main() -> Result<(), Error> {
         let grpc_config = config.clone();
         async move {
             let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            let (mut health_reporter_fn, health_service) = health_reporter();
-            health_reporter_fn
-                .set_serving::<ConsumerServiceServer<MyConsumerService>>()
-                .await;
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
@@ -120,7 +115,6 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(MyConsumerService {
                     store: grpc_store,
                 }))
-                .add_service(health_service)
                 .serve(addr);
 
             info!("GRPC server listening on {}", addr);
@@ -129,7 +123,6 @@ async fn main() -> Result<(), Error> {
 
                 res = server => {
                     info!("GRPC server task failed, shutting down");
-                    health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
 
                     // Wait for any running requests to drain
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -140,7 +133,6 @@ async fn main() -> Result<(), Error> {
                 }
                 _ = guard.wait() => {
                     info!("Cancellation token received, shutting down GRPC server");
-                    health_reporter_fn.set_not_serving::<ConsumerServiceServer<MyConsumerService>>().await;
 
                     // Wait for any running requests to drain
                     tokio::time::sleep(Duration::from_secs(5)).await;
