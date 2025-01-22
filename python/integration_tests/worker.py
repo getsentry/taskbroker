@@ -3,8 +3,17 @@ import time
 import random
 import logging
 
-from sentry_protos.sentry.v1.taskworker_pb2 import TaskActivation, FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivationStatus, TASK_ACTIVATION_STATUS_COMPLETE, TASK_ACTIVATION_STATUS_FAILURE, TASK_ACTIVATION_STATUS_RETRY
-from sentry_protos.sentry.v1.taskworker_pb2_grpc import ConsumerServiceStub
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    TaskActivation,
+    FetchNextTask,
+    GetTaskRequest,
+    SetTaskStatusRequest,
+    TaskActivationStatus,
+    TASK_ACTIVATION_STATUS_COMPLETE,
+    TASK_ACTIVATION_STATUS_FAILURE,
+    TASK_ACTIVATION_STATUS_RETRY
+)
+from sentry_protos.taskbroker.v1.taskbroker_pb2_grpc import ConsumerServiceStub
 
 
 class TaskWorkerClient:

@@ -5,7 +5,7 @@ use anyhow::{anyhow, Error};
 use chrono::{MappedLocalTime, TimeZone, Utc};
 use prost::Message as _;
 use rdkafka::{message::OwnedMessage, Message};
-use sentry_protos::sentry::v1::TaskActivation;
+use sentry_protos::taskbroker::v1::TaskActivation;
 
 use crate::{
     config::Config,
@@ -82,7 +82,7 @@ mod tests {
     use chrono::Utc;
     use prost::Message as _;
     use rdkafka::{message::OwnedMessage, Timestamp};
-    use sentry_protos::sentry::v1::TaskActivation;
+    use sentry_protos::taskbroker::v1::TaskActivation;
 
     use super::{new, DeserializeConfig};
 
@@ -107,7 +107,6 @@ mod tests {
                 seconds: the_past.timestamp(),
                 nanos: 0,
             }),
-            deadline: None,
             retry_state: None,
             processing_deadline_duration: 10,
             expires: None,
@@ -154,7 +153,6 @@ mod tests {
                 seconds: the_past.timestamp(),
                 nanos: 0,
             }),
-            deadline: None,
             retry_state: None,
             processing_deadline_duration: 10,
             expires: Some(100),

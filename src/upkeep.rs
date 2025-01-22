@@ -5,7 +5,7 @@ use rdkafka::{
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
 };
-use sentry_protos::sentry::v1::TaskActivation;
+use sentry_protos::taskbroker::v1::TaskActivation;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -235,7 +235,7 @@ mod tests {
 
     use chrono::{TimeDelta, TimeZone, Utc};
     use prost_types::Timestamp;
-    use sentry_protos::sentry::v1::RetryState;
+    use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState};
 
     use crate::{
         inflight_activation_store::{InflightActivationStatus, InflightActivationStore},
@@ -270,9 +270,8 @@ mod tests {
         records[0].status = InflightActivationStatus::Retry;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
-            kind: "".into(),
-            discard_after_attempt: Some(2),
-            deadletter_after_attempt: None,
+            max_attempts: 2,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());
@@ -313,9 +312,8 @@ mod tests {
         records[0].status = InflightActivationStatus::Retry;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
-            kind: "".into(),
-            discard_after_attempt: Some(1),
-            deadletter_after_attempt: None,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
 
@@ -444,9 +442,8 @@ mod tests {
         batch[1].at_most_once = true;
         batch[1].activation.retry_state = Some(RetryState {
             attempts: 0,
-            kind: "".into(),
-            deadletter_after_attempt: None,
-            discard_after_attempt: Some(1),
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: Some(true),
         });
         assert!(store.store(batch.clone()).await.is_ok());
@@ -520,9 +517,8 @@ mod tests {
         records[0].status = InflightActivationStatus::Failure;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
-            kind: "".into(),
-            discard_after_attempt: None,
-            deadletter_after_attempt: Some(1),
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());

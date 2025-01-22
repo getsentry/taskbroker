@@ -1,6 +1,6 @@
 use chrono::Utc;
-use sentry_protos::sentry::v1::consumer_service_server::ConsumerService;
-use sentry_protos::sentry::v1::{
+use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
+use sentry_protos::taskbroker::v1::{
     GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivationStatus,
 };
@@ -33,7 +33,6 @@ impl ConsumerService for MyConsumerService {
             Ok(Some(inflight)) => {
                 let resp = GetTaskResponse {
                     task: Some(inflight.activation),
-                    error: None,
                 };
                 metrics::histogram!("grpc_server.get_task.duration").record(start_time.elapsed());
 
@@ -80,10 +79,7 @@ impl ConsumerService for MyConsumerService {
             Err(e) => return Err(Status::internal(e.to_string())),
         }
 
-        let mut response = SetTaskStatusResponse {
-            task: None,
-            error: None,
-        };
+        let mut response = SetTaskStatusResponse { task: None };
 
         let fetch_next = &request.get_ref().fetch_next_task;
         if let Some(fetch_next) = fetch_next {

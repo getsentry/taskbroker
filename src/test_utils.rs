@@ -18,7 +18,7 @@ use crate::{
     },
 };
 use chrono::{Timelike, Utc};
-use sentry_protos::sentry::v1::TaskActivation;
+use sentry_protos::taskbroker::v1::TaskActivation;
 
 /// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
@@ -43,7 +43,6 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
                     seconds: now.timestamp(),
                     nanos: now.nanosecond() as i32,
                 }),
-                deadline: None,
                 retry_state: None,
                 processing_deadline_duration: 10,
                 expires: None,

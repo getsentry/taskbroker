@@ -6,7 +6,11 @@ import time
 from confluent_kafka import Producer
 from pathlib import Path
 from uuid import uuid4
-from sentry_protos.sentry.v1.taskworker_pb2 import RetryState, TaskActivation
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    OnAttemptsExceeded,
+    RetryState,
+    TaskActivation,
+)
 from google.protobuf.timestamp_pb2 import Timestamp
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
@@ -70,9 +74,8 @@ def create_topic(topic_name: str, num_partitions: int) -> None:
 def serialize_task_activation(i, args: list, kwargs: dict) -> bytes:
     retry_state = RetryState(
         attempts=0,
-        kind="sentry.taskworker.retry.Retry",
-        discard_after_attempt=None,
-        deadletter_after_attempt=None,
+        max_attempts=1,
+        on_attempts_exceeded=OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD,
     )
     pending_task_payload = TaskActivation(
         id=uuid4().hex,

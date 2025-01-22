@@ -3,7 +3,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, Error};
 use chrono::{DateTime, Utc};
 use prost::Message;
-use sentry_protos::sentry::v1::{TaskActivation, TaskActivationStatus};
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
 use sqlx::{
     migrate::MigrateDatabase,
     sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow},
@@ -439,9 +439,11 @@ impl InflightActivationStore {
             // We could be deadlettering because of activation.expires
             // when a task expires we still deadletter if configured.
             let retry_state = &activation.retry_state.as_ref().unwrap();
-            if retry_state.discard_after_attempt.is_some() {
+            if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Discard as i32
+                || retry_state.on_attempts_exceeded == OnAttemptsExceeded::Unspecified as i32
+            {
                 to_discard.push(activation.id);
-            } else if retry_state.deadletter_after_attempt.is_some() {
+            } else if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Deadletter as i32 {
                 to_deadletter.push(activation);
             }
         }
@@ -533,7 +535,9 @@ mod tests {
     use std::time::Duration;
 
     use chrono::{TimeZone, Utc};
-    use sentry_protos::sentry::v1::{RetryState, TaskActivation, TaskActivationStatus};
+    use sentry_protos::taskbroker::v1::{
+        OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
+    };
     use tokio::sync::broadcast;
     use tokio::task::JoinSet;
 
@@ -919,9 +923,8 @@ mod tests {
         batch[1].status = InflightActivationStatus::Processing;
         batch[1].activation.retry_state = Some(RetryState {
             attempts: 0,
-            kind: "".into(),
-            discard_after_attempt: Some(1),
-            deadletter_after_attempt: None,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: Some(true),
         });
         batch[1].at_most_once = true;
@@ -957,9 +960,8 @@ mod tests {
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].activation.retry_state = Some(RetryState {
             attempts: 0,
-            kind: "".into(),
-            discard_after_attempt: Some(1),
-            deadletter_after_attempt: None,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
 
@@ -981,9 +983,8 @@ mod tests {
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].activation.retry_state = Some(RetryState {
             attempts: 0,
-            kind: "".into(),
-            discard_after_attempt: None,
-            deadletter_after_attempt: Some(1),
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
         });
 
@@ -1006,9 +1007,8 @@ mod tests {
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].activation.retry_state = Some(RetryState {
             attempts: 1,
-            kind: "".into(),
-            discard_after_attempt: None,
-            deadletter_after_attempt: Some(1),
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
         });
 
@@ -1105,18 +1105,16 @@ mod tests {
         records[0].status = InflightActivationStatus::Failure;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
-            kind: "".into(),
-            discard_after_attempt: None,
-            deadletter_after_attempt: Some(1),
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
         });
         // discard
         records[1].status = InflightActivationStatus::Failure;
         records[1].activation.retry_state = Some(RetryState {
             attempts: 1,
-            kind: "".into(),
-            discard_after_attempt: Some(1),
-            deadletter_after_attempt: None,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
         // no retry state = discard
@@ -1127,9 +1125,8 @@ mod tests {
         records[3].status = InflightActivationStatus::Failure;
         records[3].activation.retry_state = Some(RetryState {
             attempts: 1,
-            kind: "".into(),
-            discard_after_attempt: None,
-            deadletter_after_attempt: Some(1),
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
         });
         assert!(store.store(records.clone()).await.is_ok());
@@ -1240,7 +1237,6 @@ mod tests {
                     seconds: 0,
                     nanos: 0,
                 }),
-                deadline: None,
                 retry_state: None,
                 processing_deadline_duration: 0,
                 expires: Some(1),
