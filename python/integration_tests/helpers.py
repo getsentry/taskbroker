@@ -90,7 +90,7 @@ def serialize_task_activation(i, args: list, kwargs: dict) -> bytes:
     return pending_task_payload
 
 
-def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
+def send_messages_to_kafka(topic_name: str, num_messages: int, custom_message: TaskActivation | None = None) -> None:
     """
     Send num_messages to kafka topic using unique task names.
     """
@@ -103,15 +103,17 @@ def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
         )
 
         for i in range(num_messages):
-            task_message = serialize_task_activation(i, ["foobar"], {})
+            if custom_message:
+                task_message = custom_message.SerializeToString()
+            else:
+                task_message = serialize_task_activation(i, ["foobar"], {})
+            print(f"Sending message: {task_message}")
             producer.produce(topic_name, task_message)
 
         producer.poll(5)  # trigger delivery reports
         producer.flush()
-        print(f"Sent {num_messages} messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
-
 
 def check_num_tasks_written(consumer_config: ConsumerConfig) -> int:
     attach_db_stmt = f"ATTACH DATABASE '{consumer_config.db_path}' AS {consumer_config.db_name};\n"
