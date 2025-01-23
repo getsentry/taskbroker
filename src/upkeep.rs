@@ -113,7 +113,6 @@ pub async fn do_upkeep(
             }
 
             ids.push(inflight.activation.id);
-            println!("retry.publish.success {:?}", ids);
         }
 
         // 3. Update retry tasks to complete
@@ -432,8 +431,8 @@ mod tests {
         assert!(store.store(batch.clone()).await.is_ok());
         let result_context = do_upkeep(config, store.clone(), producer).await;
 
-        assert_eq!(result_context.remove_at_expired, 1); // batch[2] is removed due to remove_at deadline
-        assert_eq!(result_context.discarded, 1); // batch[2] is discarded
+        assert_eq!(result_context.remove_at_expired, 1); // batch[0] is removed due to remove_at deadline
+        assert_eq!(result_context.discarded, 1); // batch[0] is discarded
         assert_eq!(result_context.completed, 2); // batch[1] and batch[2] are removed as completed
         assert_eq!(
             store
@@ -453,8 +452,28 @@ mod tests {
         );
 
         assert!(
-            store.get_by_id(&batch[0].activation.id).await.is_ok(),
-            "first task should remain"
+            store
+                .get_by_id(&batch[0].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "first task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[1].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "second task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[2].activation.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "third task should be kept"
         );
     }
 
