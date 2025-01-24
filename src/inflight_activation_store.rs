@@ -96,6 +96,11 @@ impl From<SqliteQueryResult> for QueryResult {
     }
 }
 
+pub struct FailedTasksForwarder {
+    pub to_discard: Vec<String>,
+    pub to_deadletter: Vec<TaskActivation>,
+}
+
 #[derive(Debug, FromRow)]
 struct TableRow {
     id: String,
@@ -413,7 +418,7 @@ impl InflightActivationStore {
     /// or need to be moved to deadletter and are returned in the Result.
     /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
     /// complete.
-    pub async fn handle_failed_tasks(&self) -> Result<Vec<TaskActivation>, Error> {
+    pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
         let mut atomic = self.sqlite_pool.begin().await?;
 
         let failed_tasks: Vec<SqliteRow> =
@@ -424,8 +429,10 @@ impl InflightActivationStore {
                 .into_iter()
                 .collect();
 
-        let mut to_discard: Vec<String> = vec![];
-        let mut to_deadletter: Vec<TaskActivation> = vec![];
+        let mut forwarder = FailedTasksForwarder {
+            to_discard: vec![],
+            to_deadletter: vec![],
+        };
 
         for record in failed_tasks.iter() {
             let activation_data: &[u8] = record.get("activation");
@@ -433,7 +440,7 @@ impl InflightActivationStore {
 
             // Without a retry state, tasks are discarded
             if activation.retry_state.as_ref().is_none() {
-                to_discard.push(activation.id);
+                forwarder.to_discard.push(activation.id);
                 continue;
             }
             // We could be deadlettering because of activation.expires
@@ -442,13 +449,13 @@ impl InflightActivationStore {
             if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Discard as i32
                 || retry_state.on_attempts_exceeded == OnAttemptsExceeded::Unspecified as i32
             {
-                to_discard.push(activation.id);
+                forwarder.to_discard.push(activation.id)
             } else if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Deadletter as i32 {
-                to_deadletter.push(activation);
+                forwarder.to_deadletter.push(activation)
             }
         }
 
-        if !to_discard.is_empty() {
+        if !forwarder.to_discard.is_empty() {
             let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
             query_builder
                 .push("SET status = ")
@@ -456,7 +463,7 @@ impl InflightActivationStore {
                 .push(" WHERE id IN (");
 
             let mut separated = query_builder.separated(", ");
-            for id in to_discard.iter() {
+            for id in forwarder.to_discard.iter() {
                 separated.push_bind(id);
             }
             separated.push_unseparated(")");
@@ -466,7 +473,7 @@ impl InflightActivationStore {
 
         atomic.commit().await?;
 
-        Ok(to_deadletter)
+        Ok(forwarder)
     }
 
     /// Mark a collection of tasks as complete by id
@@ -1133,19 +1140,23 @@ mod tests {
 
         let result = store.handle_failed_tasks().await;
         assert!(result.is_ok(), "handle_failed_tasks should be ok");
-        let deadletter = result.unwrap();
+        let fowarder = result.unwrap();
 
-        assert_eq!(deadletter.len(), 2, "should have two tasks to deadletter");
+        assert_eq!(
+            fowarder.to_deadletter.len(),
+            2,
+            "should have two tasks to deadletter"
+        );
         assert!(
-            store.get_by_id(&deadletter[0].id).await.is_ok(),
+            store.get_by_id(&fowarder.to_deadletter[0].id).await.is_ok(),
             "deadletter records still in sqlite"
         );
         assert!(
-            store.get_by_id(&deadletter[1].id).await.is_ok(),
+            store.get_by_id(&fowarder.to_deadletter[1].id).await.is_ok(),
             "deadletter records still in sqlite"
         );
-        assert_eq!(deadletter[0].id, records[0].activation.id);
-        assert_eq!(deadletter[1].id, records[3].activation.id);
+        assert_eq!(fowarder.to_deadletter[0].id, records[0].activation.id);
+        assert_eq!(fowarder.to_deadletter[1].id, records[3].activation.id);
 
         assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
     }
