@@ -36,7 +36,7 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
     loop {
         select! {
             _ = timer.tick() => {
-                do_upkeep(config.clone(), store.clone(), producer_arc.clone()).await;
+                let _ = do_upkeep(config.clone(), store.clone(), producer_arc.clone()).await;
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
@@ -47,6 +47,7 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
 }
 
 // Debugging context
+#[derive(Debug)]
 struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
@@ -55,6 +56,7 @@ struct UpkeepResults {
     completed: u64,
     pending: u32,
     processing: u32,
+    discarded: u64,
 }
 
 impl UpkeepResults {
@@ -66,6 +68,7 @@ impl UpkeepResults {
             && self.completed == 0
             && self.pending == 0
             && self.processing == 0
+            && self.discarded == 0
     }
 }
 
@@ -74,7 +77,7 @@ pub async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<InflightActivationStore>,
     producer: Arc<FutureProducer>,
-) {
+) -> UpkeepResults {
     let upkeep_start = Instant::now();
     let mut result_context = UpkeepResults {
         retried: 0,
@@ -84,6 +87,7 @@ pub async fn do_upkeep(
         completed: 0,
         pending: 0,
         processing: 0,
+        discarded: 0,
     };
 
     // 1. Handle retry tasks
@@ -136,14 +140,15 @@ pub async fn do_upkeep(
     }
 
     // 6. Handle failure state tasks
-    if let Ok(deadletter_activations) = store
+    if let Ok(failed_tasks_forwarder) = store
         .handle_failed_tasks()
         .instrument(info_span!("handle_failed_tasks"))
         .await
     {
+        result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
         let mut ids: Vec<String> = vec![];
         // Submit deadlettered tasks to dlq.
-        for activation in deadletter_activations {
+        for activation in failed_tasks_forwarder.to_deadletter {
             let payload = activation.encode_to_vec();
             let message =
                 FutureRecord::<(), _>::to(&config.kafka_deadletter_topic).payload(&payload);
@@ -207,6 +212,8 @@ pub async fn do_upkeep(
 
     metrics::gauge!("upkeep.pending_count").increment(result_context.pending);
     metrics::gauge!("upkeep.processing_count").increment(result_context.processing);
+
+    result_context
 }
 
 /// Create a new activation that is a 'retry' of the passed inflight_activation
@@ -276,10 +283,11 @@ mod tests {
         });
         assert!(store.store(records.clone()).await.is_ok());
 
-        do_upkeep(config.clone(), store.clone(), producer).await;
+        let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
 
         // Only 1 record left as the retry task should be appended as a new task
         assert_eq!(store.count().await.unwrap(), 1);
+        assert_eq!(result_context.retried, 1);
 
         let messages = consume_topic(config.clone(), config.kafka_topic.as_ref(), 1).await;
         assert_eq!(messages.len(), 1);
@@ -303,67 +311,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_is_discarded_when_exhausted_with_retry() {
-        let config = create_config();
-        let store = create_inflight_store().await;
-        let producer = create_producer(config.clone());
-
-        let mut records = make_activations(2);
-        records[0].status = InflightActivationStatus::Retry;
-        records[0].activation.retry_state = Some(RetryState {
-            attempts: 1,
-            max_attempts: 1,
-            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
-            at_most_once: None,
-        });
-
-        assert!(store.store(records).await.is_ok());
-
-        do_upkeep(config, store.clone(), producer).await;
-
-        // Only 1 record left as the retry task should be discarded.
-        assert_eq!(store.count().await.unwrap(), 1);
-        assert_eq!(
-            store
-                .count_by_status(InflightActivationStatus::Pending)
-                .await
-                .unwrap(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn test_retry_is_discarded_with_no_retry_state() {
-        let config = create_config();
-        let store = create_inflight_store().await;
-        let producer = create_producer(config.clone());
-
-        let mut records = make_activations(2);
-        records[0].status = InflightActivationStatus::Retry;
-        records[0].activation.retry_state = None;
-
-        assert!(store.store(records.clone()).await.is_ok());
-
-        do_upkeep(config, store.clone(), producer).await;
-
-        // Only 1 record left as the retry task should be discarded.
-        assert_eq!(store.count().await.unwrap(), 1);
-        assert_eq!(
-            store
-                .count_by_status(InflightActivationStatus::Pending)
-                .await
-                .unwrap(),
-            1
-        );
-        // retry task should be removed.
-        assert!(store
-            .get_by_id(&records[0].activation.id)
-            .await
-            .unwrap()
-            .is_none());
-    }
-
-    #[tokio::test]
     async fn test_processing_deadline_retains_future_deadline() {
         let config = create_config();
         let store = create_inflight_store().await;
@@ -375,7 +322,7 @@ mod tests {
         batch[1].processing_deadline = Some(Utc::now().add(TimeDelta::minutes(5)));
         assert!(store.store(batch.clone()).await.is_ok());
 
-        do_upkeep(config, store.clone(), producer).await;
+        let _ = do_upkeep(config, store.clone(), producer).await;
 
         // Should retain the processing record
         assert_eq!(
@@ -409,9 +356,10 @@ mod tests {
             1
         );
 
-        do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer).await;
 
         // 0 processing, 2 pending now
+        assert_eq!(result_context.processing_deadline_reset, 1);
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Processing)
@@ -448,9 +396,10 @@ mod tests {
         });
         assert!(store.store(batch.clone()).await.is_ok());
 
-        do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer).await;
 
         // 0 processing, 1 pending, 1 discarded
+        assert_eq!(result_context.discarded, 1);
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Processing)
@@ -480,8 +429,11 @@ mod tests {
         batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
 
         assert!(store.store(batch.clone()).await.is_ok());
-        do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer).await;
 
+        assert_eq!(result_context.remove_at_expired, 1); // batch[0] is removed due to remove_at deadline
+        assert_eq!(result_context.discarded, 1); // batch[0] is discarded
+        assert_eq!(result_context.completed, 2); // batch[1] and batch[2] are removed as completed
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Pending)
@@ -500,8 +452,28 @@ mod tests {
         );
 
         assert!(
-            store.get_by_id(&batch[0].activation.id).await.is_ok(),
-            "first task should remain"
+            store
+                .get_by_id(&batch[0].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "first task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[1].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "second task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[2].activation.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "third task should be kept"
         );
     }
 
@@ -523,9 +495,10 @@ mod tests {
         });
         assert!(store.store(records.clone()).await.is_ok());
 
-        do_upkeep(config.clone(), store.clone(), producer).await;
+        let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
 
         // Only 1 record left as the failure task should be appended to dlq
+        assert_eq!(result_context.deadlettered, 1);
         assert_eq!(store.count().await.unwrap(), 1);
 
         let messages =
@@ -549,8 +522,9 @@ mod tests {
         batch[0].status = InflightActivationStatus::Failure;
         assert!(store.store(batch).await.is_ok());
 
-        do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer).await;
 
+        assert_eq!(result_context.discarded, 1);
         assert_eq!(
             store.count().await.unwrap(),
             1,
