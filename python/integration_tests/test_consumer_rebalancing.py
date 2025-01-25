@@ -16,7 +16,7 @@ from python.integration_tests.helpers import (
     TESTS_OUTPUT_ROOT,
     create_topic,
     send_messages_to_kafka,
-    ConsumerConfig
+    ConsumerConfig,
 )
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_consumer_rebalancing"
@@ -107,7 +107,15 @@ Running test with the following configuration:
     for i in range(num_consumers):
         filename = f"config_{i}.yml"
         db_name = f"db_{i}_{curr_time}"
-        consumer_configs[filename] = ConsumerConfig(db_name, str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"), max_pending_count, topic_name, topic_name, "earliest", 50051 + i)
+        consumer_configs[filename] = ConsumerConfig(
+            db_name,
+            str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+            max_pending_count,
+            topic_name,
+            topic_name,
+            "earliest",
+            50051 + i,
+        )
 
     for filename, config in consumer_configs.items():
         with open(str(TEST_OUTPUT_PATH / filename), "w") as f:
