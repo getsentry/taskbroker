@@ -15,7 +15,7 @@ from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
     create_topic,
-    send_messages_to_kafka,
+    send_generic_messages_to_topic,
     ConsumerConfig
 )
 
@@ -114,7 +114,7 @@ Running test with the following configuration:
             yaml.safe_dump(config.to_dict(), f)
 
     try:
-        send_messages_to_kafka(topic_name, num_messages)
+        send_generic_messages_to_topic(topic_name, num_messages)
         threads: list[Thread] = []
         for i in range(num_consumers):
             thread = threading.Thread(

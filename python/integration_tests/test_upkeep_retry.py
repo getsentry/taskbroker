@@ -10,9 +10,9 @@ from collections import defaultdict
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
-    send_messages_to_kafka,
+    send_generic_messages_to_topic,
     create_topic,
-    check_num_tasks_written,
+    get_num_tasks_in_sqlite,
     ConsumerConfig,
 )
 
@@ -141,7 +141,7 @@ def manage_consumer(
         # Let the consumer write the messages to sqlite
         end = time.time() + timeout
         while (time.time() < end) and (not tasks_written_event.is_set()):
-            written_tasks = check_num_tasks_written(consumer_config)
+            written_tasks = get_num_tasks_in_sqlite(consumer_config)
             if written_tasks == num_messages:
                 print(
                     f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite. Sending signal to taskworker(s) to start processing"
@@ -260,7 +260,7 @@ Running test with the following configuration:
         yaml.safe_dump(consumer_config.to_dict(), f)
 
     try:
-        send_messages_to_kafka(topic_name, num_messages)
+        send_generic_messages_to_topic(topic_name, num_messages)
         tasks_written_event = threading.Event()
         shutdown_events = [threading.Event() for _ in range(num_workers)]
         consumer_thread = threading.Thread(

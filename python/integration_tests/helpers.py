@@ -16,6 +16,10 @@ from google.protobuf.timestamp_pb2 import Timestamp
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
 TESTS_OUTPUT_ROOT = Path(__file__).parent / ".tests_output"
+TEST_PRODUCER_CONFIG = {
+    "bootstrap.servers": "127.0.0.1:9092",
+    "broker.address.family": "v4",
+}
 
 
 class ConsumerConfig:
@@ -90,24 +94,15 @@ def serialize_task_activation(i, args: list, kwargs: dict) -> bytes:
     return pending_task_payload
 
 
-def send_messages_to_kafka(topic_name: str, num_messages: int, custom_message: TaskActivation | None = None) -> None:
+def send_generic_messages_to_topic(topic_name: str, num_messages: int) -> None:
     """
     Send num_messages to kafka topic using unique task names.
     """
     try:
-        producer = Producer(
-            {
-                "bootstrap.servers": "127.0.0.1:9092",
-                "broker.address.family": "v4",
-            }
-        )
+        producer = Producer(TEST_PRODUCER_CONFIG)
 
         for i in range(num_messages):
-            if custom_message:
-                task_message = custom_message.SerializeToString()
-            else:
-                task_message = serialize_task_activation(i, ["foobar"], {})
-            print(f"Sending message: {task_message}")
+            task_message = serialize_task_activation(i, ["foobar"], {})
             producer.produce(topic_name, task_message)
 
         producer.poll(5)  # trigger delivery reports
@@ -115,9 +110,38 @@ def send_messages_to_kafka(topic_name: str, num_messages: int, custom_message: T
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
-def check_num_tasks_written(consumer_config: ConsumerConfig) -> int:
+
+def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskActivation]) -> None:
+    """
+    Send num_messages to kafka topic using unique task names.
+    """
+    try:
+        producer = Producer(TEST_PRODUCER_CONFIG)
+
+        for message in custom_messages:
+            task_message = message.SerializeToString()
+            producer.produce(topic_name, task_message)
+
+        producer.poll(5)  # trigger delivery reports
+        producer.flush()
+    except Exception as e:
+        raise Exception(f"Failed to send messages to kafka: {e}")
+
+
+def get_num_tasks_in_sqlite(consumer_config: ConsumerConfig) -> int:
     attach_db_stmt = f"ATTACH DATABASE '{consumer_config.db_path}' AS {consumer_config.db_name};\n"
     query = f"""SELECT count(*) as count FROM {consumer_config.db_name}.inflight_taskactivations;"""
+    con = sqlite3.connect(consumer_config.db_path)
+    cur = con.cursor()
+    cur.executescript(attach_db_stmt)
+    rows = cur.execute(query).fetchall()
+    count = rows[0][0]
+    return count
+
+
+def get_num_tasks_in_sqlite_by_status(consumer_config: ConsumerConfig, status: str) -> int:
+    attach_db_stmt = f"ATTACH DATABASE '{consumer_config.db_path}' AS {consumer_config.db_name};\n"
+    query = f"""SELECT count(*) as count FROM {consumer_config.db_name}.inflight_taskactivations WHERE status = '{status}';"""
     con = sqlite3.connect(consumer_config.db_path)
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
