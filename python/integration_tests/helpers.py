@@ -22,7 +22,7 @@ TEST_PRODUCER_CONFIG = {
 }
 
 
-class ConsumerConfig:
+class TaskbrokerConfig:
     def __init__(
         self,
         db_name: str,
