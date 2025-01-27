@@ -26,7 +26,7 @@ clap = { version = "4.5.20", features = ["derive"] }
 sentry = { version = "0.34.0", features = ["tracing"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["json"] }
-metrics-exporter-statsd = "0.9.0"
+metrics-exporter-dogstatsd = "0.9.0"
 metrics = "0.24.0"
 elegant-departure = { version = "0.3.1", features = ["tokio"] }
 uuid = { version = "1.11.0", features = ["v4"] }
