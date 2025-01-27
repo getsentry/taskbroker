@@ -4,7 +4,7 @@ use figment::{
 };
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, net::SocketAddr};
+use std::borrow::Cow;
 
 use crate::{
     logging::{LogFormat, LogLevel},
@@ -32,7 +32,7 @@ pub struct Config {
     pub log_format: LogFormat,
 
     /// The statsd address to report metrics to.
-    pub statsd_addr: SocketAddr,
+    pub statsd_addr: String,
 
     /// The hostname and port of the gRPC server.
     pub grpc_addr: String,
