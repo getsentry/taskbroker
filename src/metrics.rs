@@ -1,34 +1,26 @@
 use crate::config::Config;
-use metrics_exporter_statsd::StatsdBuilder;
-use std::net::{SocketAddr, ToSocketAddrs};
+use metrics_exporter_dogstatsd::DogStatsDBuilder;
 
 pub struct MetricsConfig {
-    pub statsd_addr: SocketAddr,
+    pub dog_statsd_addr: Option<String>,
 }
 
 impl MetricsConfig {
     pub fn from_config(config: &Config) -> Self {
-        let socket_addrs = config
-            .statsd_addr
-            .to_socket_addrs()
-            .expect("Could not resolve into a socket address");
-        let [statsd_addr] = socket_addrs.as_slice() else {
-            unreachable!("Expect statsd_addr to resolve into a single socket address");
-        };
         MetricsConfig {
-            statsd_addr: *statsd_addr,
+            dog_statsd_addr: config.dog_statsd_addr.clone(),
         }
     }
 }
 
 pub fn init(metrics_config: MetricsConfig) {
-    let address = metrics_config.statsd_addr;
-
-    let recorder = StatsdBuilder::from(address.ip().to_string(), address.port())
-        .with_queue_size(5000)
-        .with_buffer_size(1024)
-        .build(Some("taskbroker"))
-        .expect("Could not create StatsdRecorder");
-
-    metrics::set_global_recorder(recorder).expect("Could not set global metrics recorder")
+    let Some(dog_statd_addr) = metrics_config.dog_statsd_addr else {
+        return;
+    };
+    DogStatsDBuilder::default()
+        .with_remote_address(dog_statd_addr)
+        .expect("Failed to parse remote address")
+        .with_telemetry(false)
+        .install()
+        .expect("Failed to install DogStatsD recorder");
 }
