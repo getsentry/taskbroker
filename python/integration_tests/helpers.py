@@ -18,7 +18,7 @@ TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
 TESTS_OUTPUT_ROOT = Path(__file__).parent / ".tests_output"
 
 
-class ConsumerConfig:
+class TaskbrokerConfig:
     def __init__(
         self,
         db_name: str,
@@ -113,10 +113,16 @@ def send_messages_to_kafka(topic_name: str, num_messages: int) -> None:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
 
-def check_num_tasks_written(consumer_config: ConsumerConfig) -> int:
-    attach_db_stmt = f"ATTACH DATABASE '{consumer_config.db_path}' AS {consumer_config.db_name};\n"
-    query = f"""SELECT count(*) as count FROM {consumer_config.db_name}.inflight_taskactivations;"""
-    con = sqlite3.connect(consumer_config.db_path)
+def get_num_tasks_in_sqlite(taskbroker_config: TaskbrokerConfig) -> int:
+    attach_db_stmt = (
+        f"ATTACH DATABASE '{taskbroker_config.db_path}' "
+        f"AS {taskbroker_config.db_name};\n"
+    )
+    query = (
+        f"SELECT count(*) as count FROM "
+        f"{taskbroker_config.db_name}.inflight_taskactivations;"
+    )
+    con = sqlite3.connect(taskbroker_config.db_path)
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     rows = cur.execute(query).fetchall()

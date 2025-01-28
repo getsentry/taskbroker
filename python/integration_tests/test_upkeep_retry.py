@@ -12,11 +12,14 @@ from python.integration_tests.helpers import (
     TESTS_OUTPUT_ROOT,
     send_messages_to_kafka,
     create_topic,
-    check_num_tasks_written,
-    ConsumerConfig,
+    get_num_tasks_in_sqlite,
+    TaskbrokerConfig,
 )
 
-from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
+from python.integration_tests.worker import (
+    ConfigurableTaskWorker,
+    TaskWorkerClient
+)
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
@@ -52,7 +55,7 @@ counter = TasksRetriedCounter()
 
 def manage_taskworker(
     worker_id: int,
-    consumer_config: ConsumerConfig,
+    taskbroker_config: TaskbrokerConfig,
     log_file_path: str,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
@@ -61,15 +64,19 @@ def manage_taskworker(
     timeout: int,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
-    worker = ConfigurableTaskWorker(TaskWorkerClient(f"127.0.0.1:{consumer_config.grpc_port}"), retry_rate=1)
+    worker = ConfigurableTaskWorker(
+        TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"),
+        retry_rate=1
+    )
     retried_tasks = 0
     next_task = None
     task = None
     end = time.time() + timeout
 
-    # Wait for consumer to initialize sqlite and write tasks to it
+    # Wait for taskbroker to initialize sqlite and write tasks to it
     print(
-        f"[taskworker_{worker_id}]: Waiting for consumer to initialize sqlite and write tasks to it..."
+        f"[taskworker_{worker_id}]: Waiting for taskbroker to initialize "
+        f"sqlite and write tasks to it..."
     )
     while not tasks_written_event.is_set() and not shutdown_event.is_set():
         time.sleep(1)
@@ -79,7 +86,10 @@ def manage_taskworker(
     try:
         while not shutdown_event.is_set():
             if time.time() > end:
-                print(f"[taskworker_{worker_id}]: Timeout elapse. Shutting down taskworker_{worker_id}")
+                print(
+                    f"[taskworker_{worker_id}]: Timeout elapse. "
+                    f"Shutting down taskworker_{worker_id}"
+                )
                 shutdown_event.set()
                 break
             if next_task:
@@ -88,13 +98,16 @@ def manage_taskworker(
             else:
                 task = worker.fetch_task()
 
-            # If there are no more pending task to be fetched, check if all tasks have been retried.
-            # If so, shutdown the taskworker. If not, wait for upkeep to re-produce the task to kafka.
+            # If there are no more pending task to be fetched, check if all
+            # tasks have been retried. If so, shutdown the taskworker.
+            # If not, wait for upkeep to re-produce the task to kafka.
             if not task:
                 task_retried_count = counter.get_total_retried()
                 if task_retried_count >= num_messages * retries_per_task:
                     print(
-                        f"[taskworker_{worker_id}]: Total tasks retried reached: {task_retried_count}/{num_messages * retries_per_task}. Shutting down taskworker_{worker_id}"
+                        f"[taskworker_{worker_id}]: Total tasks retried reached: "
+                        f"{task_retried_count}/{num_messages * retries_per_task}. "
+                        f"Shutting down taskworker_{worker_id}"
                     )
                     shutdown_event.set()
                     break
@@ -102,13 +115,16 @@ def manage_taskworker(
                     time.sleep(1)
                     continue
 
-            # If the tasks's retry policy is less than specificed attempts, set the task to retry state.
-            # Otherwise, complete the task.
+            # If the tasks's retry policy is less than specificed attempts,
+            # set the task to retry state. Otherwise, complete the task.
             if task.retry_state.attempts < retries_per_task:
                 next_task = worker.process_task(task)
                 retried_tasks += 1
                 curr_retried = counter.increment(task.taskname)
-                print(f"[taskworker_{worker_id}]: Total tasks retried: {curr_retried}/{num_messages * retries_per_task}")
+                print(
+                    f"[taskworker_{worker_id}]: Total tasks retried: "
+                    f"{curr_retried}/{num_messages * retries_per_task}"
+                )
             else:
                 next_task = worker.complete_task(task)
     except Exception as e:
@@ -119,10 +135,10 @@ def manage_taskworker(
         log_file.write(f"Retried:{retried_tasks}")
 
 
-def manage_consumer(
-    consumer_path: str,
+def manage_taskbroker(
+    taskbroker_path: str,
     config_file_path: str,
-    consumer_config: ConsumerConfig,
+    taskbroker_config: TaskbrokerConfig,
     log_file_path: str,
     timeout: int,
     num_messages: int,
@@ -130,42 +146,54 @@ def manage_consumer(
     shutdown_events: list[threading.Event],
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(f"[consumer_0] Starting consumer, writing log file to {log_file_path}")
+        print(
+            f"[taskbroker_0] Starting taskbroker, writing log file to "
+            f"{log_file_path}"
+        )
         process = subprocess.Popen(
-            [consumer_path, "-c", config_file_path],
+            [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
             stdout=log_file,
         )
-        time.sleep(3)  # give the consumer some time to start
+        time.sleep(3)  # give the taskbroker some time to start
 
-        # Let the consumer write the messages to sqlite
+        # Let the taskbroker write the messages to sqlite
         end = time.time() + timeout
         while (time.time() < end) and (not tasks_written_event.is_set()):
-            written_tasks = check_num_tasks_written(consumer_config)
+            written_tasks = get_num_tasks_in_sqlite(taskbroker_config)
             if written_tasks == num_messages:
                 print(
-                    f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite. Sending signal to taskworker(s) to start processing"
+                    f"[taskbroker_0]: Finishing writting all {num_messages} "
+                    f"task(s) to sqlite. Sending signal to taskworker(s) "
+                    f"to start processing"
                 )
                 tasks_written_event.set()
             time.sleep(1)
 
-        # Keep gRPC consumer alive until taskworker is done processing
+        # Keep gRPC taskbroker alive until taskworker is done processing
         if tasks_written_event.is_set():
-            print("[consumer_0]: Waiting for taskworker(s) to finish processing...")
+            print(
+                "[taskbroker_0]: Waiting for taskworker(s) to finish "
+                "processing..."
+            )
             while not all(
                 shutdown_event.is_set() for shutdown_event in shutdown_events
             ):
                 time.sleep(1)
-            print("[consumer_0]: Received shutdown signal from all taskworker(s)")
+            print(
+                "[taskbroker_0]: Received shutdown signal from all "
+                "taskworker(s)"
+            )
         else:
             print(
-                "[consumer_0]: Timeout elapse and not all tasks have been written to sqlite. Signalling taskworker(s) to stop"
+                "[taskbroker_0]: Timeout elapse and not all tasks have been "
+                "written to sqlite. Signalling taskworker(s) to stop"
             )
             for shutdown_event in shutdown_events:
                 shutdown_event.set()
 
-        # Stop the consumer
-        print("[consumer_0]: Shutting down consumer")
+        # Stop the taskbroker
+        print("[taskbroker_0]: Shutting down taskbroker")
         process.send_signal(signal.SIGINT)
         try:
             return_code = process.wait(timeout=10)
@@ -186,7 +214,7 @@ def test_upkeep_retry() -> None:
     continues until all tasks have been retried the specified number of times.
 
     How does it accomplish this?
-    The test starts N number of taskworker(s) and a consumer in separate
+    The test starts N number of taskworker(s) and a taskbroker in separate
     threads. Synchronization events are use to instruct the taskworker(s)
     when start processing and shutdown. A shared data structured access by
     a mutex called TaskRetriedCounter is used to globally keep track of
@@ -194,10 +222,10 @@ def test_upkeep_retry() -> None:
     number of times each individual task was retried.
 
     Sequence diagram:
-    [Thread 1: Consumer]                                        [Thread 2-N: Taskworker(s)]
+    [Thread 1: Taskbroker]                                     [Thread 2-N: Taskworker(s)]
              |                                                              |
              |                                                              |
-    Start consumer                                                 Start taskworker(s)
+    Start taskbroker                                               Start taskworker(s)
              |                                                              |
              |                                                              |
     Consume kafka and write to sqlite                                       |
@@ -218,17 +246,17 @@ def test_upkeep_retry() -> None:
              |                                                      Stop taskworker
              |                                                              |
     Once received shutdown signal(s)                                        |
-    from all workers, Stop consumer                                         |
+    from all workers, Stop taskbroker                                       |
     """
 
     # Test configuration
-    consumer_path = str(TASKBROKER_BIN)
+    taskbroker_path = str(TASKBROKER_BIN)
     num_messages = 5000
     retries_per_task = 3
     num_partitions = 1
     num_workers = 20
     max_pending_count = 100_000
-    consumer_timeout = (
+    taskbroker_timeout = (
         60  # the time in seconds to wait for all messages to be written to sqlite
     )
     taskworker_timeout = 600  # the time in seconds for taskworker to finish processing
@@ -249,37 +277,45 @@ Running test with the following configuration:
 
     create_topic(topic_name, num_partitions)
 
-    # Create config file for consumer
-    print("Creating config file for consumer")
+    # Create taskbroker config file
+    print("Creating config file for taskbroker")
     TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     db_name = f"db_0_{curr_time}_test_upkeep_retry"
     config_filename = "config_0_test_upkeep_retry.yml"
-    consumer_config = ConsumerConfig(db_name, str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"), max_pending_count, topic_name, topic_name, "earliest", 50051)
+    taskbroker_config = TaskbrokerConfig(
+        db_name,
+        str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+        max_pending_count,
+        topic_name,
+        topic_name,
+        "earliest",
+        50051
+    )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
-        yaml.safe_dump(consumer_config.to_dict(), f)
+        yaml.safe_dump(taskbroker_config.to_dict(), f)
 
     try:
         send_messages_to_kafka(topic_name, num_messages)
         tasks_written_event = threading.Event()
         shutdown_events = [threading.Event() for _ in range(num_workers)]
-        consumer_thread = threading.Thread(
-            target=manage_consumer,
+        taskbroker_thread = threading.Thread(
+            target=manage_taskbroker,
             args=(
-                consumer_path,
+                taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
-                consumer_config,
+                taskbroker_config,
                 str(
                     TEST_OUTPUT_PATH
-                    / f"consumer_0_{curr_time}_test_upkeep_retry.log"
+                    / f"taskbroker_0_{curr_time}_test_upkeep_retry.log"
                 ),
-                consumer_timeout,
+                taskbroker_timeout,
                 num_messages,
                 tasks_written_event,
                 shutdown_events,
             ),
         )
-        consumer_thread.start()
+        taskbroker_thread.start()
 
         worker_threads = []
         worker_log_files = []
@@ -293,7 +329,7 @@ Running test with the following configuration:
                 target=manage_taskworker,
                 args=(
                     i,
-                    consumer_config,
+                    taskbroker_config,
                     log_file,
                     tasks_written_event,
                     shutdown_events[i],
@@ -305,14 +341,14 @@ Running test with the following configuration:
             worker_thread.start()
             worker_threads.append(worker_thread)
 
-        consumer_thread.join()
+        taskbroker_thread.join()
         for t in worker_threads:
             t.join()
     except Exception as e:
         raise Exception(f"Error running taskbroker: {e}")
 
     if not tasks_written_event.is_set():
-        pytest.fail(f"Not all messages were written to sqlite.")
+        pytest.fail("Not all messages were written to sqlite.")
 
     total_retried = 0
 
@@ -324,4 +360,6 @@ Running test with the following configuration:
     print(f"\nTotal tasks retried: {total_retried}")
 
     assert total_retried == num_messages * retries_per_task
-    assert all([val == retries_per_task for val in counter.get_tasks_retried().values()])
+    assert all(
+        [val == retries_per_task for val in counter.get_tasks_retried().values()]
+    )
