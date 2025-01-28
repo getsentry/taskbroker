@@ -13,10 +13,13 @@ from python.integration_tests.helpers import (
     send_generic_messages_to_topic,
     create_topic,
     get_num_tasks_in_sqlite,
-    ConsumerConfig
+    TaskbrokerConfig
 )
 
-from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
+from python.integration_tests.worker import (
+    ConfigurableTaskWorker,
+    TaskWorkerClient
+)
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
@@ -26,14 +29,14 @@ mutex = threading.Lock()
 
 def manage_taskworker(
     worker_id: int,
-    consumer_config: ConsumerConfig,
+    taskbroker_config: TaskbrokerConfig,
     log_file_path: str,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
     worker = ConfigurableTaskWorker(
-        TaskWorkerClient(f"127.0.0.1:{consumer_config.grpc_port}")
+        TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}")
     )
     fetched_tasks = 0
     completed_tasks = 0
@@ -41,9 +44,10 @@ def manage_taskworker(
     next_task = None
     task = None
 
-    # Wait for consumer to initialize sqlite and write tasks to it
+    # Wait for taskbroker to initialize sqlite and write tasks to it
     print(
-        f"[taskworker_{worker_id}]: Waiting for consumer to initialize sqlite and write tasks to it..."
+        f"[taskworker_{worker_id}]: Waiting for taskbroker to initialize "
+        f"sqlite and write tasks to it..."
     )
     while not tasks_written_event.is_set() and not shutdown_event.is_set():
         time.sleep(1)
@@ -62,7 +66,8 @@ def manage_taskworker(
                     fetched_tasks += 1
             if not task:
                 print(
-                    f"[taskworker_{worker_id}]: No more pending tasks to retrieve, shutting down taskworker_{worker_id}"
+                    f"[taskworker_{worker_id}]: No more pending tasks "
+                    f"to retrieve, shutting down taskworker_{worker_id}"
                 )
                 shutdown_event.set()
                 break
@@ -79,10 +84,10 @@ def manage_taskworker(
         log_file.write(f"Fetched:{fetched_tasks}, Completed:{completed_tasks}")
 
 
-def manage_consumer(
-    consumer_path: str,
+def manage_taskbroker(
+    taskbroker_path: str,
     config_file_path: str,
-    consumer_config: ConsumerConfig,
+    taskbroker_config: TaskbrokerConfig,
     log_file_path: str,
     timeout: int,
     num_messages: int,
@@ -90,42 +95,54 @@ def manage_consumer(
     shutdown_events: list[threading.Event],
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(f"[consumer_0] Starting consumer, writing log file to {log_file_path}")
+        print(
+            f"[taskbroker_0] Starting taskbroker, writing log file to "
+            f"{log_file_path}"
+        )
         process = subprocess.Popen(
-            [consumer_path, "-c", config_file_path],
+            [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
             stdout=log_file,
         )
-        time.sleep(3)  # give the consumer some time to start
+        time.sleep(3)  # give the taskbroker some time to start
 
-        # Let the consumer write the messages to sqlite
+        # Let the taskbroker write the messages to sqlite
         end = time.time() + timeout
         while (time.time() < end) and (not tasks_written_event.is_set()):
-            written_tasks = get_num_tasks_in_sqlite(consumer_config)
+            written_tasks = get_num_tasks_in_sqlite(taskbroker_config)
             if written_tasks == num_messages:
                 print(
-                    f"[consumer_0]: Finishing writting all {num_messages} task(s) to sqlite. Sending signal to taskworker(s) to start processing"
+                    f"[taskbroker_0]: Finishing writting all {num_messages} "
+                    f"task(s) to sqlite. Sending signal to taskworker(s) "
+                    f"to start processing"
                 )
                 tasks_written_event.set()
             time.sleep(1)
 
-        # Keep gRPC consumer alive until taskworker is done processing
+        # Keep gRPC taskbroker alive until taskworker is done processing
         if tasks_written_event.is_set():
-            print("[consumer_0]: Waiting for taskworker(s) to finish processing...")
+            print(
+                "[taskbroker_0]: Waiting for taskworker(s) to finish "
+                "processing..."
+            )
             while not all(
                 shutdown_event.is_set() for shutdown_event in shutdown_events
             ):
                 time.sleep(1)
-            print("[consumer_0]: Received shutdown signal from all taskworker(s)")
+            print(
+                "[taskbroker_0]: Received shutdown signal from all "
+                "taskworker(s)"
+            )
         else:
             print(
-                "[consumer_0]: Timeout elapse and not all tasks have been written to sqlite. Signalling taskworker(s) to stop"
+                "[taskbroker_0]: Timeout elapse and not all tasks have been "
+                "written to sqlite. Signalling taskworker(s) to stop"
             )
             for shutdown_event in shutdown_events:
                 shutdown_event.set()
 
-        # Stop the consumer
-        print("[consumer_0]: Shutting down consumer")
+        # Stop the taskbroker
+        print("[taskbroker_0]: Shutting down taskbroker")
         process.send_signal(signal.SIGINT)
         try:
             return_code = process.wait(timeout=10)
@@ -145,17 +162,17 @@ def test_task_worker_processing() -> None:
 
     How does it accomplish this?
     To accomplish this, the test starts N number of taskworker(s) and a
-    consumer in separate. threads. Synchronization events are use to
+    taskbroker in separate. threads. Synchronization events are use to
     instruct the taskworker(s) when start processing and shutdown.
     A shared dictionary accessed by a mutex is used to collect duplicate
     processed tasks. Finally, the total number of fetched and completed
     tasks are compared to the number of messages sent to taskbroker.
 
     Sequence diagram:
-    [Thread 1: Consumer]                                        [Thread 2-N: Taskworker(s)]
+    [Thread 1: Taskbroker]                                     [Thread 2-N: Taskworker(s)]
              |                                                              |
              |                                                              |
-    Start consumer                                                 Start taskworker(s)
+    Start Taskbroker                                               Start taskworker(s)
              |                                                              |
              |                                                              |
     Consume kafka and write to sqlite                                       |
@@ -172,16 +189,16 @@ def test_task_worker_processing() -> None:
              |                                                      Stop taskworker
              |                                                              |
     Once received shutdown signal(s)                                        |
-    from all workers, Stop consumer                                         |
+    from all workers, Stop taskbroker                                       |
     """
 
     # Test configuration
-    consumer_path = str(TASKBROKER_BIN)
+    taskbroker_path = str(TASKBROKER_BIN)
     num_messages = 10_000
     num_partitions = 1
     num_workers = 20
     max_pending_count = 100_000
-    consumer_timeout = (
+    taskbroker_timeout = (
         60  # the time in seconds to wait for all messages to be written to sqlite
     )
     topic_name = "task-worker"
@@ -200,37 +217,45 @@ Running test with the following configuration:
 
     create_topic(topic_name, num_partitions)
 
-    # Create config file for consumer
-    print("Creating config file for consumer")
+    # Create config file for taskbroker
+    print("Creating config file for taskbroker")
     TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
     db_name = f"db_0_{curr_time}_test_task_worker_processing"
     config_filename = "config_0_test_task_worker_processing.yml"
-    consumer_config = ConsumerConfig(db_name, str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"), max_pending_count, topic_name, topic_name, "earliest", 50051)
+    taskbroker_config = TaskbrokerConfig(
+        db_name,
+        str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+        max_pending_count,
+        topic_name,
+        topic_name,
+        "earliest",
+        50051
+    )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
-        yaml.safe_dump(consumer_config.to_dict(), f)
+        yaml.safe_dump(taskbroker_config.to_dict(), f)
 
     try:
         send_generic_messages_to_topic(topic_name, num_messages)
         tasks_written_event = threading.Event()
         shutdown_events = [threading.Event() for _ in range(num_workers)]
-        consumer_thread = threading.Thread(
-            target=manage_consumer,
+        taskbroker_thread = threading.Thread(
+            target=manage_taskbroker,
             args=(
-                consumer_path,
+                taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
-                consumer_config,
+                taskbroker_config,
                 str(
                     TEST_OUTPUT_PATH
-                    / f"consumer_0_{curr_time}_test_task_worker_processing.log"
+                    / f"taskbroker_0_{curr_time}_test_task_worker_processing.log"
                 ),
-                consumer_timeout,
+                taskbroker_timeout,
                 num_messages,
                 tasks_written_event,
                 shutdown_events,
             ),
         )
-        consumer_thread.start()
+        taskbroker_thread.start()
 
         worker_threads = []
         worker_log_files = []
@@ -244,7 +269,7 @@ Running test with the following configuration:
                 target=manage_taskworker,
                 args=(
                     i,
-                    consumer_config,
+                    taskbroker_config,
                     log_file,
                     tasks_written_event,
                     shutdown_events[i],
@@ -253,14 +278,14 @@ Running test with the following configuration:
             worker_thread.start()
             worker_threads.append(worker_thread)
 
-        consumer_thread.join()
+        taskbroker_thread.join()
         for t in worker_threads:
             t.join()
     except Exception as e:
         raise Exception(f"Error running taskbroker: {e}")
 
     if not tasks_written_event.is_set():
-        pytest.fail(f"Not all messages were written to sqlite.")
+        pytest.fail("Not all messages were written to sqlite.")
 
     total_fetched = 0
     total_completed = 0
@@ -271,7 +296,8 @@ Running test with the following configuration:
             total_completed += int(line.split(",")[1].split(":")[1])
 
     print(
-        f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: {total_completed}"
+        f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: "
+        f"{total_completed}"
     )
     duplicate_tasks = [
         (task_id, worker_ids)

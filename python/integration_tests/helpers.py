@@ -128,10 +128,16 @@ def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskAct
         raise Exception(f"Failed to send messages to kafka: {e}")
 
 
-def get_num_tasks_in_sqlite(consumer_config: ConsumerConfig) -> int:
-    attach_db_stmt = f"ATTACH DATABASE '{consumer_config.db_path}' AS {consumer_config.db_name};\n"
-    query = f"""SELECT count(*) as count FROM {consumer_config.db_name}.inflight_taskactivations;"""
-    con = sqlite3.connect(consumer_config.db_path)
+def get_num_tasks_in_sqlite(taskbroker_config: TaskbrokerConfig) -> int:
+    attach_db_stmt = (
+        f"ATTACH DATABASE '{taskbroker_config.db_path}' "
+        f"AS {taskbroker_config.db_name};\n"
+    )
+    query = (
+        f"SELECT count(*) as count FROM "
+        f"{taskbroker_config.db_name}.inflight_taskactivations;"
+    )
+    con = sqlite3.connect(taskbroker_config.db_path)
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     rows = cur.execute(query).fetchall()
@@ -139,10 +145,19 @@ def get_num_tasks_in_sqlite(consumer_config: ConsumerConfig) -> int:
     return count
 
 
-def get_num_tasks_in_sqlite_by_status(consumer_config: ConsumerConfig, status: str) -> int:
-    attach_db_stmt = f"ATTACH DATABASE '{consumer_config.db_path}' AS {consumer_config.db_name};\n"
-    query = f"""SELECT count(*) as count FROM {consumer_config.db_name}.inflight_taskactivations WHERE status = '{status}';"""
-    con = sqlite3.connect(consumer_config.db_path)
+def get_num_tasks_in_sqlite_by_status(
+    taskbroker_config: TaskbrokerConfig,
+    status: str
+) -> int:
+    attach_db_stmt = (
+        f"ATTACH DATABASE '{taskbroker_config.db_path}' "
+        f"AS {taskbroker_config.db_name};\n"
+    )
+    query = (
+        f"SELECT count(*) as count FROM {taskbroker_config.db_name}."
+        f"inflight_taskactivations WHERE status = '{status}';"
+    )
+    con = sqlite3.connect(taskbroker_config.db_path)
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     rows = cur.execute(query).fetchall()

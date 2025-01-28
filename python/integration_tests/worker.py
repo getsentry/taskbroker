@@ -73,7 +73,15 @@ class ConfigurableTaskWorker:
     A taskworker that can be configured to fail/timeout while processing tasks.
     """
 
-    def __init__(self, client: TaskWorkerClient, namespace: str | None = None, failure_rate: float = 0.0, timeout_rate: float = 0.0, retry_rate: float = 0.0, enable_backoff: bool = False) -> None:
+    def __init__(
+        self,
+        client: TaskWorkerClient,
+        namespace: str | None = None,
+        failure_rate: float = 0.0,
+        timeout_rate: float = 0.0,
+        retry_rate: float = 0.0,
+        enable_backoff: bool = False,
+    ) -> None:
         self.client = client
         self._namespace: str | None = namespace
         self._failure_rate: float = failure_rate
