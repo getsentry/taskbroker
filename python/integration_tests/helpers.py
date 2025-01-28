@@ -20,6 +20,11 @@ TEST_PRODUCER_CONFIG = {
     "bootstrap.servers": "127.0.0.1:9092",
     "broker.address.family": "v4",
 }
+TEST_CONSUMER_CONFIG = {
+    'bootstrap.servers': "127.0.0.1:9092",
+    'group.id': 'my-group',
+    'auto.offset.reset': 'earliest',
+}
 
 
 class TaskbrokerConfig:
@@ -110,6 +115,7 @@ def send_generic_messages_to_topic(topic_name: str, num_messages: int) -> None:
 
         producer.poll(5)  # trigger delivery reports
         producer.flush()
+        print(f"Sent {num_messages} generic messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
@@ -127,6 +133,7 @@ def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskAct
 
         producer.poll(5)  # trigger delivery reports
         producer.flush()
+        print(f"Sent {num_messages} custom messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
@@ -138,11 +145,7 @@ def get_topic_size(topic_name: str) -> int:
     """
     attempts = 30
     size = 0
-    consumer = Consumer({
-        'bootstrap.servers': "127.0.0.1:9092",
-        'group.id': 'my-group',
-        'auto.offset.reset': 'earliest',
-    })
+    consumer = Consumer(TEST_CONSUMER_CONFIG)
     consumer.subscribe([topic_name])
     while attempts > 0:
         event = consumer.poll(1.0)
