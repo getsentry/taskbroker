@@ -37,6 +37,14 @@ format: ## Run autofix mode for formatting and lint
 	cargo clippy --workspace --all-targets --all-features --no-deps --fix --allow-dirty --allow-staged -- -D warnings
 .PHONY: format
 
+style-py: ## Run black --check on python code
+	python/.venv/bin/python -m black --check python/
+.PHONY: style-py
+
+format-py: ## Run autofix mode for formatting and lint
+	python/.venv/bin/python -m black python/
+.PHONY: format-py
+
 # Tests
 
 unit-test: ## Run unit tests
