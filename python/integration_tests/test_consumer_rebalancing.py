@@ -14,7 +14,6 @@ from python.integration_tests.helpers import (
     TESTS_OUTPUT_ROOT,
     create_topic,
     send_generic_messages_to_topic,
-    send_generic_messages_to_topic,
     TaskbrokerConfig,
 )
 
@@ -81,6 +80,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     max_restart_duration = 30
     max_pending_count = 15_000
     topic_name = "task-worker"
+    kafka_deadletter_topic = "task-worker-dlq"
     curr_time = int(time.time())
 
     print(
@@ -109,13 +109,14 @@ Running test with the following configuration:
         filename = f"config_{i}.yml"
         db_name = f"db_{i}_{curr_time}"
         taskbroker_configs[filename] = TaskbrokerConfig(
-            db_name,
-            str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
-            max_pending_count,
-            topic_name,
-            topic_name,
-            "earliest",
-            50051 + i,
+            db_name=db_name,
+            db_path=str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+            max_pending_count=max_pending_count,
+            topic_name=topic_name,
+            kafka_deadletter_topic=kafka_deadletter_topic,
+            kafka_consumer_group_id=f"task-worker-{i}",
+            kafka_consumer_offset="earliest",
+            kafka_consumer_port=50051 + i,
         )
 
     for filename, config in taskbroker_configs.items():

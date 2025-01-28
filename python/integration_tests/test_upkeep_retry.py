@@ -261,6 +261,7 @@ def test_upkeep_retry() -> None:
     )
     taskworker_timeout = 600  # the time in seconds for taskworker to finish processing
     topic_name = "task-worker"
+    kafka_deadletter_topic = "task-worker-dlq"
     curr_time = int(time.time())
 
     print(
@@ -283,13 +284,14 @@ Running test with the following configuration:
     db_name = f"db_0_{curr_time}_test_upkeep_retry"
     config_filename = "config_0_test_upkeep_retry.yml"
     taskbroker_config = TaskbrokerConfig(
-        db_name,
-        str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
-        max_pending_count,
-        topic_name,
-        topic_name,
-        "earliest",
-        50051
+        db_name=db_name,
+        db_path=str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+        max_pending_count=max_pending_count,
+        topic_name=topic_name,
+        kafka_deadletter_topic=kafka_deadletter_topic,
+        kafka_consumer_group_id=topic_name,
+        kafka_consumer_offset="earliest",
+        kafka_consumer_port=50051
     )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
