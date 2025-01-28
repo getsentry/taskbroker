@@ -15,6 +15,7 @@ from python.integration_tests.helpers import (
     get_num_tasks_in_sqlite,
     get_num_tasks_in_sqlite_by_status,
     TaskbrokerConfig,
+    get_topic_size,
 )
 from python.integration_tests.worker import TaskWorkerClient
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -77,6 +78,7 @@ def manage_taskbroker(
     config_file_path: str,
     taskbroker_config: TaskbrokerConfig,
     log_file_path: str,
+    results_log_path: str,
     timeout: int,
     num_messages: int,
     tasks_written_event: threading.Event,
@@ -120,9 +122,9 @@ def manage_taskbroker(
                 taskbroker_config,
                 "Complete"
             )
-            print(num_completed_tasks)
             time.sleep(3)
             cur_time = time.time()
+
         if shutdown_event.is_set():
             print(
                 "[taskbroker_0]: Received shutdown signal from taskworker. "
@@ -137,6 +139,9 @@ def manage_taskbroker(
                 "Shutting down taskbroker."
             )
 
+        with open(results_log_path, "a") as results_log_file:
+            results_log_file.write(f"Completed:{num_completed_tasks}")
+
         # Stop the taskbroker
         print("[taskbroker_0]: Shutting down taskbroker")
         process.send_signal(signal.SIGINT)
@@ -149,31 +154,66 @@ def manage_taskbroker(
 
 def test_upkeep_dlq() -> None:
     """
-    Testing DLQ and discard when remove_at elapses.
-    - Produce N messages to kafka where the tasks retry policy max_attempts is 5 (does not matter) and on_attempts_exceeded is set to deadletter and expires to 0.
-
-    Testing DLQ and discard when max_attempts is reached.
-    - Produce N messages to kafka where the tasks retry policy max_attempts is 3 and set to deadletter
-    - Expect the tasks to try 3 times, then be deadlettered
-    __________________________
     What does this test do?
+    This tests is responsible for checking the integrity of the discard
+    and deadletter mechanism implemented in the upkeep thread of taskbroker.
+    An initial amount of messages is produced to kafka where half of the
+    messages' on_attempts_exceeded is set to discard and the other half
+    to deadletter. These messages have an `expires` value of 1 second.
+    An extra message is produced to the topic which is to be completed
+    by a taskworker first. This allows all the previous messages to be
+    discarded/deadlettered by upkeep. During an interval, the upkeep thread
+    collect all tasks that have expired, sets them all to a failed status,
+    then appropriately discards or deadletters these messages. This process
+    continues until all tasks have have a completed status (this means
+    all tasks have either been discarded or deadlettered).
 
     How does it accomplish this?
-
+    The test starts a taskworker and a taskbroker in separate
+    threads. Synchronization events are use to instruct the taskworker
+    when complete the last message and shutdown. Once the upkeep thread
+    has successfully completed all messages in sqlite, taskbroker shuts down.
+    Finally, this total number of completed messages and messages in the DLQ
+    topic is validated.
 
     Sequence diagram:
- 
+    [Thread 1: Taskbroker]                                      [Thread 2: Taskworker]
+             |                                                              |
+             |                                                              |
+    Start taskbroker                                                Start taskworker
+             |                                                              |
+             |                                                              |
+    Consume kafka and write to sqlite                                       |
+             .                                                              |
+             .                                                              |
+    Done initializing and writing to sqlite ---------[Send signal]--------->|
+             |                                                              |
+             |                                                     Complete last message
+             |                                                              .
+             |                                                        Stop taskworker
+             |                                                              |
+             |                                                              |
+    Upkeep thread collects expired tasks and discards/deadletters           |
+             .                                                              |
+             .                                                              |
+             .                                                              |
+             .                                                              |
+             .                                                              |
+             |                                                              |
+    When it finishes or timeout is elapsed,                                 |
+    Stop taskbroker                                                         |
     """
 
     # Test configuration
     taskbroker_path = str(TASKBROKER_BIN)
-    num_messages = 5000
+    num_messages = 10_001  # the 5001st message will be completed by the taskworker such that all previous can be discarded/deadlettered
     num_partitions = 4
     max_pending_count = 100_000
     taskbroker_timeout = (
         60  # the time in seconds to wait for taskbroker to process
     )
     topic_name = "task-worker"
+    dlq_topic_name = "task-worker-dlq"
     curr_time = int(time.time())
 
     print(
@@ -182,11 +222,13 @@ Running test with the following configuration:
         num of messages: {num_messages},
         num of partitions: {num_partitions},
         max pending count: {max_pending_count},
-        topic name: {topic_name}
+        topic name: {topic_name},
+        dlq topic name: {dlq_topic_name}
     """
     )
 
     create_topic(topic_name, num_partitions)
+    create_topic(dlq_topic_name, 1)
 
     # Create config file for taskbroker
     print("Creating config file for taskbroker")
@@ -194,13 +236,14 @@ Running test with the following configuration:
     db_name = f"db_0_{curr_time}_test_upkeep_dlq"
     config_filename = "config_0_test_upkeep_dlq.yml"
     taskbroker_config = TaskbrokerConfig(
-        db_name,
-        str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
-        max_pending_count,
-        topic_name,
-        topic_name,
-        "earliest",
-        50051
+        db_name=db_name,
+        db_path=str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+        max_pending_count=max_pending_count,
+        kafka_topic=topic_name,
+        kafka_deadletter_topic=dlq_topic_name,
+        kafka_consumer_group=topic_name,
+        kafka_auto_offset_reset="earliest",
+        grpc_port=50051
     )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
@@ -217,11 +260,18 @@ Running test with the following configuration:
             if i == num_messages - 1:
                 last_task_id = id
 
-            retry_state = RetryState(
-                attempts=0,
-                max_attempts=1,
-                on_attempts_exceeded=OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD,
-            )
+            if i % 2 == 0:
+                retry_state = RetryState(
+                    attempts=0,
+                    max_attempts=1,
+                    on_attempts_exceeded=OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD,
+                )
+            else:
+                retry_state = RetryState(
+                    attempts=0,
+                    max_attempts=1,
+                    on_attempts_exceeded=OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DEADLETTER,
+                )
             task_activation = TaskActivation(
                 id=id,
                 namespace="integration_tests",
@@ -239,6 +289,10 @@ Running test with the following configuration:
         shutdown_event = threading.Event()
 
         # Create taskbroker thread
+        results_log_path = str(
+            TEST_OUTPUT_PATH
+            / f"taskbroker_0_{curr_time}_test_upkeep_dlq_results.log"
+        )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
             args=(
@@ -249,6 +303,7 @@ Running test with the following configuration:
                     TEST_OUTPUT_PATH
                     / f"taskbroker_0_{curr_time}_test_upkeep_dlq.log"
                 ),
+                results_log_path,
                 taskbroker_timeout,
                 num_messages,
                 tasks_written_event,
@@ -273,3 +328,14 @@ Running test with the following configuration:
         worker_thread.join()
     except Exception as e:
         raise Exception(f"Error running taskbroker: {e}")
+
+    num_completed_tasks = 0
+
+    with open(results_log_path, "r") as log_file:
+        line = log_file.readline()
+        num_completed_tasks = int(line.split(":")[1])
+
+    dlq_size = get_topic_size(dlq_topic_name)
+
+    assert num_completed_tasks == num_messages  # all tasks should be completed as a result of discard or deadlettering
+    assert dlq_size == num_messages / 2  # half of the tasks should be deadlettered

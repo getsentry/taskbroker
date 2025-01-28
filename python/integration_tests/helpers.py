@@ -3,7 +3,7 @@ import subprocess
 import sqlite3
 import time
 
-from confluent_kafka import Producer
+from confluent_kafka import Consumer, Producer, KafkaException
 from pathlib import Path
 from uuid import uuid4
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -29,6 +29,7 @@ class TaskbrokerConfig:
         db_path: str,
         max_pending_count: int,
         kafka_topic: str,
+        kafka_deadletter_topic: str,
         kafka_consumer_group: str,
         kafka_auto_offset_reset: str,
         grpc_port: int
@@ -37,6 +38,7 @@ class TaskbrokerConfig:
         self.db_path = db_path
         self.max_pending_count = max_pending_count
         self.kafka_topic = kafka_topic
+        self.kafka_deadletter_topic = kafka_deadletter_topic
         self.kafka_consumer_group = kafka_consumer_group
         self.kafka_auto_offset_reset = kafka_auto_offset_reset
         self.grpc_port = grpc_port
@@ -47,6 +49,7 @@ class TaskbrokerConfig:
             "db_path": self.db_path,
             "max_pending_count": self.max_pending_count,
             "kafka_topic": self.kafka_topic,
+            "kafka_deadletter_topic": self.kafka_deadletter_topic,
             "kafka_consumer_group": self.kafka_consumer_group,
             "kafka_auto_offset_reset": self.kafka_auto_offset_reset,
             "grpc_port": self.grpc_port,
@@ -126,6 +129,32 @@ def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskAct
         producer.flush()
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
+
+
+def get_topic_size(topic_name: str) -> int:
+    """
+    Creates a consumer and polls the topic starting at the earliest offset
+    attempts are exhausted.
+    """
+    attempts = 30
+    size = 0
+    consumer = Consumer({
+        'bootstrap.servers': "127.0.0.1:9092",
+        'group.id': 'my-group',
+        'auto.offset.reset': 'earliest',
+    })
+    consumer.subscribe([topic_name])
+    while attempts > 0:
+        event = consumer.poll(1.0)
+        if event is None:
+            attempts -= 1
+            continue
+        if event.error():
+            raise KafkaException(event.error())
+        else:
+            size += 1
+
+    return size
 
 
 def get_num_tasks_in_sqlite(taskbroker_config: TaskbrokerConfig) -> int:
