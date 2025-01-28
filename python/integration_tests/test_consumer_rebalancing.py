@@ -112,11 +112,11 @@ Running test with the following configuration:
             db_name=db_name,
             db_path=str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
             max_pending_count=max_pending_count,
-            topic_name=topic_name,
+            kafka_topic=topic_name,
             kafka_deadletter_topic=kafka_deadletter_topic,
-            kafka_consumer_group_id=f"task-worker-{i}",
-            kafka_consumer_offset="earliest",
-            kafka_consumer_port=50051 + i,
+            kafka_consumer_group=f"task-worker-{i}",
+            kafka_auto_offset_reset="earliest",
+            grpc_port=50051 + i,
         )
 
     for filename, config in taskbroker_configs.items():
