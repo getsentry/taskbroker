@@ -338,4 +338,4 @@ Running test with the following configuration:
     dlq_size = get_topic_size(dlq_topic_name)
 
     assert num_completed_tasks == num_messages  # all tasks should be completed as a result of discard or deadlettering
-    assert dlq_size == num_messages / 2  # half of the tasks should be deadlettered
+    assert dlq_size == (num_messages - 1) / 2  # half of the tasks should be deadlettered

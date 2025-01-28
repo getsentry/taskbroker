@@ -114,7 +114,6 @@ def send_generic_messages_to_topic(topic_name: str, num_messages: int) -> None:
             producer.produce(topic_name, task_message)
 
         producer.poll(5)  # trigger delivery reports
-        producer.flush()
         print(f"Sent {num_messages} generic messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
@@ -132,7 +131,6 @@ def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskAct
             producer.produce(topic_name, task_message)
 
         producer.poll(5)  # trigger delivery reports
-        producer.flush()
         print(f"Sent {len(custom_messages)} custom messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
