@@ -38,11 +38,13 @@ format: ## Run autofix mode for formatting and lint
 .PHONY: format
 
 style-py: ## Run black --check on python code
-	python/.venv/bin/python -m black --check python/
+	source python/.venv/bin/activate
+	black --check python/
 .PHONY: style-py
 
 format-py: ## Run autofix mode for formatting and lint
-	python/.venv/bin/python -m black python/
+	source python/.venv/bin/activate
+	black python/
 .PHONY: format-py
 
 # Tests
@@ -53,7 +55,7 @@ unit-test: ## Run unit tests
 
 install-py-dev: ## Install python dependencies
 	python -m venv python/.venv
-	. python/.venv/bin/activate
+	source python/.venv/bin/activate
 	pip install -r python/requirements-dev.txt
 .PHONY: install-py-dev
 
