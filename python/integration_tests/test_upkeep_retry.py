@@ -16,10 +16,7 @@ from python.integration_tests.helpers import (
     TaskbrokerConfig,
 )
 
-from python.integration_tests.worker import (
-    ConfigurableTaskWorker,
-    TaskWorkerClient
-)
+from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
@@ -30,9 +27,12 @@ class TasksRetriedCounter:
     A thread safe class that tracks the total number of tasks that have
     been retried.
     """
+
     def __init__(self):
         self.total_retried = 0
-        self.tasks_retried = defaultdict(int)  # key: task_name, value: number of retries
+        self.tasks_retried = defaultdict(
+            int
+        )  # key: task_name, value: number of retries
         self._lock = threading.Lock()
 
     def increment(self, task_name: str):
@@ -65,8 +65,7 @@ def manage_taskworker(
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
     worker = ConfigurableTaskWorker(
-        TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"),
-        retry_rate=1
+        TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"), retry_rate=1
     )
     retried_tasks = 0
     next_task = None
@@ -173,17 +172,13 @@ def manage_taskbroker(
         # Keep gRPC taskbroker alive until taskworker is done processing
         if tasks_written_event.is_set():
             print(
-                "[taskbroker_0]: Waiting for taskworker(s) to finish "
-                "processing..."
+                "[taskbroker_0]: Waiting for taskworker(s) to finish " "processing..."
             )
             while not all(
                 shutdown_event.is_set() for shutdown_event in shutdown_events
             ):
                 time.sleep(1)
-            print(
-                "[taskbroker_0]: Received shutdown signal from all "
-                "taskworker(s)"
-            )
+            print("[taskbroker_0]: Received shutdown signal from all " "taskworker(s)")
         else:
             print(
                 "[taskbroker_0]: Timeout elapse and not all tasks have been "
@@ -291,7 +286,7 @@ Running test with the following configuration:
         kafka_deadletter_topic=kafka_deadletter_topic,
         kafka_consumer_group=topic_name,
         kafka_auto_offset_reset="earliest",
-        grpc_port=50051
+        grpc_port=50051,
     )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
@@ -308,8 +303,7 @@ Running test with the following configuration:
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
                 str(
-                    TEST_OUTPUT_PATH
-                    / f"taskbroker_0_{curr_time}_test_upkeep_retry.log"
+                    TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_retry.log"
                 ),
                 taskbroker_timeout,
                 num_messages,

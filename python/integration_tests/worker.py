@@ -11,7 +11,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivationStatus,
     TASK_ACTIVATION_STATUS_COMPLETE,
     TASK_ACTIVATION_STATUS_FAILURE,
-    TASK_ACTIVATION_STATUS_RETRY
+    TASK_ACTIVATION_STATUS_RETRY,
 )
 from sentry_protos.taskbroker.v1.taskbroker_pb2_grpc import ConsumerServiceStub
 
@@ -45,7 +45,10 @@ class TaskWorkerClient:
         return None
 
     def update_task(
-        self, task_id: str, status: TaskActivationStatus.ValueType, fetch_next_task: FetchNextTask | None
+        self,
+        task_id: str,
+        status: TaskActivationStatus.ValueType,
+        fetch_next_task: FetchNextTask | None,
     ) -> TaskActivation | None:
         """
         Update the status for a given task activation.
