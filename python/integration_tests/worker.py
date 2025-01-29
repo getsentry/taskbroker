@@ -45,7 +45,7 @@ class TaskWorkerClient:
         return None
 
     def update_task(
-        self, task_id: str, status: TaskActivationStatus.ValueType, fetch_next_task: FetchNextTask
+        self, task_id: str, status: TaskActivationStatus.ValueType, fetch_next_task: FetchNextTask | None
     ) -> TaskActivation | None:
         """
         Update the status for a given task activation.
@@ -73,7 +73,15 @@ class ConfigurableTaskWorker:
     A taskworker that can be configured to fail/timeout while processing tasks.
     """
 
-    def __init__(self, client: TaskWorkerClient, namespace: str | None = None, failure_rate: float = 0.0, timeout_rate: float = 0.0, retry_rate: float = 0.0, enable_backoff: bool = False) -> None:
+    def __init__(
+        self,
+        client: TaskWorkerClient,
+        namespace: str | None = None,
+        failure_rate: float = 0.0,
+        timeout_rate: float = 0.0,
+        retry_rate: float = 0.0,
+        enable_backoff: bool = False,
+    ) -> None:
         self.client = client
         self._namespace: str | None = namespace
         self._failure_rate: float = failure_rate

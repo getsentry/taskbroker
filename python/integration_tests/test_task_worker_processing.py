@@ -10,7 +10,7 @@ from collections import defaultdict
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
-    send_messages_to_kafka,
+    send_generic_messages_to_topic,
     create_topic,
     get_num_tasks_in_sqlite,
     TaskbrokerConfig
@@ -202,6 +202,7 @@ def test_task_worker_processing() -> None:
         60  # the time in seconds to wait for all messages to be written to sqlite
     )
     topic_name = "task-worker"
+    kafka_deadletter_topic = "task-worker-dlq"
     curr_time = int(time.time())
 
     print(
@@ -223,20 +224,21 @@ Running test with the following configuration:
     db_name = f"db_0_{curr_time}_test_task_worker_processing"
     config_filename = "config_0_test_task_worker_processing.yml"
     taskbroker_config = TaskbrokerConfig(
-        db_name,
-        str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
-        max_pending_count,
-        topic_name,
-        topic_name,
-        "earliest",
-        50051
+        db_name=db_name,
+        db_path=str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+        max_pending_count=max_pending_count,
+        kafka_topic=topic_name,
+        kafka_deadletter_topic=kafka_deadletter_topic,
+        kafka_consumer_group=topic_name,
+        kafka_auto_offset_reset="earliest",
+        grpc_port=50051
     )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
         yaml.safe_dump(taskbroker_config.to_dict(), f)
 
     try:
-        send_messages_to_kafka(topic_name, num_messages)
+        send_generic_messages_to_topic(topic_name, num_messages)
         tasks_written_event = threading.Event()
         shutdown_events = [threading.Event() for _ in range(num_workers)]
         taskbroker_thread = threading.Thread(
