@@ -114,7 +114,7 @@ Running test with the following configuration:
             max_pending_count=max_pending_count,
             kafka_topic=topic_name,
             kafka_deadletter_topic=kafka_deadletter_topic,
-            kafka_consumer_group=f"task-worker-{i}",
+            kafka_consumer_group=topic_name,
             kafka_auto_offset_reset="earliest",
             grpc_port=50051 + i,
         )
