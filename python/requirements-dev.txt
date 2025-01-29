@@ -6,3 +6,4 @@ protobuf>=5.28.3
 pytest>=8.3.3
 pyyaml>=6.0.2
 sentry-protos>=0.1.52
+black==24.10.0
