@@ -507,10 +507,10 @@ impl InflightActivationStore {
 
         let incomplete_query = sqlx::query(
             r#"
-            SELECT "offset"
+            SELECT "added_at"
             FROM inflight_taskactivations
             WHERE status != $1
-            ORDER BY "offset"
+            ORDER BY "added_at"
             LIMIT 1
             "#,
         )
@@ -518,17 +518,18 @@ impl InflightActivationStore {
         .fetch_optional(&mut *atomic)
         .await?;
 
-        let lowest_incomplete_offset: i64 = if let Some(query_result) = incomplete_query {
-            query_result.get("offset")
-        } else {
-            return Ok(0);
-        };
+        let earliest_incomplete_added_at: DateTime<Utc> =
+            if let Some(query_result) = incomplete_query {
+                query_result.get("added_at")
+            } else {
+                return Ok(0);
+            };
 
         let cleanup_query = sqlx::query(
-            r#"DELETE FROM inflight_taskactivations WHERE status = $1 AND "offset" < $2"#,
+            r#"DELETE FROM inflight_taskactivations WHERE status = $1 AND "added_at" < $2"#,
         )
         .bind(InflightActivationStatus::Complete)
-        .bind(lowest_incomplete_offset)
+        .bind(earliest_incomplete_added_at)
         .execute(&mut *atomic)
         .await?;
 
