@@ -32,7 +32,7 @@ pub struct Config {
     pub log_format: LogFormat,
 
     /// The statsd address to report metrics to.
-    pub dog_statsd_addr: Option<String>,
+    pub statsd_addr: String,
 
     /// The hostname and port of the gRPC server.
     pub grpc_addr: String,
@@ -107,7 +107,7 @@ impl Default for Config {
             log_format: LogFormat::Text,
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
-            dog_statsd_addr: None,
+            statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
             kafka_consumer_group: "task-worker".to_owned(),
             kafka_topic: "task-worker".to_owned(),
