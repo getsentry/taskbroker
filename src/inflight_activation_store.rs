@@ -383,7 +383,7 @@ impl InflightActivationStore {
     pub async fn handle_remove_at(&self) -> Result<u64, Error> {
         let mut atomic = self.sqlite_pool.begin().await?;
         let max_result: SqliteRow = sqlx::query(
-            r#"SELECT MAX("offset") AS max_offset
+            r#"SELECT max("added_at") AS max_added_at
             FROM inflight_taskactivations
             WHERE status = $1
             "#,
@@ -392,17 +392,21 @@ impl InflightActivationStore {
         .fetch_one(&mut *atomic)
         .await?;
 
-        let max_offset: u32 = max_result.get("max_offset");
+        let max_added_at: DateTime<Utc> = match max_result.get("max_added_at") {
+            Some(max_added_at) => max_added_at,
+            None => return Ok(0),
+        };
+
         let now = Utc::now();
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE remove_at < $2 AND "offset" < $3 AND status = $4
+            WHERE remove_at < $2 AND added_at < $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
         .bind(now)
-        .bind(max_offset)
+        .bind(max_added_at)
         .bind(InflightActivationStatus::Pending)
         .execute(&mut *atomic)
         .await?;
