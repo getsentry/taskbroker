@@ -9,7 +9,7 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 use super::inflight_activation_store::{InflightActivationStatus, InflightActivationStore};
-use tracing::instrument;
+use tracing::{error, instrument};
 
 pub struct MyConsumerService {
     pub store: Arc<InflightActivationStore>,
@@ -96,7 +96,10 @@ impl ConsumerService for MyConsumerService {
                     response.task = Some(inflight.activation);
                 }
                 Ok(None) => return Err(Status::not_found("No pending activation")),
-                Err(e) => return Err(Status::internal(e.to_string())),
+                Err(e) => {
+                    error!("Error fetching next task: {}", e);
+                    return Err(Status::internal("Error fetching next task"));
+                }
             }
         }
 
