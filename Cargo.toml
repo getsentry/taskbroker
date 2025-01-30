@@ -25,7 +25,11 @@ figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 clap = { version = "4.5.20", features = ["derive"] }
 sentry = { version = "0.34.0", features = ["tracing"] }
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["json"] }
+tracing-subscriber = { version = "0.3.18", features = [
+    "std",
+    "env-filter",
+    "json",
+] }
 metrics-exporter-statsd = "0.9.0"
 metrics = "0.24.0"
 elegant-departure = { version = "0.3.1", features = ["tokio"] }

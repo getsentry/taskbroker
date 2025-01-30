@@ -27,7 +27,4 @@ pub struct Args {
     /// Path to the configuration file
     #[arg(short, long, help = "The path to a config file")]
     pub config: Option<String>,
-
-    #[arg(short, long, help = "Set the logging level filter")]
-    pub log_level: Option<String>,
 }

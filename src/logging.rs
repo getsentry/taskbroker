@@ -1,50 +1,12 @@
-use rdkafka::config::RDKafkaLogLevel;
 use sentry::types::Dsn;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::str::FromStr;
-use tracing_subscriber::{filter::LevelFilter, prelude::*, Layer};
+use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::Layer;
 
 use crate::{config::Config, get_version};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogLevel {
-    Error,
-    Warn,
-    Info,
-    Debug,
-    Trace,
-    Off,
-}
-
-impl LogLevel {
-    /// Convert application log levels to tracing::LevelFilter
-    pub const fn level_filter(&self) -> LevelFilter {
-        match self {
-            Self::Error => LevelFilter::ERROR,
-            Self::Warn => LevelFilter::WARN,
-            Self::Info => LevelFilter::INFO,
-            Self::Debug => LevelFilter::DEBUG,
-            Self::Trace => LevelFilter::TRACE,
-            Self::Off => LevelFilter::OFF,
-        }
-    }
-    /// Convert to the log levels used by rdkafka
-    pub const fn kafka_level(&self) -> RDKafkaLogLevel {
-        match self {
-            Self::Error => RDKafkaLogLevel::Error,
-            Self::Warn => RDKafkaLogLevel::Warning,
-            Self::Info => RDKafkaLogLevel::Info,
-            Self::Debug => RDKafkaLogLevel::Debug,
-            Self::Trace => RDKafkaLogLevel::Debug,
-            // While emerg is not an off state,
-            // emerg is effectively off as we don't
-            // use emerg level.
-            Self::Off => RDKafkaLogLevel::Emerg,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -68,7 +30,7 @@ pub struct LoggingConfig {
     pub traces_sample_rate: f32,
 
     /// The log level to filter logging to.
-    pub log_level: LogLevel,
+    pub log_filter: String,
 
     /// The log format to use
     pub log_format: LogFormat,
@@ -80,7 +42,7 @@ impl LoggingConfig {
             sentry_dsn: config.sentry_dsn.clone(),
             sentry_env: config.sentry_env.clone(),
             traces_sample_rate: config.traces_sample_rate.unwrap_or(0.0),
-            log_level: config.log_level,
+            log_filter: config.log_filter.clone(),
             log_format: config.log_format,
         }
     }
@@ -119,7 +81,7 @@ pub fn init(log_config: LoggingConfig) {
     };
 
     let logs_subscriber = tracing_subscriber::registry()
-        .with(formatter.with_filter(log_config.log_level.level_filter()))
+        .with(formatter.with_filter(EnvFilter::new(log_config.log_filter)))
         .with(sentry::integrations::tracing::layer());
 
     logs_subscriber.init();
