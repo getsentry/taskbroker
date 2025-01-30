@@ -21,9 +21,9 @@ TEST_PRODUCER_CONFIG = {
     "broker.address.family": "v4",
 }
 TEST_CONSUMER_CONFIG = {
-    'bootstrap.servers': "127.0.0.1:9092",
-    'group.id': 'my-group',
-    'auto.offset.reset': 'earliest',
+    "bootstrap.servers": "127.0.0.1:9092",
+    "group.id": "my-group",
+    "auto.offset.reset": "earliest",
 }
 
 
@@ -37,7 +37,7 @@ class TaskbrokerConfig:
         kafka_deadletter_topic: str,
         kafka_consumer_group: str,
         kafka_auto_offset_reset: str,
-        grpc_port: int
+        grpc_port: int,
     ):
         self.db_name = db_name
         self.db_path = db_path
@@ -119,7 +119,9 @@ def send_generic_messages_to_topic(topic_name: str, num_messages: int) -> None:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
 
-def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskActivation]) -> None:
+def send_custom_messages_to_topic(
+    topic_name: str, custom_messages: list[TaskActivation]
+) -> None:
     """
     Send num_messages to kafka topic using unique task names.
     """
@@ -131,7 +133,9 @@ def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskAct
             producer.produce(topic_name, task_message)
 
         producer.flush()
-        print(f"Sent {len(custom_messages)} custom messages to kafka topic {topic_name}")
+        print(
+            f"Sent {len(custom_messages)} custom messages to kafka topic {topic_name}"
+        )
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
@@ -176,8 +180,7 @@ def get_num_tasks_in_sqlite(taskbroker_config: TaskbrokerConfig) -> int:
 
 
 def get_num_tasks_in_sqlite_by_status(
-    taskbroker_config: TaskbrokerConfig,
-    status: str
+    taskbroker_config: TaskbrokerConfig, status: str
 ) -> int:
     attach_db_stmt = (
         f"ATTACH DATABASE '{taskbroker_config.db_path}' "

@@ -224,9 +224,7 @@ Running test with the following configuration:
 
     taskbroker_error_logs = []
     for i in range(num_consumers):
-        with open(
-            str(TEST_OUTPUT_PATH / f"taskbroker_{i}_{curr_time}.log"), "r"
-        ) as f:
+        with open(str(TEST_OUTPUT_PATH / f"taskbroker_{i}_{curr_time}.log"), "r") as f:
             lines = f.readlines()
             for log_line_index, line in enumerate(lines):
                 if "[31mERROR" in line:
@@ -248,8 +246,7 @@ Running test with the following configuration:
 
     if not taskbrokers_have_data:
         print(
-            "\nTest failed! Lower than expected amount of kafka messages "
-            "in sqlite"
+            "\nTest failed! Lower than expected amount of kafka messages " "in sqlite"
         )
 
     if taskbroker_error_logs:

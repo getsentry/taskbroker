@@ -38,11 +38,13 @@ format: ## Run autofix mode for formatting and lint
 .PHONY: format
 
 style-py: ## Run black --check on python code
-	python/.venv/bin/python -m black --check python/
+	. python/.venv/bin/activate
+	black --check python/
 .PHONY: style-py
 
 format-py: ## Run autofix mode for formatting and lint
-	python/.venv/bin/python -m black python/
+	. python/.venv/bin/activate
+	black python/
 .PHONY: format-py
 
 # Tests

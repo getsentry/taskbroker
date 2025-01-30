@@ -31,6 +31,12 @@ jobs:
       - name: Run Clippy
         run: make lint
 
+      - name: Install python dependencies
+        run: make install-py-dev
+
+      - name: Run python lint
+        run: make style-py
+
   test:
     name: Tests (ubuntu)
     runs-on: ubuntu-latest

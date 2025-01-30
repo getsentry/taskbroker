@@ -22,7 +22,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     OnAttemptsExceeded,
     RetryState,
     TaskActivation,
-    TASK_ACTIVATION_STATUS_COMPLETE
+    TASK_ACTIVATION_STATUS_COMPLETE,
 )
 
 
@@ -114,13 +114,12 @@ def manage_taskbroker(
         cur_time = time.time()
         num_completed_tasks = 0
         while (
-            (not shutdown_event.is_set()) and
-            (cur_time < end) and
-            (num_completed_tasks < num_messages)
+            (not shutdown_event.is_set())
+            and (cur_time < end)
+            and (num_completed_tasks < num_messages)
         ):
             num_completed_tasks = get_num_tasks_in_sqlite_by_status(
-                taskbroker_config,
-                "Complete"
+                taskbroker_config, "Complete"
             )
             time.sleep(3)
             cur_time = time.time()
@@ -209,9 +208,7 @@ def test_upkeep_dlq() -> None:
     num_messages = 10_001  # the 5001st message will be completed by the taskworker such that all previous can be discarded/deadlettered
     num_partitions = 4
     max_pending_count = 100_000
-    taskbroker_timeout = (
-        60  # the time in seconds to wait for taskbroker to process
-    )
+    taskbroker_timeout = 60  # the time in seconds to wait for taskbroker to process
     topic_name = "task-worker"
     dlq_topic_name = "task-worker-dlq"
     curr_time = int(time.time())
@@ -243,7 +240,7 @@ Running test with the following configuration:
         kafka_deadletter_topic=dlq_topic_name,
         kafka_consumer_group=topic_name,
         kafka_auto_offset_reset="earliest",
-        grpc_port=50051
+        grpc_port=50051,
     )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
@@ -290,8 +287,7 @@ Running test with the following configuration:
 
         # Create taskbroker thread
         results_log_path = str(
-            TEST_OUTPUT_PATH
-            / f"taskbroker_0_{curr_time}_test_upkeep_dlq_results.log"
+            TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_dlq_results.log"
         )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
@@ -299,10 +295,7 @@ Running test with the following configuration:
                 taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
-                str(
-                    TEST_OUTPUT_PATH
-                    / f"taskbroker_0_{curr_time}_test_upkeep_dlq.log"
-                ),
+                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_dlq.log"),
                 results_log_path,
                 taskbroker_timeout,
                 num_messages,
@@ -337,5 +330,9 @@ Running test with the following configuration:
 
     dlq_size = get_topic_size(dlq_topic_name)
 
-    assert num_completed_tasks == num_messages  # all tasks should be completed as a result of discard or deadlettering
-    assert dlq_size == (num_messages - 1) / 2  # half of the tasks should be deadlettered
+    assert (
+        num_completed_tasks == num_messages
+    )  # all tasks should be completed as a result of discard or deadlettering
+    assert (
+        dlq_size == (num_messages - 1) / 2
+    )  # half of the tasks should be deadlettered

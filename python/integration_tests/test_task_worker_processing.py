@@ -13,13 +13,10 @@ from python.integration_tests.helpers import (
     send_generic_messages_to_topic,
     create_topic,
     get_num_tasks_in_sqlite,
-    TaskbrokerConfig
+    TaskbrokerConfig,
 )
 
-from python.integration_tests.worker import (
-    ConfigurableTaskWorker,
-    TaskWorkerClient
-)
+from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
@@ -122,17 +119,13 @@ def manage_taskbroker(
         # Keep gRPC taskbroker alive until taskworker is done processing
         if tasks_written_event.is_set():
             print(
-                "[taskbroker_0]: Waiting for taskworker(s) to finish "
-                "processing..."
+                "[taskbroker_0]: Waiting for taskworker(s) to finish " "processing..."
             )
             while not all(
                 shutdown_event.is_set() for shutdown_event in shutdown_events
             ):
                 time.sleep(1)
-            print(
-                "[taskbroker_0]: Received shutdown signal from all "
-                "taskworker(s)"
-            )
+            print("[taskbroker_0]: Received shutdown signal from all " "taskworker(s)")
         else:
             print(
                 "[taskbroker_0]: Timeout elapse and not all tasks have been "
@@ -231,7 +224,7 @@ Running test with the following configuration:
         kafka_deadletter_topic=kafka_deadletter_topic,
         kafka_consumer_group=topic_name,
         kafka_auto_offset_reset="earliest",
-        grpc_port=50051
+        grpc_port=50051,
     )
 
     with open(str(TEST_OUTPUT_PATH / config_filename), "w") as f:
