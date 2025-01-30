@@ -4,7 +4,7 @@ use figment::{
 };
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use crate::{logging::LogFormat, Args};
 
@@ -28,6 +28,9 @@ pub struct Config {
 
     /// The statsd address to report metrics to.
     pub statsd_addr: String,
+
+    /// Default tags to add to all metrics.
+    pub default_metrics_tags: BTreeMap<String, String>,
 
     /// The hostname and port of the gRPC server.
     pub grpc_addr: String,
@@ -102,6 +105,7 @@ impl Default for Config {
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
+            default_metrics_tags: Default::default(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
             kafka_consumer_group: "task-worker".to_owned(),
             kafka_topic: "task-worker".to_owned(),
@@ -178,7 +182,7 @@ impl Provider for Config {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
+    use std::{borrow::Cow, collections::BTreeMap};
 
     use super::Config;
     use crate::{logging::LogFormat, Args};
@@ -210,6 +214,8 @@ mod tests {
                 log_filter: debug,rdkafka=off
                 log_format: json
                 statsd_addr: 127.0.0.1:8126
+                default_metrics_tags:
+                    key_1: value_1
                 kafka_cluster: 10.0.0.1:9092,10.0.0.2:9092
                 kafka_topic: error-tasks
                 kafka_deadletter_topic: error-tasks-dlq
@@ -234,6 +240,10 @@ mod tests {
             assert_eq!(
                 config.kafka_cluster,
                 "10.0.0.1:9092,10.0.0.2:9092".to_owned()
+            );
+            assert_eq!(
+                config.default_metrics_tags,
+                BTreeMap::from([("key_1".to_owned(), "value_1".to_owned())])
             );
             assert_eq!(config.kafka_consumer_group, "task-worker".to_owned());
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
@@ -269,6 +279,7 @@ mod tests {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
             jail.set_env("TASKBROKER_REMOVE_DEADLINE", "2000");
+            jail.set_env("TASKBROKER_DEFAULT_METRICS_TAGS", "{key=value}");
 
             let args = Args { config: None };
             let config = Config::from_args(&args).unwrap();
@@ -281,6 +292,10 @@ mod tests {
             assert_eq!(config.max_pending_count, 2048);
             assert_eq!(config.max_processing_deadline, 300);
             assert_eq!(config.remove_deadline, 2000);
+            assert_eq!(
+                config.default_metrics_tags,
+                BTreeMap::from([("key".to_owned(), "value".to_owned())])
+            );
 
             Ok(())
         });
