@@ -20,6 +20,7 @@ pub struct Config {
     pub traces_sample_rate: Option<f32>,
 
     /// The log filter to apply application logging to.
+    /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
     pub log_filter: String,
 
     /// The log format to use
