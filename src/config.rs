@@ -1,15 +1,12 @@
 use figment::{
-    providers::{Env, Format, Serialized, Yaml},
+    providers::{Env, Format, Yaml},
     Figment, Metadata, Profile, Provider,
 };
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-use crate::{
-    logging::{LogFormat, LogLevel},
-    Args,
-};
+use crate::{logging::LogFormat, Args};
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -22,11 +19,9 @@ pub struct Config {
     /// The sampling rate for tracing data.
     pub traces_sample_rate: Option<f32>,
 
-    /// The log level to filter application logging to.
-    pub log_level: LogLevel,
-
-    /// The log level to filter rdkafka logging to.
-    pub rdkafka_log_level: LogLevel,
+    /// The log filter to apply application logging to.
+    /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+    pub log_filter: String,
 
     /// The log format to use
     pub log_format: LogFormat,
@@ -102,8 +97,7 @@ impl Default for Config {
             sentry_dsn: None,
             sentry_env: None,
             traces_sample_rate: Some(0.0),
-            log_level: LogLevel::Debug,
-            rdkafka_log_level: LogLevel::Warn,
+            log_filter: "debug,librdkafka=warn,h2=off".to_owned(),
             log_format: LogFormat::Text,
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
@@ -135,9 +129,6 @@ impl Config {
         if let Some(path) = &args.config {
             builder = builder.merge(Yaml::file(path));
         }
-        if let Some(log_level) = &args.log_level {
-            builder = builder.merge(Serialized::default("log_level", log_level));
-        }
         builder = builder.merge(Env::prefixed("TASKBROKER_"));
         let config = builder.extract()?;
         Ok(config)
@@ -163,17 +154,14 @@ impl Config {
                 "auto.offset.reset",
                 self.kafka_auto_offset_reset.to_string(),
             )
-            .set("enable.auto.offset.store", "false")
-            .set_log_level(self.rdkafka_log_level.kafka_level());
+            .set("enable.auto.offset.store", "false");
         config.clone()
     }
 
     /// Convert the application Config into rdkafka::ClientConfig
     pub fn kafka_producer_config(&self) -> ClientConfig {
         let mut new_config = ClientConfig::new();
-        let config = new_config
-            .set("bootstrap.servers", self.kafka_cluster.clone())
-            .set_log_level(self.log_level.kafka_level());
+        let config = new_config.set("bootstrap.servers", self.kafka_cluster.clone());
         config.clone()
     }
 }
@@ -193,10 +181,7 @@ mod tests {
     use std::borrow::Cow;
 
     use super::Config;
-    use crate::{
-        logging::{LogFormat, LogLevel},
-        Args,
-    };
+    use crate::{logging::LogFormat, Args};
     use figment::Jail;
 
     #[test]
@@ -206,7 +191,7 @@ mod tests {
         };
         assert_eq!(config.sentry_dsn, None);
         assert_eq!(config.sentry_env, None);
-        assert_eq!(config.log_level, LogLevel::Debug);
+        assert_eq!(config.log_filter, "debug,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
@@ -222,7 +207,7 @@ mod tests {
                 r#"
                 sentry_dsn: fake_dsn
                 sentry_env: prod
-                log_level: info
+                log_filter: debug,rdkafka=off
                 log_format: json
                 statsd_addr: 127.0.0.1:8126
                 kafka_cluster: 10.0.0.1:9092,10.0.0.2:9092
@@ -236,16 +221,15 @@ mod tests {
             "#,
             )?;
             // Env vars always override config file
-            jail.set_env("TASKBROKER_LOG_LEVEL", "error");
+            jail.set_env("TASKBROKER_LOG_FILTER", "error");
 
             let args = Args {
                 config: Some("config.yaml".to_owned()),
-                log_level: None,
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, Some("fake_dsn".to_owned()));
             assert_eq!(config.sentry_env, Some(Cow::Borrowed("prod")));
-            assert_eq!(config.log_level, LogLevel::Error);
+            assert_eq!(config.log_filter, "error");
             assert_eq!(config.log_format, LogFormat::Json);
             assert_eq!(
                 config.kafka_cluster,
@@ -268,15 +252,12 @@ mod tests {
     #[test]
     fn test_from_args_env_and_args() {
         Jail::expect_with(|jail| {
-            jail.set_env("TASKBROKER_LOG_LEVEL", "error");
+            jail.set_env("TASKBROKER_LOG_FILTER", "error");
             jail.set_env("TASKBROKER_REMOVE_DEADLINE", "2000");
 
-            let args = Args {
-                config: None,
-                log_level: Some("debug".to_owned()),
-            };
+            let args = Args { config: None };
             let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.log_level, LogLevel::Error);
+            assert_eq!(config.log_filter, "error");
             assert_eq!(config.remove_deadline, 2000);
 
             Ok(())
@@ -286,17 +267,14 @@ mod tests {
     #[test]
     fn test_from_args_env_test() {
         Jail::expect_with(|jail| {
-            jail.set_env("TASKBROKER_LOG_LEVEL", "error");
+            jail.set_env("TASKBROKER_LOG_FILTER", "error");
             jail.set_env("TASKBROKER_REMOVE_DEADLINE", "2000");
 
-            let args = Args {
-                config: None,
-                log_level: None,
-            };
+            let args = Args { config: None };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
-            assert_eq!(config.log_level, LogLevel::Error);
+            assert_eq!(config.log_filter, "error");
             assert_eq!(config.kafka_topic, "task-worker".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
@@ -310,10 +288,7 @@ mod tests {
 
     #[test]
     fn test_kafka_consumer_config() {
-        let args = Args {
-            config: None,
-            log_level: None,
-        };
+        let args = Args { config: None };
         let config = Config::from_args(&args).unwrap();
         let consumer_config = config.kafka_consumer_config();
 
@@ -327,10 +302,7 @@ mod tests {
 
     #[test]
     fn test_kafka_producer_config() {
-        let args = Args {
-            config: None,
-            log_level: None,
-        };
+        let args = Args { config: None };
         let config = Config::from_args(&args).unwrap();
         let producer_config = config.kafka_producer_config();
 
