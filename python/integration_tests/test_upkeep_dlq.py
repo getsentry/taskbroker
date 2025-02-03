@@ -165,10 +165,16 @@ def manage_taskbroker(
                 "discarding/deadlettering all tasks before timeout. "
                 "Shutting down taskbroker."
             )
-        total = sum([count for count in task_count_in_sqlite.values()])
+        total_hanging_tasks = sum(
+            [
+                count
+                for status, count in task_count_in_sqlite.items()
+                if status != "Complete"
+            ]
+        )
 
         with open(results_log_path, "a") as results_log_file:
-            results_log_file.write(f"total:{total}")
+            results_log_file.write(f"total_hanging_tasks:{total_hanging_tasks}")
 
         # Stop the taskbroker
         print("[taskbroker_0]: Shutting down taskbroker")
@@ -342,15 +348,15 @@ Running test with the following configuration:
     except Exception as e:
         raise Exception(f"Error running taskbroker: {e}")
 
-    total_count = 0
+    total_hanging_tasks = 0
 
     with open(results_log_path, "r") as log_file:
         line = log_file.readline()
-        total_count = int(line.split(":")[1])
+        total_hanging_tasks = int(line.split(":")[1])
 
     dlq_size = get_topic_size(dlq_topic_name)
 
     assert (
-        total_count == 1
-    )  # there should only be one task left in sqlite since all tasks before the last buffer task were discarded or deadlettered
+        total_hanging_tasks == 0
+    )  # there should no tasks in sqlite that are not completed or removed
     assert dlq_size == (num_messages) / 2  # half of the tasks should be deadlettered
