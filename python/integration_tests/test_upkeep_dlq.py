@@ -120,7 +120,7 @@ def manage_taskbroker(
         end = time.time() + timeout
         while (time.time() < end) and (not tasks_written_event.is_set()):
             written_tasks = get_num_tasks_in_sqlite(taskbroker_config)
-            if written_tasks == num_messages + 2:
+            if written_tasks == num_messages + 1:
                 print(
                     f"[taskbroker_0]: Finishing writting all {num_messages} "
                     "task(s) to sqlite. Sending signal to taskworker to "
@@ -135,23 +135,22 @@ def manage_taskbroker(
         while (not shutdown_event.is_set()) and (cur_time < end):
             task_count_in_sqlite = get_num_tasks_group_by_status(taskbroker_config)
             print(
-                "[taskbroker_0]: Current state tasks in sqlite: "
+                "[taskbroker_0]: Current state of tasks in sqlite: "
                 f"{task_count_in_sqlite}"
             )
 
-            # Break successfully if there is only one pending task
-            # left in sqlite
-            if task_count_in_sqlite["Pending"] == 1:
-                complete = True
-                for status, count in task_count_in_sqlite.items():
-                    if status != "Pending" and count != 0:
-                        complete = False
-                if complete:
-                    print(
-                        "[taskbroker_0]: Upkeep has completed and removed "
-                        "all tasks except the last buffer task."
-                    )
-                    break
+            # Break successfully there are either no tasks in sqlite or
+            # all tasks are completed
+            complete = True
+            for status, count in task_count_in_sqlite.items():
+                if status != "Complete" and count != 0:
+                    complete = False
+            if complete:
+                print(
+                    "[taskbroker_0]: Upkeep has completed "
+                    "all tasks."
+                )
+                break
 
             time.sleep(3)
             cur_time = time.time()
@@ -280,14 +279,11 @@ Running test with the following configuration:
         yaml.safe_dump(taskbroker_config.to_dict(), f)
 
     try:
-        # Produce num_messages + 2 to kafka.
+        # Produce num_messages + 1 to kafka.
         # The first num_messages messages are produced with an expiration
-        # of 1 second. The last two messages are produced with an expiration
-        # of 2400 seconds. The second last message is the one that will be
-        # completed by taskworker such that all messages can be
-        # discarded/deadlettered. The last message will remain in a pending
-        # state which will allow upkeep to cleanup and remove all
-        # previous completed messages from sqlite.
+        # of 1 second. The last message is produced with an expiration
+        # of 2400 seconds. This message will be completed by taskworker
+        # such that all messages can be discarded/deadlettered.
 
         custom_messages = []
         for i in range(num_messages):
@@ -301,17 +297,11 @@ Running test with the following configuration:
                 )
             custom_messages.append(task_activation)
 
-        # Produce second last message to be completed by taskworker
+        # Produce last buffer message to be completed by taskworker
         task_activation = generate_task_activation(
             OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 2400
         )
         id_to_complete = task_activation.id
-        custom_messages.append(task_activation)
-
-        # Produce last buffer message
-        task_activation = generate_task_activation(
-            OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 2400
-        )
         custom_messages.append(task_activation)
 
         send_custom_messages_to_topic(topic_name, custom_messages)
