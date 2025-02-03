@@ -1,14 +1,16 @@
 use chrono::Utc;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
+    FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivationStatus,
 };
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use super::inflight_activation_store::{InflightActivationStatus, InflightActivationStore};
+use super::inflight_activation_store::{
+    InflightActivation, InflightActivationStatus, InflightActivationStore,
+};
 use tracing::{error, instrument};
 
 pub struct MyConsumerService {
@@ -51,17 +53,30 @@ impl ConsumerService for MyConsumerService {
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
-        let proto_status = TaskActivationStatus::try_from(request.get_ref().status);
-        let status: InflightActivationStatus = match proto_status {
-            Ok(value) => value.into(),
-            Err(_) => return Err(Status::invalid_argument("Invalid status")),
-        };
+        let status: InflightActivationStatus =
+            TaskActivationStatus::try_from(request.get_ref().status)
+                .map_err(|e| {
+                    Status::invalid_argument(format!("Unable to deserialize status: {:?}", e))
+                })?
+                .into();
+
         if !status.is_conclusion() {
-            return Err(Status::invalid_argument(
-                "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)",
-            ));
+            return Err(Status::invalid_argument(format!(
+                "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {:?}",
+                status
+            )));
         }
-        let update_result = self.store.set_status(&id, status).await;
+
+        if let Err(e) = self.store.set_status(&id, status).await {
+            error!(
+                "Unable to update status of {:?} to {:?}: {:?}",
+                id, status, e
+            );
+            return Err(Status::internal(format!(
+                "Unable to update status of {:?} to {:?}",
+                id, status
+            )));
+        }
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
         if let Ok(Some(inflight_activation)) = self.store.get_by_id(&id).await {
@@ -74,35 +89,29 @@ impl ConsumerService for MyConsumerService {
             .record(duration.num_milliseconds() as f64);
         }
 
-        match update_result {
-            Ok(()) => {}
-            Err(e) => return Err(Status::internal(e.to_string())),
-        }
+        let Some(FetchNextTask { ref namespace }) = request.get_ref().fetch_next_task else {
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        };
 
-        let mut response = SetTaskStatusResponse { task: None };
+        let start_time = Instant::now();
 
-        let fetch_next = &request.get_ref().fetch_next_task;
-        if let Some(fetch_next) = fetch_next {
-            let start_time = Instant::now();
-            let namespace = &fetch_next.namespace;
-            let inflight = self
-                .store
-                .get_pending_activation(namespace.as_deref())
-                .await;
-            metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
-
-            match inflight {
-                Ok(Some(inflight)) => {
-                    response.task = Some(inflight.activation);
-                }
-                Ok(None) => return Err(Status::not_found("No pending activation")),
-                Err(e) => {
-                    error!("Error fetching next task: {}", e);
-                    return Err(Status::internal("Error fetching next task"));
-                }
+        let res = match self
+            .store
+            .get_pending_activation(namespace.as_deref())
+            .await
+        {
+            Err(e) => {
+                error!("Unable to fetch next task: {:?}", e);
+                Err(Status::internal("Unable to fetch next task"))
             }
-        }
-
-        Ok(Response::new(response))
+            Ok(None) => Err(Status::not_found("No pending activation")),
+            Ok(Some(InflightActivation { activation, .. })) => {
+                Ok(Response::new(SetTaskStatusResponse {
+                    task: Some(activation),
+                }))
+            }
+        };
+        metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
+        res
     }
 }

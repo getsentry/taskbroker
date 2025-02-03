@@ -60,6 +60,6 @@ async fn test_set_task_status_invalid() {
     assert_eq!(e.code(), Code::InvalidArgument);
     assert_eq!(
         e.message(),
-        "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete)"
+        "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: Pending"
     );
 }
