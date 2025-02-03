@@ -29,7 +29,9 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_dlq"
 
 
-def generate_task_activation(on_attempts_exceeded: OnAttemptsExceeded, expires: int) -> TaskActivation:
+def generate_task_activation(
+    on_attempts_exceeded: OnAttemptsExceeded, expires: int
+) -> TaskActivation:
     retry_state = RetryState(
         attempts=0,
         max_attempts=1,
@@ -130,19 +132,14 @@ def manage_taskbroker(
         print("[taskbroker_0]: Waiting for upkeep to discard/deadletter tasks")
         end = time.time() + timeout
         cur_time = time.time()
-        while (
-            (not shutdown_event.is_set())
-            and (cur_time < end)
-        ):
-            task_count_in_sqlite = get_num_tasks_group_by_status(
-                taskbroker_config
-            )
+        while (not shutdown_event.is_set()) and (cur_time < end):
+            task_count_in_sqlite = get_num_tasks_group_by_status(taskbroker_config)
             print(
                 "[taskbroker_0]: Current state tasks in sqlite: "
                 f"{task_count_in_sqlite}"
             )
 
-            # Break successfully if there is only one pending task 
+            # Break successfully if there is only one pending task
             # left in sqlite
             if task_count_in_sqlite["Pending"] == 1:
                 complete = True
@@ -150,8 +147,10 @@ def manage_taskbroker(
                     if status != "Pending" and count != 0:
                         complete = False
                 if complete:
-                    print("[taskbroker_0]: Upkeep has completed and removed "
-                          "all tasks except the last buffer task.")
+                    print(
+                        "[taskbroker_0]: Upkeep has completed and removed "
+                        "all tasks except the last buffer task."
+                    )
                     break
 
             time.sleep(3)
@@ -293,18 +292,26 @@ Running test with the following configuration:
         custom_messages = []
         for i in range(num_messages):
             if i % 2 == 0:
-                task_activation = generate_task_activation(OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 1)
+                task_activation = generate_task_activation(
+                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 1
+                )
             else:
-                task_activation = generate_task_activation(OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DEADLETTER, 1)
+                task_activation = generate_task_activation(
+                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DEADLETTER, 1
+                )
             custom_messages.append(task_activation)
 
         # Produce second last message to be completed by taskworker
-        task_activation = generate_task_activation(OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 2400)
+        task_activation = generate_task_activation(
+            OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 2400
+        )
         id_to_complete = task_activation.id
         custom_messages.append(task_activation)
 
         # Produce last buffer message
-        task_activation = generate_task_activation(OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 2400)
+        task_activation = generate_task_activation(
+            OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 2400
+        )
         custom_messages.append(task_activation)
 
         send_custom_messages_to_topic(topic_name, custom_messages)
@@ -359,6 +366,4 @@ Running test with the following configuration:
     assert (
         total_count == 1
     )  # there should only be one task left in sqlite since all tasks before the last buffer task were discarded or deadlettered
-    assert (
-        dlq_size == (num_messages) / 2
-    )  # half of the tasks should be deadlettered
+    assert dlq_size == (num_messages) / 2  # half of the tasks should be deadlettered

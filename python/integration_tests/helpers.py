@@ -198,7 +198,9 @@ def get_num_tasks_in_sqlite_by_status(
     return count
 
 
-def get_num_tasks_group_by_status(taskbroker_config: TaskbrokerConfig) -> dict[str, int]:
+def get_num_tasks_group_by_status(
+    taskbroker_config: TaskbrokerConfig,
+) -> dict[str, int]:
     task_count_in_sqlite = {}
     attach_db_stmt = (
         f"ATTACH DATABASE '{taskbroker_config.db_path}' "
