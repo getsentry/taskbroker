@@ -13,7 +13,7 @@ from python.integration_tests.helpers import (
     send_custom_messages_to_topic,
     create_topic,
     get_num_tasks_in_sqlite,
-    get_num_tasks_in_sqlite_by_status,
+    get_num_tasks_group_by_status,
     TaskbrokerConfig,
     get_topic_size,
 )
@@ -29,11 +29,31 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_dlq"
 
 
+def generate_task_activation(
+    on_attempts_exceeded: OnAttemptsExceeded, expires: int
+) -> TaskActivation:
+    retry_state = RetryState(
+        attempts=0,
+        max_attempts=1,
+        on_attempts_exceeded=on_attempts_exceeded,
+    )
+    return TaskActivation(
+        id=uuid4().hex,
+        namespace="integration_tests",
+        taskname="integration_tests.say_hello",
+        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}),
+        retry_state=retry_state,
+        processing_deadline_duration=3000,
+        received_at=Timestamp(seconds=int(time.time())),
+        expires=expires,
+    )
+
+
 def manage_taskworker(
     taskbroker_config: TaskbrokerConfig,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
-    last_task_id: str,
+    id_to_complete: str,
 ) -> None:
     """
     A special task worker that only fetches one most recent task
@@ -53,7 +73,7 @@ def manage_taskworker(
 
     try:
         client.update_task(
-            task_id=last_task_id,
+            task_id=id_to_complete,
             status=TASK_ACTIVATION_STATUS_COMPLETE,
             fetch_next_task=None,
         )
@@ -100,7 +120,7 @@ def manage_taskbroker(
         end = time.time() + timeout
         while (time.time() < end) and (not tasks_written_event.is_set()):
             written_tasks = get_num_tasks_in_sqlite(taskbroker_config)
-            if written_tasks == num_messages:
+            if written_tasks == num_messages + 1:
                 print(
                     f"[taskbroker_0]: Finishing writting all {num_messages} "
                     "task(s) to sqlite. Sending signal to taskworker to "
@@ -112,15 +132,23 @@ def manage_taskbroker(
         print("[taskbroker_0]: Waiting for upkeep to discard/deadletter tasks")
         end = time.time() + timeout
         cur_time = time.time()
-        num_completed_tasks = 0
-        while (
-            (not shutdown_event.is_set())
-            and (cur_time < end)
-            and (num_completed_tasks < num_messages)
-        ):
-            num_completed_tasks = get_num_tasks_in_sqlite_by_status(
-                taskbroker_config, "Complete"
+        while (not shutdown_event.is_set()) and (cur_time < end):
+            task_count_in_sqlite = get_num_tasks_group_by_status(taskbroker_config)
+            print(
+                "[taskbroker_0]: Current state of tasks in sqlite: "
+                f"{task_count_in_sqlite}"
             )
+
+            # Break successfully there are either no tasks in sqlite or
+            # all tasks are completed
+            complete = True
+            for status, count in task_count_in_sqlite.items():
+                if status != "Complete" and count != 0:
+                    complete = False
+            if complete:
+                print("[taskbroker_0]: Upkeep has completed all tasks.")
+                break
+
             time.sleep(3)
             cur_time = time.time()
 
@@ -134,12 +162,19 @@ def manage_taskbroker(
         if cur_time >= end:
             print(
                 "[taskbroker_0]: Taskbroker (upkeep) did not finish "
-                "discarding/deadlettering tasks before timeout. "
+                "discarding/deadlettering all tasks before timeout. "
                 "Shutting down taskbroker."
             )
+        total_hanging_tasks = sum(
+            [
+                count
+                for status, count in task_count_in_sqlite.items()
+                if status != "Complete"
+            ]
+        )
 
         with open(results_log_path, "a") as results_log_file:
-            results_log_file.write(f"Completed:{num_completed_tasks}")
+            results_log_file.write(f"total_hanging_tasks:{total_hanging_tasks}")
 
         # Stop the taskbroker
         print("[taskbroker_0]: Shutting down taskbroker")
@@ -205,7 +240,7 @@ def test_upkeep_dlq() -> None:
 
     # Test configuration
     taskbroker_path = str(TASKBROKER_BIN)
-    num_messages = 10_001  # the 5001st message will be completed by the taskworker such that all previous can be discarded/deadlettered
+    num_messages = 10_000
     num_partitions = 4
     max_pending_count = 100_000
     taskbroker_timeout = 120  # the time in seconds to wait for taskbroker to process
@@ -247,39 +282,30 @@ Running test with the following configuration:
         yaml.safe_dump(taskbroker_config.to_dict(), f)
 
     try:
-        # Produce N messages to kafka that expires immediately
+        # Produce num_messages + 1 to kafka.
+        # The first num_messages messages are produced with an expiration
+        # of 1 second. The last message is produced with an expiration
+        # of 2400 seconds. This message will be completed by taskworker
+        # such that all messages can be discarded/deadlettered.
+
         custom_messages = []
-        last_task_id = ""
         for i in range(num_messages):
-            id = uuid4().hex
-
-            # Capture the last task id so that we can complete it later
-            if i == num_messages - 1:
-                last_task_id = id
-
             if i % 2 == 0:
-                retry_state = RetryState(
-                    attempts=0,
-                    max_attempts=1,
-                    on_attempts_exceeded=OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD,
+                task_activation = generate_task_activation(
+                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 1
                 )
             else:
-                retry_state = RetryState(
-                    attempts=0,
-                    max_attempts=1,
-                    on_attempts_exceeded=OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DEADLETTER,
+                task_activation = generate_task_activation(
+                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DEADLETTER, 1
                 )
-            task_activation = TaskActivation(
-                id=id,
-                namespace="integration_tests",
-                taskname=f"integration_tests.say_hello_{i}",
-                parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}),
-                retry_state=retry_state,
-                processing_deadline_duration=3000,
-                received_at=Timestamp(seconds=int(time.time())),
-                expires=1,
-            )
             custom_messages.append(task_activation)
+
+        # Produce last buffer message to be completed by taskworker
+        task_activation = generate_task_activation(
+            OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 2400
+        )
+        id_to_complete = task_activation.id
+        custom_messages.append(task_activation)
 
         send_custom_messages_to_topic(topic_name, custom_messages)
         tasks_written_event = threading.Event()
@@ -312,7 +338,7 @@ Running test with the following configuration:
                 taskbroker_config,
                 tasks_written_event,
                 shutdown_event,
-                last_task_id,
+                id_to_complete,
             ),
         )
         worker_thread.start()
@@ -322,17 +348,15 @@ Running test with the following configuration:
     except Exception as e:
         raise Exception(f"Error running taskbroker: {e}")
 
-    num_completed_tasks = 0
+    total_hanging_tasks = 0
 
     with open(results_log_path, "r") as log_file:
         line = log_file.readline()
-        num_completed_tasks = int(line.split(":")[1])
+        total_hanging_tasks = int(line.split(":")[1])
 
     dlq_size = get_topic_size(dlq_topic_name)
 
     assert (
-        num_completed_tasks == num_messages
-    )  # all tasks should be completed as a result of discard or deadlettering
-    assert (
-        dlq_size == (num_messages - 1) / 2
-    )  # half of the tasks should be deadlettered
+        total_hanging_tasks == 0
+    )  # there should no tasks in sqlite that are not completed or removed
+    assert dlq_size == (num_messages) / 2  # half of the tasks should be deadlettered
