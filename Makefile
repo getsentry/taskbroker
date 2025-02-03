@@ -61,6 +61,7 @@ install-py-dev: ## Install python dependencies
 
 reset-kafka: install-py-dev ## Reset kafka
 	devservices down
+	-docker container rm kafka-kafka-1
 	-docker volume rm kafka_kafka-data
 	devservices up
 .PHONY: reset-kafka
