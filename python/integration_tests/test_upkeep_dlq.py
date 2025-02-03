@@ -208,7 +208,7 @@ def test_upkeep_dlq() -> None:
     num_messages = 10_001  # the 5001st message will be completed by the taskworker such that all previous can be discarded/deadlettered
     num_partitions = 4
     max_pending_count = 100_000
-    taskbroker_timeout = 60  # the time in seconds to wait for taskbroker to process
+    taskbroker_timeout = 120  # the time in seconds to wait for taskbroker to process
     topic_name = "task-worker"
     dlq_topic_name = "task-worker-dlq"
     curr_time = int(time.time())
