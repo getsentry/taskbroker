@@ -113,6 +113,7 @@ def manage_taskbroker(
         end = time.time() + timeout
         cur_time = time.time()
         num_completed_tasks = 0
+        num_failed_tasks = 0
         while (
             (not shutdown_event.is_set())
             and (cur_time < end)
@@ -120,6 +121,14 @@ def manage_taskbroker(
         ):
             num_completed_tasks = get_num_tasks_in_sqlite_by_status(
                 taskbroker_config, "Complete"
+            )
+            num_failed_tasks = get_num_tasks_in_sqlite_by_status(
+                taskbroker_config, "Failure"
+            )
+            print(
+                f"[taskbroker_0]: Currently, upkeep has "
+                f"completed: {num_completed_tasks} and "
+                f"failed: {num_failed_tasks} tasks in sqlite"
             )
             time.sleep(3)
             cur_time = time.time()
@@ -134,7 +143,7 @@ def manage_taskbroker(
         if cur_time >= end:
             print(
                 "[taskbroker_0]: Taskbroker (upkeep) did not finish "
-                "discarding/deadlettering tasks before timeout. "
+                "discarding/deadlettering all tasks before timeout. "
                 "Shutting down taskbroker."
             )
 
