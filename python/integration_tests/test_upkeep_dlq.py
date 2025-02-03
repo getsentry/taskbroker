@@ -146,10 +146,7 @@ def manage_taskbroker(
                 if status != "Complete" and count != 0:
                     complete = False
             if complete:
-                print(
-                    "[taskbroker_0]: Upkeep has completed "
-                    "all tasks."
-                )
+                print("[taskbroker_0]: Upkeep has completed all tasks.")
                 break
 
             time.sleep(3)
