@@ -196,3 +196,24 @@ def get_num_tasks_in_sqlite_by_status(
     rows = cur.execute(query).fetchall()
     count = rows[0][0]
     return count
+
+
+def get_num_tasks_group_by_status(
+    taskbroker_config: TaskbrokerConfig,
+) -> dict[str, int]:
+    task_count_in_sqlite = {}
+    attach_db_stmt = (
+        f"ATTACH DATABASE '{taskbroker_config.db_path}' "
+        f"AS {taskbroker_config.db_name};\n"
+    )
+    query = (
+        f"SELECT status, count(id) as count FROM {taskbroker_config.db_name}."
+        f"inflight_taskactivations GROUP BY status;"
+    )
+    con = sqlite3.connect(taskbroker_config.db_path)
+    cur = con.cursor()
+    cur.executescript(attach_db_stmt)
+    rows = cur.execute(query).fetchall()
+    for task_count in rows:
+        task_count_in_sqlite[task_count[0]] = task_count[1]
+    return task_count_in_sqlite
