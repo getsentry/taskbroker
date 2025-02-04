@@ -118,7 +118,7 @@ impl Default for Config {
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             max_pending_count: 2048,
-            max_pending_buffer_count: 1,
+            max_pending_buffer_count: 128,
             max_processing_deadline: 300,
             remove_deadline: 900,
             upkeep_task_interval_ms: 200,
