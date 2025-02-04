@@ -210,7 +210,7 @@ pub async fn do_upkeep(
     metrics::counter!("upkeep.remove_at_expired").increment(result_context.remove_at_expired);
     metrics::counter!("upkeep.retried").increment(result_context.retried);
 
-    metrics::counter!("upkeep.pending_count").increment(result_context.pending.into());
+    metrics::gauge!("upkeep.pending_count").set(result_context.pending);
     metrics::gauge!("upkeep.processing_count").set(result_context.processing);
 
     result_context
