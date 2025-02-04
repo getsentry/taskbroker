@@ -211,7 +211,7 @@ pub async fn do_upkeep(
     metrics::counter!("upkeep.retried").increment(result_context.retried);
 
     metrics::counter!("upkeep.pending_count").increment(result_context.pending.into());
-    metrics::counter!("upkeep.processing_count").increment(result_context.processing.into());
+    metrics::gauge!("upkeep.processing_count").set(result_context.processing);
 
     result_context
 }
