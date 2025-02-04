@@ -1,6 +1,9 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::consumer::inflight_activation_batcher::{
+    ActivationBatcherConfig, InflightActivationBatcher,
+};
 use taskbroker::grpc_middleware::MetricsLayer;
 use taskbroker::upkeep::upkeep;
 use tokio::select;
@@ -81,18 +84,28 @@ async fn main() -> Result<(), Error> {
                 &[&consumer_config.kafka_topic],
                 &consumer_config.kafka_consumer_config(),
                 processing_strategy!({
-                    map: deserialize_activation::new(DeserializeConfig::from_config(&consumer_config)),
-                    reduce: InflightActivationWriter::new(
-                        consumer_store.clone(),
-                        ActivationWriterConfig::from_config(&consumer_config)
-                    ),
+                    map:
+                        deserialize_activation::new(
+                            DeserializeConfig::from_config(&consumer_config)
+                        ),
 
-                    err: OsStreamWriter::new(
-                        Duration::from_secs(1),
-                        OsStream::StdErr,
-                    ),
+                    reduce:
+                        InflightActivationBatcher::new(
+                            ActivationBatcherConfig::from_config(&consumer_config)
+                        )
+                        => InflightActivationWriter::new(
+                            consumer_store.clone(),
+                            ActivationWriterConfig::from_config(&consumer_config)
+                        ),
+
+                    err:
+                        OsStreamWriter::new(
+                            Duration::from_secs(1),
+                            OsStream::StdErr,
+                        ),
                 }),
-            ).await
+            )
+            .await
         }
     });
 

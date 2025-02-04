@@ -1,5 +1,6 @@
-use std::{mem::replace, sync::Arc, time::Duration};
+use std::{mem::take, sync::Arc};
 
+use anyhow::Ok;
 use chrono::{DateTime, Utc};
 use tracing::{debug, instrument};
 
@@ -16,9 +17,6 @@ use super::kafka::{
 pub struct ActivationWriterConfig {
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
-    pub flush_interval: Option<Duration>,
-    pub when_full_behaviour: ReducerWhenFullBehaviour,
-    pub shutdown_behaviour: ReduceShutdownBehaviour,
 }
 
 impl ActivationWriterConfig {
@@ -27,51 +25,44 @@ impl ActivationWriterConfig {
         Self {
             max_buf_len: config.max_pending_buffer_count,
             max_pending_activations: config.max_pending_count,
-            flush_interval: Some(Duration::from_secs(4)),
-            when_full_behaviour: ReducerWhenFullBehaviour::Flush,
-            shutdown_behaviour: ReduceShutdownBehaviour::Drop,
         }
     }
 }
 
 pub struct InflightActivationWriter {
-    store: Arc<InflightActivationStore>,
-    buffer: Vec<InflightActivation>,
     config: ActivationWriterConfig,
+    store: Arc<InflightActivationStore>,
+    batch: Option<Vec<InflightActivation>>,
 }
 
 impl InflightActivationWriter {
     pub fn new(store: Arc<InflightActivationStore>, config: ActivationWriterConfig) -> Self {
         Self {
-            store,
-            buffer: Vec::with_capacity(config.max_buf_len),
             config,
+            store,
+            batch: None,
         }
     }
 }
 
 impl Reducer for InflightActivationWriter {
-    type Input = InflightActivation;
+    type Input = Vec<InflightActivation>;
 
     type Output = ();
 
-    async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
-        self.buffer.push(t);
+    async fn reduce(&mut self, batch: Self::Input) -> Result<(), anyhow::Error> {
+        assert!(self.batch.is_none());
+        self.batch = Some(batch);
         Ok(())
     }
 
     #[instrument(skip_all)]
     async fn flush(&mut self) -> Result<Self::Output, anyhow::Error> {
-        if self.buffer.is_empty() {
+        let Some(batch) = take(&mut self.batch) else {
             return Ok(());
-        }
-        let records = replace(
-            &mut self.buffer,
-            Vec::with_capacity(self.config.max_buf_len),
-        );
-
+        };
         let lag = Utc::now()
-            - records
+            - batch
                 .iter()
                 .map(|item| {
                     let ts = item
@@ -84,8 +75,7 @@ impl Reducer for InflightActivationWriter {
                 .min_by_key(|item| item.timestamp())
                 .unwrap();
 
-        let res = self.store.store(records).await?;
-
+        let res = self.store.store(batch).await?;
         metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
             .record(lag.num_seconds() as f64);
         metrics::counter!("consumer.inflight_activation_writer.stored")
@@ -99,27 +89,25 @@ impl Reducer for InflightActivationWriter {
         Ok(())
     }
 
-    fn reset(&mut self) {
-        self.buffer.clear();
-    }
+    fn reset(&mut self) {}
 
     async fn is_full(&self) -> bool {
-        self.buffer.len() >= self.config.max_buf_len
+        self.batch.is_some()
             || self
                 .store
                 .count_pending_activations()
                 .await
                 .expect("Error communicating with activation store")
-                + self.buffer.len()
-                >= self.config.max_pending_activations
+                + self.config.max_buf_len
+                > self.config.max_pending_activations
     }
 
     fn get_reduce_config(&self) -> ReduceConfig {
         ReduceConfig {
-            shutdown_condition: ReduceShutdownCondition::Signal,
+            when_full_behaviour: ReducerWhenFullBehaviour::Flush,
             shutdown_behaviour: ReduceShutdownBehaviour::Flush,
-            when_full_behaviour: self.config.when_full_behaviour,
-            flush_interval: self.config.flush_interval,
+            shutdown_condition: ReduceShutdownCondition::Signal,
+            flush_interval: None,
         }
     }
 }
