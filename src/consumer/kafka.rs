@@ -227,7 +227,7 @@ macro_rules! processing_strategy {
     ) => {{
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
 
-        $handles.spawn($crate::reduce(
+        $handles.spawn($crate::consumer::kafka::reduce(
             $reduce_first,
             $prev_receiver,
             sender.clone(),
@@ -623,15 +623,14 @@ pub async fn reduce<T, U>(
                     );
                     handle_reducer_failure(&mut reducer, &mut inflight_msgs, &err).await;
                 }
-
-                if config.when_full_behaviour == ReducerWhenFullBehaviour::Flush
-                    && reducer.is_full().await
-                {
-                    flush_reducer(&mut reducer, &mut inflight_msgs, &ok, &err).await?;
-                }
             }
 
-            _ = repoll_timer.tick() => { }
+            _ = repoll_timer.tick() => {}
+        }
+
+        if config.when_full_behaviour == ReducerWhenFullBehaviour::Flush && reducer.is_full().await
+        {
+            flush_reducer(&mut reducer, &mut inflight_msgs, &ok, &err).await?;
         }
     }
 
@@ -791,6 +790,7 @@ mod tests {
     use std::{
         collections::HashMap,
         iter,
+        marker::PhantomData,
         mem::take,
         sync::{Arc, RwLock},
         time::Duration,
@@ -810,9 +810,13 @@ mod tests {
     use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
     use tokio_util::sync::CancellationToken;
 
-    use crate::consumer::kafka::{
-        commit, map, reduce, reduce_err, CommitClient, KafkaMessage, MessageQueue, ReduceConfig,
-        ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour,
+    use crate::consumer::{
+        kafka::{
+            commit, map, reduce, reduce_err, CommitClient, KafkaMessage, MessageQueue,
+            ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
+            ReducerWhenFullBehaviour,
+        },
+        os_stream_writer::{OsStream, OsStreamWriter},
     };
 
     struct MockCommitClient {
@@ -1760,5 +1764,78 @@ mod tests {
         sleep(Duration::from_secs(1)).await;
         assert!(ok_receiver.is_closed());
         assert!(err_receiver.is_closed());
+    }
+
+    pub struct NoopReducer<T> {
+        phantom: PhantomData<T>,
+    }
+
+    impl<T> NoopReducer<T> {
+        pub fn new() -> Self {
+            Self {
+                phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T> Reducer for NoopReducer<T>
+    where
+        T: Send + Sync,
+    {
+        type Input = T;
+        type Output = ();
+
+        async fn reduce(&mut self, _t: Self::Input) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+
+        async fn flush(&mut self) -> Result<(), anyhow::Error> {
+            Ok(())
+        }
+
+        fn reset(&mut self) {}
+
+        async fn is_full(&self) -> bool {
+            false
+        }
+
+        fn get_reduce_config(&self) -> ReduceConfig {
+            ReduceConfig {
+                shutdown_condition: ReduceShutdownCondition::Drain,
+                shutdown_behaviour: ReduceShutdownBehaviour::Flush,
+                when_full_behaviour: ReducerWhenFullBehaviour::Flush,
+                flush_interval: Some(Duration::from_secs(1)),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_processing_strategy_can_compile() {
+        let _ = processing_strategy!({
+            map:
+                |_: Arc<OwnedMessage>| Ok(()),
+            reduce:
+                NoopReducer::new()
+                => NoopReducer::new()
+                => NoopReducer::new()
+                => NoopReducer::new(),
+            err:
+                OsStreamWriter::new(
+                    Duration::from_secs(1),
+                    OsStream::StdErr,
+                ),
+        });
+
+        let _ = processing_strategy!({
+            map:
+                |_: Arc<OwnedMessage>| Ok(()),
+            reduce:
+                NoopReducer::new(),
+            err:
+                OsStreamWriter::new(
+                    Duration::from_secs(1),
+                    OsStream::StdErr,
+                ),
+        });
     }
 }
