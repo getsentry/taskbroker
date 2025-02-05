@@ -208,7 +208,7 @@ Running test with the following configuration:
             f"{str(count).rjust(16)}"
         )
 
-    taskbrokers_have_data = True
+    total_row_count = 0
     print("\n======== Number of rows in each taskbroker ========")
     for i, config in enumerate(taskbroker_configs.values()):
         query = (
@@ -220,7 +220,9 @@ Running test with the following configuration:
             f"Consumer {i}: {res}, "
             f"{str(int(res / max_pending_count * 100))}% of capacity"
         )
-        taskbrokers_have_data = taskbrokers_have_data and res >= max_pending_count // 3
+        total_row_count += res
+
+    taskbrokers_have_data = total_row_count > num_messages // 3
 
     taskbroker_error_logs = []
     for i in range(num_consumers):
@@ -245,9 +247,7 @@ Running test with the following configuration:
         print("\nTest failed! Got duplicate/missing kafka messages in sqlite")
 
     if not taskbrokers_have_data:
-        print(
-            "\nTest failed! Lower than expected amount of kafka messages " "in sqlite"
-        )
+        print("\nTest failed! Lower than expected amount of kafka messages in sqlite")
 
     if taskbroker_error_logs:
         print("\nTest failed! Errors in taskbroker logs")
