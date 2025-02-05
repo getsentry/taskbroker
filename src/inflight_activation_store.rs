@@ -6,7 +6,11 @@ use prost::Message;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
 use sqlx::{
     migrate::MigrateDatabase,
-    sqlite::{SqliteConnectOptions, SqlitePool, SqliteQueryResult, SqliteRow},
+    pool::PoolOptions,
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult, SqliteRow,
+        SqliteSynchronous,
+    },
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
 
@@ -159,9 +163,15 @@ impl InflightActivationStore {
         if !Sqlite::database_exists(url).await? {
             Sqlite::create_database(url).await?
         }
-        let conn_options = SqliteConnectOptions::from_str(url)?.disable_statement_logging();
+        let conn_options = SqliteConnectOptions::from_str(url)?
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .disable_statement_logging();
 
-        let sqlite_pool = SqlitePool::connect_with(conn_options).await?;
+        let sqlite_pool = PoolOptions::<Sqlite>::new()
+            .max_connections(1)
+            .connect_with(conn_options)
+            .await?;
 
         sqlx::migrate!("./migrations").run(&sqlite_pool).await?;
 

@@ -14,7 +14,6 @@ pub mod logging;
 pub mod metrics;
 pub mod upkeep;
 
-#[cfg(test)]
 pub mod test_utils;
 
 pub fn get_version() -> &'static str {

@@ -1,4 +1,5 @@
 # Development
+
 setup: setup-git install-py-dev ## run setup tasks to create and configure a development environment
 .PHONY: setup
 
@@ -87,6 +88,12 @@ test-upkeep-dlq: build reset-kafka ## Run the upkeep dlq integration test
 
 integration-test: test-rebalance test-worker-processing test-upkeep-retry ## Run all integration tests
 .PHONY: integration-test
+
+# Benchmarks
+
+bench::
+	cargo bench
+.PHONY: bench
 
 # Help
 
