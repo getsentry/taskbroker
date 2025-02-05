@@ -1,14 +1,10 @@
 use clap::Parser;
 use std::fs;
 
-#[allow(dead_code)]
 pub mod config;
-#[allow(dead_code)]
 pub mod consumer;
 pub mod grpc_middleware;
-#[allow(dead_code)]
 pub mod grpc_server;
-#[allow(dead_code)]
 pub mod inflight_activation_store;
 pub mod logging;
 pub mod metrics;
