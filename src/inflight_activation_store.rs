@@ -209,7 +209,7 @@ impl InflightActivationStore {
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at);
                 b.push_bind(row.remove_at);
-                b.push_bind(row.expires_at);
+                b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline);
@@ -245,7 +245,7 @@ impl InflightActivationStore {
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
-        query_builder.push_bind(now);
+        query_builder.push_bind(now.timestamp());
         query_builder.push(")");
         query_builder.push(" AND (remove_at IS NULL OR remove_at > ");
         query_builder.push_bind(now);
@@ -438,11 +438,11 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE expires_at < $2 AND status = $3
+            WHERE expires_at IS NOT NULL AND expires_at < $2 AND status = $3
             "#,
         )
         .bind(InflightActivationStatus::Failure)
-        .bind(now)
+        .bind(now.timestamp())
         .bind(InflightActivationStatus::Pending)
         .execute(&self.sqlite_pool)
         .await?;
