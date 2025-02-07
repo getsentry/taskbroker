@@ -44,9 +44,7 @@ pub fn new(
         }
         let now = Utc::now();
 
-        // Determine the deadletter_at time using config and activation expires time.
-        let mut expires_at = None;
-        if let Some(expires) = activation.expires {
+        let expires_at = if let Some(expires) = activation.expires {
             let expires_duration = Duration::from_secs(expires);
             // Expiry times are based on the time the task was received
             // not the time it was dequeued from Kafka.
@@ -56,8 +54,10 @@ pub fn new(
                     _ => now,
                 }
             });
-            expires_at = Some(activation_received + expires_duration);
-        }
+            Some(activation_received + expires_duration)
+        } else {
+            None
+        };
 
         let remove_at = now.add(config.remove_deadline);
         Ok(InflightActivation {
