@@ -681,7 +681,7 @@ async fn test_handle_remove_at_with_complete() {
     batch[1].added_at += Duration::from_secs(1);
 
     batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
-    batch[2].added_at += Duration::from_secs(1);
+    batch[2].added_at += Duration::from_secs(2);
 
     assert!(store.store(batch.clone()).await.is_ok());
 
