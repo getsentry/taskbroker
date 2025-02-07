@@ -401,7 +401,7 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE remove_at < $2 AND added_at < $3 AND status = $4
+            WHERE remove_at <= $2 AND added_at <= $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
