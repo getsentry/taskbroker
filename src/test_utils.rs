@@ -52,6 +52,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             offset: i as i64,
             added_at: Utc::now(),
             remove_at: Utc::now().add(Duration::from_secs(5 * 60)),
+            expires_at: None,
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".into(),
