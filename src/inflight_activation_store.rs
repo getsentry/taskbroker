@@ -201,11 +201,11 @@ impl InflightActivationStore {
                 b.push_bind(row.activation);
                 b.push_bind(row.partition);
                 b.push_bind(row.offset);
-                b.push_bind(row.added_at);
-                b.push_bind(row.remove_at);
+                b.push_bind(row.added_at.timestamp());
+                b.push_bind(row.remove_at.timestamp());
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
-                    b.push_bind(deadline);
+                    b.push_bind(deadline.timestamp());
                 } else {
                     // Add a literal null
                     b.push("null");
@@ -227,7 +227,7 @@ impl InflightActivationStore {
 
         let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'), status = ",
+            SET processing_deadline = unixepoch('now', '+' || processing_deadline_duration || ' seconds'), status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Processing);
         query_builder.push(
@@ -238,7 +238,7 @@ impl InflightActivationStore {
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (remove_at IS NULL OR remove_at > ");
-        query_builder.push_bind(now);
+        query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
         if let Some(namespace) = namespace {
@@ -341,10 +341,10 @@ impl InflightActivationStore {
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE datetime(processing_deadline) < datetime($2) AND at_most_once = TRUE AND status = $3",
+            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
-        .bind(now)
+        .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
         .execute(&self.sqlite_pool)
         .await;
@@ -358,10 +358,10 @@ impl InflightActivationStore {
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE datetime(processing_deadline) < datetime($2) AND status = $3",
+            WHERE processing_deadline < $2 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
-        .bind(now)
+        .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
         .execute(&self.sqlite_pool)
         .await;
@@ -405,8 +405,8 @@ impl InflightActivationStore {
             "#,
         )
         .bind(InflightActivationStatus::Failure)
-        .bind(now)
-        .bind(max_added_at)
+        .bind(now.timestamp())
+        .bind(max_added_at.timestamp())
         .bind(InflightActivationStatus::Pending)
         .execute(&mut *atomic)
         .await?;
@@ -529,7 +529,7 @@ impl InflightActivationStore {
             r#"DELETE FROM inflight_taskactivations WHERE status = $1 AND "added_at" < $2"#,
         )
         .bind(InflightActivationStatus::Complete)
-        .bind(earliest_incomplete_added_at)
+        .bind(earliest_incomplete_added_at.timestamp())
         .execute(&mut *atomic)
         .await?;
 
@@ -1040,8 +1040,12 @@ mod tests {
         let mut records = make_activations(3);
         // record 1 & 2 should not be removed.
         records[0].status = InflightActivationStatus::Complete;
+
         records[1].status = InflightActivationStatus::Pending;
+        records[1].added_at = records[1].added_at.add(Duration::from_secs(1));
+
         records[2].status = InflightActivationStatus::Complete;
+        records[2].added_at = records[2].added_at.add(Duration::from_secs(1));
 
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -1077,8 +1081,13 @@ mod tests {
         // only record 1 can be removed
         records[0].status = InflightActivationStatus::Complete;
         records[1].status = InflightActivationStatus::Failure;
+        records[1].added_at = records[1].added_at.add(Duration::from_secs(1));
+
         records[2].status = InflightActivationStatus::Complete;
+        records[2].added_at = records[2].added_at.add(Duration::from_secs(1));
+
         records[3].status = InflightActivationStatus::Processing;
+        records[3].added_at = records[3].added_at.add(Duration::from_secs(1));
 
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -1216,10 +1225,14 @@ mod tests {
         let store = InflightActivationStore::new(&url).await.unwrap();
         let mut batch = make_activations(3);
 
-        // Because 1 is complete and has a higher offset than 0 1 will be moved to failure
+        // Because 1 is complete and has a higher added_at than 0. 1 will be moved to failure
         batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+
         batch[1].status = InflightActivationStatus::Complete;
+        batch[1].added_at = batch[1].added_at.add(Duration::from_secs(1));
+
         batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+        batch[2].added_at = batch[2].added_at.add(Duration::from_secs(1));
 
         assert!(store.store(batch.clone()).await.is_ok());
 
