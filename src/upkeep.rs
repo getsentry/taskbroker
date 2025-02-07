@@ -281,7 +281,7 @@ mod tests {
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
-        records[1].added_at = records[1].added_at + Duration::from_secs(1);
+        records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
         let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
@@ -428,10 +428,10 @@ mod tests {
         batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
 
         batch[1].status = InflightActivationStatus::Complete;
-        batch[1].added_at = batch[1].added_at + Duration::from_secs(1);
+        batch[1].added_at += Duration::from_secs(1);
 
         batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
-        batch[2].added_at = batch[2].added_at + Duration::from_secs(2);
+        batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
         let result_context = do_upkeep(config, store.clone(), producer).await;
@@ -498,7 +498,7 @@ mod tests {
             on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
         });
-        records[1].added_at = records[1].added_at + Duration::from_secs(1);
+        records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
         let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
@@ -526,7 +526,7 @@ mod tests {
 
         let mut batch = make_activations(2);
         batch[0].status = InflightActivationStatus::Failure;
-        batch[1].added_at = batch[1].added_at + Duration::from_secs(1);
+        batch[1].added_at += Duration::from_secs(1);
         assert!(store.store(batch).await.is_ok());
 
         let result_context = do_upkeep(config, store.clone(), producer).await;

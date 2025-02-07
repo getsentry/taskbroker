@@ -491,10 +491,10 @@ async fn test_remove_completed() {
     // record 1 & 2 should not be removed.
     records[0].status = InflightActivationStatus::Complete;
     records[1].status = InflightActivationStatus::Pending;
-    records[1].added_at = records[1].added_at + Duration::from_secs(1);
+    records[1].added_at += Duration::from_secs(1);
 
     records[2].status = InflightActivationStatus::Complete;
-    records[2].added_at = records[2].added_at + Duration::from_secs(2);
+    records[2].added_at += Duration::from_secs(2);
 
     assert!(store.store(records.clone()).await.is_ok());
 
@@ -530,13 +530,13 @@ async fn test_remove_completed_multiple_gaps() {
     // only record 1 can be removed
     records[0].status = InflightActivationStatus::Complete;
     records[1].status = InflightActivationStatus::Failure;
-    records[1].added_at = records[1].added_at + Duration::from_secs(1);
+    records[1].added_at += Duration::from_secs(1);
 
     records[2].status = InflightActivationStatus::Complete;
-    records[2].added_at = records[2].added_at + Duration::from_secs(2);
+    records[2].added_at += Duration::from_secs(2);
 
     records[3].status = InflightActivationStatus::Processing;
-    records[3].added_at = records[3].added_at + Duration::from_secs(3);
+    records[3].added_at += Duration::from_secs(3);
 
     assert!(store.store(records.clone()).await.is_ok());
 
@@ -678,10 +678,10 @@ async fn test_handle_remove_at_with_complete() {
     batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
 
     batch[1].status = InflightActivationStatus::Complete;
-    batch[1].added_at = batch[1].added_at + Duration::from_secs(1);
+    batch[1].added_at += Duration::from_secs(1);
 
     batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
-    batch[2].added_at = batch[2].added_at + Duration::from_secs(1);
+    batch[2].added_at += Duration::from_secs(1);
 
     assert!(store.store(batch.clone()).await.is_ok());
 
