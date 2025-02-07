@@ -201,11 +201,11 @@ impl InflightActivationStore {
                 b.push_bind(row.activation);
                 b.push_bind(row.partition);
                 b.push_bind(row.offset);
-                b.push_bind(row.added_at);
-                b.push_bind(row.remove_at);
+                b.push_bind(row.added_at.timestamp());
+                b.push_bind(row.remove_at.timestamp());
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
-                    b.push_bind(deadline);
+                    b.push_bind(deadline.timestamp());
                 } else {
                     // Add a literal null
                     b.push("null");
@@ -227,7 +227,7 @@ impl InflightActivationStore {
 
         let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = datetime('now', '+' || processing_deadline_duration || ' seconds'), status = ",
+            SET processing_deadline = unixepoch('now', '+' || processing_deadline_duration || ' seconds'), status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Processing);
         query_builder.push(
@@ -238,7 +238,7 @@ impl InflightActivationStore {
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (remove_at IS NULL OR remove_at > ");
-        query_builder.push_bind(now);
+        query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
         if let Some(namespace) = namespace {
@@ -341,10 +341,10 @@ impl InflightActivationStore {
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE datetime(processing_deadline) < datetime($2) AND at_most_once = TRUE AND status = $3",
+            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
-        .bind(now)
+        .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
         .execute(&self.sqlite_pool)
         .await;
@@ -358,10 +358,10 @@ impl InflightActivationStore {
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
-            WHERE datetime(processing_deadline) < datetime($2) AND status = $3",
+            WHERE processing_deadline < $2 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
-        .bind(now)
+        .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
         .execute(&self.sqlite_pool)
         .await;
@@ -401,12 +401,12 @@ impl InflightActivationStore {
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
-            WHERE remove_at < $2 AND added_at < $3 AND status = $4
+            WHERE remove_at <= $2 AND added_at <= $3 AND status = $4
             "#,
         )
         .bind(InflightActivationStatus::Failure)
-        .bind(now)
-        .bind(max_added_at)
+        .bind(now.timestamp())
+        .bind(max_added_at.timestamp())
         .bind(InflightActivationStatus::Pending)
         .execute(&mut *atomic)
         .await?;
@@ -529,7 +529,7 @@ impl InflightActivationStore {
             r#"DELETE FROM inflight_taskactivations WHERE status = $1 AND "added_at" < $2"#,
         )
         .bind(InflightActivationStatus::Complete)
-        .bind(earliest_incomplete_added_at)
+        .bind(earliest_incomplete_added_at.timestamp())
         .execute(&mut *atomic)
         .await?;
 

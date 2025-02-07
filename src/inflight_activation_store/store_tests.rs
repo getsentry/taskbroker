@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::ops::Add;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -492,7 +491,10 @@ async fn test_remove_completed() {
     // record 1 & 2 should not be removed.
     records[0].status = InflightActivationStatus::Complete;
     records[1].status = InflightActivationStatus::Pending;
+    records[1].added_at += Duration::from_secs(1);
+
     records[2].status = InflightActivationStatus::Complete;
+    records[2].added_at += Duration::from_secs(2);
 
     assert!(store.store(records.clone()).await.is_ok());
 
@@ -528,8 +530,13 @@ async fn test_remove_completed_multiple_gaps() {
     // only record 1 can be removed
     records[0].status = InflightActivationStatus::Complete;
     records[1].status = InflightActivationStatus::Failure;
+    records[1].added_at += Duration::from_secs(1);
+
     records[2].status = InflightActivationStatus::Complete;
+    records[2].added_at += Duration::from_secs(2);
+
     records[3].status = InflightActivationStatus::Processing;
+    records[3].added_at += Duration::from_secs(3);
 
     assert!(store.store(records.clone()).await.is_ok());
 
@@ -667,10 +674,14 @@ async fn test_handle_remove_at_with_complete() {
     let store = InflightActivationStore::new(&url).await.unwrap();
     let mut batch = make_activations(3);
 
-    // Because 1 is complete and has a higher offset than 0 1 will be moved to failure
+    // Because 1 is complete and has a higher added_at than 0 1 will be moved to failure
     batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+
     batch[1].status = InflightActivationStatus::Complete;
+    batch[1].added_at += Duration::from_secs(1);
+
     batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+    batch[2].added_at += Duration::from_secs(2);
 
     assert!(store.store(batch.clone()).await.is_ok());
 
@@ -712,7 +723,7 @@ async fn test_clear() {
         partition: 0,
         offset: 0,
         added_at: Utc::now(),
-        remove_at: Utc::now().add(Duration::from_secs(5 * 60)),
+        remove_at: Utc::now() + Duration::from_secs(5 * 60),
         processing_deadline: None,
         at_most_once: false,
         namespace: "namespace".into(),

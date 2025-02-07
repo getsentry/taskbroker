@@ -237,8 +237,8 @@ fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActi
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Add;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use chrono::{TimeDelta, TimeZone, Utc};
     use prost_types::Timestamp;
@@ -281,6 +281,7 @@ mod tests {
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
+        records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
         let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
@@ -319,7 +320,7 @@ mod tests {
         let mut batch = make_activations(2);
         // Make a task past with a future processing deadline
         batch[1].status = InflightActivationStatus::Processing;
-        batch[1].processing_deadline = Some(Utc::now().add(TimeDelta::minutes(5)));
+        batch[1].processing_deadline = Some(Utc::now() + TimeDelta::minutes(5));
         assert!(store.store(batch.clone()).await.is_ok());
 
         let _ = do_upkeep(config, store.clone(), producer).await;
@@ -425,8 +426,12 @@ mod tests {
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
         batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+
         batch[1].status = InflightActivationStatus::Complete;
+        batch[1].added_at += Duration::from_secs(1);
+
         batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+        batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
         let result_context = do_upkeep(config, store.clone(), producer).await;
@@ -493,6 +498,7 @@ mod tests {
             on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
         });
+        records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
         let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
@@ -520,6 +526,7 @@ mod tests {
 
         let mut batch = make_activations(2);
         batch[0].status = InflightActivationStatus::Failure;
+        batch[1].added_at += Duration::from_secs(1);
         assert!(store.store(batch).await.is_ok());
 
         let result_context = do_upkeep(config, store.clone(), producer).await;
