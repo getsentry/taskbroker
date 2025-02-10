@@ -245,7 +245,9 @@ mod tests {
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState};
 
     use crate::{
-        inflight_activation_store::{InflightActivationStatus, InflightActivationStore},
+        inflight_activation_store::{
+            InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+        },
         test_utils::{
             consume_topic, create_config, create_integration_config, create_producer,
             generate_temp_filename, make_activations, reset_topic,
@@ -255,8 +257,13 @@ mod tests {
 
     async fn create_inflight_store() -> Arc<InflightActivationStore> {
         let url = generate_temp_filename();
+        let config = create_integration_config();
 
-        Arc::new(InflightActivationStore::new(&url).await.unwrap())
+        Arc::new(
+            InflightActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
+                .await
+                .unwrap(),
+        )
     }
 
     #[tokio::test]

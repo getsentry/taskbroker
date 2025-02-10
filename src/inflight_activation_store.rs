@@ -10,8 +10,23 @@ use sqlx::{
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
 
+use crate::config::Config;
+
+pub struct InflightActivationStoreConfig {
+    pub max_processing_attempts: usize,
+}
+
+impl InflightActivationStoreConfig {
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            max_processing_attempts: config.max_processing_attempts,
+        }
+    }
+}
+
 pub struct InflightActivationStore {
     sqlite_pool: SqlitePool,
+    config: InflightActivationStoreConfig,
 }
 
 /// The members of this enum should be synced with the members
@@ -69,9 +84,10 @@ pub struct InflightActivation {
     /// The timestamp when the activation was stored in activation store.
     pub added_at: DateTime<Utc>,
 
-    /// The timestamp after which a task should be removed from inflight store
-    /// depending on the retry policy of an activation it will either be deadlettered or discarded.
-    pub remove_at: DateTime<Utc>,
+    /// The number of times the activation has been attempted to be processed. This counter is
+    /// incremented everytime a task is reset from processing back to pending. When this
+    /// exceeds max_processing_attempts, the task is discarded/deadlettered.
+    pub processing_attempts: i32,
 
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
@@ -108,7 +124,7 @@ struct TableRow {
     partition: i32,
     offset: i64,
     added_at: DateTime<Utc>,
-    remove_at: DateTime<Utc>,
+    processing_attempts: i32,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
@@ -126,7 +142,7 @@ impl TryFrom<InflightActivation> for TableRow {
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
-            remove_at: value.remove_at,
+            processing_attempts: value.processing_attempts,
             processing_deadline_duration: value.activation.processing_deadline_duration as u32,
             processing_deadline: value.processing_deadline,
             status: value.status,
@@ -146,7 +162,7 @@ impl From<TableRow> for InflightActivation {
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
-            remove_at: value.remove_at,
+            processing_attempts: value.processing_attempts,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
             namespace: value.namespace,
@@ -155,7 +171,7 @@ impl From<TableRow> for InflightActivation {
 }
 
 impl InflightActivationStore {
-    pub async fn new(url: &str) -> Result<Self, Error> {
+    pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
         if !Sqlite::database_exists(url).await? {
             Sqlite::create_database(url).await?
         }
@@ -165,7 +181,10 @@ impl InflightActivationStore {
 
         sqlx::migrate!("./migrations").run(&sqlite_pool).await?;
 
-        Ok(Self { sqlite_pool })
+        Ok(Self {
+            sqlite_pool,
+            config,
+        })
     }
 
     /// Get an activation by id. Primarily used for testing
@@ -189,7 +208,7 @@ impl InflightActivationStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, remove_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
+            (id, activation, partition, offset, added_at, processing_attempts, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
         );
         let rows = batch
             .into_iter()
@@ -202,7 +221,7 @@ impl InflightActivationStore {
                 b.push_bind(row.partition);
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at.timestamp());
-                b.push_bind(row.remove_at.timestamp());
+                b.push_bind(row.processing_attempts);
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline.timestamp());
@@ -237,8 +256,8 @@ impl InflightActivationStore {
             WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
-        query_builder.push(" AND (remove_at IS NULL OR remove_at > ");
-        query_builder.push_bind(now.timestamp());
+        query_builder.push(" AND (processing_attempts < ");
+        query_builder.push_bind(self.config.max_processing_attempts as i32);
         query_builder.push(")");
 
         if let Some(namespace) = namespace {
@@ -374,46 +393,29 @@ impl InflightActivationStore {
         Err(anyhow!("Could not update tasks past processing_deadline"))
     }
 
-    /// Perform upkeep work for tasks that are past remove_at deadlines
-    ///
-    /// Tasks that are pending and past their remove_at deadline are updated
-    /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
+    /// Perform upkeep work for pending tasks that have a processing_attempts greater
+    /// than the max_processing_attempts. These tasks are updated to have status=failure
+    /// so they can be discarded/deadlettered by handle_failed_tasks.
     ///
     /// The number of impacted records is returned in a Result.
-    pub async fn handle_remove_at(&self) -> Result<u64, Error> {
-        let mut atomic = self.sqlite_pool.begin().await?;
-        let max_result: SqliteRow = sqlx::query(
-            r#"SELECT max("added_at") AS max_added_at
-            FROM inflight_taskactivations
-            WHERE status = $1
-            "#,
-        )
-        .bind(InflightActivationStatus::Complete)
-        .fetch_one(&mut *atomic)
-        .await?;
+    pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+        let mut modified_rows = 0;
 
-        let max_added_at: DateTime<Utc> = match max_result.get("max_added_at") {
-            Some(max_added_at) => max_added_at,
-            None => return Ok(0),
-        };
-
-        let now = Utc::now();
-        let update_result = sqlx::query(
-            r#"UPDATE inflight_taskactivations
-            SET status = $1
-            WHERE remove_at <= $2 AND added_at <= $3 AND status = $4
-            "#,
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations SET status = $1 WHERE status = $2 AND processing_attempts >= $3",
         )
         .bind(InflightActivationStatus::Failure)
-        .bind(now.timestamp())
-        .bind(max_added_at.timestamp())
         .bind(InflightActivationStatus::Pending)
-        .execute(&mut *atomic)
-        .await?;
+        .bind(self.config.max_processing_attempts as i32)
+        .execute(&self.sqlite_pool)
+        .await;
 
-        atomic.commit().await?;
+        if let Ok(query_res) = result {
+            modified_rows += query_res.rows_affected();
+            return Ok(modified_rows);
+        }
 
-        Ok(update_result.rows_affected())
+        Err(anyhow!("Could not update tasks past processing_attempts"))
     }
 
     /// Perform upkeep work related to status=failure

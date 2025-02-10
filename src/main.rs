@@ -23,7 +23,9 @@ use taskbroker::consumer::{
     os_stream_writer::{OsStream, OsStreamWriter},
 };
 use taskbroker::grpc_server::MyConsumerService;
-use taskbroker::inflight_activation_store::InflightActivationStore;
+use taskbroker::inflight_activation_store::{
+    InflightActivationStore, InflightActivationStoreConfig,
+};
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
@@ -50,7 +52,13 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
-    let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
+    let store = Arc::new(
+        InflightActivationStore::new(
+            &config.db_path,
+            InflightActivationStoreConfig::from_config(&config),
+        )
+        .await?,
+    );
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
