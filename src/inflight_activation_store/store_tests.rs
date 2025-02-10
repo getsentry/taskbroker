@@ -488,11 +488,9 @@ async fn test_remove_completed() {
     let store = InflightActivationStore::new(&url).await.unwrap();
 
     let mut records = make_activations(3);
-    // record 1 & 2 should not be removed.
     records[0].status = InflightActivationStatus::Complete;
     records[1].status = InflightActivationStatus::Pending;
     records[1].added_at += Duration::from_secs(1);
-
     records[2].status = InflightActivationStatus::Complete;
     records[2].added_at += Duration::from_secs(2);
 
@@ -500,7 +498,7 @@ async fn test_remove_completed() {
 
     let result = store.remove_completed().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 1);
+    assert_eq!(result.unwrap(), 2);
     assert!(store
         .get_by_id(&records[0].activation.id)
         .await
@@ -515,9 +513,9 @@ async fn test_remove_completed() {
         .get_by_id(&records[2].activation.id)
         .await
         .expect("no error")
-        .is_some());
+        .is_none());
 
-    assert_count_by_status(&store, InflightActivationStatus::Complete, 1).await;
+    assert_count_by_status(&store, InflightActivationStatus::Complete, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
 }
 
@@ -542,7 +540,7 @@ async fn test_remove_completed_multiple_gaps() {
 
     let result = store.remove_completed().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 1);
+    assert_eq!(result.unwrap(), 2);
     assert!(store
         .get_by_id(&records[0].activation.id)
         .await
@@ -557,7 +555,7 @@ async fn test_remove_completed_multiple_gaps() {
         .get_by_id(&records[2].activation.id)
         .await
         .expect("no error")
-        .is_some());
+        .is_none());
     assert!(store
         .get_by_id(&records[3].activation.id)
         .await
