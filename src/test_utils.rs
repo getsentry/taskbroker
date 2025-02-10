@@ -23,9 +23,7 @@ use sentry_protos::taskbroker::v1::TaskActivation;
 /// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
     let mut rng = rand::thread_rng();
-    let url = format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.gen::<u64>());
-    println!("url: {}", url);
-    url
+    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.gen::<u64>())
 }
 
 /// Create a collection of pending unsaved activations.

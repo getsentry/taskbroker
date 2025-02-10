@@ -139,7 +139,6 @@ pub async fn do_upkeep(
         .await
     {
         result_context.expired = expired_count;
-        println!("expired_count: {}", expired_count);
     }
 
     // 5. Advance state on tasks past remove_at
@@ -157,14 +156,6 @@ pub async fn do_upkeep(
         .instrument(info_span!("handle_failed_tasks"))
         .await
     {
-        println!(
-            "failed_tasks_forwarder: {:?}",
-            failed_tasks_forwarder.to_discard
-        );
-        println!(
-            "failed_tasks_forwarder: {:?}",
-            failed_tasks_forwarder.to_deadletter
-        );
         result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
         let mut ids: Vec<String> = vec![];
         // Submit deadlettered tasks to dlq.
@@ -184,7 +175,7 @@ pub async fn do_upkeep(
             }
             ids.push(activation.id);
         }
-        println!("ids: {:?}", ids);
+
         // 7. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
             result_context.deadlettered = deadletter_count;
