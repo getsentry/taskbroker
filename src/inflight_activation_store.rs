@@ -314,7 +314,7 @@ impl InflightActivationStore {
         deadline: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
         sqlx::query("UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2")
-            .bind(deadline)
+            .bind(deadline.unwrap().timestamp())
             .bind(id)
             .execute(&self.sqlite_pool)
             .await?;
@@ -498,21 +498,15 @@ impl InflightActivationStore {
         Ok(result.rows_affected())
     }
 
-    /// Remove completed tasks
-    ///
+    /// Remove completed tasks.
     /// This method is a garbage collector for the inflight task store.
     pub async fn remove_completed(&self) -> Result<u64, Error> {
-        let mut atomic = self.sqlite_pool.begin().await?;
+        let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
+            .bind(InflightActivationStatus::Complete)
+            .execute(&self.sqlite_pool)
+            .await?;
 
-        let cleanup_query =
-            sqlx::query(r#"DELETE FROM inflight_taskactivations WHERE status = $1"#)
-                .bind(InflightActivationStatus::Complete)
-                .execute(&mut *atomic)
-                .await?;
-
-        atomic.commit().await?;
-
-        Ok(cleanup_query.rows_affected())
+        Ok(query.rows_affected())
     }
 }
 

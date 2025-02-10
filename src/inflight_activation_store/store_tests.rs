@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{TimeZone, Utc};
+use chrono::{SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{
     OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
 };
@@ -340,7 +340,7 @@ async fn test_set_processing_deadline() {
         .is_ok());
 
     let result = store.get_by_id("id_0").await.unwrap().unwrap();
-    assert_eq!(result.processing_deadline, Some(deadline));
+    assert_eq!(result.processing_deadline, Some(deadline.round_subsecs(0)));
 }
 
 #[tokio::test]
@@ -599,11 +599,9 @@ async fn test_remove_completed() {
     .unwrap();
 
     let mut records = make_activations(3);
-    // record 1 & 2 should not be removed.
     records[0].status = InflightActivationStatus::Complete;
     records[1].status = InflightActivationStatus::Pending;
     records[1].added_at += Duration::from_secs(1);
-
     records[2].status = InflightActivationStatus::Complete;
     records[2].added_at += Duration::from_secs(2);
 
