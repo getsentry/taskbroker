@@ -73,7 +73,7 @@ pub struct InflightActivation {
     /// depending on the retry policy of an activation it will either be deadlettered or discarded.
     pub remove_at: DateTime<Utc>,
 
-    // If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
+    /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
     pub expires_at: Option<DateTime<Utc>>,
 
     /// The timestamp for when processing should be complete
