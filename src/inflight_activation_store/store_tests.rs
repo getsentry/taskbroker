@@ -608,7 +608,7 @@ async fn test_remove_completed() {
 
     let result = store.remove_completed().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 1);
+    assert_eq!(result.unwrap(), 2);
     assert!(store
         .get_by_id(&records[0].activation.id)
         .await
@@ -623,9 +623,9 @@ async fn test_remove_completed() {
         .get_by_id(&records[2].activation.id)
         .await
         .expect("no error")
-        .is_some());
+        .is_none());
 
-    assert_count_by_status(&store, InflightActivationStatus::Complete, 1).await;
+    assert_count_by_status(&store, InflightActivationStatus::Complete, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
 }
 
@@ -655,7 +655,7 @@ async fn test_remove_completed_multiple_gaps() {
 
     let result = store.remove_completed().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 1);
+    assert_eq!(result.unwrap(), 2);
     assert!(store
         .get_by_id(&records[0].activation.id)
         .await
@@ -670,7 +670,7 @@ async fn test_remove_completed_multiple_gaps() {
         .get_by_id(&records[2].activation.id)
         .await
         .expect("no error")
-        .is_some());
+        .is_none());
     assert!(store
         .get_by_id(&records[3].activation.id)
         .await
