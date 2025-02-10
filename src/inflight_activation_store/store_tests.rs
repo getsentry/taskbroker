@@ -223,7 +223,7 @@ async fn test_get_pending_activation_with_namespace() {
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_no_deadletter() {
+async fn test_get_pending_activation_excluding_processing_attempts_exceeded_tasks() {
     let url = generate_temp_filename();
     let store = InflightActivationStore::new(
         &url,
@@ -233,7 +233,7 @@ async fn test_get_pending_activation_no_deadletter() {
     .unwrap();
 
     let mut batch = make_activations(1);
-    batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+    batch[0].processing_attempts = store.config.max_processing_attempts as i32;
     assert!(store.store(batch.clone()).await.is_ok());
 
     let result = store.get_pending_activation(None).await;
@@ -773,30 +773,6 @@ async fn test_mark_completed() {
 }
 
 #[tokio::test]
-async fn test_handle_remove_at_no_complete() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
-    let mut batch = make_activations(3);
-
-    // While two records are past deadlines, there are no completed tasks with higher offsets
-    // no tasks should be updated as we could have no workers available.
-    batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
-    batch[1].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
-
-    assert!(store.store(batch.clone()).await.is_ok());
-    let result = store.handle_remove_at().await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 0);
-
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 0).await;
-}
-
-#[tokio::test]
 async fn test_handle_remove_at_with_complete() {
     let url = generate_temp_filename();
     let store = InflightActivationStore::new(
@@ -807,24 +783,31 @@ async fn test_handle_remove_at_with_complete() {
     .unwrap();
     let mut batch = make_activations(3);
 
-    // Because 1 is complete and has a higher added_at than 0 1 will be moved to failure
-    batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+    // Spawn 3 tasks where a complete task is sandwiched between two tasks that have
+    // exceeding the max_processing_attempts.
+    batch[0].processing_attempts = store.config.max_processing_attempts as i32;
 
     batch[1].status = InflightActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
-    batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+    batch[2].processing_attempts = store.config.max_processing_attempts as i32;
     batch[2].added_at += Duration::from_secs(2);
 
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.handle_remove_at().await;
+    let result = store.handle_processing_attempts().await;
     assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 1, "only one record should be updated");
+    assert_eq!(result.unwrap(), 2, "two record should be updated");
 
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 1).await;
+    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
 
     let failed = store.get_by_id(&batch[0].activation.id).await;
+    assert_eq!(
+        failed.unwrap().unwrap().status,
+        InflightActivationStatus::Failure
+    );
+
+    let failed = store.get_by_id(&batch[2].activation.id).await;
     assert_eq!(
         failed.unwrap().unwrap().status,
         InflightActivationStatus::Failure
@@ -861,7 +844,7 @@ async fn test_clear() {
         partition: 0,
         offset: 0,
         added_at: Utc::now(),
-        remove_at: Utc::now() + Duration::from_secs(5 * 60),
+        processing_attempts: 0,
         processing_deadline: None,
         at_most_once: false,
         namespace: "namespace".into(),

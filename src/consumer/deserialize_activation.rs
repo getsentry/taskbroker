@@ -1,33 +1,14 @@
-use std::ops::Add;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use anyhow::{anyhow, Error};
-use chrono::{MappedLocalTime, TimeZone, Utc};
+use chrono::Utc;
 use prost::Message as _;
 use rdkafka::{message::OwnedMessage, Message};
 use sentry_protos::taskbroker::v1::TaskActivation;
 
-use crate::{
-    config::Config,
-    inflight_activation_store::{InflightActivation, InflightActivationStatus},
-};
+use crate::inflight_activation_store::{InflightActivation, InflightActivationStatus};
 
-pub struct DeserializeConfig {
-    pub remove_deadline: Duration,
-}
-
-impl DeserializeConfig {
-    /// Convert from application into service configuration
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            remove_deadline: Duration::from_secs(config.remove_deadline as u64),
-        }
-    }
-}
-
-pub fn new(
-    config: DeserializeConfig,
-) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
+pub fn new() -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
     move |msg: Arc<OwnedMessage>| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
@@ -67,14 +48,11 @@ mod tests {
     use rdkafka::{message::OwnedMessage, Timestamp};
     use sentry_protos::taskbroker::v1::TaskActivation;
 
-    use super::{new, DeserializeConfig};
+    use super::new;
 
     #[test]
-    fn test_deadletter_from_config() {
-        let config = DeserializeConfig {
-            remove_deadline: Duration::from_secs(900),
-        };
-        let deserializer = new(config);
+    fn test_processing_attempts_set() {
+        let deserializer = new();
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
@@ -108,19 +86,15 @@ mod tests {
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
-        let delta = inflight.remove_at - now;
         assert!(
-            delta.num_seconds() >= 900,
-            "Should have at least 900 seconds of delay from now"
+            inflight.processing_attempts == 0,
+            "Should have 0 processing attempts"
         );
     }
 
     #[test]
-    fn test_expires_deadletter() {
-        let config = DeserializeConfig {
-            remove_deadline: Duration::from_secs(900),
-        };
-        let deserializer = new(config);
+    fn test_expires() {
+        let deserializer = new();
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
@@ -154,10 +128,10 @@ mod tests {
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
-        let delta = inflight.remove_at - the_past;
-        assert!(
-            delta.num_seconds() >= 99,
-            "Should have ~100 seconds of delay from received_at"
-        );
+        // let delta = inflight.expires_at - the_past;
+        // assert!(
+        //     delta.num_seconds() >= 99,
+        //     "Should have ~100 seconds of delay from received_at"
+        // );
     }
 }

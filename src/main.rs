@@ -17,7 +17,7 @@ use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServe
 use taskbroker::config::Config;
 use taskbroker::consumer::{
     admin::create_missing_topics,
-    deserialize_activation::{self, DeserializeConfig},
+    deserialize_activation::{self},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
@@ -93,9 +93,7 @@ async fn main() -> Result<(), Error> {
                 &consumer_config.kafka_consumer_config(),
                 processing_strategy!({
                     map:
-                        deserialize_activation::new(
-                            DeserializeConfig::from_config(&consumer_config)
-                        ),
+                        deserialize_activation::new(),
 
                     reduce:
                         InflightActivationBatcher::new(

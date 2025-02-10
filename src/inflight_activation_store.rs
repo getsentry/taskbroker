@@ -242,8 +242,6 @@ impl InflightActivationStore {
         &self,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
-        let now = Utc::now();
-
         let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
             SET processing_deadline = unixepoch('now', '+' || processing_deadline_duration || ' seconds'), status = ",
@@ -500,40 +498,17 @@ impl InflightActivationStore {
         Ok(result.rows_affected())
     }
 
-    /// Remove completed tasks that do not have an incomplete record following
-    /// them in offset order.
+    /// Remove completed tasks
     ///
     /// This method is a garbage collector for the inflight task store.
     pub async fn remove_completed(&self) -> Result<u64, Error> {
         let mut atomic = self.sqlite_pool.begin().await?;
 
-        let incomplete_query = sqlx::query(
-            r#"
-            SELECT "added_at"
-            FROM inflight_taskactivations
-            WHERE status != $1
-            ORDER BY "added_at"
-            LIMIT 1
-            "#,
-        )
-        .bind(InflightActivationStatus::Complete)
-        .fetch_optional(&mut *atomic)
-        .await?;
-
-        let earliest_incomplete_added_at: DateTime<Utc> =
-            if let Some(query_result) = incomplete_query {
-                query_result.get("added_at")
-            } else {
-                return Ok(0);
-            };
-
-        let cleanup_query = sqlx::query(
-            r#"DELETE FROM inflight_taskactivations WHERE status = $1 AND "added_at" < $2"#,
-        )
-        .bind(InflightActivationStatus::Complete)
-        .bind(earliest_incomplete_added_at.timestamp())
-        .execute(&mut *atomic)
-        .await?;
+        let cleanup_query =
+            sqlx::query(r#"DELETE FROM inflight_taskactivations WHERE status = $1"#)
+                .bind(InflightActivationStatus::Complete)
+                .execute(&mut *atomic)
+                .await?;
 
         atomic.commit().await?;
 

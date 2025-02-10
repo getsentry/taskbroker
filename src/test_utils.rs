@@ -7,8 +7,6 @@ use rdkafka::{
     producer::FutureProducer,
     Message,
 };
-use std::ops::Add;
-use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
@@ -51,7 +49,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             partition: 0,
             offset: i as i64,
             added_at: Utc::now(),
-            remove_at: Utc::now().add(Duration::from_secs(5 * 60)),
+            processing_attempts: 0,
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".into(),

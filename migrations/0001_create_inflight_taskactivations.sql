@@ -13,4 +13,4 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
 );
 
 CREATE INDEX idx_pending_activation
-ON inflight_taskactivations (status, remove_at, added_at, namespace, id);
+ON inflight_taskactivations (status, added_at, namespace, id);
