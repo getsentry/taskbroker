@@ -297,7 +297,7 @@ impl InflightActivationStore {
         deadline: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
         sqlx::query("UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2")
-            .bind(deadline)
+            .bind(deadline.unwrap().timestamp())
             .bind(id)
             .execute(&self.sqlite_pool)
             .await?;
