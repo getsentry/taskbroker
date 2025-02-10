@@ -139,6 +139,7 @@ pub async fn do_upkeep(
         .await
     {
         result_context.expired = expired_count;
+        println!("expired_count: {}", expired_count);
     }
 
     // 5. Advance state on tasks past remove_at
@@ -156,6 +157,14 @@ pub async fn do_upkeep(
         .instrument(info_span!("handle_failed_tasks"))
         .await
     {
+        println!(
+            "failed_tasks_forwarder: {:?}",
+            failed_tasks_forwarder.to_discard
+        );
+        println!(
+            "failed_tasks_forwarder: {:?}",
+            failed_tasks_forwarder.to_deadletter
+        );
         result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
         let mut ids: Vec<String> = vec![];
         // Submit deadlettered tasks to dlq.
@@ -175,6 +184,7 @@ pub async fn do_upkeep(
             }
             ids.push(activation.id);
         }
+        println!("ids: {:?}", ids);
         // 7. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
             result_context.deadlettered = deadletter_count;
@@ -571,7 +581,10 @@ mod tests {
         batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
         batch[1].status = InflightActivationStatus::Complete;
         batch[2].expires_at = Some(Utc::now() - Duration::from_secs(100));
+
+        // Ensure the fourth task is in the future
         batch[3].expires_at = Some(Utc::now() + Duration::from_secs(100));
+        batch[3].added_at += Duration::from_secs(1);
 
         assert!(store.store(batch.clone()).await.is_ok());
         let result_context = do_upkeep(config, store.clone(), producer).await;

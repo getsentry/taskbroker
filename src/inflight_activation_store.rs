@@ -197,6 +197,7 @@ impl InflightActivationStore {
             "INSERT INTO inflight_taskactivations \
             (id, activation, partition, offset, added_at, remove_at, expires_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
         );
+        println!("batch: {:?}", batch);
         let rows = batch
             .into_iter()
             .map(TableRow::try_from)
