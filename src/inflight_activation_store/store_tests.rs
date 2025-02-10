@@ -419,7 +419,7 @@ async fn test_handle_processing_deadline() {
     batch[1].status = InflightActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(batch.clone()).await.is_ok());
 
     let past_deadline = store.handle_processing_deadline().await;
     assert!(past_deadline.is_ok());
@@ -427,6 +427,9 @@ async fn test_handle_processing_deadline() {
 
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
+
+    let task = store.get_by_id(&batch[1].activation.id).await;
+    assert_eq!(task.unwrap().unwrap().processing_attempts, 1);
 
     // Run again to check early return
     let past_deadline = store.handle_processing_deadline().await;
@@ -773,7 +776,7 @@ async fn test_mark_completed() {
 }
 
 #[tokio::test]
-async fn test_handle_remove_at_with_complete() {
+async fn test_handle_processing_attempts() {
     let url = generate_temp_filename();
     let store = InflightActivationStore::new(
         &url,

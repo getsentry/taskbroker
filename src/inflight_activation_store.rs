@@ -374,7 +374,7 @@ impl InflightActivationStore {
         // Update non-idempotent tasks
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1
+            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
             WHERE processing_deadline < $2 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
