@@ -277,7 +277,14 @@ async fn test_set_processing_deadline() {
         .is_ok());
 
     let result = store.get_by_id("id_0").await.unwrap().unwrap();
-    assert_eq!(result.processing_deadline, Some(deadline.round_subsecs(0)));
+    assert_eq!(
+        result
+            .processing_deadline
+            .unwrap()
+            .round_subsecs(0)
+            .timestamp(),
+        deadline.timestamp()
+    )
 }
 
 #[tokio::test]
