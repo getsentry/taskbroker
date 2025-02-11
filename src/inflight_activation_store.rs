@@ -263,9 +263,6 @@ impl InflightActivationStore {
             WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
-        query_builder.push(" AND (processing_attempts < ");
-        query_builder.push_bind(self.config.max_processing_attempts as i32);
-        query_builder.push(")");
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
@@ -363,8 +360,12 @@ impl InflightActivationStore {
     /// Update tasks that are in processing and have exceeded their processing deadline
     /// Exceeding a processing deadline does not consume a retry as we don't know
     /// if a worker took the task and was killed, or failed.
-    pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+    /// Returns a tuple where
+    /// 0: number of rows updated for processing_deadline
+    /// 1: number of rows updated for processing_attempts
+    pub async fn handle_processing_deadline(&self) -> Result<(u64, u64), Error> {
         let now = Utc::now();
+
         // Idempotent tasks that fail their processing deadlines go directly to failure
         // there are no retries, as the worker will reject the task due to idempotency keys.
         let most_once_result = sqlx::query(
@@ -378,12 +379,14 @@ impl InflightActivationStore {
         .execute(&self.sqlite_pool)
         .await;
 
-        let mut modified_rows = 0;
+        let mut processing_deadline_modified_rows = 0;
         if let Ok(query_res) = most_once_result {
-            modified_rows = query_res.rows_affected();
+            processing_deadline_modified_rows = query_res.rows_affected();
         }
 
         // Update non-idempotent tasks
+        let mut atomic = self.sqlite_pool.begin().await?;
+
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
@@ -392,12 +395,30 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
-        .execute(&self.sqlite_pool)
+        .execute(&mut *atomic)
         .await;
 
         if let Ok(query_res) = result {
-            modified_rows += query_res.rows_affected();
-            return Ok(modified_rows);
+            processing_deadline_modified_rows += query_res.rows_affected();
+        }
+
+        // In the same transaction, update records exceeding to max processing attempts immediately.
+        // This is to ensure that get_pending_activation in a parallel thread will not pick up the task.
+
+        let processing_attempts_result = sqlx::query(
+            "UPDATE inflight_taskactivations 
+            SET status = $1 
+            WHERE processing_attempts >= $2 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Failure)
+        .bind(self.config.max_processing_attempts as i32)
+        .bind(InflightActivationStatus::Pending)
+        .execute(&mut *atomic)
+        .await;
+
+        atomic.commit().await?;
+        if let Ok(query_res) = processing_attempts_result {
+            return Ok((processing_deadline_modified_rows, query_res.rows_affected()));
         }
 
         Err(anyhow!("Could not update tasks past processing_deadline"))

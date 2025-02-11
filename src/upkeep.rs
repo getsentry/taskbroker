@@ -125,12 +125,13 @@ pub async fn do_upkeep(
     }
 
     // 4. Handle processing deadlines
-    if let Ok(processing_count) = store
+    if let Ok(counts) = store
         .handle_processing_deadline()
         .instrument(info_span!("handle_processing_deadline"))
         .await
     {
-        result_context.processing_deadline_reset = processing_count;
+        result_context.processing_deadline_reset = counts.0;
+        result_context.processing_attempts_exceeded = counts.1;
     }
 
     // 5.Handle tasks whos processing_attempts have exceeded max_processing_attempts
@@ -139,7 +140,7 @@ pub async fn do_upkeep(
         .instrument(info_span!("handle_processing_attempts"))
         .await
     {
-        result_context.processing_attempts_exceeded = processing_attempts_exceeded;
+        result_context.processing_attempts_exceeded += processing_attempts_exceeded;
     }
 
     // 6. Handle tasks that are past their expires_at deadline
