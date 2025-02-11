@@ -12,6 +12,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivation,
 )
 from google.protobuf.timestamp_pb2 import Timestamp
+import socket
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
@@ -217,3 +218,20 @@ def get_num_tasks_group_by_status(
     for task_count in rows:
         task_count_in_sqlite[task_count[0]] = task_count[1]
     return task_count_in_sqlite
+
+
+def get_available_ports(count: int) -> list[int]:
+    MIN = 49152
+    MAX = 65535
+    res = []
+    for i in range(count):
+        for candidate in range(MIN + i, MAX, count):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("0.0.0.0", candidate))
+                    res.append(candidate)
+                    break
+            except Exception as e:
+                print(f"Tried port: {candidate}: {e}")
+    assert len(res) == count, "Not enough free ports"
+    return res

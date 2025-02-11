@@ -13,6 +13,7 @@ from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
     create_topic,
+    get_available_ports,
     send_generic_messages_to_topic,
     TaskbrokerConfig,
 )
@@ -81,6 +82,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     max_pending_count = 15_000
     topic_name = "task-worker"
     kafka_deadletter_topic = "task-worker-dlq"
+    grpc_ports = get_available_ports(num_consumers)
     curr_time = int(time.time())
 
     print(
@@ -92,7 +94,8 @@ Running test with the following configuration:
         num of partitions: {num_partitions},
         min restart duration: {min_restart_duration} seconds,
         max restart duration: {max_restart_duration} seconds,
-        topic name: {topic_name}
+        topic name: {topic_name},
+        grpc ports: {grpc_ports},
         random seed value: 42
     """
     )
@@ -116,7 +119,7 @@ Running test with the following configuration:
             kafka_deadletter_topic=kafka_deadletter_topic,
             kafka_consumer_group=topic_name,
             kafka_auto_offset_reset="earliest",
-            grpc_port=50051 + i,
+            grpc_port=grpc_ports[i],
         )
 
     for filename, config in taskbroker_configs.items():
