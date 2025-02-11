@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Error};
-use chrono::Utc;
+use chrono::{MappedLocalTime, TimeZone, Utc};
 use prost::Message as _;
 use rdkafka::{message::OwnedMessage, Message};
 use sentry_protos::taskbroker::v1::TaskActivation;
@@ -24,6 +24,22 @@ pub fn new() -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> 
                 .expect("could not access at_most_once");
         }
         let processing_attempts = 0;
+        let now = Utc::now();
+
+        let expires_at = if let Some(expires) = activation.expires {
+            let expires_duration = Duration::from_secs(expires);
+            // Expiry times are based on the time the task was received
+            // not the time it was dequeued from Kafka.
+            let activation_received = activation.received_at.map_or(now, |ts| {
+                match Utc.timestamp_opt(ts.seconds, ts.nanos as u32) {
+                    MappedLocalTime::Single(ts) => ts,
+                    _ => now,
+                }
+            });
+            Some(activation_received + expires_duration)
+        } else {
+            None
+        };
 
         Ok(InflightActivation {
             activation,
@@ -33,6 +49,7 @@ pub fn new() -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> 
             added_at: Utc::now(),
             processing_deadline: None,
             processing_attempts,
+            expires_at,
             at_most_once,
             namespace,
         })
@@ -128,10 +145,10 @@ mod tests {
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
-        // let delta = inflight.expires_at - the_past;
-        // assert!(
-        //     delta.num_seconds() >= 99,
-        //     "Should have ~100 seconds of delay from received_at"
-        // );
+        let delta = inflight.expires_at.unwrap() - the_past;
+        assert!(
+            delta.num_seconds() >= 99,
+            "Should have ~100 seconds of delay from received_at"
+        );
     }
 }

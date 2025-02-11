@@ -52,6 +52,7 @@ struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
     processing_attempts_exceeded: u64,
+    expired: u64,
     deadlettered: u64,
     completed: u64,
     pending: u32,
@@ -64,6 +65,7 @@ impl UpkeepResults {
         self.retried == 0
             && self.processing_deadline_reset == 0
             && self.processing_attempts_exceeded == 0
+            && self.expired == 0
             && self.deadlettered == 0
             && self.completed == 0
             && self.pending == 0
@@ -83,6 +85,7 @@ pub async fn do_upkeep(
         retried: 0,
         processing_deadline_reset: 0,
         processing_attempts_exceeded: 0,
+        expired: 0,
         deadlettered: 0,
         completed: 0,
         pending: 0,
@@ -130,7 +133,7 @@ pub async fn do_upkeep(
         result_context.processing_deadline_reset = processing_count;
     }
 
-    // 5. Advance state on tasks whos processing_attempts have been exceeded max_processing_attempts
+    // 5.Handle tasks whos processing_attempts have exceeded max_processing_attempts
     if let Ok(processing_attempts_exceeded) = store
         .handle_processing_attempts()
         .instrument(info_span!("handle_processing_attempts"))
@@ -139,7 +142,16 @@ pub async fn do_upkeep(
         result_context.processing_attempts_exceeded = processing_attempts_exceeded;
     }
 
-    // 6. Handle failure state tasks
+    // 6. Handle tasks that are past their expires_at deadline
+    if let Ok(expired_count) = store
+        .handle_expires_at()
+        .instrument(info_span!("handle_expires_at"))
+        .await
+    {
+        result_context.expired = expired_count;
+    }
+
+    // 7.. Handle failure state tasks
     if let Ok(failed_tasks_forwarder) = store
         .handle_failed_tasks()
         .instrument(info_span!("handle_failed_tasks"))
@@ -164,13 +176,14 @@ pub async fn do_upkeep(
             }
             ids.push(activation.id);
         }
-        // 7. Update deadlettered tasks to complete
+
+        // 8. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
             result_context.deadlettered = deadletter_count;
         }
     }
 
-    // 8. Cleanup completed tasks
+    // 9. Cleanup completed tasks
     if let Ok(count) = store
         .remove_completed()
         .instrument(info_span!("remove_completed"))
@@ -210,6 +223,7 @@ pub async fn do_upkeep(
     metrics::counter!("upkeep.processing_attempts_exceeded")
         .increment(result_context.processing_attempts_exceeded);
     metrics::counter!("upkeep.retried").increment(result_context.retried);
+    metrics::counter!("upkeep.expired").increment(result_context.expired);
 
     metrics::gauge!("upkeep.pending_count").set(result_context.pending);
     metrics::gauge!("upkeep.processing_count").set(result_context.processing);
@@ -238,12 +252,12 @@ fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActi
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
     use chrono::{TimeDelta, TimeZone, Utc};
     use prost_types::Timestamp;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState};
+
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use crate::{
         inflight_activation_store::{
@@ -515,6 +529,7 @@ mod tests {
         let result_context = do_upkeep(config, store.clone(), producer).await;
 
         assert_eq!(result_context.discarded, 1);
+        assert_eq!(result_context.completed, 1);
         assert_eq!(
             store.count().await.unwrap(),
             1,
@@ -527,6 +542,79 @@ mod tests {
                 .unwrap(),
             1,
             "pending task should remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_expired_discard() {
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut batch = make_activations(4);
+
+        batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
+        batch[1].status = InflightActivationStatus::Complete;
+        batch[2].expires_at = Some(Utc::now() - Duration::from_secs(100));
+
+        // Ensure the fourth task is in the future
+        batch[3].expires_at = Some(Utc::now() + Duration::from_secs(100));
+        batch[3].added_at += Duration::from_secs(1);
+
+        assert!(store.store(batch.clone()).await.is_ok());
+        let result_context = do_upkeep(config, store.clone(), producer).await;
+
+        assert_eq!(result_context.expired, 2); // 0/2 removed as expired
+        assert_eq!(result_context.discarded, 2); // 0/2 discarded as well
+        assert_eq!(result_context.completed, 3); // 1 complete
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1,
+            "one pending task should remain"
+        );
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Complete)
+                .await
+                .unwrap(),
+            0,
+            "complete tasks were removed"
+        );
+
+        assert!(
+            store
+                .get_by_id(&batch[0].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "first task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[1].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "second task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[2].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "third task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[3].activation.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "fourth task should be kept"
         );
     }
 }

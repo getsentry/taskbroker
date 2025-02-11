@@ -89,6 +89,9 @@ pub struct InflightActivation {
     /// exceeds max_processing_attempts, the task is discarded/deadlettered.
     pub processing_attempts: i32,
 
+    /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
+    pub expires_at: Option<DateTime<Utc>>,
+
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
 
@@ -125,6 +128,7 @@ struct TableRow {
     offset: i64,
     added_at: DateTime<Utc>,
     processing_attempts: i32,
+    expires_at: Option<DateTime<Utc>>,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
@@ -143,6 +147,7 @@ impl TryFrom<InflightActivation> for TableRow {
             offset: value.offset,
             added_at: value.added_at,
             processing_attempts: value.processing_attempts,
+            expires_at: value.expires_at,
             processing_deadline_duration: value.activation.processing_deadline_duration as u32,
             processing_deadline: value.processing_deadline,
             status: value.status,
@@ -163,6 +168,7 @@ impl From<TableRow> for InflightActivation {
             offset: value.offset,
             added_at: value.added_at,
             processing_attempts: value.processing_attempts,
+            expires_at: value.expires_at,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
             namespace: value.namespace,
@@ -208,7 +214,7 @@ impl InflightActivationStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, processing_attempts, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
+            (id, activation, partition, offset, added_at, processing_attempts, expires_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
         );
         let rows = batch
             .into_iter()
@@ -222,6 +228,7 @@ impl InflightActivationStore {
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at.timestamp());
                 b.push_bind(row.processing_attempts);
+                b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline.timestamp());
@@ -242,6 +249,8 @@ impl InflightActivationStore {
         &self,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
+        let now = Utc::now();
+
         let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
             SET processing_deadline = unixepoch('now', '+' || processing_deadline_duration || ' seconds'), status = ",
@@ -256,6 +265,9 @@ impl InflightActivationStore {
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (processing_attempts < ");
         query_builder.push_bind(self.config.max_processing_attempts as i32);
+        query_builder.push(")");
+        query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
+        query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
         if let Some(namespace) = namespace {
@@ -414,6 +426,29 @@ impl InflightActivationStore {
         }
 
         Err(anyhow!("Could not update tasks past processing_attempts"))
+    }
+
+    /// Perform upkeep work for tasks that are past expires_at deadlines
+    ///
+    /// Tasks that are pending and past their expires_at deadline are updated
+    /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
+    ///
+    /// The number of impacted records is returned in a Result.
+    pub async fn handle_expires_at(&self) -> Result<u64, Error> {
+        let now = Utc::now();
+        let update_result = sqlx::query(
+            r#"UPDATE inflight_taskactivations
+            SET status = $1
+            WHERE expires_at IS NOT NULL AND expires_at < $2 AND status = $3
+            "#,
+        )
+        .bind(InflightActivationStatus::Failure)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Pending)
+        .execute(&self.sqlite_pool)
+        .await?;
+
+        Ok(update_result.rows_affected())
     }
 
     /// Perform upkeep work related to status=failure

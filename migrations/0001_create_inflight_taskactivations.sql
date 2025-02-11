@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     offset INTEGER NOT NULL,
     added_at INTEGER NOT NULL,
     processing_attempts INTEGER NOT NULL,
+    expires_at INTEGER,
     processing_deadline_duration INTEGER NOT NULL,
     processing_deadline INTEGER,
     status TEXT NOT NULL,

@@ -244,6 +244,27 @@ async fn test_get_pending_activation_excluding_processing_attempts_exceeded_task
 }
 
 #[tokio::test]
+async fn test_get_pending_activation_skip_expires() {
+    let url = generate_temp_filename();
+    let store = InflightActivationStore::new(
+        &url,
+        InflightActivationStoreConfig::from_config(&create_integration_config()),
+    )
+    .await
+    .unwrap();
+
+    let mut batch = make_activations(1);
+    batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    let result = store.get_pending_activation(None).await;
+    assert!(result.is_ok());
+    let res_option = result.unwrap();
+    assert!(res_option.is_none());
+    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+}
+
+#[tokio::test]
 async fn test_get_pending_activation_earliest() {
     let url = generate_temp_filename();
     let store = InflightActivationStore::new(
@@ -340,7 +361,14 @@ async fn test_set_processing_deadline() {
         .is_ok());
 
     let result = store.get_by_id("id_0").await.unwrap().unwrap();
-    assert_eq!(result.processing_deadline, Some(deadline.round_subsecs(0)));
+    assert_eq!(
+        result
+            .processing_deadline
+            .unwrap()
+            .round_subsecs(0)
+            .timestamp(),
+        deadline.timestamp()
+    )
 }
 
 #[tokio::test]
@@ -816,6 +844,30 @@ async fn test_handle_processing_attempts() {
 }
 
 #[tokio::test]
+async fn test_handle_expires_at() {
+    let url = generate_temp_filename();
+    let store = InflightActivationStore::new(
+        &url,
+        InflightActivationStoreConfig::from_config(&create_integration_config()),
+    )
+    .await
+    .unwrap();
+    let mut batch = make_activations(3);
+
+    // All expired tasks should be removed, regardless of order or other tasks.
+    batch[0].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
+    batch[1].expires_at = Some(Utc::now() + (Duration::from_secs(5 * 60)));
+    batch[2].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
+
+    assert!(store.store(batch.clone()).await.is_ok());
+    let result = store.handle_expires_at().await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 2);
+
+    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
+}
+
+#[tokio::test]
 async fn test_clear() {
     let url = generate_temp_filename();
     let store = InflightActivationStore::new(
@@ -846,6 +898,7 @@ async fn test_clear() {
         offset: 0,
         added_at: Utc::now(),
         processing_attempts: 0,
+        expires_at: None,
         processing_deadline: None,
         at_most_once: false,
         namespace: "namespace".into(),
