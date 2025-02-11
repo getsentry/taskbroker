@@ -83,10 +83,25 @@ impl ConsumerService for MyConsumerService {
             let duration = Utc::now() - inflight_activation.added_at;
             metrics::histogram!(
                 "task_execution.conclusion.duration",
-                "namespace" => inflight_activation.activation.namespace,
-                "taskname" => inflight_activation.activation.taskname,
+                "namespace" => inflight_activation.activation.namespace.clone(),
+                "taskname" => inflight_activation.activation.taskname.clone(),
             )
             .record(duration.num_milliseconds() as f64);
+
+            // Record the time taken from when the task started processing to when it finished
+            // Use the processing deadline to calculate the time taken
+            let mut execution_remaining = inflight_activation
+                .processing_deadline
+                .unwrap()
+                .timestamp_millis()
+                - Utc::now().timestamp_millis();
+            if execution_remaining < 0 {
+                execution_remaining = 0;
+            }
+            let execution_time = inflight_activation.activation.processing_deadline_duration
+                - (execution_remaining * 1000) as u64;
+            metrics::histogram!("task_execution.completion_time", "namespace" => inflight_activation.activation.namespace.clone(),
+                "taskname" => inflight_activation.activation.taskname.clone()).record(execution_time as f64);
         }
 
         let Some(FetchNextTask { ref namespace }) = request.get_ref().fetch_next_task else {
