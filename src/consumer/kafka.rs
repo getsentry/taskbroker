@@ -506,7 +506,8 @@ pub trait Reducer {
     type Output;
 
     fn reduce(&mut self, t: Self::Input) -> impl Future<Output = Result<(), anyhow::Error>> + Send;
-    fn flush(&mut self) -> impl Future<Output = Result<Self::Output, anyhow::Error>> + Send;
+    fn flush(&mut self)
+        -> impl Future<Output = Result<Option<Self::Output>, anyhow::Error>> + Send;
     fn reset(&mut self);
     fn is_full(&self) -> impl Future<Output = bool> + Send;
     fn get_reduce_config(&self) -> ReduceConfig;
@@ -535,12 +536,11 @@ async fn flush_reducer<T, U>(
             error!("Failed to flush reducer, reason: {}", e);
             handle_reducer_failure(reducer, inflight_msgs, err).await;
         }
-        Ok(result) => {
-            if !inflight_msgs.is_empty() {
-                ok.send((take(inflight_msgs), result))
-                    .await
-                    .map_err(|err| anyhow!("{}", err))?;
-            }
+        Ok(None) => {}
+        Ok(Some(result)) => {
+            ok.send((take(inflight_msgs), result))
+                .await
+                .map_err(|err| anyhow!("{}", err))?;
         }
     }
     Ok(())
@@ -870,9 +870,12 @@ mod tests {
             Ok(())
         }
 
-        async fn flush(&mut self) -> Result<(), anyhow::Error> {
+        async fn flush(&mut self) -> Result<Option<()>, anyhow::Error> {
+            if self.data.is_none() {
+                return Ok(None);
+            }
             self.pipe.write().unwrap().push(self.data.take().unwrap());
-            Ok(())
+            Ok(Some(()))
         }
 
         fn reset(&mut self) {
@@ -945,7 +948,7 @@ mod tests {
             Ok(())
         }
 
-        async fn flush(&mut self) -> Result<(), anyhow::Error> {
+        async fn flush(&mut self) -> Result<Option<()>, anyhow::Error> {
             if let Some(idx) = self.error_on_nth_flush {
                 if idx == 0 {
                     self.error_on_nth_flush.take();
@@ -954,11 +957,14 @@ mod tests {
                     self.error_on_nth_flush = Some(idx - 1);
                 }
             }
+            if self.buffer.read().unwrap().is_empty() {
+                return Ok(None);
+            }
             self.pipe
                 .write()
                 .unwrap()
                 .extend(take(&mut self.buffer.write().unwrap() as &mut Vec<T>).into_iter());
-            Ok(())
+            Ok(Some(()))
         }
 
         fn reset(&mut self) {
@@ -1789,8 +1795,8 @@ mod tests {
             Ok(())
         }
 
-        async fn flush(&mut self) -> Result<(), anyhow::Error> {
-            Ok(())
+        async fn flush(&mut self) -> Result<Option<()>, anyhow::Error> {
+            Ok(Some(()))
         }
 
         fn reset(&mut self) {}
