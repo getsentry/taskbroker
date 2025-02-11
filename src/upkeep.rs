@@ -447,20 +447,20 @@ mod tests {
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].processing_attempts = 3;
+        batch[0].processing_attempts = config.max_processing_attempts as i32;
 
         batch[1].status = InflightActivationStatus::Complete;
         batch[1].added_at += Duration::from_secs(1);
 
-        batch[2].processing_attempts = 3;
+        batch[2].processing_attempts = config.max_processing_attempts as i32;
         batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
         let result_context = do_upkeep(config, store.clone(), producer).await;
 
-        assert_eq!(result_context.processing_attempts_exceeded, 2); // batch[0] is removed due to remove_at deadline
-        assert_eq!(result_context.discarded, 2); // batch[0] is discarded
-        assert_eq!(result_context.completed, 3); // batch[1] and batch[2] are removed as completed
+        assert_eq!(result_context.processing_attempts_exceeded, 2); // batch[0] and batch[2] are removed due to max processing_attempts exceeded
+        assert_eq!(result_context.discarded, 2); // batch[0] and batch[2] are discarded
+        assert_eq!(result_context.completed, 3); // all three are removed as completed
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Pending)
