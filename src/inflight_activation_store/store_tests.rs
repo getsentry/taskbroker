@@ -201,6 +201,22 @@ async fn test_get_pending_activation_no_deadletter() {
 }
 
 #[tokio::test]
+async fn test_get_pending_activation_skip_expires() {
+    let url = generate_temp_filename();
+    let store = InflightActivationStore::new(&url).await.unwrap();
+
+    let mut batch = make_activations(1);
+    batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    let result = store.get_pending_activation(None).await;
+    assert!(result.is_ok());
+    let res_option = result.unwrap();
+    assert!(res_option.is_none());
+    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+}
+
+#[tokio::test]
 async fn test_get_pending_activation_earliest() {
     let url = generate_temp_filename();
     let store = InflightActivationStore::new(&url).await.unwrap();
@@ -704,6 +720,25 @@ async fn test_handle_remove_at_with_complete() {
 }
 
 #[tokio::test]
+async fn test_handle_expires_at() {
+    let url = generate_temp_filename();
+    let store = InflightActivationStore::new(&url).await.unwrap();
+    let mut batch = make_activations(3);
+
+    // All expired tasks should be removed, regardless of order or other tasks.
+    batch[0].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
+    batch[1].expires_at = Some(Utc::now() + (Duration::from_secs(5 * 60)));
+    batch[2].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
+
+    assert!(store.store(batch.clone()).await.is_ok());
+    let result = store.handle_expires_at().await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 2);
+
+    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
+}
+
+#[tokio::test]
 async fn test_clear() {
     let url = generate_temp_filename();
     let store = InflightActivationStore::new(&url).await.unwrap();
@@ -729,6 +764,7 @@ async fn test_clear() {
         offset: 0,
         added_at: Utc::now(),
         remove_at: Utc::now() + Duration::from_secs(5 * 60),
+        expires_at: None,
         processing_deadline: None,
         at_most_once: false,
         namespace: "namespace".into(),

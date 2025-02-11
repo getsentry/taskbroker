@@ -52,6 +52,7 @@ struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
     remove_at_expired: u64,
+    expired: u64,
     deadlettered: u64,
     completed: u64,
     pending: u32,
@@ -64,6 +65,7 @@ impl UpkeepResults {
         self.retried == 0
             && self.processing_deadline_reset == 0
             && self.remove_at_expired == 0
+            && self.expired == 0
             && self.deadlettered == 0
             && self.completed == 0
             && self.pending == 0
@@ -83,6 +85,7 @@ pub async fn do_upkeep(
         retried: 0,
         processing_deadline_reset: 0,
         remove_at_expired: 0,
+        expired: 0,
         deadlettered: 0,
         completed: 0,
         pending: 0,
@@ -130,6 +133,14 @@ pub async fn do_upkeep(
         result_context.processing_deadline_reset = processing_count;
     }
 
+    if let Ok(expired_count) = store
+        .handle_expires_at()
+        .instrument(info_span!("handle_expires_at"))
+        .await
+    {
+        result_context.expired = expired_count;
+    }
+
     // 5. Advance state on tasks past remove_at
     if let Ok(remove_count) = store
         .handle_remove_at()
@@ -164,6 +175,7 @@ pub async fn do_upkeep(
             }
             ids.push(activation.id);
         }
+
         // 7. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
             result_context.deadlettered = deadletter_count;
@@ -209,6 +221,7 @@ pub async fn do_upkeep(
     metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
     metrics::counter!("upkeep.remove_at_expired").increment(result_context.remove_at_expired);
     metrics::counter!("upkeep.retried").increment(result_context.retried);
+    metrics::counter!("upkeep.expired").increment(result_context.expired);
 
     metrics::gauge!("upkeep.pending_count").set(result_context.pending);
     metrics::gauge!("upkeep.processing_count").set(result_context.processing);
@@ -237,12 +250,12 @@ fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActi
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::time::Duration;
-
     use chrono::{TimeDelta, TimeZone, Utc};
     use prost_types::Timestamp;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState};
+
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use crate::{
         inflight_activation_store::{InflightActivationStatus, InflightActivationStore},
@@ -425,12 +438,12 @@ mod tests {
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+        batch[0].remove_at = Utc::now() - Duration::from_secs(100);
 
         batch[1].status = InflightActivationStatus::Complete;
         batch[1].added_at += Duration::from_secs(1);
 
-        batch[2].remove_at = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+        batch[2].remove_at = Utc::now() - Duration::from_secs(100);
         batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
@@ -532,6 +545,7 @@ mod tests {
         let result_context = do_upkeep(config, store.clone(), producer).await;
 
         assert_eq!(result_context.discarded, 1);
+        assert_eq!(result_context.completed, 1);
         assert_eq!(
             store.count().await.unwrap(),
             1,
@@ -544,6 +558,79 @@ mod tests {
                 .unwrap(),
             1,
             "pending task should remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_expired_discard() {
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut batch = make_activations(4);
+
+        batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
+        batch[1].status = InflightActivationStatus::Complete;
+        batch[2].expires_at = Some(Utc::now() - Duration::from_secs(100));
+
+        // Ensure the fourth task is in the future
+        batch[3].expires_at = Some(Utc::now() + Duration::from_secs(100));
+        batch[3].added_at += Duration::from_secs(1);
+
+        assert!(store.store(batch.clone()).await.is_ok());
+        let result_context = do_upkeep(config, store.clone(), producer).await;
+
+        assert_eq!(result_context.expired, 2); // 0/2 removed as expired
+        assert_eq!(result_context.discarded, 2); // 0/2 discarded as well
+        assert_eq!(result_context.completed, 3); // 1 complete
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1,
+            "one pending task should remain"
+        );
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Complete)
+                .await
+                .unwrap(),
+            0,
+            "complete tasks were removed"
+        );
+
+        assert!(
+            store
+                .get_by_id(&batch[0].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "first task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[1].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "second task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[2].activation.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "third task should be removed"
+        );
+        assert!(
+            store
+                .get_by_id(&batch[3].activation.id)
+                .await
+                .unwrap()
+                .is_some(),
+            "fourth task should be kept"
         );
     }
 }

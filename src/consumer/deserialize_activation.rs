@@ -44,23 +44,22 @@ pub fn new(
         }
         let now = Utc::now();
 
-        // Determine the deadletter_at time using config and activation expires time.
-        let mut remove_at = now.add(config.remove_deadline);
-        if let Some(expires) = activation.expires {
+        let expires_at = if let Some(expires) = activation.expires {
             let expires_duration = Duration::from_secs(expires);
-            if expires_duration < config.remove_deadline {
-                // Expiry times are based on the time the task was received
-                // not the time it was dequeued from Kafka.
-                let activation_received = activation.received_at.map_or(now, |ts| {
-                    match Utc.timestamp_opt(ts.seconds, ts.nanos as u32) {
-                        MappedLocalTime::Single(ts) => ts,
-                        _ => now,
-                    }
-                });
-                remove_at = activation_received + expires_duration;
-            }
-        }
+            // Expiry times are based on the time the task was received
+            // not the time it was dequeued from Kafka.
+            let activation_received = activation.received_at.map_or(now, |ts| {
+                match Utc.timestamp_opt(ts.seconds, ts.nanos as u32) {
+                    MappedLocalTime::Single(ts) => ts,
+                    _ => now,
+                }
+            });
+            Some(activation_received + expires_duration)
+        } else {
+            None
+        };
 
+        let remove_at = now.add(config.remove_deadline);
         Ok(InflightActivation {
             activation,
             status: InflightActivationStatus::Pending,
@@ -69,6 +68,7 @@ pub fn new(
             added_at: Utc::now(),
             processing_deadline: None,
             remove_at,
+            expires_at,
             at_most_once,
             namespace,
         })
