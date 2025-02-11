@@ -14,7 +14,8 @@ use crate::inflight_activation_store::{
     InflightActivationStoreConfig,
 };
 use crate::test_utils::{
-    assert_count_by_status, create_integration_config, generate_temp_filename, make_activations,
+    assert_count_by_status, create_integration_config, create_test_store, generate_temp_filename,
+    make_activations,
 };
 
 #[test]
@@ -68,13 +69,7 @@ async fn test_create_db() {
 
 #[tokio::test]
 async fn test_store() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
@@ -85,13 +80,7 @@ async fn test_store() {
 
 #[tokio::test]
 async fn test_store_duplicate_id_in_batch() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     // Coerce a conflict
@@ -106,13 +95,7 @@ async fn test_store_duplicate_id_in_batch() {
 
 #[tokio::test]
 async fn test_store_duplicate_id_between_batches() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
@@ -131,13 +114,7 @@ async fn test_store_duplicate_id_between_batches() {
 
 #[tokio::test]
 async fn test_get_pending_activation() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
@@ -152,15 +129,7 @@ async fn test_get_pending_activation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
 async fn test_get_pending_activation_with_race() {
-    let url = generate_temp_filename();
-    let store = Arc::new(
-        InflightActivationStore::new(
-            &url,
-            InflightActivationStoreConfig::from_config(&create_integration_config()),
-        )
-        .await
-        .unwrap(),
-    );
+    let store = Arc::new(create_test_store().await);
 
     const NUM_CONCURRENT_WRITES: u32 = 2000;
 
@@ -198,13 +167,7 @@ async fn test_get_pending_activation_with_race() {
 
 #[tokio::test]
 async fn test_get_pending_activation_with_namespace() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     batch[1].namespace = "other_namespace".into();
@@ -224,13 +187,7 @@ async fn test_get_pending_activation_with_namespace() {
 
 #[tokio::test]
 async fn test_get_pending_activation_skip_expires() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(1);
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
@@ -245,13 +202,7 @@ async fn test_get_pending_activation_skip_expires() {
 
 #[tokio::test]
 async fn test_get_pending_activation_earliest() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     batch[0].added_at = Utc.with_ymd_and_hms(2024, 6, 24, 0, 0, 0).unwrap();
@@ -267,13 +218,7 @@ async fn test_get_pending_activation_earliest() {
 
 #[tokio::test]
 async fn test_count_pending_activations() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(3);
     batch[0].status = InflightActivationStatus::Processing;
@@ -286,13 +231,7 @@ async fn test_count_pending_activations() {
 
 #[tokio::test]
 async fn set_activation_status() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
@@ -322,13 +261,7 @@ async fn set_activation_status() {
 
 #[tokio::test]
 async fn test_set_processing_deadline() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let batch = make_activations(1);
     assert!(store.store(batch.clone()).await.is_ok());
@@ -352,13 +285,7 @@ async fn test_set_processing_deadline() {
 
 #[tokio::test]
 async fn test_delete_activation() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
@@ -381,13 +308,7 @@ async fn test_delete_activation() {
 
 #[tokio::test]
 async fn test_get_retry_activations() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
@@ -414,13 +335,7 @@ async fn test_get_retry_activations() {
 
 #[tokio::test]
 async fn test_handle_processing_deadline() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -446,13 +361,7 @@ async fn test_handle_processing_deadline() {
 
 #[tokio::test]
 async fn test_handle_processing_deadline_multiple_tasks() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     batch[0].status = InflightActivationStatus::Processing;
@@ -471,13 +380,7 @@ async fn test_handle_processing_deadline_multiple_tasks() {
 
 #[tokio::test]
 async fn test_handle_processing_at_most_once() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     // Both records are past processing deadlines
     let mut batch = make_activations(2);
@@ -514,13 +417,7 @@ async fn test_handle_processing_at_most_once() {
 
 #[tokio::test]
 async fn test_handle_processing_deadline_discard_after() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -541,13 +438,7 @@ async fn test_handle_processing_deadline_discard_after() {
 
 #[tokio::test]
 async fn test_handle_processing_deadline_deadletter_after() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -569,13 +460,7 @@ async fn test_handle_processing_deadline_deadletter_after() {
 
 #[tokio::test]
 async fn test_handle_processing_deadline_no_retries_remaining() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -596,40 +481,35 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
 }
 
 #[tokio::test]
-async fn test_handle_processing_deadline_with_processing_attempts_exceeded() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+async fn test_processing_attempts_exceeded() {
+    let store = create_test_store().await;
 
-    let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
-    batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[1].processing_attempts = store.config.max_processing_attempts as i32 - 1;
+    let mut batch = make_activations(3);
+    batch[0].status = InflightActivationStatus::Processing;
+    batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+    batch[0].processing_attempts = store.config.max_processing_attempts as i32 - 1;
+
+    batch[1].status = InflightActivationStatus::Complete;
+    batch[1].added_at += Duration::from_secs(1);
+
+    batch[2].status = InflightActivationStatus::Processing;
+    batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+    batch[2].processing_attempts = store.config.max_processing_attempts as i32 - 1;
 
     assert!(store.store(batch.clone()).await.is_ok());
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (1, 1));
+    assert_eq!(count.unwrap(), (2, 2));
 
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 1).await;
+    assert_count_by_status(&store, InflightActivationStatus::Complete, 1).await;
+    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
 }
 
 #[tokio::test]
 async fn test_remove_completed() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut records = make_activations(3);
     records[0].status = InflightActivationStatus::Complete;
@@ -665,13 +545,7 @@ async fn test_remove_completed() {
 
 #[tokio::test]
 async fn test_remove_completed_multiple_gaps() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut records = make_activations(4);
     // only record 1 can be removed
@@ -714,13 +588,7 @@ async fn test_remove_completed_multiple_gaps() {
 
 #[tokio::test]
 async fn test_handle_failed_tasks() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let mut records = make_activations(4);
     // deadletter
@@ -778,13 +646,7 @@ async fn test_handle_failed_tasks() {
 
 #[tokio::test]
 async fn test_mark_completed() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     let records = make_activations(3);
     assert!(store.store(records.clone()).await.is_ok());
@@ -807,56 +669,8 @@ async fn test_mark_completed() {
 }
 
 #[tokio::test]
-async fn test_handle_processing_attempts() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
-    let mut batch = make_activations(3);
-
-    // Spawn 3 tasks where a complete task is sandwiched between two tasks that have
-    // exceeding the max_processing_attempts.
-    batch[0].processing_attempts = store.config.max_processing_attempts as i32;
-
-    batch[1].status = InflightActivationStatus::Complete;
-    batch[1].added_at += Duration::from_secs(1);
-
-    batch[2].processing_attempts = store.config.max_processing_attempts as i32;
-    batch[2].added_at += Duration::from_secs(2);
-
-    assert!(store.store(batch.clone()).await.is_ok());
-
-    let result = store.handle_processing_attempts().await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 2, "two record should be updated");
-
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
-
-    let failed = store.get_by_id(&batch[0].activation.id).await;
-    assert_eq!(
-        failed.unwrap().unwrap().status,
-        InflightActivationStatus::Failure
-    );
-
-    let failed = store.get_by_id(&batch[2].activation.id).await;
-    assert_eq!(
-        failed.unwrap().unwrap().status,
-        InflightActivationStatus::Failure
-    );
-}
-
-#[tokio::test]
 async fn test_handle_expires_at() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
     let mut batch = make_activations(3);
 
     // All expired tasks should be removed, regardless of order or other tasks.
@@ -874,13 +688,7 @@ async fn test_handle_expires_at() {
 
 #[tokio::test]
 async fn test_clear() {
-    let url = generate_temp_filename();
-    let store = InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
-    )
-    .await
-    .unwrap();
+    let store = create_test_store().await;
 
     #[allow(deprecated)]
     let batch = vec![InflightActivation {

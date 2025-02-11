@@ -13,6 +13,7 @@ use crate::{
     config::Config,
     inflight_activation_store::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
+        InflightActivationStoreConfig,
     },
 };
 use chrono::{Timelike, Utc};
@@ -76,6 +77,18 @@ pub async fn assert_count_by_status(
 /// Create a basic default [`Config`]
 pub fn create_config() -> Arc<Config> {
     Arc::new(Config::default())
+}
+
+/// Create an InflightActivationStore instance
+pub async fn create_test_store() -> InflightActivationStore {
+    let url = generate_temp_filename();
+
+    InflightActivationStore::new(
+        &url,
+        InflightActivationStoreConfig::from_config(&create_integration_config()),
+    )
+    .await
+    .unwrap()
 }
 
 /// Create a Config instance that uses a testing topic
