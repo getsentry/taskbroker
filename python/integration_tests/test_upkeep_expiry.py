@@ -83,7 +83,6 @@ def manage_taskbroker(
                 finished_writing_tasks = True
             time.sleep(1)
 
-        print(finished_writing_tasks)
         if not finished_writing_tasks:
             print(
                 "[taskbroker_0]: Taskbroker was unable to write all tasks to "
