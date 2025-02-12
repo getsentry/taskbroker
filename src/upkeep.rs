@@ -51,7 +51,7 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
 struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
-    remove_at_expired: u64,
+    processing_attempts_exceeded: u64,
     expired: u64,
     deadlettered: u64,
     completed: u64,
@@ -64,7 +64,7 @@ impl UpkeepResults {
     fn empty(&self) -> bool {
         self.retried == 0
             && self.processing_deadline_reset == 0
-            && self.remove_at_expired == 0
+            && self.processing_attempts_exceeded == 0
             && self.expired == 0
             && self.deadlettered == 0
             && self.completed == 0
@@ -84,7 +84,7 @@ pub async fn do_upkeep(
     let mut result_context = UpkeepResults {
         retried: 0,
         processing_deadline_reset: 0,
-        remove_at_expired: 0,
+        processing_attempts_exceeded: 0,
         expired: 0,
         deadlettered: 0,
         completed: 0,
@@ -125,29 +125,22 @@ pub async fn do_upkeep(
     }
 
     // 4. Handle processing deadlines
-    if let Ok(processing_count) = store
+    if let Ok(counts) = store
         .handle_processing_deadline()
         .instrument(info_span!("handle_processing_deadline"))
         .await
     {
-        result_context.processing_deadline_reset = processing_count;
+        result_context.processing_deadline_reset = counts.0;
+        result_context.processing_attempts_exceeded = counts.1;
     }
 
+    // 5. Handle tasks that are past their expires_at deadline
     if let Ok(expired_count) = store
         .handle_expires_at()
         .instrument(info_span!("handle_expires_at"))
         .await
     {
         result_context.expired = expired_count;
-    }
-
-    // 5. Advance state on tasks past remove_at
-    if let Ok(remove_count) = store
-        .handle_remove_at()
-        .instrument(info_span!("handle_remove_at"))
-        .await
-    {
-        result_context.remove_at_expired = remove_count;
     }
 
     // 6. Handle failure state tasks
@@ -208,7 +201,7 @@ pub async fn do_upkeep(
         info!(
             result_context.completed,
             result_context.deadlettered,
-            result_context.remove_at_expired,
+            result_context.processing_attempts_exceeded,
             result_context.retried,
             result_context.pending,
             result_context.processing,
@@ -219,7 +212,8 @@ pub async fn do_upkeep(
 
     metrics::counter!("upkeep.completed").increment(result_context.completed);
     metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
-    metrics::counter!("upkeep.remove_at_expired").increment(result_context.remove_at_expired);
+    metrics::counter!("upkeep.processing_attempts_exceeded")
+        .increment(result_context.processing_attempts_exceeded);
     metrics::counter!("upkeep.retried").increment(result_context.retried);
     metrics::counter!("upkeep.expired").increment(result_context.expired);
 
@@ -258,7 +252,9 @@ mod tests {
     use std::time::Duration;
 
     use crate::{
-        inflight_activation_store::{InflightActivationStatus, InflightActivationStore},
+        inflight_activation_store::{
+            InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+        },
         test_utils::{
             consume_topic, create_config, create_integration_config, create_producer,
             generate_temp_filename, make_activations, reset_topic,
@@ -268,8 +264,13 @@ mod tests {
 
     async fn create_inflight_store() -> Arc<InflightActivationStore> {
         let url = generate_temp_filename();
+        let config = create_integration_config();
 
-        Arc::new(InflightActivationStore::new(&url).await.unwrap())
+        Arc::new(
+            InflightActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
+                .await
+                .unwrap(),
+        )
     }
 
     #[tokio::test]
@@ -431,34 +432,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_past_remove_at_discard() {
+    async fn test_processing_attempts_exceeded_discard() {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].remove_at = Utc::now() - Duration::from_secs(100);
+        batch[0].processing_attempts = config.max_processing_attempts as i32;
 
         batch[1].status = InflightActivationStatus::Complete;
         batch[1].added_at += Duration::from_secs(1);
 
-        batch[2].remove_at = Utc::now() - Duration::from_secs(100);
+        batch[2].processing_attempts = config.max_processing_attempts as i32;
         batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
         let result_context = do_upkeep(config, store.clone(), producer).await;
 
-        assert_eq!(result_context.remove_at_expired, 1); // batch[0] is removed due to remove_at deadline
-        assert_eq!(result_context.discarded, 1); // batch[0] is discarded
-        assert_eq!(result_context.completed, 2); // batch[1] and batch[2] are removed as completed
+        assert_eq!(result_context.processing_attempts_exceeded, 2); // batch[0] and batch[2] are removed due to max processing_attempts exceeded
+        assert_eq!(result_context.discarded, 2); // batch[0] and batch[2] are discarded
+        assert_eq!(result_context.completed, 3); // all three are removed as completed
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Pending)
                 .await
                 .unwrap(),
-            1,
-            "one pending task should remain"
+            0,
+            "zero pending task should remain"
         );
         assert_eq!(
             store
@@ -467,31 +468,6 @@ mod tests {
                 .unwrap(),
             0,
             "complete tasks were removed"
-        );
-
-        assert!(
-            store
-                .get_by_id(&batch[0].activation.id)
-                .await
-                .unwrap()
-                .is_none(),
-            "first task should be removed"
-        );
-        assert!(
-            store
-                .get_by_id(&batch[1].activation.id)
-                .await
-                .unwrap()
-                .is_none(),
-            "second task should be removed"
-        );
-        assert!(
-            store
-                .get_by_id(&batch[2].activation.id)
-                .await
-                .unwrap()
-                .is_some(),
-            "third task should be kept"
         );
     }
 

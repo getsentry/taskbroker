@@ -83,12 +83,10 @@ pub struct Config {
     /// does not have a processing deadline set, this will be used.
     pub max_processing_deadline: usize,
 
-    /// The maximum number of seconds that a TaskActivation
-    /// can be in InflightTaskStore. After this time, activations
-    /// will be removed if they are not complete. This should
-    /// be a multiple of max_processing_deadline to allow
-    /// temporary worker deaths to be resolved.
-    pub remove_deadline: usize,
+    /// The maximum number of times a task can be reset from
+    /// processing back to pending. When this limit is reached,
+    /// the activation will be discarded/deadlettered.
+    pub max_processing_attempts: usize,
 
     /// The frequency at which upkeep tasks are spawned.
     pub upkeep_task_interval_ms: u64,
@@ -120,8 +118,8 @@ impl Default for Config {
             max_pending_count: 2048,
             max_pending_buffer_count: 128,
             max_processing_deadline: 300,
-            remove_deadline: 900,
-            upkeep_task_interval_ms: 200,
+            max_processing_attempts: 3,
+            upkeep_task_interval_ms: 1000,
         }
     }
 }
@@ -223,7 +221,7 @@ mod tests {
                 db_path: ./taskbroker-error.sqlite
                 max_pending_count: 512
                 max_processing_deadline: 1000
-                remove_deadline: 2000
+                max_processing_attempts: 5
             "#,
             )?;
             // Env vars always override config file
@@ -253,7 +251,7 @@ mod tests {
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 512);
             assert_eq!(config.max_processing_deadline, 1000);
-            assert_eq!(config.remove_deadline, 2000);
+            assert_eq!(config.max_processing_attempts, 5);
 
             Ok(())
         });
@@ -263,12 +261,12 @@ mod tests {
     fn test_from_args_env_and_args() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
-            jail.set_env("TASKBROKER_REMOVE_DEADLINE", "2000");
+            jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
 
             let args = Args { config: None };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.log_filter, "error");
-            assert_eq!(config.remove_deadline, 2000);
+            assert_eq!(config.max_processing_attempts, 5);
 
             Ok(())
         });
@@ -278,7 +276,7 @@ mod tests {
     fn test_from_args_env_test() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
-            jail.set_env("TASKBROKER_REMOVE_DEADLINE", "2000");
+            jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
             jail.set_env("TASKBROKER_DEFAULT_METRICS_TAGS", "{key=value}");
 
             let args = Args { config: None };
@@ -291,7 +289,7 @@ mod tests {
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 2048);
             assert_eq!(config.max_processing_deadline, 300);
-            assert_eq!(config.remove_deadline, 2000);
+            assert_eq!(config.max_processing_attempts, 5);
             assert_eq!(
                 config.default_metrics_tags,
                 BTreeMap::from([("key".to_owned(), "value".to_owned())])
