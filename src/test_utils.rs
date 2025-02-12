@@ -7,14 +7,13 @@ use rdkafka::{
     producer::FutureProducer,
     Message,
 };
-use std::ops::Add;
-use std::time::Duration;
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     config::Config,
     inflight_activation_store::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
+        InflightActivationStoreConfig,
     },
 };
 use chrono::{Timelike, Utc};
@@ -51,7 +50,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             partition: 0,
             offset: i as i64,
             added_at: Utc::now(),
-            remove_at: Utc::now().add(Duration::from_secs(5 * 60)),
+            processing_attempts: 0,
             expires_at: None,
             processing_deadline: None,
             at_most_once: false,
@@ -78,6 +77,18 @@ pub async fn assert_count_by_status(
 /// Create a basic default [`Config`]
 pub fn create_config() -> Arc<Config> {
     Arc::new(Config::default())
+}
+
+/// Create an InflightActivationStore instance
+pub async fn create_test_store() -> InflightActivationStore {
+    let url = generate_temp_filename();
+
+    InflightActivationStore::new(
+        &url,
+        InflightActivationStoreConfig::from_config(&create_integration_config()),
+    )
+    .await
+    .unwrap()
 }
 
 /// Create a Config instance that uses a testing topic
