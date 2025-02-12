@@ -40,16 +40,16 @@ where
         Ok(())
     }
 
-    async fn flush(&mut self) -> Result<(), anyhow::Error> {
+    async fn flush(&mut self) -> Result<Option<()>, anyhow::Error> {
         let Some(data) = self.data.take() else {
-            return Ok(());
+            return Ok(None);
         };
         match self.os_stream {
             OsStream::StdOut => println!("{:?}", data),
             OsStream::StdErr => eprintln!("{:?}", data),
         }
         sleep(self.print_duration).await;
-        Ok(())
+        Ok(Some(()))
     }
 
     fn reset(&mut self) {

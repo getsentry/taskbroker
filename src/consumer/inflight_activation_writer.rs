@@ -57,10 +57,22 @@ impl Reducer for InflightActivationWriter {
     }
 
     #[instrument(skip_all)]
-    async fn flush(&mut self) -> Result<Self::Output, anyhow::Error> {
-        let Some(batch) = take(&mut self.batch) else {
-            return Ok(());
+    async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
+        let Some(ref batch) = self.batch else {
+            return Ok(None);
         };
+
+        if self
+            .store
+            .count_pending_activations()
+            .await
+            .expect("Error communicating with activation store")
+            + batch.len()
+            > self.config.max_pending_activations
+        {
+            return Ok(None);
+        }
+
         let lag = Utc::now()
             - batch
                 .iter()
@@ -75,7 +87,7 @@ impl Reducer for InflightActivationWriter {
                 .min_by_key(|item| item.timestamp())
                 .unwrap();
 
-        let res = self.store.store(batch).await?;
+        let res = self.store.store(take(&mut self.batch).unwrap()).await?;
         metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
             .record(lag.num_seconds() as f64);
         metrics::counter!("consumer.inflight_activation_writer.stored")
@@ -86,20 +98,13 @@ impl Reducer for InflightActivationWriter {
             lag.num_seconds()
         );
 
-        Ok(())
+        Ok(Some(()))
     }
 
     fn reset(&mut self) {}
 
     async fn is_full(&self) -> bool {
         self.batch.is_some()
-            || self
-                .store
-                .count_pending_activations()
-                .await
-                .expect("Error communicating with activation store")
-                + self.config.max_buf_len
-                > self.config.max_pending_activations
     }
 
     fn get_reduce_config(&self) -> ReduceConfig {

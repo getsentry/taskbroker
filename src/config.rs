@@ -119,7 +119,7 @@ impl Default for Config {
             max_pending_buffer_count: 128,
             max_processing_deadline: 300,
             max_processing_attempts: 3,
-            upkeep_task_interval_ms: 200,
+            upkeep_task_interval_ms: 1000,
         }
     }
 }

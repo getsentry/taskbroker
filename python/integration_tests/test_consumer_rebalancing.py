@@ -212,6 +212,7 @@ Running test with the following configuration:
         )
 
     total_row_count = 0
+    over_capacity = []
     print("\n======== Number of rows in each taskbroker ========")
     for i, config in enumerate(taskbroker_configs.values()):
         query = (
@@ -221,9 +222,10 @@ Running test with the following configuration:
         res = cur.execute(query).fetchall()[0][0]
         print(
             f"Consumer {i}: {res}, "
-            f"{str(int(res / max_pending_count * 100))}% of capacity"
+            f"{str(round(float(res) / float(max_pending_count) * 100, 2))}% of capacity"
         )
         total_row_count += res
+        over_capacity.append(res > max_pending_count)
 
     taskbrokers_have_data = total_row_count > num_messages // 3
 
@@ -249,6 +251,9 @@ Running test with the following configuration:
     if not all([row[3] == 0 for row in row_count]):
         print("\nTest failed! Got duplicate/missing kafka messages in sqlite")
 
+    if any(over_capacity):
+        print("\nTest failed! Got more messages than max_pending_count in sqlite")
+
     if not taskbrokers_have_data:
         print("\nTest failed! Lower than expected amount of kafka messages in sqlite")
 
@@ -258,5 +263,6 @@ Running test with the following configuration:
             print(log)
 
     assert all([row[3] == 0 for row in row_count])
+    assert not any(over_capacity)
     assert taskbrokers_have_data
     assert not taskbroker_error_logs
