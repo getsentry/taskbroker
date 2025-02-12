@@ -44,14 +44,14 @@ impl Reducer for InflightActivationBatcher {
         Ok(())
     }
 
-    async fn flush(&mut self) -> Result<Self::Output, anyhow::Error> {
+    async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
         if self.buffer.is_empty() {
-            return Ok(vec![]);
+            return Ok(None);
         }
-        Ok(replace(
+        Ok(Some(replace(
             &mut self.buffer,
             Vec::with_capacity(self.config.max_buf_len),
-        ))
+        )))
     }
 
     fn reset(&mut self) {
