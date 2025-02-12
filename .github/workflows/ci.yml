@@ -144,8 +144,8 @@ jobs:
         run: |
           make test-upkeep-retry
   
-  upkeep-dlq-integration-test:
-    name: Upkeep DLQ integration test
+  upkeep-expiry-integration-test:
+    name: Upkeep expiry integration test
     runs-on: ubuntu-latest
 
     steps:
@@ -164,6 +164,6 @@ jobs:
         with:
           key: ${{ github.job }}
 
-      - name: Run upkeep DLQ integration test
+      - name: Run upkeep expiry integration test
         run: |
-          make test-upkeep-dlq
+          make test-upkeep-expiry
