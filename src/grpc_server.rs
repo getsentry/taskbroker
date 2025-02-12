@@ -130,3 +130,6 @@ impl ConsumerService for MyConsumerService {
         res
     }
 }
+
+#[cfg(test)]
+mod tests;

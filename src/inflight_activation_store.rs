@@ -550,4 +550,4 @@ impl InflightActivationStore {
 }
 
 #[cfg(test)]
-mod store_tests;
+mod tests;
