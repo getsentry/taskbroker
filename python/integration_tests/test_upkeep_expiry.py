@@ -104,8 +104,10 @@ def manage_taskbroker(
             if complete:
                 print("[taskbroker_0]: Upkeep has completed all tasks.")
                 break
-            print(f"[taskbroker_0]: Waiting for upkeep to complete all tasks. "
-                  f"Sqlite count: {task_count_in_sqlite}")
+            print(
+                f"[taskbroker_0]: Waiting for upkeep to complete all tasks. "
+                f"Sqlite count: {task_count_in_sqlite}"
+            )
 
             time.sleep(3)
             cur_time = time.time()
@@ -242,7 +244,8 @@ Running test with the following configuration:
 
         # Create taskbroker thread
         results_log_path = str(
-            TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_expiry_results.log"
+            TEST_OUTPUT_PATH
+            / f"taskbroker_0_{curr_time}_test_upkeep_expiry_results.log"
         )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
@@ -250,7 +253,10 @@ Running test with the following configuration:
                 taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
-                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_expiry.log"),
+                str(
+                    TEST_OUTPUT_PATH
+                    / f"taskbroker_0_{curr_time}_test_upkeep_expiry.log"
+                ),
                 results_log_path,
                 taskbroker_timeout,
                 num_messages,
