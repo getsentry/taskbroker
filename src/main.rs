@@ -17,13 +17,15 @@ use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServe
 use taskbroker::config::Config;
 use taskbroker::consumer::{
     admin::create_missing_topics,
-    deserialize_activation::{self, DeserializeConfig},
+    deserialize_activation::{self},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
 use taskbroker::grpc_server::MyConsumerService;
-use taskbroker::inflight_activation_store::InflightActivationStore;
+use taskbroker::inflight_activation_store::{
+    InflightActivationStore, InflightActivationStoreConfig,
+};
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
@@ -50,7 +52,13 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
-    let store = Arc::new(InflightActivationStore::new(&config.db_path).await?);
+    let store = Arc::new(
+        InflightActivationStore::new(
+            &config.db_path,
+            InflightActivationStoreConfig::from_config(&config),
+        )
+        .await?,
+    );
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
@@ -85,9 +93,7 @@ async fn main() -> Result<(), Error> {
                 &consumer_config.kafka_consumer_config(),
                 processing_strategy!({
                     map:
-                        deserialize_activation::new(
-                            DeserializeConfig::from_config(&consumer_config)
-                        ),
+                        deserialize_activation::new(),
 
                     reduce:
                         InflightActivationBatcher::new(

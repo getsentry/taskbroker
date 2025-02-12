@@ -5,18 +5,38 @@ use sentry_protos::taskbroker::v1::{GetTaskRequest, SetTaskStatusRequest};
 use std::sync::Arc;
 use tonic::{Code, Request};
 
+use taskbroker::config::Config;
 use taskbroker::grpc_server::MyConsumerService;
-use taskbroker::inflight_activation_store::InflightActivationStore;
+use taskbroker::inflight_activation_store::{
+    InflightActivationStore, InflightActivationStoreConfig,
+};
 
 fn generate_temp_filename() -> String {
     let mut rng = rand::thread_rng();
     format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.gen::<u64>())
 }
 
+pub fn create_integration_config() -> Arc<Config> {
+    let config = Config {
+        kafka_topic: "taskbroker-test".into(),
+        kafka_auto_offset_reset: "earliest".into(),
+        ..Config::default()
+    };
+
+    Arc::new(config)
+}
+
 #[tokio::test]
 async fn test_get_task() {
     let url = generate_temp_filename();
-    let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
+    let store = Arc::new(
+        InflightActivationStore::new(
+            &url,
+            InflightActivationStoreConfig::from_config(&create_integration_config()),
+        )
+        .await
+        .unwrap(),
+    );
     let service = MyConsumerService { store };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
@@ -30,7 +50,14 @@ async fn test_get_task() {
 #[allow(deprecated)]
 async fn test_set_task_status() {
     let url = generate_temp_filename();
-    let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
+    let store = Arc::new(
+        InflightActivationStore::new(
+            &url,
+            InflightActivationStoreConfig::from_config(&create_integration_config()),
+        )
+        .await
+        .unwrap(),
+    );
     let service = MyConsumerService { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -47,7 +74,14 @@ async fn test_set_task_status() {
 #[allow(deprecated)]
 async fn test_set_task_status_invalid() {
     let url = generate_temp_filename();
-    let store = Arc::new(InflightActivationStore::new(&url).await.unwrap());
+    let store = Arc::new(
+        InflightActivationStore::new(
+            &url,
+            InflightActivationStoreConfig::from_config(&create_integration_config()),
+        )
+        .await
+        .unwrap(),
+    );
     let service = MyConsumerService { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
