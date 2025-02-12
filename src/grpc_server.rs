@@ -96,8 +96,9 @@ impl ConsumerService for MyConsumerService {
                 if execution_remaining < 0 {
                     execution_remaining = 0;
                 }
-                let execution_time = inflight_activation.activation.processing_deadline_duration
-                    - (execution_remaining * 1000) as u64;
+                let execution_time = (inflight_activation.activation.processing_deadline_duration
+                    * 1000)
+                    - execution_remaining as u64;
                 metrics::histogram!("task_execution.completion_time", "namespace" => inflight_activation.activation.namespace.clone(),
                     "taskname" => inflight_activation.activation.taskname.clone()).record(execution_time as f64);
             }
