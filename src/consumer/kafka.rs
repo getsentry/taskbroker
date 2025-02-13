@@ -37,7 +37,7 @@ use tokio::{
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::{either::Either, sync::CancellationToken};
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 
 pub async fn start_consumer(
     topics: &[&str],
@@ -124,6 +124,13 @@ impl ConsumerContext for KafkaContext {
         match rebalance {
             Rebalance::Assign(tpl) => {
                 debug!("Got pre-rebalance callback, kind: Assign");
+                if tpl.count() == 0 {
+                    warn!(
+                        "Got partition assignment with no partitions, \
+                        this is likely due to there being more consumers than partitions"
+                    );
+                    return;
+                }
                 let _ = self.event_sender.send((
                     Event::Assign(tpl.to_topic_map().keys().cloned().collect()),
                     rendezvous_sender,
@@ -134,6 +141,13 @@ impl ConsumerContext for KafkaContext {
             }
             Rebalance::Revoke(tpl) => {
                 debug!("Got pre-rebalance callback, kind: Revoke");
+                if tpl.count() == 0 {
+                    warn!(
+                        "Got partition revocation with no partitions, \
+                        this is likely due to there being more consumers than partitions"
+                    );
+                    return;
+                }
                 let _ = self.event_sender.send((
                     Event::Revoke(tpl.to_topic_map().keys().cloned().collect()),
                     rendezvous_sender,
