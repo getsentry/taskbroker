@@ -258,7 +258,14 @@ impl InflightActivationStore {
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
-        Ok(query.execute(&self.sqlite_pool).await?.into())
+        let result = Ok(query.execute(&self.sqlite_pool).await?.into());
+
+        // Sync the WAL into the main database so we don't lose data on host failure.
+        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+            .execute(&self.sqlite_pool)
+            .await?;
+
+        result
     }
 
     pub async fn get_pending_activation(
