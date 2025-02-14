@@ -7,7 +7,10 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActi
 use sqlx::{
     migrate::MigrateDatabase,
     pool::PoolOptions,
-    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult, SqliteRow},
+    sqlite::{
+        SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult, SqliteRow,
+        SqliteSynchronous,
+    },
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
 
@@ -15,12 +18,17 @@ use crate::config::Config;
 
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
+    pub sync_mode: SqliteSynchronous,
 }
 
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_processing_attempts: config.max_processing_attempts,
+            sync_mode: config
+                .db_sync_mode
+                .parse()
+                .expect("Unable to parse db_sync_mode"),
         }
     }
 }
@@ -185,6 +193,7 @@ impl InflightActivationStore {
 
         let conn_options = SqliteConnectOptions::from_str(url)?
             .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(config.sync_mode)
             .disable_statement_logging();
 
         let sqlite_pool = PoolOptions::<Sqlite>::new()
