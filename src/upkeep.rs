@@ -203,6 +203,7 @@ pub async fn do_upkeep(
             result_context.deadlettered,
             result_context.discarded,
             result_context.processing_attempts_exceeded,
+            result_context.expired,
             result_context.retried,
             result_context.pending,
             result_context.processing,
