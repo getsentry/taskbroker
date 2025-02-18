@@ -68,6 +68,9 @@ pub struct Config {
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
+    /// The maximum number of messages to buffer in the rdkafka producer.
+    pub max_rdkafka_producer_buffer: u64,
+
     /// The path to the sqlite database
     pub db_path: String,
 
@@ -117,6 +120,7 @@ impl Default for Config {
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
+            max_rdkafka_producer_buffer: 100000,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             db_sync_mode: "normal".to_owned(),
             max_pending_count: 2048,
@@ -167,7 +171,17 @@ impl Config {
     /// Convert the application Config into rdkafka::ClientConfig
     pub fn kafka_producer_config(&self) -> ClientConfig {
         let mut new_config = ClientConfig::new();
-        let config = new_config.set("bootstrap.servers", self.kafka_cluster.clone());
+        let config = new_config
+            .set("bootstrap.servers", self.kafka_cluster.clone())
+            // Ensure the buffer gets flushed more frequently than upkeep runs
+            .set(
+                "queue.buffering.max.ms",
+                (self.upkeep_task_interval_ms / 2).to_string(),
+            )
+            .set(
+                "queue.buffering.max.messages",
+                self.max_rdkafka_producer_buffer.to_string(),
+            );
         config.clone()
     }
 }
