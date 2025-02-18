@@ -201,6 +201,7 @@ pub async fn do_upkeep(
         info!(
             result_context.completed,
             result_context.deadlettered,
+            result_context.discarded,
             result_context.processing_attempts_exceeded,
             result_context.retried,
             result_context.pending,
@@ -212,6 +213,7 @@ pub async fn do_upkeep(
 
     metrics::counter!("upkeep.completed").increment(result_context.completed);
     metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
+    metrics::counter!("upkeep.discarded").increment(result_context.discarded);
     metrics::counter!("upkeep.processing_attempts_exceeded")
         .increment(result_context.processing_attempts_exceeded);
     metrics::counter!("upkeep.retried").increment(result_context.retried);
