@@ -178,14 +178,14 @@ impl Config {
         let config = new_config
             .set("bootstrap.servers", self.kafka_cluster.clone())
             // Ensure the buffer gets flushed more frequently than upkeep runs
+            // .set(
+            //     "queue.buffering.max.ms",
+            //     (self.upkeep_task_interval_ms / 2).to_string(),
+            // )
             .set(
-                "queue.buffering.max.ms",
-                (self.upkeep_task_interval_ms / 2).to_string(),
+                "queue.buffering.max.messages",
+                self.max_rdkafka_producer_buffer.to_string(),
             );
-        // .set(
-        //     "queue.buffering.max.messages",
-        //     self.max_rdkafka_producer_buffer.to_string(),
-        // );
         config.clone()
     }
 }
