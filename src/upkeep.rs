@@ -1,4 +1,5 @@
 use chrono::{Timelike, Utc};
+use futures::{stream::FuturesUnordered, StreamExt};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::{
@@ -10,7 +11,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{select, task::JoinSet, time};
+use tokio::{select, time};
 use tracing::{error, info, info_span, instrument, Instrument};
 use uuid::Uuid;
 
@@ -100,30 +101,30 @@ pub async fn do_upkeep(
         .await
     {
         // 2. Append retries to kafka
-        let futures = retries
+        let acks = retries
             .into_iter()
             .map(|inflight| {
                 let producer = producer.clone();
                 let config = config.clone();
                 async move {
                     let serialized = create_retry_activation(&inflight).encode_to_vec();
-                    let send_result = producer
+                    let ack = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
                                 .payload(&serialized),
                             Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                         )
                         .await;
-                    match send_result {
+                    match ack {
                         Ok(_) => Ok(inflight.activation.id),
                         Err(err) => Err(err),
                     }
                 }
             })
-            .collect::<JoinSet<_>>();
+            .collect::<FuturesUnordered<_>>();
 
-        let ids = futures
-            .join_all()
+        let ids = acks
+            .collect::<Vec<_>>()
             .await
             .into_iter()
             .filter_map(|result| match result {
@@ -133,7 +134,7 @@ pub async fn do_upkeep(
                     None
                 }
             })
-            .collect::<Vec<_>>();
+            .collect();
 
         // 3. Update retry tasks to complete
         if let Ok(retried_count) = store.mark_completed(ids).await {
