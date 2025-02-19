@@ -181,11 +181,11 @@ impl Config {
             .set(
                 "queue.buffering.max.ms",
                 (self.upkeep_task_interval_ms / 2).to_string(),
-            )
-            .set(
-                "queue.buffering.max.messages",
-                self.max_rdkafka_producer_buffer.to_string(),
             );
+        // .set(
+        //     "queue.buffering.max.messages",
+        //     self.max_rdkafka_producer_buffer.to_string(),
+        // );
         config.clone()
     }
 }
