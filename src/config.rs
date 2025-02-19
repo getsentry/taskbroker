@@ -38,6 +38,10 @@ pub struct Config {
     /// The port to bind the grpc service to
     pub grpc_port: u32,
 
+    /// A list of shared secrets that clients use to authenticate.
+    /// We support a list of secrets to allow for key rotation.
+    pub grpc_shared_secret: Vec<String>,
+
     /// comma separated list of kafka brokers to connect to
     pub kafka_cluster: String,
 
@@ -102,6 +106,7 @@ impl Default for Config {
             log_format: LogFormat::Text,
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
+            grpc_shared_secret: vec![],
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             default_metrics_tags: Default::default(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),

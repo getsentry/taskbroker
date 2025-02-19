@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use taskbroker::consumer::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
-use taskbroker::grpc_middleware::MetricsLayer;
+use taskbroker::grpc_middleware::{MetricsLayer, AuthLayer};
 use taskbroker::upkeep::upkeep;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
@@ -127,6 +127,7 @@ async fn main() -> Result<(), Error> {
 
             let layers = tower::ServiceBuilder::new()
                 .layer(MetricsLayer::default())
+                .layer(AuthLayer::new(&grpc_config))
                 .into_inner();
 
             let server = Server::builder()
