@@ -1,6 +1,5 @@
-use anyhow::{anyhow, Error};
 use chrono::{Timelike, Utc};
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{future::join_all, stream::FuturesUnordered, StreamExt};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::{
@@ -18,7 +17,9 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    inflight_activation_store::{InflightActivationStatus, InflightActivationStore},
+    inflight_activation_store::{
+        InflightActivation, InflightActivationStatus, InflightActivationStore,
+    },
 };
 
 /// The upkeep task that periodically performs upkeep
@@ -74,47 +75,6 @@ impl UpkeepResults {
     }
 }
 
-async fn send_to_kafka(
-    producer: Arc<FutureProducer>,
-    topic: &str,
-    timeout_ms: u64,
-    activations: Vec<(String, TaskActivation)>,
-) -> Result<Vec<String>, Error> {
-    let deliveries = activations
-        .into_iter()
-        .map(|(id, activation)| {
-            let producer = producer.clone();
-            async move {
-                let serialized = activation.encode_to_vec();
-                let delivery = producer
-                    .send(
-                        FutureRecord::<(), Vec<u8>>::to(topic).payload(&serialized),
-                        Timeout::After(Duration::from_millis(timeout_ms)),
-                    )
-                    .await;
-                match delivery {
-                    Ok(_) => Ok(id),
-                    Err((err, _msg)) => Err(anyhow!(err.to_string())),
-                }
-            }
-        })
-        .collect::<FuturesUnordered<_>>();
-
-    let ids = deliveries
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .filter_map(|result| match result {
-            Ok(id) => Some(id),
-            Err(err) => {
-                error!("retry.publish.failure {}", err);
-                None
-            }
-        })
-        .collect();
-    Ok(ids)
-}
-
 #[instrument(name = "consumer::do_upkeep", skip(store, config, producer))]
 pub async fn do_upkeep(
     config: Arc<Config>,
@@ -140,24 +100,41 @@ pub async fn do_upkeep(
         .instrument(info_span!("get_retry_activations"))
         .await
     {
-        let activations = retries
+        // 2. Append retries to kafka
+        let deliveries = retries
             .into_iter()
-            .map(|activation| (activation.id.clone(), create_retry_activation(&activation)))
+            .map(|inflight| {
+                let producer = producer.clone();
+                let config = config.clone();
+                async move {
+                    let serialized = create_retry_activation(&inflight).encode_to_vec();
+                    let delivery = producer
+                        .send(
+                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
+                                .payload(&serialized),
+                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                        )
+                        .await;
+                    match delivery {
+                        Ok(_) => Ok(inflight.activation.id),
+                        Err(err) => Err(err),
+                    }
+                }
+            })
+            .collect::<FuturesUnordered<_>>();
+
+        let ids = deliveries
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(|result| match result {
+                Ok(id) => Some(id),
+                Err((err, _msg)) => {
+                    error!("retry.publish.failure {}", err);
+                    None
+                }
+            })
             .collect();
-        let ids = match send_to_kafka(
-            producer.clone(),
-            &config.kafka_topic,
-            config.kafka_send_timeout_ms,
-            activations,
-        )
-        .await
-        {
-            Ok(ids) => ids,
-            Err(err) => {
-                error!("retry.publish.failure {}", err);
-                vec![]
-            }
-        };
 
         // 3. Update retry tasks to complete
         if let Ok(retried_count) = store.mark_completed(ids).await {
@@ -191,25 +168,42 @@ pub async fn do_upkeep(
         .await
     {
         result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
-        let activations = failed_tasks_forwarder
+        let deadletters = failed_tasks_forwarder
             .to_deadletter
             .into_iter()
-            .map(|activation| (activation.id.clone(), activation))
+            .map(|activation| {
+                let producer = producer.clone();
+                let config = config.clone();
+                async move {
+                    let payload = activation.encode_to_vec();
+                    let delivery = producer
+                        .send(
+                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
+                                .payload(&payload),
+                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                        )
+                        .await;
+
+                    match delivery {
+                        Ok(_) => Ok(activation.id),
+                        Err(err) => Err(err),
+                    }
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Submit deadlettered tasks to dlq.
+        let ids = join_all(deadletters)
+            .await
+            .into_iter()
+            .filter_map(|result| match result {
+                Ok(id) => Some(id),
+                Err((err, _msg)) => {
+                    error!("deadletter.publish.failure {}", err);
+                    None
+                }
+            })
             .collect();
-        let ids = match send_to_kafka(
-            producer.clone(),
-            &config.kafka_deadletter_topic,
-            config.kafka_send_timeout_ms,
-            activations,
-        )
-        .await
-        {
-            Ok(ids) => ids,
-            Err(err) => {
-                error!("deadletter.publish.failure {}", err);
-                vec![]
-            }
-        };
 
         // 7. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
@@ -271,8 +265,8 @@ pub async fn do_upkeep(
 /// Create a new activation that is a 'retry' of the passed inflight_activation
 /// The retry_state.attempts is advanced as part of the retry state machine.
 #[instrument(skip_all)]
-fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
-    let mut new_activation = activation.clone();
+fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActivation {
+    let mut new_activation = inflight_activation.activation.clone();
 
     let now = Utc::now();
     new_activation.id = Uuid::new_v4().into();
