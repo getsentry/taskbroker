@@ -155,7 +155,7 @@ where
         // - Will also need the custom future to make a response
         let future = self.inner.call(req);
         AuthResponseFuture {
-            inner: future,
+            inner: AuthResponseKind::Success { future },
         }
     }
 }
@@ -163,7 +163,7 @@ where
 #[pin_project]
 pub struct AuthResponseFuture<F> {
     #[pin]
-    inner: F,
+    inner: AuthResponseKind<F>,
 }
 
 impl<F, E> Future for AuthResponseFuture<F>
@@ -173,8 +173,18 @@ where
     type Output = F::Output;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.project().inner.poll(cx)
+        match self.project().inner.project() {
+            AuthResponseKindProj::Success { future } => future.poll(cx),
+        }
     }
+}
+
+#[pin_project(project = AuthResponseKindProj)]
+enum AuthResponseKind<F> {
+    Success {
+        #[pin]
+        future: F,
+    },
 }
 
 /*
