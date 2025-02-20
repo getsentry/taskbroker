@@ -101,21 +101,21 @@ pub async fn do_upkeep(
         .await
     {
         // 2. Append retries to kafka
-        let acks = retries
+        let deliveries = retries
             .into_iter()
             .map(|inflight| {
                 let producer = producer.clone();
                 let config = config.clone();
                 async move {
                     let serialized = create_retry_activation(&inflight).encode_to_vec();
-                    let ack = producer
+                    let delivery = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
                                 .payload(&serialized),
                             Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                         )
                         .await;
-                    match ack {
+                    match delivery {
                         Ok(_) => Ok(inflight.activation.id),
                         Err(err) => Err(err),
                     }
@@ -123,7 +123,7 @@ pub async fn do_upkeep(
             })
             .collect::<FuturesUnordered<_>>();
 
-        let ids = acks
+        let ids = deliveries
             .collect::<Vec<_>>()
             .await
             .into_iter()
