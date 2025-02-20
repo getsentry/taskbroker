@@ -8,7 +8,7 @@ use std::time::Instant;
 use http::HeaderMap;
 
 use pin_project::pin_project;
-use tonic::body::BoxBody;
+use tonic::body::{empty_body, BoxBody};
 use tower::{Layer, Service};
 
 use crate::config::Config;
@@ -95,30 +95,30 @@ pub struct AuthService<Inner> {
 }
 
 impl<Inner> AuthService<Inner> {
+    /// Validate the request signature using the path + header map
+    /// Currently only the path is used in signing, but the request body should participate as
+    /// well to prevent replay attacks as paths are relatively fixed.
     pub fn validate_signature(&self, path: &str, headers: &HeaderMap) -> Result<(), Error> {
         if self.shared_secret.is_empty() {
             return Ok(());
         }
         let header_val = match headers.get("sentry-signature") {
             Some(header_val) => {
-                header_val.to_str().unwrap_or("").as_bytes()
+                // header value is hex encoded
+                let header_str = header_val.to_str().unwrap_or("");
+                hex::decode(header_str).unwrap_or(vec![])
             },
             None => {
                 return Err(anyhow!("Missing sentry-signature header"));
             }
         };
-        let mut success = false;
+        // Check all the possible keys in case we are rotating secrets
         for possible_key in &self.shared_secret {
             let mut hmac = HmacSha256::new_from_slice(possible_key.as_bytes()).unwrap();
             hmac.update(path.as_bytes());
-            let hmac_bytes: &[u8] = &hmac.finalize().into_bytes();
-            if hmac_bytes == header_val {
-                success = true;
-                break;
+            if let Ok(_) = hmac.verify_slice(header_val.as_slice()) {
+                return Ok(());
             }
-        }
-        if success {
-            return Ok(());
         }
         return Err(anyhow!("Invalid request signature"));
     }
@@ -140,26 +140,24 @@ where
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
         let headers = req.headers();
         let path = req.uri().path();
-
-        let auth_res = self.validate_signature(path, headers);
-        if let Err(e) = auth_res {
-            println!("Authentication failed {:?}", e);
-        }
-
-        // TODO remove all the custom future stuff temorarily
-        // get things working without auth first.
-        // - Then add in the custom future and have wrap
-        // the future from inner.call
-        // - Then add in the enum and get success working
-        // - Then add unauthenticated case to the enum + future
-        // - Will also need the custom future to make a response
-        let future = self.inner.call(req);
-        AuthResponseFuture {
-            inner: AuthResponseKind::Success { future },
+        match self.validate_signature(path, headers) {
+            Ok(_) => {
+                let future = self.inner.call(req);
+                AuthResponseFuture {
+                    inner: AuthResponseKind::Success { future },
+                }
+            },
+            Err(err) => {
+                AuthResponseFuture {
+                    inner: AuthResponseKind::Error { message: err.to_string() },
+                }
+            }
         }
     }
 }
 
+// Define a custom Future because Tower requires a Future to be returned
+// and the tonic response futures will not let us return an error response.
 #[pin_project]
 pub struct AuthResponseFuture<F> {
     #[pin]
@@ -175,44 +173,26 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project().inner.project() {
             AuthResponseKindProj::Success { future } => future.poll(cx),
-        }
-    }
-}
+            AuthResponseKindProj::Error { message: _message } => {
+                // let status = tonic::Status::unauthenticated(message.clone());
+                let body = empty_body();
+                let mut response = http::Response::new(body);
+                *response.status_mut() = http::StatusCode::UNAUTHORIZED;
 
-#[pin_project(project = AuthResponseKindProj)]
-enum AuthResponseKind<F> {
-    Success {
-        #[pin]
-        future: F,
-    },
-}
-
-/*
-#[derive(Debug)]
-#[pin_project(project = AuthResponseKindProj)]
-enum AuthResponseKind<F> {
-    Success {
-        #[pin]
-        future: F,
-    },
-    Unauthenticated {
-        error: Option<http::Response<BoxBody>>
-    }
-}
-
-impl<F, E> Future for AuthResponseFuture<F>
-where
-    F: Future<Output = Result<http::Response<BoxBody>, E>>,
-{
-    type Output = Result<http::Response<BoxBody>, E>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.project().inner.project() {
-            AuthResponseKindProj::Success { future } => future.poll(cx),
-            AuthResponseKindProj::Unauthenticated { error } => {
-                Poll::Ready(Ok(error.take().unwrap()))
+                Poll::Ready(Ok(response))
+                // Poll::Ready(Err(status))
             }
         }
     }
 }
-*/
+
+#[pin_project(project = AuthResponseKindProj)]
+enum AuthResponseKind<F> {
+    Success {
+        #[pin]
+        future: F,
+    },
+    Error {
+        message: String,
+    }
+}
