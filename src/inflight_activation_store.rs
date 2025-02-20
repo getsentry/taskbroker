@@ -18,19 +18,12 @@ use crate::config::Config;
 
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
-    pub sync_mode: SqliteSynchronous,
-    pub checkpoint_mode: String,
 }
 
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_processing_attempts: config.max_processing_attempts,
-            sync_mode: config
-                .db_sync_mode
-                .parse()
-                .expect("Unable to parse db_sync_mode"),
-            checkpoint_mode: config.db_checkpoint_mode.clone(),
         }
     }
 }
@@ -195,7 +188,7 @@ impl InflightActivationStore {
 
         let conn_options = SqliteConnectOptions::from_str(url)?
             .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(config.sync_mode)
+            .synchronous(SqliteSynchronous::Normal)
             .disable_statement_logging();
 
         let sqlite_pool = PoolOptions::<Sqlite>::new()
@@ -263,7 +256,7 @@ impl InflightActivationStore {
         let result = Ok(query.execute(&self.sqlite_pool).await?.into());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
-        sqlx::query(format!("PRAGMA wal_checkpoint({})", self.config.checkpoint_mode).as_str())
+        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
             .execute(&self.sqlite_pool)
             .await?;
 
