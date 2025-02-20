@@ -1,4 +1,5 @@
 use chrono::{Timelike, Utc};
+use futures::{stream::FuturesUnordered, StreamExt};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::{
@@ -100,23 +101,40 @@ pub async fn do_upkeep(
         .await
     {
         // 2. Append retries to kafka
-        let mut ids: Vec<String> = vec![];
-        for inflight in retries {
-            let retry_activation = create_retry_activation(&inflight);
-            let payload = retry_activation.encode_to_vec();
-            let message = FutureRecord::<(), _>::to(&config.kafka_topic).payload(&payload);
-            let send_result = producer
-                .send(
-                    message,
-                    Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                )
-                .await;
-            if let Err((err, _msg)) = send_result {
-                error!("retry.publish.failure {}", err);
-            }
+        let deliveries = retries
+            .into_iter()
+            .map(|inflight| {
+                let producer = producer.clone();
+                let config = config.clone();
+                async move {
+                    let serialized = create_retry_activation(&inflight).encode_to_vec();
+                    let delivery = producer
+                        .send(
+                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
+                                .payload(&serialized),
+                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                        )
+                        .await;
+                    match delivery {
+                        Ok(_) => Ok(inflight.activation.id),
+                        Err(err) => Err(err),
+                    }
+                }
+            })
+            .collect::<FuturesUnordered<_>>();
 
-            ids.push(inflight.activation.id);
-        }
+        let ids = deliveries
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(|result| match result {
+                Ok(id) => Some(id),
+                Err((err, _msg)) => {
+                    error!("retry.publish.failure {}", err);
+                    None
+                }
+            })
+            .collect();
 
         // 3. Update retry tasks to complete
         if let Ok(retried_count) = store.mark_completed(ids).await {
