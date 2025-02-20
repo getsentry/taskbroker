@@ -328,9 +328,8 @@ async fn test_get_retry_activations() {
 
     let retries = store.get_retry_activations().await.unwrap();
     assert_eq!(retries.len(), 2);
-    for record in retries.iter() {
-        assert_eq!(record.status, InflightActivationStatus::Retry);
-    }
+    assert_eq!(retries[0].id, "id_0");
+    assert_eq!(retries[1].id, "id_1");
 }
 
 #[tokio::test]

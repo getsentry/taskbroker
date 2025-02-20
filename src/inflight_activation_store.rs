@@ -363,14 +363,17 @@ impl InflightActivationStore {
         Ok(())
     }
 
-    pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
+    pub async fn get_retry_activations(&self) -> Result<Vec<TaskActivation>, Error> {
         Ok(
-            sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE status = $1")
+            sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
                 .bind(InflightActivationStatus::Retry)
                 .fetch_all(&self.sqlite_pool)
                 .await?
                 .into_iter()
-                .map(|row: TableRow| row.into())
+                .map(|record: SqliteRow| {
+                    let activation_data: &[u8] = record.get("activation");
+                    TaskActivation::decode(activation_data).unwrap()
+                })
                 .collect(),
         )
     }
