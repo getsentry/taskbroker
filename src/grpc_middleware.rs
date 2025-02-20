@@ -8,8 +8,9 @@ use std::time::Instant;
 use http::HeaderMap;
 
 use pin_project::pin_project;
-use tonic::body::{empty_body, BoxBody};
+use tonic::body::BoxBody;
 use tower::{Layer, Service};
+use tracing::error;
 
 use crate::config::Config;
 
@@ -173,14 +174,15 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project().inner.project() {
             AuthResponseKindProj::Success { future } => future.poll(cx),
-            AuthResponseKindProj::Error { message: _message } => {
-                // let status = tonic::Status::unauthenticated(message.clone());
-                let body = empty_body();
-                let mut response = http::Response::new(body);
-                *response.status_mut() = http::StatusCode::UNAUTHORIZED;
+            AuthResponseKindProj::Error { message } => {
+                // In the event of an authentication error, we return a error response, 
+                // and log the error. There should *never* be authentication errors in production.
+                error!("GRPC Authentication error: {}", message);
+
+                let status = tonic::Status::unauthenticated(message.clone());
+                let response = status.into_http();
 
                 Poll::Ready(Ok(response))
-                // Poll::Ready(Err(status))
             }
         }
     }
