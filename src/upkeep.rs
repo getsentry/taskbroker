@@ -1,5 +1,5 @@
 use chrono::{Timelike, Utc};
-use futures::{future::join_all, stream::FuturesUnordered, StreamExt};
+use futures::{stream::FuturesUnordered, StreamExt};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::{
@@ -190,10 +190,11 @@ pub async fn do_upkeep(
                     }
                 }
             })
-            .collect::<Vec<_>>();
+            .collect::<FuturesUnordered<_>>();
 
         // Submit deadlettered tasks to dlq.
-        let ids = join_all(deadletters)
+        let ids = deadletters
+            .collect::<Vec<_>>()
             .await
             .into_iter()
             .filter_map(|result| match result {
