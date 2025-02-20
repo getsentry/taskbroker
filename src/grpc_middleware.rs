@@ -1,11 +1,14 @@
 use anyhow::{anyhow, Error};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use tonic::transport::channel::ResponseFuture;
+use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use http::HeaderMap;
+
+use pin_project::pin_project;
+use tonic::body::BoxBody;
 use tower::{Layer, Service};
 
 use crate::config::Config;
@@ -77,31 +80,38 @@ impl AuthLayer {
     }
 }
 
-impl <S> Layer<S> for AuthLayer {
-    type Service = AuthService<S>;
+impl <Inner> Layer<Inner> for AuthLayer {
+    type Service = AuthService<Inner>;
 
-    fn layer(&self, service: S) -> Self::Service {
+    fn layer(&self, service: Inner) -> Self::Service {
         AuthService { inner: service, shared_secret: self.shared_secret.clone() }
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct AuthService<S> {
-    inner: S,
+pub struct AuthService<Inner> {
+    inner: Inner,
     shared_secret: Vec<String>,
 }
 
-impl<S> AuthService<S> {
+impl<Inner> AuthService<Inner> {
     pub fn validate_signature(&self, path: &str, headers: &HeaderMap) -> Result<(), Error> {
         if self.shared_secret.is_empty() {
             return Ok(());
         }
-        let header_val = headers.get("sentry-signature").unwrap_or("").as_bytes();
+        let header_val = match headers.get("sentry-signature") {
+            Some(header_val) => {
+                header_val.to_str().unwrap_or("").as_bytes()
+            },
+            None => {
+                return Err(anyhow!("Missing sentry-signature header"));
+            }
+        };
         let mut success = false;
         for possible_key in &self.shared_secret {
             let mut hmac = HmacSha256::new_from_slice(possible_key.as_bytes()).unwrap();
             hmac.update(path.as_bytes());
-            let hmac_bytes = hmac.finalize().into_bytes();
+            let hmac_bytes: &[u8] = &hmac.finalize().into_bytes();
             if hmac_bytes == header_val {
                 success = true;
                 break;
@@ -114,44 +124,85 @@ impl<S> AuthService<S> {
     }
 }
 
-impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for AuthService<S>
-where
-    S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
-    S::Future: Send + 'static,
-    ReqBody: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx)
+impl<Inner, ReqBody> Service<http::Request<ReqBody>> for AuthService<Inner>
+where
+    Inner: Service<http::Request<ReqBody>, Response = http::Response<BoxBody>>,
+{
+    type Response = Inner::Response;
+    type Error = Inner::Error;
+    type Future = AuthResponseFuture<Inner::Future>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
-        let clone = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone);
-
         let headers = req.headers();
         let path = req.uri().path();
-        match self.validate_signature(path, headers) {
-            Ok(_) => {
-                Box::pin(async move {
-                    let response = inner.call(req).await?;
 
-                    Ok(response)
-                })
-            },
-            Err(err) => {
-                let response = http::Response::builder()
-                    .status(401)
-                    .body(err.to_string())
-                    .unwrap();
+        let auth_res = self.validate_signature(path, headers);
+        if let Err(e) = auth_res {
+            println!("Authentication failed {:?}", e);
+        }
 
-                Box::pin(async move {
-                    Ok(response)
-                })
+        // TODO remove all the custom future stuff temorarily
+        // get things working without auth first.
+        // - Then add in the custom future and have wrap
+        // the future from inner.call
+        // - Then add in the enum and get success working
+        // - Then add unauthenticated case to the enum + future
+        // - Will also need the custom future to make a response
+        let future = self.inner.call(req);
+        AuthResponseFuture {
+            inner: future,
+        }
+    }
+}
+
+#[pin_project]
+pub struct AuthResponseFuture<F> {
+    #[pin]
+    inner: F,
+}
+
+impl<F, E> Future for AuthResponseFuture<F>
+where
+    F: Future<Output = Result<http::Response<BoxBody>, E>>,
+{
+    type Output = F::Output;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.project().inner.poll(cx)
+    }
+}
+
+/*
+#[derive(Debug)]
+#[pin_project(project = AuthResponseKindProj)]
+enum AuthResponseKind<F> {
+    Success {
+        #[pin]
+        future: F,
+    },
+    Unauthenticated {
+        error: Option<http::Response<BoxBody>>
+    }
+}
+
+impl<F, E> Future for AuthResponseFuture<F>
+where
+    F: Future<Output = Result<http::Response<BoxBody>, E>>,
+{
+    type Output = Result<http::Response<BoxBody>, E>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.project().inner.project() {
+            AuthResponseKindProj::Success { future } => future.poll(cx),
+            AuthResponseKindProj::Unauthenticated { error } => {
+                Poll::Ready(Ok(error.take().unwrap()))
             }
         }
     }
 }
+*/
