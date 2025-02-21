@@ -1,5 +1,5 @@
 use hmac::Mac;
-use std::convert::Infallible;
+use http_body_util::combinators::UnsyncBoxBody;
 use std::mem;
 use std::task::{self, Poll};
 
@@ -7,14 +7,11 @@ use anyhow::Context;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use hmac::Hmac;
-use http_body::Body as HttpBody;
-use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use http_body_util::{BodyExt, Full};
 use sha2::Sha256;
 use tower::{Layer, Service};
 
 use crate::config::Config;
-
-// Gist link https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=44cfd2c852f6e45b41b146a37d80d4b4
 
 type Hmac256 = Hmac<Sha256>;
 
@@ -41,47 +38,52 @@ impl <Inner> Layer<Inner> for AuthLayer {
 }
 
 #[derive(Debug, Clone)]
-pub struct AuthService<T> {
+pub struct AuthService<Inner> {
     secret: Vec<String>,
-    inner: T,
+    inner: Inner,
 }
 
-impl<T> AuthService<T> {
-    pub fn new(secret: Vec<String>, inner: T) -> Self {
+impl<Inner> AuthService<Inner> {
+    pub fn new(secret: Vec<String>, inner: Inner) -> Self {
         Self { secret, inner }
     }
 }
 
-impl<T, B> Service<http::Request<B>> for AuthService<T>
+type TonicBody = UnsyncBoxBody<Bytes, tonic::Status>;
+
+impl<Inner> Service<http::Request<TonicBody>> for AuthService<Inner>
 where
-    T: Service<http::Request<BoxBody<Bytes, Infallible>>> + Clone + Send + 'static,
-    T::Future: Send,
-    B: HttpBody<Data: Send, Error: std::error::Error + Send + Sync + 'static> + Send + 'static,
+    Inner: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>> + Clone + Send + 'static,
+    Inner::Future: Send,
 {
-    type Response = T::Response;
-    type Error = T::Error;
+    type Response = Inner::Response;
+    type Error = Inner::Error;
     type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: http::Request<B>) -> Self::Future {
+    fn call(&mut self, req: http::Request<TonicBody>) -> Self::Future {
         let secret = self.secret.clone();
         let mut inner = self.inner.clone();
         mem::swap(&mut inner, &mut self.inner);
 
         Box::pin(async move {
             let (parts, body) = req.into_parts();
+            let body_bytes = body.collect().await.unwrap().to_bytes();
 
-            match validate_signature(&secret[..], &parts, body).await {
+            match validate_signature(&secret, &parts, body_bytes).await {
                 Ok(body) => {
-                    let new_req = http::Request::from_parts(parts, Full::new(body).boxed());
+                    let new_body = Full::new(body);
+                    let f = tonic::body::boxed(new_body);
+                    let new_req = http::Request::from_parts(parts, f);
+
                     inner.call(new_req).await
                 }
                 Err(error) => {
                     tracing::error!("GRPC Authentication error: {error}");
-                    let response = tonic::Status::unauthenticated(error.into()).into_http();
+                    let response = tonic::Status::unauthenticated("Authentication failed").into_http();
                     Ok(response)
                 }
             }
@@ -89,20 +91,13 @@ where
     }
 }
 
-async fn validate_signature<B>(
+
+async fn validate_signature(
     secret: &[String],
     req_head: &http::request::Parts,
-    req_body: B,
+    req_body: Bytes,
 ) -> anyhow::Result<Bytes>
-where
-    B: HttpBody<Error: std::error::Error + Send + Sync + 'static>,
 {
-    let req_body = req_body
-        .collect()
-        .await
-        .context("failed to buffer request body")?
-        .to_bytes();
-
     if secret.is_empty() {
         return Ok(req_body);
     }
@@ -117,11 +112,14 @@ where
     // Signature in the request headers is hex encoded
     let signature = hex::decode(signature).unwrap_or_default();
 
+    // TODO: figure out why we get 5 null bytes at the beginning of bodies.
+    let req_body_trim = &req_body[5..];
+
     for possible_key in secret {
         let mut hmac = Hmac256::new_from_slice(possible_key.as_bytes()).unwrap();
         hmac.update(req_head.uri.path().as_bytes());
         hmac.update(b":");
-        hmac.update(&req_body[..]);
+        hmac.update(&req_body_trim);
 
         if hmac.verify_slice(&signature[..]).is_ok() {
             return Ok(req_body);
