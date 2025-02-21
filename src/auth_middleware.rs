@@ -29,7 +29,7 @@ impl AuthLayer {
     }
 }
 
-impl <Inner> Layer<Inner> for AuthLayer {
+impl<Inner> Layer<Inner> for AuthLayer {
     type Service = AuthService<Inner>;
 
     fn layer(&self, service: Inner) -> Self::Service {
@@ -53,7 +53,10 @@ type TonicBody = UnsyncBoxBody<Bytes, tonic::Status>;
 
 impl<Inner> Service<http::Request<TonicBody>> for AuthService<Inner>
 where
-    Inner: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>> + Clone + Send + 'static,
+    Inner: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>
+        + Clone
+        + Send
+        + 'static,
     Inner::Future: Send,
 {
     type Response = Inner::Response;
@@ -83,7 +86,8 @@ where
                 }
                 Err(error) => {
                     tracing::error!("GRPC Authentication error: {error}");
-                    let response = tonic::Status::unauthenticated("Authentication failed").into_http();
+                    let response =
+                        tonic::Status::unauthenticated("Authentication failed").into_http();
                     Ok(response)
                 }
             }
@@ -91,13 +95,11 @@ where
     }
 }
 
-
 async fn validate_signature(
     secret: &[String],
     req_head: &http::request::Parts,
     req_body: Bytes,
-) -> anyhow::Result<Bytes>
-{
+) -> anyhow::Result<Bytes> {
     if secret.is_empty() {
         return Ok(req_body);
     }
@@ -119,7 +121,7 @@ async fn validate_signature(
         let mut hmac = Hmac256::new_from_slice(possible_key.as_bytes()).unwrap();
         hmac.update(req_head.uri.path().as_bytes());
         hmac.update(b":");
-        hmac.update(&req_body_trim);
+        hmac.update(req_body_trim);
 
         if hmac.verify_slice(&signature[..]).is_ok() {
             return Ok(req_body);

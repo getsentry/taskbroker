@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::auth_middleware::AuthLayer;
 use taskbroker::consumer::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
 use taskbroker::grpc_middleware::MetricsLayer;
-use taskbroker::auth_middleware::AuthLayer;
 use taskbroker::upkeep::upkeep;
 use tokio::select;
 use tokio::signal::unix::SignalKind;

@@ -4,7 +4,6 @@ use std::time::Instant;
 
 use tower::{Layer, Service};
 
-
 #[derive(Debug, Clone, Default)]
 pub struct MetricsLayer {}
 
