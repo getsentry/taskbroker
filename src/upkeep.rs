@@ -168,24 +168,43 @@ pub async fn do_upkeep(
         .await
     {
         result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
-        let mut ids: Vec<String> = vec![];
-        // Submit deadlettered tasks to dlq.
-        for activation in failed_tasks_forwarder.to_deadletter {
-            let payload = activation.encode_to_vec();
-            let message =
-                FutureRecord::<(), _>::to(&config.kafka_deadletter_topic).payload(&payload);
+        let deadletters = failed_tasks_forwarder
+            .to_deadletter
+            .into_iter()
+            .map(|activation| {
+                let producer = producer.clone();
+                let config = config.clone();
+                async move {
+                    let payload = activation.encode_to_vec();
+                    let delivery = producer
+                        .send(
+                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
+                                .payload(&payload),
+                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                        )
+                        .await;
 
-            let send_result = producer
-                .send(
-                    message,
-                    Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                )
-                .await;
-            if let Err((err, _msg)) = send_result {
-                error!("deadletter.publish.failure {}", err);
-            }
-            ids.push(activation.id);
-        }
+                    match delivery {
+                        Ok(_) => Ok(activation.id),
+                        Err(err) => Err(err),
+                    }
+                }
+            })
+            .collect::<FuturesUnordered<_>>();
+
+        // Submit deadlettered tasks to dlq.
+        let ids = deadletters
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .filter_map(|result| match result {
+                Ok(id) => Some(id),
+                Err((err, _msg)) => {
+                    error!("deadletter.publish.failure {}", err);
+                    None
+                }
+            })
+            .collect();
 
         // 7. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
