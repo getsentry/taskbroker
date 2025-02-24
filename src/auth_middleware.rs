@@ -11,6 +11,13 @@ use tower::{Layer, Service};
 
 use crate::config::Config;
 
+// 5 bytes
+const HEADER_SIZE: usize =
+    // compression flag
+    std::mem::size_of::<u8>() +
+    // data length
+    std::mem::size_of::<u32>();
+
 type Hmac256 = Hmac<Sha256>;
 
 /// Tower layer to connect authentication logic with the grpc server
@@ -119,22 +126,16 @@ fn validate_signature(
     // Signature in the request headers is hex encoded
     let signature = hex::decode(signature).unwrap_or_default();
 
-    // Slice off the leading nulls. Real requests
-    // come with a bunch of null bytes.
-    let mut index = 0;
-    for byte in req_body.iter() {
-        if *byte != b'\0' {
-            break;
-        }
-        index += 1;
-    }
-    let req_body_trim = &req_body[index..];
+    // gRPC messages are prefix-length encoded with a 5 byte header
+    // https://github.com/hyperium/tonic/blob/master/tonic/src/codec/mod.rs#L93
+    // Slice off the header as it won't be included in the signature.
+    let trimmed_body = &req_body[HEADER_SIZE..];
 
     for possible_key in secret {
         let mut hmac = Hmac256::new_from_slice(possible_key.as_bytes()).unwrap();
         hmac.update(req_head.uri.path().as_bytes());
         hmac.update(b":");
-        hmac.update(req_body_trim);
+        hmac.update(trimmed_body);
 
         if hmac.verify_slice(&signature[..]).is_ok() {
             return Ok(req_body);
@@ -231,32 +232,14 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_signature_success() {
+    fn test_validate_signature_success_header_trim() {
         let secret: Vec<String> = vec!["super secret".into()];
-        let body = Bytes::from("request data");
-        let signature = generate_hmac(&secret[0], "/rpc/service/method", &body);
-        let request = Request::builder()
-            .uri("http://example.org/rpc/service/method")
-            .header("sentry-signature", signature)
-            .body(body)
-            .unwrap();
-        let (parts, body) = request.into_parts();
-
-        let res = validate_signature(&secret, &parts, body);
-        assert!(res.is_ok());
-        let result_body = res.unwrap();
-        assert!(result_body == *"request data");
-    }
-
-    #[test]
-    fn test_validate_signature_success_null_slicing() {
-        let secret: Vec<String> = vec!["super secret".into()];
-        // When clients send requests there are no nulls included in the
-        // signature input.
-        let signature_body = Bytes::from("request data");
+        // Client signatures don't include message framing
+        let signature_body = Bytes::from("A request data that is 38 bytes long..");
         let signature = generate_hmac(&secret[0], "/rpc/service/method", &signature_body);
-        // Request bodies are received with a bunch of nulls.
-        let request_body = Bytes::from("\0\0\0\0request data");
+
+        // Request bodies are length-prefixed with a 5 byte header.
+        let request_body = Bytes::from("\0\0\0\0&A request data that is 38 bytes long..");
         let request = Request::builder()
             .uri("http://example.org/rpc/service/method")
             .header("sentry-signature", signature)
@@ -269,6 +252,6 @@ mod tests {
 
         // Original body returned.
         let result_body = res.unwrap();
-        assert!(result_body == *"\0\0\0\0request data");
+        assert!(result_body == *"\0\0\0\0&A request data that is 38 bytes long..");
     }
 }
