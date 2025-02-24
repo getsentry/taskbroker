@@ -79,10 +79,6 @@ pub struct Config {
     /// before being written to InflightTaskStore (sqlite).
     pub max_pending_buffer_count: usize,
 
-    /// The maximum value for processing deadlines. If a task
-    /// does not have a processing deadline set, this will be used.
-    pub max_processing_deadline: usize,
-
     /// The maximum number of times a task can be reset from
     /// processing back to pending. When this limit is reached,
     /// the activation will be discarded/deadlettered.
@@ -117,7 +113,6 @@ impl Default for Config {
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             max_pending_count: 2048,
             max_pending_buffer_count: 128,
-            max_processing_deadline: 300,
             max_processing_attempts: 3,
             upkeep_task_interval_ms: 1000,
         }
@@ -220,7 +215,6 @@ mod tests {
                 kafka_auto_offset_reset: earliest
                 db_path: ./taskbroker-error.sqlite
                 max_pending_count: 512
-                max_processing_deadline: 1000
                 max_processing_attempts: 5
             "#,
             )?;
@@ -250,7 +244,6 @@ mod tests {
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 512);
-            assert_eq!(config.max_processing_deadline, 1000);
             assert_eq!(config.max_processing_attempts, 5);
 
             Ok(())
@@ -288,7 +281,6 @@ mod tests {
             assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 2048);
-            assert_eq!(config.max_processing_deadline, 300);
             assert_eq!(config.max_processing_attempts, 5);
             assert_eq!(
                 config.default_metrics_tags,
