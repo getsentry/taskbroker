@@ -254,4 +254,28 @@ mod tests {
         let result_body = res.unwrap();
         assert!(result_body == *"\0\0\0\0&A request data that is 38 bytes long..");
     }
+
+    #[test]
+    fn test_validate_signature_success_secondary_key() {
+        // Check that secondary keys pass validation
+        let secret: Vec<String> = vec!["super secret".into(), "second extra secret".into()];
+        let signature_body = Bytes::from("A request data that is 38 bytes long..");
+        let signature = generate_hmac(&secret[1], "/rpc/service/method", &signature_body);
+
+        // Request bodies are length-prefixed with a 5 byte header.
+        let request_body = Bytes::from("\0\0\0\0&A request data that is 38 bytes long..");
+        let request = Request::builder()
+            .uri("http://example.org/rpc/service/method")
+            .header("sentry-signature", signature)
+            .body(request_body)
+            .unwrap();
+        let (parts, body) = request.into_parts();
+
+        let res = validate_signature(&secret, &parts, body);
+        assert!(res.is_ok());
+
+        // Original body returned.
+        let result_body = res.unwrap();
+        assert!(result_body == *"\0\0\0\0&A request data that is 38 bytes long..");
+    }
 }
