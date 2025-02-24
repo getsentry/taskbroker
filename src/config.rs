@@ -86,6 +86,9 @@ pub struct Config {
 
     /// The frequency at which upkeep tasks are spawned.
     pub upkeep_task_interval_ms: u64,
+
+    /// The number of worker threads for tokio runtime. Use the tokio default if 0.
+    pub worker_threads: usize,
 }
 
 impl Default for Config {
@@ -115,6 +118,7 @@ impl Default for Config {
             max_pending_buffer_count: 128,
             max_processing_attempts: 3,
             upkeep_task_interval_ms: 1000,
+            worker_threads: 0,
         }
     }
 }
