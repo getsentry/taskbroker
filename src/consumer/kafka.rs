@@ -293,7 +293,7 @@ macro_rules! processing_strategy {
                 ));
             }
 
-            let (commit_sender, commit_receiver) = $crate::processing_strategy!(
+            let (_, commit_receiver) = $crate::processing_strategy!(
                 @reducers,
                 ($reduce_first $(,$reduce_rest)*),
                 reduce_receiver,
@@ -311,7 +311,6 @@ macro_rules! processing_strategy {
             handles.spawn($crate::consumer::kafka::reduce_err(
                 $reduce_err,
                 err_receiver,
-                commit_sender.clone(),
                 shutdown_signal.clone(),
             ));
 
@@ -656,18 +655,22 @@ pub async fn reduce<T, U>(
 pub async fn reduce_err(
     mut reducer: impl Reducer<Input = OwnedMessage, Output = ()>,
     mut receiver: mpsc::Receiver<OwnedMessage>,
-    ok: mpsc::Sender<(Vec<OwnedMessage>, ())>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
     let config = reducer.get_reduce_config();
     let mut flush_timer = config.flush_interval.map(time::interval);
-    let mut inflight_msgs = Vec::new();
+    let mut repoll_timer = time::interval(Duration::from_secs(1));
+    repoll_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         select! {
             biased;
 
-            _ = shutdown.cancelled() => {
+            _ = if config.shutdown_condition == ReduceShutdownCondition::Signal {
+                Either::Left(shutdown.cancelled())
+            } else {
+                Either::Right(future::pending::<_>())
+            } => {
                 match config.shutdown_behaviour {
                     ReduceShutdownBehaviour::Flush => {
                         debug!("Received shutdown signal, flushing reducer...");
@@ -675,11 +678,6 @@ pub async fn reduce_err(
                             .flush()
                             .await
                             .expect("Failed to flush error reducer");
-                        if !inflight_msgs.is_empty() {
-                            ok.send((take(&mut inflight_msgs), ()))
-                                .await
-                                .map_err(|err| anyhow!("{}", err))?;
-                        }
                     },
                     ReduceShutdownBehaviour::Drop => {
                         debug!("Received shutdown signal, dropping reducer...");
@@ -698,39 +696,46 @@ pub async fn reduce_err(
                     .flush()
                     .await
                     .expect("Failed to flush error reducer");
-                if !inflight_msgs.is_empty() {
-                    ok.send((take(&mut inflight_msgs), ()))
-                        .await
-                        .map_err(|err| anyhow!("{}", err))?;
-                }
             }
 
             val = receiver.recv(), if !reducer.is_full().await => {
                 let Some(msg) = val else {
-                    unreachable!("Received end of stream without shutdown signal");
+                    assert_eq!(
+                        config.shutdown_condition,
+                        ReduceShutdownCondition::Drain,
+                        "Got end of stream without shutdown signal"
+                    );
+                    match config.shutdown_behaviour {
+                        ReduceShutdownBehaviour::Flush => {
+                            debug!("Received end of stream, flushing reducer...");
+                            reducer
+                                .flush()
+                                .await
+                                .expect("Failed to flush error reducer");
+                        }
+                        ReduceShutdownBehaviour::Drop => {
+                            debug!("Received end of stream, dropping reducer...");
+                            drop(reducer);
+                        }
+                    };
+                    break;
                 };
-                inflight_msgs.push(msg.clone());
 
                 reducer
                     .reduce(msg)
                     .await
                     .expect("Failed to reduce error reducer");
-
-                if matches!(config.when_full_behaviour, ReducerWhenFullBehaviour::Flush)
-                    && reducer.is_full().await
-                {
-                    reducer
-                        .flush()
-                        .await
-                        .expect("Failed to flush error reducer");
-
-                    if !inflight_msgs.is_empty() {
-                        ok.send((take(&mut inflight_msgs), ()))
-                            .await
-                            .map_err(|err| anyhow!("{}", err))?;
-                    }
-                }
             }
+
+            _ = repoll_timer.tick() => {}
+        }
+
+        if config.when_full_behaviour == ReducerWhenFullBehaviour::Flush && reducer.is_full().await
+        {
+            reducer
+                .flush()
+                .await
+                .expect("Failed to flush error reducer");
         }
     }
 
@@ -1054,7 +1059,6 @@ mod tests {
         let pipe = reducer.get_pipe();
 
         let (sender, receiver) = mpsc::channel(1);
-        let (commit_sender, mut commit_receiver) = mpsc::channel(1);
         let shutdown = CancellationToken::new();
 
         let msg = OwnedMessage::new(
@@ -1067,18 +1071,10 @@ mod tests {
             None,
         );
 
-        tokio::spawn(reduce_err(
-            reducer,
-            receiver,
-            commit_sender,
-            shutdown.clone(),
-        ));
+        tokio::spawn(reduce_err(reducer, receiver, shutdown.clone()));
 
         assert!(sender.send(msg.clone()).await.is_ok());
-        assert_eq!(
-            commit_receiver.recv().await.unwrap().0[0].payload(),
-            msg.payload()
-        );
+        sleep(Duration::from_secs(1)).await;
         assert_eq!(
             pipe.read().unwrap().last().unwrap().payload().unwrap(),
             &[0, 1, 2, 3, 4, 5, 6, 7]
@@ -1086,9 +1082,6 @@ mod tests {
 
         drop(sender);
         shutdown.cancel();
-
-        sleep(Duration::from_secs(1)).await;
-        assert!(commit_receiver.is_closed());
     }
 
     #[tokio::test]
@@ -1235,7 +1228,6 @@ mod tests {
         let pipe = reducer.get_pipe();
 
         let (sender, receiver) = mpsc::channel(1);
-        let (commit_sender, mut commit_receiver) = mpsc::channel(1);
         let shutdown = CancellationToken::new();
 
         let msg = OwnedMessage::new(
@@ -1248,26 +1240,15 @@ mod tests {
             None,
         );
 
-        tokio::spawn(reduce_err(
-            reducer,
-            receiver,
-            commit_sender,
-            shutdown.clone(),
-        ));
+        tokio::spawn(reduce_err(reducer, receiver, shutdown.clone()));
 
         assert!(sender.send(msg.clone()).await.is_ok());
-        assert_eq!(
-            commit_receiver.recv().await.unwrap().0[0].payload(),
-            msg.payload()
-        );
+        sleep(Duration::from_secs(1)).await;
         assert_eq!(pipe.read().unwrap()[0].payload(), msg.payload());
         assert!(buffer.read().unwrap().is_empty());
 
         drop(sender);
         shutdown.cancel();
-
-        sleep(Duration::from_secs(1)).await;
-        assert!(commit_receiver.is_closed());
     }
 
     #[tokio::test]
