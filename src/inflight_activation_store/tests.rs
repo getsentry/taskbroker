@@ -345,7 +345,7 @@ async fn test_handle_processing_deadline() {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (1, 0));
+    assert_eq!(count.unwrap(), 1);
 
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
@@ -356,7 +356,7 @@ async fn test_handle_processing_deadline() {
     // Run again to check early return
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (0, 0));
+    assert_eq!(count.unwrap(), 0);
 }
 
 #[tokio::test]
@@ -372,7 +372,7 @@ async fn test_handle_processing_deadline_multiple_tasks() {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (1, 0));
+    assert_eq!(count.unwrap(), 1);
 
     assert_count_by_status(&store, InflightActivationStatus::Processing, 1).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
@@ -401,7 +401,7 @@ async fn test_handle_processing_at_most_once() {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (2, 0));
+    assert_eq!(count.unwrap(), 2);
 
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
@@ -433,7 +433,7 @@ async fn test_handle_processing_deadline_discard_after() {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (1, 0));
+    assert_eq!(count.unwrap(), 1);
 }
 
 #[tokio::test]
@@ -454,7 +454,7 @@ async fn test_handle_processing_deadline_deadletter_after() {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (1, 0));
+    assert_eq!(count.unwrap(), 1);
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
 }
 
@@ -476,7 +476,7 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (1, 0));
+    assert_eq!(count.unwrap(), 1);
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
 }
 
@@ -485,22 +485,22 @@ async fn test_processing_attempts_exceeded() {
     let store = create_test_store().await;
 
     let mut batch = make_activations(3);
-    batch[0].status = InflightActivationStatus::Processing;
+    batch[0].status = InflightActivationStatus::Pending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[0].processing_attempts = store.config.max_processing_attempts as i32 - 1;
+    batch[0].processing_attempts = store.config.max_processing_attempts as i32;
 
     batch[1].status = InflightActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
-    batch[2].status = InflightActivationStatus::Processing;
+    batch[2].status = InflightActivationStatus::Pending;
     batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[2].processing_attempts = store.config.max_processing_attempts as i32 - 1;
+    batch[2].processing_attempts = store.config.max_processing_attempts as i32;
 
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let count = store.handle_processing_deadline().await;
+    let count = store.handle_processing_attempts().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), (2, 2));
+    assert_eq!(count.unwrap(), 2);
 
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Complete, 1).await;
