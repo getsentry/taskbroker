@@ -255,6 +255,8 @@ pub async fn do_upkeep(
     metrics::counter!("upkeep.discarded").increment(result_context.discarded);
     metrics::counter!("upkeep.processing_attempts_exceeded")
         .increment(result_context.processing_attempts_exceeded);
+    metrics::counter!("upkeep.processing_deadline_reset")
+        .increment(result_context.processing_deadline_reset);
     metrics::counter!("upkeep.retried").increment(result_context.retried);
     metrics::counter!("upkeep.expired").increment(result_context.expired);
 
