@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Error};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::auth_middleware::AuthLayer;
 use taskbroker::consumer::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
@@ -143,6 +144,7 @@ async fn runnable() -> Result<(), Error> {
 
             let layers = tower::ServiceBuilder::new()
                 .layer(MetricsLayer::default())
+                .layer(AuthLayer::new(&grpc_config))
                 .into_inner();
 
             let server = Server::builder()

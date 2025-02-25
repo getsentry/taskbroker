@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::fs;
 
+pub mod auth_middleware;
 pub mod config;
 pub mod consumer;
 pub mod grpc_middleware;
