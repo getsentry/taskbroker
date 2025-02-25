@@ -1,17 +1,17 @@
 use std::str::FromStr;
 
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
 use sqlx::{
+    ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::PoolOptions,
     sqlite::{
         SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult, SqliteRow,
         SqliteSynchronous,
     },
-    ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
 };
 
 use crate::config::Config;

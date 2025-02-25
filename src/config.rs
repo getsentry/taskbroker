@@ -1,12 +1,12 @@
 use figment::{
-    providers::{Env, Format, Yaml},
     Figment, Metadata, Profile, Provider,
+    providers::{Env, Format, Yaml},
 };
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, collections::BTreeMap};
 
-use crate::{logging::LogFormat, Args};
+use crate::{Args, logging::LogFormat};
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
@@ -187,7 +187,7 @@ mod tests {
     use std::{borrow::Cow, collections::BTreeMap};
 
     use super::Config;
-    use crate::{logging::LogFormat, Args};
+    use crate::{Args, logging::LogFormat};
     use figment::Jail;
 
     #[test]

@@ -1,7 +1,7 @@
 use anyhow::Error;
 use rdkafka::{
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
     ClientConfig,
+    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
 };
 use tracing::info;
 

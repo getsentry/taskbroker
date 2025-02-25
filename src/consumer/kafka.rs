@@ -1,16 +1,17 @@
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use futures::{
+    Stream, StreamExt,
     future::{self},
-    pin_mut, Stream, StreamExt,
+    pin_mut,
 };
 use rdkafka::{
+    ClientConfig, ClientContext, Message, Offset, TopicPartitionList,
     consumer::{
-        stream_consumer::StreamPartitionQueue, BaseConsumer, Consumer, ConsumerContext, Rebalance,
-        StreamConsumer,
+        BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer,
+        stream_consumer::StreamPartitionQueue,
     },
     error::{KafkaError, KafkaResult},
     message::{BorrowedMessage, OwnedMessage},
-    ClientConfig, ClientContext, Message, Offset, TopicPartitionList,
 };
 use std::{
     cmp,
@@ -20,8 +21,8 @@ use std::{
     iter,
     mem::take,
     sync::{
-        mpsc::{sync_channel, SyncSender},
         Arc,
+        mpsc::{SyncSender, sync_channel},
     },
     time::Duration,
 };
@@ -29,11 +30,11 @@ use tokio::{
     runtime::Handle,
     select,
     sync::{
-        mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, UnboundedReceiver, UnboundedSender, unbounded_channel},
         oneshot,
     },
     task::{self, JoinError, JoinSet},
-    time::{self, sleep, MissedTickBehavior},
+    time::{self, MissedTickBehavior, sleep},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_util::{either::Either, sync::CancellationToken};
@@ -521,7 +522,7 @@ pub trait Reducer {
 
     fn reduce(&mut self, t: Self::Input) -> impl Future<Output = Result<(), anyhow::Error>> + Send;
     fn flush(&mut self)
-        -> impl Future<Output = Result<Option<Self::Output>, anyhow::Error>> + Send;
+    -> impl Future<Output = Result<Option<Self::Output>, anyhow::Error>> + Send;
     fn reset(&mut self);
     fn is_full(&self) -> impl Future<Output = bool> + Send;
     fn get_reduce_config(&self) -> ReduceConfig;
@@ -810,25 +811,25 @@ mod tests {
         time::Duration,
     };
 
-    use anyhow::{anyhow, Error};
+    use anyhow::{Error, anyhow};
     use futures::Stream;
     use rdkafka::{
+        Message, Offset, Timestamp, TopicPartitionList,
         error::{KafkaError, KafkaResult},
         message::OwnedMessage,
-        Message, Offset, Timestamp, TopicPartitionList,
     };
     use tokio::{
         sync::{broadcast, mpsc, oneshot},
         time::sleep,
     };
-    use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
+    use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
     use tokio_util::sync::CancellationToken;
 
     use crate::consumer::{
         kafka::{
-            commit, map, reduce, reduce_err, CommitClient, KafkaMessage, MessageQueue,
-            ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
-            ReducerWhenFullBehaviour,
+            CommitClient, KafkaMessage, MessageQueue, ReduceConfig, ReduceShutdownBehaviour,
+            ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour, commit, map, reduce,
+            reduce_err,
         },
         os_stream_writer::{OsStream, OsStreamWriter},
     };

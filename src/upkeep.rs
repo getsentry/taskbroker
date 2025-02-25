@@ -1,5 +1,5 @@
 use chrono::{Timelike, Utc};
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{StreamExt, stream::FuturesUnordered};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::{
@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{select, time};
-use tracing::{error, info, info_span, instrument, Instrument};
+use tracing::{Instrument, error, info, info_span, instrument};
 use uuid::Uuid;
 
 use crate::{

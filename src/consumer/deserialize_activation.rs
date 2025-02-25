@@ -1,9 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use chrono::{MappedLocalTime, TimeZone, Utc};
 use prost::Message as _;
-use rdkafka::{message::OwnedMessage, Message};
+use rdkafka::{Message, message::OwnedMessage};
 use sentry_protos::taskbroker::v1::TaskActivation;
 
 use crate::inflight_activation_store::{InflightActivation, InflightActivationStatus};
@@ -62,7 +62,7 @@ mod tests {
 
     use chrono::Utc;
     use prost::Message as _;
-    use rdkafka::{message::OwnedMessage, Timestamp};
+    use rdkafka::{Timestamp, message::OwnedMessage};
     use sentry_protos::taskbroker::v1::TaskActivation;
 
     use super::new;
