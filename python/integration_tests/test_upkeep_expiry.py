@@ -231,11 +231,11 @@ Running test with the following configuration:
         for i in range(num_messages):
             if i % 2 == 0:
                 task_activation = generate_task_activation(
-                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 3
+                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD, 15
                 )
             else:
                 task_activation = generate_task_activation(
-                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DEADLETTER, 3
+                    OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DEADLETTER, 15
                 )
             custom_messages.append(task_activation)
 
