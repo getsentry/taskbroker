@@ -86,6 +86,10 @@ pub struct Config {
 
     /// The frequency at which upkeep tasks are spawned.
     pub upkeep_task_interval_ms: u64,
+
+    /// The factor of worker threads to spawn compared to the
+    /// amount of parallelism available
+    pub parallelism_to_workers: usize,
 }
 
 impl Default for Config {
@@ -115,6 +119,7 @@ impl Default for Config {
             max_pending_buffer_count: 128,
             max_processing_attempts: 3,
             upkeep_task_interval_ms: 1000,
+            parallelism_to_workers: 1,
         }
     }
 }
