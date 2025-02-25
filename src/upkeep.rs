@@ -143,16 +143,24 @@ pub async fn do_upkeep(
     }
 
     // 4. Handle processing deadlines
-    if let Ok(counts) = store
+    if let Ok(processing_deadline_reset) = store
         .handle_processing_deadline()
         .instrument(info_span!("handle_processing_deadline"))
         .await
     {
-        result_context.processing_deadline_reset = counts.0;
-        result_context.processing_attempts_exceeded = counts.1;
+        result_context.processing_deadline_reset = processing_deadline_reset;
     }
 
-    // 5. Handle tasks that are past their expires_at deadline
+    // 5. Handle processing attempts exceeded
+    if let Ok(processing_attempts_exceeded) = store
+        .handle_processing_attempts()
+        .instrument(info_span!("handle_processing_attempts"))
+        .await
+    {
+        result_context.processing_attempts_exceeded = processing_attempts_exceeded;
+    }
+
+    // 6. Handle tasks that are past their expires_at deadline
     if let Ok(expired_count) = store
         .handle_expires_at()
         .instrument(info_span!("handle_expires_at"))
@@ -161,7 +169,7 @@ pub async fn do_upkeep(
         result_context.expired = expired_count;
     }
 
-    // 6. Handle failure state tasks
+    // 7. Handle failure state tasks
     if let Ok(failed_tasks_forwarder) = store
         .handle_failed_tasks()
         .instrument(info_span!("handle_failed_tasks"))
@@ -206,13 +214,13 @@ pub async fn do_upkeep(
             })
             .collect();
 
-        // 7. Update deadlettered tasks to complete
+        // 8. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
             result_context.deadlettered = deadletter_count;
         }
     }
 
-    // 8. Cleanup completed tasks
+    // 9. Cleanup completed tasks
     if let Ok(count) = store
         .remove_completed()
         .instrument(info_span!("remove_completed"))

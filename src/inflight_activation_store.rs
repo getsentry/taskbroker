@@ -378,10 +378,7 @@ impl InflightActivationStore {
     /// Update tasks that are in processing and have exceeded their processing deadline
     /// Exceeding a processing deadline does not consume a retry as we don't know
     /// if a worker took the task and was killed, or failed.
-    /// Returns a tuple where
-    /// 0: number of rows updated for processing_deadline
-    /// 1: number of rows updated for processing_attempts
-    pub async fn handle_processing_deadline(&self) -> Result<(u64, u64), Error> {
+    pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
 
         // Idempotent tasks that fail their processing deadlines go directly to failure
@@ -402,9 +399,8 @@ impl InflightActivationStore {
             processing_deadline_modified_rows = query_res.rows_affected();
         }
 
-        // Update non-idempotent tasks
-        let mut atomic = self.sqlite_pool.begin().await?;
-
+        // Update non-idempotent tasks.
+        // Increment processing_attempts by 1 and reset processing_deadline to null.
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
@@ -413,17 +409,20 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
-        .execute(&mut *atomic)
+        .execute(&self.sqlite_pool)
         .await;
 
         if let Ok(query_res) = result {
             processing_deadline_modified_rows += query_res.rows_affected();
+            return Ok(processing_deadline_modified_rows);
         }
 
-        // In the same transaction, update records exceeding max processing attempts to status=failure immediately.
-        // This is to ensure that get_pending_activation in a parallel thread will not pick up the task.
-        // These tasks are updated to have status=failure so they can be discarded/deadlettered by handle_failed_tasks.
+        Err(anyhow!("Could not update tasks past processing_deadline"))
+    }
 
+    /// Update tasks that have exceeded their max processing attempts.
+    /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
+    pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
         let processing_attempts_result = sqlx::query(
             "UPDATE inflight_taskactivations 
             SET status = $1 
@@ -432,12 +431,11 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(self.config.max_processing_attempts as i32)
         .bind(InflightActivationStatus::Pending)
-        .execute(&mut *atomic)
+        .execute(&self.sqlite_pool)
         .await;
 
-        atomic.commit().await?;
         if let Ok(query_res) = processing_attempts_result {
-            return Ok((processing_deadline_modified_rows, query_res.rows_affected()));
+            return Ok(query_res.rows_affected());
         }
 
         Err(anyhow!("Could not update tasks past processing_deadline"))
