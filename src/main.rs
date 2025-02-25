@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
 use taskbroker::auth_middleware::AuthLayer;
@@ -15,6 +15,7 @@ use tracing::{error, info};
 
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
+use taskbroker::Args;
 use taskbroker::config::Config;
 use taskbroker::consumer::{
     admin::create_missing_topics,
@@ -30,7 +31,6 @@ use taskbroker::inflight_activation_store::{
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
-use taskbroker::Args;
 
 async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     match task.await {

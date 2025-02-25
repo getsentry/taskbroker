@@ -59,12 +59,14 @@ fn test_inflightactivation_status_from() {
 
 #[tokio::test]
 async fn test_create_db() {
-    assert!(InflightActivationStore::new(
-        &generate_temp_filename(),
-        InflightActivationStoreConfig::from_config(&create_integration_config())
+    assert!(
+        InflightActivationStore::new(
+            &generate_temp_filename(),
+            InflightActivationStoreConfig::from_config(&create_integration_config())
+        )
+        .await
+        .is_ok()
     )
-    .await
-    .is_ok())
 }
 
 #[tokio::test]
@@ -237,24 +239,32 @@ async fn set_activation_status() {
     assert!(store.store(batch).await.is_ok());
 
     assert_eq!(store.count_pending_activations().await.unwrap(), 2);
-    assert!(store
-        .set_status("id_0", InflightActivationStatus::Failure)
-        .await
-        .is_ok());
+    assert!(
+        store
+            .set_status("id_0", InflightActivationStatus::Failure)
+            .await
+            .is_ok()
+    );
     assert_eq!(store.count_pending_activations().await.unwrap(), 1);
-    assert!(store
-        .set_status("id_0", InflightActivationStatus::Pending)
-        .await
-        .is_ok());
+    assert!(
+        store
+            .set_status("id_0", InflightActivationStatus::Pending)
+            .await
+            .is_ok()
+    );
     assert_eq!(store.count_pending_activations().await.unwrap(), 2);
-    assert!(store
-        .set_status("id_0", InflightActivationStatus::Failure)
-        .await
-        .is_ok());
-    assert!(store
-        .set_status("id_1", InflightActivationStatus::Failure)
-        .await
-        .is_ok());
+    assert!(
+        store
+            .set_status("id_0", InflightActivationStatus::Failure)
+            .await
+            .is_ok()
+    );
+    assert!(
+        store
+            .set_status("id_1", InflightActivationStatus::Failure)
+            .await
+            .is_ok()
+    );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert!(store.get_pending_activation(None).await.unwrap().is_none());
 }
@@ -267,10 +277,12 @@ async fn test_set_processing_deadline() {
     assert!(store.store(batch.clone()).await.is_ok());
 
     let deadline = Utc::now();
-    assert!(store
-        .set_processing_deadline("id_0", Some(deadline))
-        .await
-        .is_ok());
+    assert!(
+        store
+            .set_processing_deadline("id_0", Some(deadline))
+            .await
+            .is_ok()
+    );
 
     let result = store.get_by_id("id_0").await.unwrap().unwrap();
     assert_eq!(
@@ -315,16 +327,20 @@ async fn test_get_retry_activations() {
 
     assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
 
-    assert!(store
-        .set_status("id_0", InflightActivationStatus::Retry)
-        .await
-        .is_ok());
+    assert!(
+        store
+            .set_status("id_0", InflightActivationStatus::Retry)
+            .await
+            .is_ok()
+    );
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
 
-    assert!(store
-        .set_status("id_1", InflightActivationStatus::Retry)
-        .await
-        .is_ok());
+    assert!(
+        store
+            .set_status("id_1", InflightActivationStatus::Retry)
+            .await
+            .is_ok()
+    );
 
     let retries = store.get_retry_activations().await.unwrap();
     assert_eq!(retries.len(), 2);
@@ -523,21 +539,27 @@ async fn test_remove_completed() {
     let result = store.remove_completed().await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 2);
-    assert!(store
-        .get_by_id(&records[0].activation.id)
-        .await
-        .expect("no error")
-        .is_none());
-    assert!(store
-        .get_by_id(&records[1].activation.id)
-        .await
-        .expect("no error")
-        .is_some());
-    assert!(store
-        .get_by_id(&records[2].activation.id)
-        .await
-        .expect("no error")
-        .is_none());
+    assert!(
+        store
+            .get_by_id(&records[0].activation.id)
+            .await
+            .expect("no error")
+            .is_none()
+    );
+    assert!(
+        store
+            .get_by_id(&records[1].activation.id)
+            .await
+            .expect("no error")
+            .is_some()
+    );
+    assert!(
+        store
+            .get_by_id(&records[2].activation.id)
+            .await
+            .expect("no error")
+            .is_none()
+    );
 
     assert_count_by_status(&store, InflightActivationStatus::Complete, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
@@ -564,26 +586,34 @@ async fn test_remove_completed_multiple_gaps() {
     let result = store.remove_completed().await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 2);
-    assert!(store
-        .get_by_id(&records[0].activation.id)
-        .await
-        .expect("no error")
-        .is_none());
-    assert!(store
-        .get_by_id(&records[1].activation.id)
-        .await
-        .expect("no error")
-        .is_some());
-    assert!(store
-        .get_by_id(&records[2].activation.id)
-        .await
-        .expect("no error")
-        .is_none());
-    assert!(store
-        .get_by_id(&records[3].activation.id)
-        .await
-        .expect("no error")
-        .is_some());
+    assert!(
+        store
+            .get_by_id(&records[0].activation.id)
+            .await
+            .expect("no error")
+            .is_none()
+    );
+    assert!(
+        store
+            .get_by_id(&records[1].activation.id)
+            .await
+            .expect("no error")
+            .is_some()
+    );
+    assert!(
+        store
+            .get_by_id(&records[2].activation.id)
+            .await
+            .expect("no error")
+            .is_none()
+    );
+    assert!(
+        store
+            .get_by_id(&records[3].activation.id)
+            .await
+            .expect("no error")
+            .is_some()
+    );
 }
 
 #[tokio::test]

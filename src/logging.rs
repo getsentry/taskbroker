@@ -2,9 +2,9 @@ use sentry::types::Dsn;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::str::FromStr;
+use tracing_subscriber::Layer;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::Layer;
 
 use crate::{config::Config, get_version};
 
