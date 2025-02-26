@@ -1,11 +1,9 @@
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
-use taskbroker::auth_middleware::AuthLayer;
 use taskbroker::consumer::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
-use taskbroker::grpc_middleware::MetricsLayer;
 use taskbroker::upkeep::upkeep;
 use tokio::select;
 use tokio::signal::unix::SignalKind;
@@ -24,7 +22,9 @@ use taskbroker::consumer::{
     kafka::start_consumer,
     os_stream_writer::{OsStream, OsStreamWriter},
 };
-use taskbroker::grpc_server::MyConsumerService;
+use taskbroker::grpc::auth_middleware::AuthLayer;
+use taskbroker::grpc::metrics_middleware::MetricsLayer;
+use taskbroker::grpc::server::TaskbrokerServer;
 use taskbroker::inflight_activation_store::{
     InflightActivationStore, InflightActivationStoreConfig,
 };
@@ -137,7 +137,6 @@ async fn runnable() -> Result<(), Error> {
         let grpc_store = store.clone();
         let grpc_config = config.clone();
         async move {
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
@@ -149,11 +148,12 @@ async fn runnable() -> Result<(), Error> {
 
             let server = Server::builder()
                 .layer(layers)
-                .add_service(ConsumerServiceServer::new(MyConsumerService {
+                .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                 }))
                 .serve(addr);
 
+            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
             info!("GRPC server listening on {}", addr);
             select! {
                 biased;

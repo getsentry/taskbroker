@@ -8,17 +8,17 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use super::inflight_activation_store::{
+use crate::inflight_activation_store::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
 };
 use tracing::{error, instrument};
 
-pub struct MyConsumerService {
+pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
 }
 
 #[tonic::async_trait]
-impl ConsumerService for MyConsumerService {
+impl ConsumerService for TaskbrokerServer {
     #[instrument(skip_all)]
     async fn get_task(
         &self,
@@ -130,6 +130,3 @@ impl ConsumerService for MyConsumerService {
         res
     }
 }
-
-#[cfg(test)]
-mod tests;
