@@ -557,6 +557,3 @@ impl InflightActivationStore {
         Ok(query.rows_affected())
     }
 }
-
-#[cfg(test)]
-mod tests;

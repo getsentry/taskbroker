@@ -11,7 +11,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     config::Config,
-    inflight_activation_store::{
+    store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig,
     },

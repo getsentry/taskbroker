@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use crate::inflight_activation_store::{
+use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
 };
 use tracing::{error, instrument};

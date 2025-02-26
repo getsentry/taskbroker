@@ -1,6 +1,6 @@
 use std::{mem::replace, time::Duration};
 
-use crate::{config::Config, inflight_activation_store::InflightActivation};
+use crate::{config::Config, store::inflight_activation::InflightActivation};
 
 use super::kafka::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,

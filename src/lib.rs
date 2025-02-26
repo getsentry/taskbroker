@@ -4,9 +4,9 @@ use std::fs;
 pub mod config;
 pub mod consumer;
 pub mod grpc;
-pub mod inflight_activation_store;
 pub mod logging;
 pub mod metrics;
+pub mod store;
 pub mod upkeep;
 
 #[cfg(test)]

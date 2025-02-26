@@ -6,7 +6,7 @@ use tracing::{debug, instrument};
 
 use crate::{
     config::Config,
-    inflight_activation_store::{InflightActivation, InflightActivationStore},
+    store::inflight_activation::{InflightActivation, InflightActivationStore},
 };
 
 use super::kafka::{

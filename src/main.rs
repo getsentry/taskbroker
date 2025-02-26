@@ -25,12 +25,12 @@ use taskbroker::consumer::{
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
-use taskbroker::inflight_activation_store::{
-    InflightActivationStore, InflightActivationStoreConfig,
-};
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
+use taskbroker::store::inflight_activation::{
+    InflightActivationStore, InflightActivationStoreConfig,
+};
 
 async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     match task.await {
