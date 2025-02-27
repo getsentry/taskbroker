@@ -9,7 +9,7 @@ use sentry_protos::taskbroker::v1::{
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
-use crate::inflight_activation_store::{
+use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
     InflightActivationStoreConfig,
 };
@@ -498,19 +498,20 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
 
 #[tokio::test]
 async fn test_processing_attempts_exceeded() {
+    let config = create_integration_config();
     let store = create_test_store().await;
 
     let mut batch = make_activations(3);
     batch[0].status = InflightActivationStatus::Pending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[0].processing_attempts = store.config.max_processing_attempts as i32;
+    batch[0].processing_attempts = config.max_processing_attempts as i32;
 
     batch[1].status = InflightActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
     batch[2].status = InflightActivationStatus::Pending;
     batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[2].processing_attempts = store.config.max_processing_attempts as i32;
+    batch[2].processing_attempts = config.max_processing_attempts as i32;
 
     assert!(store.store(batch.clone()).await.is_ok());
 

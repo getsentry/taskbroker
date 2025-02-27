@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    inflight_activation_store::{
+    store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
     },
 };
@@ -303,7 +303,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::{
-        inflight_activation_store::{
+        store::inflight_activation::{
             InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
         },
         test_utils::{

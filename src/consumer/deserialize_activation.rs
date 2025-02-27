@@ -6,7 +6,7 @@ use prost::Message as _;
 use rdkafka::{Message, message::OwnedMessage};
 use sentry_protos::taskbroker::v1::TaskActivation;
 
-use crate::inflight_activation_store::{InflightActivation, InflightActivationStatus};
+use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
 
 pub fn new() -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
     move |msg: Arc<OwnedMessage>| {

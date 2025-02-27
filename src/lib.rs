@@ -1,14 +1,12 @@
 use clap::Parser;
 use std::fs;
 
-pub mod auth_middleware;
 pub mod config;
 pub mod consumer;
-pub mod grpc_middleware;
-pub mod grpc_server;
-pub mod inflight_activation_store;
+pub mod grpc;
 pub mod logging;
 pub mod metrics;
+pub mod store;
 pub mod upkeep;
 
 #[cfg(test)]

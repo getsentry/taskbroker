@@ -1,7 +1,7 @@
-use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
+use futures_util::future::BoxFuture;
 use tower::{Layer, Service};
 
 #[derive(Debug, Clone, Default)]
@@ -20,8 +20,6 @@ pub struct MetricsMiddleware<S> {
     inner: S,
 }
 
-type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
-
 impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for MetricsMiddleware<S>
 where
     S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>> + Clone + Send + 'static,
@@ -37,8 +35,8 @@ where
     }
 
     fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
-        let clone = self.inner.clone();
-        let mut inner = std::mem::replace(&mut self.inner, clone);
+        let mut inner = self.inner.clone();
+        std::mem::swap(&mut inner, &mut self.inner);
 
         Box::pin(async move {
             let start = Instant::now();
