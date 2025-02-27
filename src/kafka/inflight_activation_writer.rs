@@ -9,7 +9,7 @@ use crate::{
     store::inflight_activation::{InflightActivation, InflightActivationStore},
 };
 
-use super::kafka::{
+use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
