@@ -165,7 +165,7 @@ pub async fn do_upkeep(
     {
         result_context.processing_attempts_exceeded = processing_attempts_exceeded;
     }
-    metrics::histogram!("upkeep.handle_processing_attempts")
+    metrics::histogram!("upkeep.handle_processing_attempts_exceeded")
         .record(handle_processing_attempts_exceeded_start.elapsed());
 
     // 6. Handle tasks that are past their expires_at deadline
