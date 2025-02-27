@@ -95,6 +95,7 @@ pub async fn do_upkeep(
     };
 
     // 1. Handle retry tasks
+    let handle_retries_start = Instant::now();
     if let Ok(retries) = store
         .get_retry_activations()
         .instrument(info_span!("get_retry_activations"))
@@ -141,8 +142,10 @@ pub async fn do_upkeep(
             result_context.retried = retried_count;
         }
     }
+    metrics::histogram!("upkeep.handle_retries").record(handle_retries_start.elapsed());
 
     // 4. Handle processing deadlines
+    let handle_processing_deadline_start = Instant::now();
     if let Ok(processing_deadline_reset) = store
         .handle_processing_deadline()
         .instrument(info_span!("handle_processing_deadline"))
@@ -150,8 +153,11 @@ pub async fn do_upkeep(
     {
         result_context.processing_deadline_reset = processing_deadline_reset;
     }
+    metrics::histogram!("upkeep.handle_processing_deadline")
+        .record(handle_processing_deadline_start.elapsed());
 
     // 5. Handle processing attempts exceeded
+    let handle_processing_attempts_exceeded_start = Instant::now();
     if let Ok(processing_attempts_exceeded) = store
         .handle_processing_attempts()
         .instrument(info_span!("handle_processing_attempts"))
@@ -159,8 +165,11 @@ pub async fn do_upkeep(
     {
         result_context.processing_attempts_exceeded = processing_attempts_exceeded;
     }
+    metrics::histogram!("upkeep.handle_processing_attempts")
+        .record(handle_processing_attempts_exceeded_start.elapsed());
 
     // 6. Handle tasks that are past their expires_at deadline
+    let handle_expires_at_start = Instant::now();
     if let Ok(expired_count) = store
         .handle_expires_at()
         .instrument(info_span!("handle_expires_at"))
@@ -168,8 +177,10 @@ pub async fn do_upkeep(
     {
         result_context.expired = expired_count;
     }
+    metrics::histogram!("upkeep.handle_expires_at").record(handle_expires_at_start.elapsed());
 
     // 7. Handle failure state tasks
+    let handle_failed_tasks_start = Instant::now();
     if let Ok(failed_tasks_forwarder) = store
         .handle_failed_tasks()
         .instrument(info_span!("handle_failed_tasks"))
@@ -219,8 +230,10 @@ pub async fn do_upkeep(
             result_context.deadlettered = deadletter_count;
         }
     }
+    metrics::histogram!("upkeep.handle_failed_tasks").record(handle_failed_tasks_start.elapsed());
 
     // 9. Cleanup completed tasks
+    let remove_completed_start = Instant::now();
     if let Ok(count) = store
         .remove_completed()
         .instrument(info_span!("remove_completed"))
@@ -228,6 +241,7 @@ pub async fn do_upkeep(
     {
         result_context.completed = count;
     }
+    metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
 
     if let Ok(pending_count) = store
         .count_by_status(InflightActivationStatus::Pending)
