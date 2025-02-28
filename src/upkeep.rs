@@ -54,10 +54,11 @@ struct UpkeepResults {
     processing_deadline_reset: u64,
     processing_attempts_exceeded: u64,
     expired: u64,
-    deadlettered: u64,
     completed: u64,
+    failed: u64,
     pending: u32,
     processing: u32,
+    deadlettered: u64,
     discarded: u64,
 }
 
@@ -67,11 +68,12 @@ impl UpkeepResults {
             && self.processing_deadline_reset == 0
             && self.processing_attempts_exceeded == 0
             && self.expired == 0
-            && self.deadlettered == 0
             && self.completed == 0
+            && self.failed == 0
             && self.pending == 0
             && self.processing == 0
             && self.discarded == 0
+            && self.deadlettered == 0
     }
 }
 
@@ -87,10 +89,11 @@ pub async fn do_upkeep(
         processing_deadline_reset: 0,
         processing_attempts_exceeded: 0,
         expired: 0,
-        deadlettered: 0,
         completed: 0,
+        failed: 0,
         pending: 0,
         processing: 0,
+        deadlettered: 0,
         discarded: 0,
     };
 
@@ -176,6 +179,9 @@ pub async fn do_upkeep(
         .await
     {
         result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
+        result_context.failed =
+            result_context.discarded + failed_tasks_forwarder.to_deadletter.len() as u64;
+
         let deadletters = failed_tasks_forwarder
             .to_deadletter
             .into_iter()
@@ -258,16 +264,21 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
 
+    // Task statuses
     metrics::counter!("upkeep.completed").increment(result_context.completed);
+    metrics::counter!("upkeep.failed").increment(result_context.failed);
+    metrics::counter!("upkeep.retried").increment(result_context.retried);
+    metrics::counter!("upkeep.expired").increment(result_context.expired);
+
+    // Upkeep cleanup actions
     metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
     metrics::counter!("upkeep.discarded").increment(result_context.discarded);
     metrics::counter!("upkeep.processing_attempts_exceeded")
         .increment(result_context.processing_attempts_exceeded);
     metrics::counter!("upkeep.processing_deadline_reset")
         .increment(result_context.processing_deadline_reset);
-    metrics::counter!("upkeep.retried").increment(result_context.retried);
-    metrics::counter!("upkeep.expired").increment(result_context.expired);
 
+    // State of inflight tasks
     metrics::gauge!("upkeep.pending_count").set(result_context.pending);
     metrics::gauge!("upkeep.processing_count").set(result_context.processing);
 
