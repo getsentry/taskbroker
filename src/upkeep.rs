@@ -77,7 +77,7 @@ impl UpkeepResults {
     }
 }
 
-#[instrument(name = "consumer::do_upkeep", skip(store, config, producer))]
+#[instrument(name = "upkeep::do_upkeep", skip(store, config, producer))]
 pub async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<InflightActivationStore>,

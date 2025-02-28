@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Instant};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
@@ -9,8 +9,8 @@ use sqlx::{
     migrate::MigrateDatabase,
     pool::PoolOptions,
     sqlite::{
-        SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult, SqliteRow,
-        SqliteSynchronous,
+        SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
+        SqliteRow, SqliteSynchronous,
     },
 };
 
@@ -189,6 +189,7 @@ impl InflightActivationStore {
         let conn_options = SqliteConnectOptions::from_str(url)?
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
+            .auto_vacuum(SqliteAutoVacuum::Incremental)
             .disable_statement_logging();
 
         let sqlite_pool = PoolOptions::<Sqlite>::new()
@@ -202,6 +203,16 @@ impl InflightActivationStore {
             sqlite_pool,
             config,
         })
+    }
+
+    /// Trigger incremental vacuum to reclaim free pages in the database.
+    pub async fn vacuum_db(&self) -> Result<(), Error> {
+        let timer = Instant::now();
+        sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&self.sqlite_pool)
+            .await?;
+        metrics::histogram!("store.vacuum").record(timer.elapsed());
+        Ok(())
     }
 
     /// Get an activation by id. Primarily used for testing

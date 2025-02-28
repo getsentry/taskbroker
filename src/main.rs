@@ -5,9 +5,9 @@ use taskbroker::consumer::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
 use taskbroker::upkeep::upkeep;
-use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
+use tokio::{select, time};
 use tonic::transport::Server;
 use tracing::{error, info};
 
@@ -88,12 +88,36 @@ async fn runnable() -> Result<(), Error> {
         .await?;
     }
 
-    // Upkeep thread
+    // Upkeep loop
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
         async move {
             upkeep(upkeep_config, upkeep_store).await;
+            Ok(())
+        }
+    });
+
+    // Maintenance task loop
+    let maintenance_task = tokio::spawn({
+        let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+        let maintenance_store = store.clone();
+        // TODO make this configurable.
+        let mut timer = time::interval(Duration::from_secs(60));
+        timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+        async move {
+            loop {
+                select! {
+                    _ = timer.tick() => {
+                        let _ = maintenance_store.vacuum_db().await;
+                        info!("ran maintenance vacuum");
+                    },
+                    _ = guard.wait() => {
+                        break;
+                    }
+                }
+            }
             Ok(())
         }
     });
@@ -187,6 +211,7 @@ async fn runnable() -> Result<(), Error> {
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
+        .on_completion(log_task_completion("maintenance_task", maintenance_task))
         .await;
 
     Ok(())
