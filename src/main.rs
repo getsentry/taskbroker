@@ -110,8 +110,8 @@ async fn runnable() -> Result<(), Error> {
             loop {
                 select! {
                     _ = timer.tick() => {
-                        info!("ran maintenance vacuum");
                         let _ = maintenance_store.vacuum_db().await;
+                        info!("ran maintenance vacuum");
                     },
                     _ = guard.wait() => {
                         break;

@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Instant};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
@@ -207,9 +207,11 @@ impl InflightActivationStore {
 
     /// Trigger incremental vacuum to reclaim free pages in the database.
     pub async fn vacuum_db(&self) -> Result<(), Error> {
+        let timer = Instant::now();
         sqlx::query("PRAGMA incremental_vacuum")
             .execute(&self.sqlite_pool)
             .await?;
+        metrics::histogram!("store.vacuum").record(timer.elapsed());
         Ok(())
     }
 
