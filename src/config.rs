@@ -121,7 +121,7 @@ impl Default for Config {
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             max_pending_count: 2048,
             max_pending_buffer_count: 128,
-            max_processing_attempts: 3,
+            max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
             worker_threads: 0,
         }
