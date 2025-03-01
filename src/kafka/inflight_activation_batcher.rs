@@ -2,7 +2,7 @@ use std::{mem::replace, time::Duration};
 
 use crate::{config::Config, store::inflight_activation::InflightActivation};
 
-use super::kafka::{
+use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };

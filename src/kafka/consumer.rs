@@ -222,7 +222,7 @@ macro_rules! processing_strategy {
     ) => {{
         let (commit_sender, commit_receiver) = tokio::sync::mpsc::channel(1);
 
-        $handles.spawn($crate::consumer::kafka::reduce(
+        $handles.spawn($crate::kafka::consumer::reduce(
             $reduce,
             $prev_receiver,
             commit_sender.clone(),
@@ -242,7 +242,7 @@ macro_rules! processing_strategy {
     ) => {{
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
 
-        $handles.spawn($crate::consumer::kafka::reduce(
+        $handles.spawn($crate::kafka::consumer::reduce(
             $reduce_first,
             $prev_receiver,
             sender.clone(),
@@ -266,9 +266,9 @@ macro_rules! processing_strategy {
             err: $reduce_err:expr,
         }
     ) => {{
-        |consumer: Arc<rdkafka::consumer::StreamConsumer<$crate::consumer::kafka::KafkaContext>>,
+        |consumer: Arc<rdkafka::consumer::StreamConsumer<$crate::kafka::consumer::KafkaContext>>,
          tpl: &std::collections::BTreeSet<(String, i32)>|
-         -> $crate::consumer::kafka::ActorHandles {
+         -> $crate::kafka::consumer::ActorHandles {
             let start = std::time::Instant::now();
 
             let mut handles = tokio::task::JoinSet::new();
@@ -285,7 +285,7 @@ macro_rules! processing_strategy {
                     .split_partition_queue(topic, *partition)
                     .expect("Unable to split topic by Partition");
 
-                handles.spawn($crate::consumer::kafka::map(
+                handles.spawn($crate::kafka::consumer::map(
                     queue,
                     $map_fn,
                     map_sender.clone(),
@@ -303,13 +303,13 @@ macro_rules! processing_strategy {
                 handles,
             );
 
-            handles.spawn($crate::consumer::kafka::commit(
+            handles.spawn($crate::kafka::consumer::commit(
                 commit_receiver,
                 consumer.clone(),
                 rendezvous_sender,
             ));
 
-            handles.spawn($crate::consumer::kafka::reduce_err(
+            handles.spawn($crate::kafka::consumer::reduce_err(
                 $reduce_err,
                 err_receiver,
                 shutdown_signal.clone(),
@@ -317,7 +317,7 @@ macro_rules! processing_strategy {
 
             tracing::debug!("Creating actors took {:?}", start.elapsed());
 
-            $crate::consumer::kafka::ActorHandles {
+            $crate::kafka::consumer::ActorHandles {
                 join_set: handles,
                 shutdown: shutdown_signal,
                 rendezvous: rendezvous_receiver,
@@ -830,8 +830,8 @@ mod tests {
     use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
     use tokio_util::sync::CancellationToken;
 
-    use crate::consumer::{
-        kafka::{
+    use crate::kafka::{
+        consumer::{
             CommitClient, KafkaMessage, MessageQueue, ReduceConfig, ReduceShutdownBehaviour,
             ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour, commit, map, reduce,
             reduce_err,

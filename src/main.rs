@@ -1,7 +1,7 @@
 use anyhow::{Error, anyhow};
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
-use taskbroker::consumer::inflight_activation_batcher::{
+use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
 use taskbroker::upkeep::upkeep;
@@ -15,16 +15,16 @@ use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServe
 
 use taskbroker::Args;
 use taskbroker::config::Config;
-use taskbroker::consumer::{
-    admin::create_missing_topics,
-    deserialize_activation::{self},
-    inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
-    kafka::start_consumer,
-    os_stream_writer::{OsStream, OsStreamWriter},
-};
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
+use taskbroker::kafka::{
+    admin::create_missing_topics,
+    consumer::start_consumer,
+    deserialize_activation::{self},
+    inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
+    os_stream_writer::{OsStream, OsStreamWriter},
+};
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;

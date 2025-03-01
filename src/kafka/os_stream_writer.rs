@@ -1,4 +1,4 @@
-use crate::consumer::kafka::{
+use crate::kafka::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
