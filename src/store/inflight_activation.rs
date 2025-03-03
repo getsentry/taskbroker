@@ -13,20 +13,17 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
-use tracing::info;
 
 use crate::config::Config;
 
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
-    pub enable_wal_checkpoint_log: bool,
 }
 
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_processing_attempts: config.max_processing_attempts,
-            enable_wal_checkpoint_log: config.enable_wal_checkpoint_log,
         }
     }
 }
@@ -270,18 +267,13 @@ impl InflightActivationStore {
         let result = Ok(query.execute(&self.sqlite_pool).await?.into());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
-        let wal_checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+        let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
             .fetch_one(&self.sqlite_pool)
             .await?;
 
-        if self.config.enable_wal_checkpoint_log {
-            let results = [
-                wal_checkpoint_result.get::<i32, _>("busy"),
-                wal_checkpoint_result.get::<i32, _>("log"),
-                wal_checkpoint_result.get::<i32, _>("checkpointed"),
-            ];
-            info!("PRAGMA wal_checkpoint(PASSIVE) results: {:?}", results);
-        }
+        metrics::gauge!("store.pages_written_to_wal").set(checkpoint_result.get::<i32, _>("log"));
+        metrics::gauge!("store.pages_committed_to_db")
+            .set(checkpoint_result.get::<i32, _>("checkpointed"));
 
         result
     }

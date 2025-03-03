@@ -93,9 +93,6 @@ pub struct Config {
 
     /// The number of worker threads for tokio runtime. Use the tokio default if 0.
     pub worker_threads: usize,
-
-    /// Whether to enable the WAL checkpoint log.
-    pub enable_wal_checkpoint_log: bool,
 }
 
 impl Default for Config {
@@ -127,7 +124,6 @@ impl Default for Config {
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
             worker_threads: 0,
-            enable_wal_checkpoint_log: false,
         }
     }
 }
