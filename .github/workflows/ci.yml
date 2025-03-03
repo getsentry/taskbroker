@@ -106,7 +106,7 @@ jobs:
         run: devservices up
 
       - name: Run coverage
-        run: cargo llvm-cov --all-fetaures --lcov --output-path lcov.info
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
 
       - uses: codecov/codecov-action@v5
         with:
