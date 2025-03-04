@@ -15,12 +15,3 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
 
 CREATE INDEX idx_pending_activation
 ON inflight_taskactivations (status, added_at, namespace, id);
-
-CREATE INDEX idx_processing_deadline
-ON inflight_taskactivations (status, processing_deadline);
-
-CREATE INDEX idx_processing_attempts
-ON inflight_taskactivations (status, processing_attempts);
-
-CREATE INDEX idx_expires_at
-ON inflight_taskactivations (status, expires_at);
