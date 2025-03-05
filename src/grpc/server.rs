@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
@@ -33,6 +33,17 @@ impl ConsumerService for TaskbrokerServer {
 
         match inflight {
             Ok(Some(inflight)) => {
+                if let Some(sentry_ts) = DateTime::from_timestamp(
+                    inflight.activation.received_at.unwrap().seconds,
+                    inflight.activation.received_at.unwrap().nanos as u32,
+                ) {
+                    metrics::histogram!("grpc_server.received_to_gettask.latency").record(
+                        Utc::now()
+                            .signed_duration_since(sentry_ts)
+                            .num_milliseconds() as f64,
+                    );
+                }
+
                 let resp = GetTaskResponse {
                     task: Some(inflight.activation),
                 };
@@ -40,8 +51,11 @@ impl ConsumerService for TaskbrokerServer {
 
                 Ok(Response::new(resp))
             }
-            Ok(None) => return Err(Status::not_found("No pending activation")),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Ok(None) => Err(Status::not_found("No pending activation")),
+            Err(e) => {
+                error!("Unable to retrieve pending activation: {:?}", e);
+                Err(Status::internal("Unable to retrieve pending activation"))
+            }
         }
     }
 
