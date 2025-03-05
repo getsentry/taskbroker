@@ -37,7 +37,7 @@ impl ConsumerService for TaskbrokerServer {
                     inflight.activation.received_at.unwrap().seconds,
                     inflight.activation.received_at.unwrap().nanos as u32,
                 ) {
-                    metrics::histogram!("grpc_server.sentry_to_disptach.latency").record(
+                    metrics::histogram!("grpc_server.received_to_gettask.latency").record(
                         Utc::now()
                             .signed_duration_since(sentry_ts)
                             .num_milliseconds() as f64,
