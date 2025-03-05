@@ -16,9 +16,6 @@ pub struct Config {
     /// The environment to report to sentry errors to.
     pub sentry_env: Option<Cow<'static, str>>,
 
-    /// The file that contains the current version of the application.
-    pub version_file: Option<String>,
-
     /// The sampling rate for tracing data.
     pub traces_sample_rate: Option<f32>,
 
@@ -103,7 +100,6 @@ impl Default for Config {
         Self {
             sentry_dsn: None,
             sentry_env: None,
-            version_file: None,
             traces_sample_rate: Some(0.0),
             log_filter: "debug,librdkafka=warn,h2=off".to_owned(),
             log_format: LogFormat::Text,
