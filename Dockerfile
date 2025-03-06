@@ -47,7 +47,6 @@ RUN mkdir /opt/sqlite
 
 # Import the built binary and config file and run it
 COPY --from=build /taskbroker/.VERSION /opt/.VERSION
-COPY --from=build /taskbroker/.VERSION /opt/taskbroker/.VERSION
 COPY --from=build /taskbroker/config.yaml /opt/config.yaml
 COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 ENTRYPOINT ["/opt/taskbroker"]
