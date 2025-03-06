@@ -13,7 +13,6 @@ use tracing::{error, info};
 
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
-use taskbroker::Args;
 use taskbroker::config::Config;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
@@ -31,6 +30,7 @@ use taskbroker::processing_strategy;
 use taskbroker::store::inflight_activation::{
     InflightActivationStore, InflightActivationStoreConfig,
 };
+use taskbroker::{Args, get_version};
 
 async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -50,9 +50,13 @@ fn main() -> Result<(), Error> {
     let args = Args::parse();
     let config = Arc::new(Config::from_args(&args)?);
 
+    println!("taskbroker starting");
+    println!("version: {}", get_version().trim());
+
     let mut basic = tokio::runtime::Builder::new_multi_thread();
     let mut runtime = basic.enable_all();
     if config.worker_threads > 0 {
+        println!("Starting with {:?} threads", config.worker_threads);
         runtime = runtime.worker_threads(config.worker_threads);
     }
 

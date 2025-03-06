@@ -32,12 +32,12 @@ COPY ./src ./src
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
-RUN echo "${TASKWORKER_GIT_REVISION}" > ./.VERSION
+RUN echo "${TASKWORKER_GIT_REVISION}" > ./VERSION
 
 # Runtime image
 FROM debian:bookworm-slim
 
-# Necessary fot libssl bindings
+# Necessary for libssl bindings
 RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev
 
 EXPOSE 50051
@@ -46,11 +46,13 @@ EXPOSE 50051
 RUN mkdir /opt/sqlite
 
 # Import the built binary and config file and run it
-COPY --from=build /taskbroker/.VERSION /opt/.VERSION
+COPY --from=build /taskbroker/VERSION /opt/VERSION
 COPY --from=build /taskbroker/config.yaml /opt/config.yaml
 COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
-ENTRYPOINT ["/opt/taskbroker"]
-CMD ["--config", "/opt/config.yaml"]
+
+WORKDIR /opt
+
+CMD ["/opt/taskbroker", "--config", "/opt/config.yaml"]
 
 # To build and run locally:
 # docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50051:50051 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry  taskbroker
