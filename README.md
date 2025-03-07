@@ -1,7 +1,9 @@
 # Taskbroker
+![ci status](https://github.com/getsentry/taskbroker/actions/workflows/ci.yml/badge.svg)
+[![codecov](https://codecov.io/gh/getsentry/taskbroker/graph/badge.svg?token=RFA2pVkzhl)](https://codecov.io/gh/getsentry/taskbroker)
 
 Taskbroker provides a Kafka consumer, RPC interface, and inflight task storage
-that form the core engine of asynchronous task execution at sentry.
+that form the core engine of asynchronous task execution at Sentry.
 
 ## High level overview
 
@@ -11,16 +13,19 @@ flowchart LR
 Sentry -- produce activation --> k[(Kafka)]
 k -- consume messages --> Taskbroker
 Taskbroker -- store --> sql[(SQLite)]
-Sentry -- grpc GetTask --> Taskbroker
-Sentry -- grpc SetTaskStatus --> Taskbroker
+Worker -- grpc GetTask --> Taskbroker
+Worker -- grpc SetTaskStatus --> Taskbroker
 ```
 
 Sentry (and other applications in the future) produce task activations. Taskbroker
 consumes those messages and stores them in a SQLite database to avoid head-of-line
-blocking, competitive workers, enable out-of-order execution and per-task acknowledgements.
+blocking, enable out-of-order execution and per-task acknowledgements.
 
-Workers use gRPC to fetch tasks. Once fetched, workers execute a task activation
-and report execution completion via gRPC.
+Workers communicate with Taskbroker via gRPC. There are two primary gRPC methods:
+
+- `GetTask` Workers can request a task from Taskbroker.
+- `SetTaskStatus` Once a worker has completed a task, `SetTaskStatus` is used to
+  report the task's outcome.
 
 ## Building
 
@@ -57,6 +62,10 @@ cargo run -- -c ./config/config-sentry-dev.yaml
 
 Taskbroker uses YAML files for configuration, and all of the available
 configuration options can be found in [Config](https://github.com/getsentry/taskbroker/blob/main/src/config.rs#L15)
+
+All configuration options can also be defined as environment variables using
+the `TASKBROKER_` prefix.
+
 ## Tests
 
 The test suite is composed of unit and integration tests in Rust, and end-to-end tests scripted with python.
