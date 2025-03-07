@@ -46,30 +46,13 @@ async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     }
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let args = Args::parse();
     let config = Arc::new(Config::from_args(&args)?);
 
     println!("taskbroker starting");
     println!("version: {}", get_version().trim());
-
-    let mut basic = tokio::runtime::Builder::new_multi_thread();
-    let mut runtime = basic.enable_all();
-    if config.worker_threads > 0 {
-        println!("Starting with {:?} threads", config.worker_threads);
-        runtime = runtime.worker_threads(config.worker_threads);
-    }
-
-    runtime
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async { runnable().await })
-}
-
-async fn runnable() -> Result<(), Error> {
-    let args = Args::parse();
-    let config = Arc::new(Config::from_args(&args)?);
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
