@@ -395,6 +395,7 @@ impl InflightActivationStore {
     /// if a worker took the task and was killed, or failed.
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
+        let mut atomic = self.sqlite_pool.begin().await?;
 
         // Idempotent tasks that fail their processing deadlines go directly to failure
         // there are no retries, as the worker will reject the task due to idempotency keys.
@@ -406,7 +407,7 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
-        .execute(&self.sqlite_pool)
+        .execute(&mut *atomic)
         .await;
 
         let mut processing_deadline_modified_rows = 0;
@@ -424,8 +425,10 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
-        .execute(&self.sqlite_pool)
+        .execute(&mut *atomic)
         .await;
+
+        atomic.commit().await?;
 
         if let Ok(query_res) = result {
             processing_deadline_modified_rows += query_res.rows_affected();
