@@ -230,11 +230,27 @@ impl InflightActivationStore {
 
     /// Get an activation by id. Primarily used for testing
     pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
-        let row_result: Option<TableRow> =
-            sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&self.read_pool)
-                .await?;
+        let row_result: Option<TableRow> = sqlx::query_as(
+            "
+            SELECT id,
+                activation,
+                partition,
+                offset,
+                added_at,
+                processing_attempts,
+                expires_at,
+                processing_deadline_duration,
+                processing_deadline,
+                status,
+                at_most_once,
+                namespace
+            FROM inflight_taskactivations
+            WHERE id = $1
+            ",
+        )
+        .bind(id)
+        .fetch_optional(&self.read_pool)
+        .await?;
 
         let Some(row) = row_result else {
             return Ok(None);
@@ -248,8 +264,23 @@ impl InflightActivationStore {
             return Ok(QueryResult { rows_affected: 0 });
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO inflight_taskactivations \
-            (id, activation, partition, offset, added_at, processing_attempts, expires_at, processing_deadline_duration, processing_deadline, status, at_most_once, namespace)",
+            "
+            INSERT INTO inflight_taskactivations
+                (
+                    id,
+                    activation,
+                    partition,
+                    offset,
+                    added_at,
+                    processing_attempts,
+                    expires_at,
+                    processing_deadline_duration,
+                    processing_deadline,
+                    status,
+                    at_most_once,
+                    namespace
+                )
+            ",
         );
         let rows = batch
             .into_iter()
@@ -298,15 +329,21 @@ impl InflightActivationStore {
         let now = Utc::now();
 
         let mut query_builder = QueryBuilder::new(
-            "UPDATE inflight_taskactivations
-            SET processing_deadline = unixepoch('now', '+' || processing_deadline_duration || ' seconds'), status = ",
+            "
+            UPDATE inflight_taskactivations
+            SET
+                processing_deadline = unixepoch(
+                    'now', '+' || processing_deadline_duration || ' seconds'
+                ),
+                status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Processing);
         query_builder.push(
-            " WHERE id = (
-            SELECT id
-            FROM inflight_taskactivations
-            WHERE status = ",
+            "
+            WHERE id = (
+                SELECT id
+                FROM inflight_taskactivations
+                WHERE status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
@@ -385,15 +422,30 @@ impl InflightActivationStore {
     }
 
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        Ok(
-            sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE status = $1")
-                .bind(InflightActivationStatus::Retry)
-                .fetch_all(&self.read_pool)
-                .await?
-                .into_iter()
-                .map(|row: TableRow| row.into())
-                .collect(),
+        Ok(sqlx::query_as(
+            "
+            SELECT id,
+                activation,
+                partition,
+                offset,
+                added_at,
+                processing_attempts,
+                expires_at,
+                processing_deadline_duration,
+                processing_deadline,
+                status,
+                at_most_once,
+                namespace
+            FROM inflight_taskactivations
+            WHERE status = $1
+            ",
         )
+        .bind(InflightActivationStatus::Retry)
+        .fetch_all(&self.read_pool)
+        .await?
+        .into_iter()
+        .map(|row: TableRow| row.into())
+        .collect())
     }
 
     pub async fn clear(&self) -> Result<(), Error> {
