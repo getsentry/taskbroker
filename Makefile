@@ -89,6 +89,13 @@ test-upkeep-expiry: build reset-kafka ## Run the upkeep expiry integration test
 integration-test: test-rebalance test-worker-processing test-upkeep-retry ## Run all integration tests
 .PHONY: integration-test
 
+
+# Benchmarks
+
+bench::
+	cargo bench
+.PHONY: bench
+
 # Help
 
 help: ## this help
