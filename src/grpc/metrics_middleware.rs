@@ -52,3 +52,30 @@ where
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::StatusCode;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn test_metrics_middleware() {
+        let mut service = MetricsLayer::default().layer(tower::service_fn(|_req| async {
+            Ok::<_, http::Error>(
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(())
+                    .unwrap(),
+            )
+        }));
+
+        let req = http::Request::builder()
+            .uri("http://localhost:8080/test")
+            .body(())
+            .unwrap();
+
+        let res = service.ready().await.unwrap().call(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+}

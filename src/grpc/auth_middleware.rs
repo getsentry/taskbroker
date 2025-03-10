@@ -147,9 +147,10 @@ fn validate_signature(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_signature;
+    use super::*;
     use bytes::Bytes;
     use hmac::{Hmac, Mac};
+    use http::StatusCode;
     use http::request::Request;
     use sha2::Sha256;
 
@@ -277,5 +278,100 @@ mod tests {
         // Original body returned.
         let result_body = res.unwrap();
         assert!(result_body == *"\0\0\0\0&A request data that is 38 bytes long..");
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_no_signature() {
+        let mut service = AuthLayer::default().layer(tower::service_fn(|_req| async {
+            let body = tonic::body::empty_body();
+            Ok::<_, http::Error>(
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(body)
+                    .unwrap(),
+            )
+        }));
+
+        let req_body = tonic::body::empty_body();
+        let req = http::Request::builder()
+            .uri("http://localhost:8080/test")
+            .body(req_body)
+            .unwrap();
+
+        let res = service.call(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_signature_success() {
+        let secret = vec!["super secret".to_string()];
+        let layer = AuthLayer {
+            shared_secret: secret,
+        };
+        let mut service = layer.layer(tower::service_fn(|_req| async {
+            let body = tonic::body::empty_body();
+            Ok::<_, http::Error>(
+                http::Response::builder()
+                    .status(StatusCode::OK)
+                    .body(body)
+                    .unwrap(),
+            )
+        }));
+
+        // Signature bodies don't include the 5 byte prefix
+        let signature_body = Bytes::from("A request data that is 38 bytes long..");
+        let signature = generate_hmac(
+            &layer.shared_secret[0],
+            "/rpc/service/method",
+            &signature_body,
+        );
+
+        let body_bytes = Bytes::from("\0\0\0\0&A request data that is 38 bytes long..");
+        let request_body = tonic::body::boxed(Full::new(body_bytes));
+        let req = http::Request::builder()
+            .uri("http://localhost:8080/rpc/service/method")
+            .header("sentry-signature", signature)
+            .body(tonic::body::boxed(request_body))
+            .unwrap();
+
+        let res = service.call(req).await.unwrap();
+
+        // No gprc status on success
+        assert_eq!(res.status(), StatusCode::OK);
+        let headers = res.headers();
+        assert!(headers.get("grpc-status").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_signature_failure() {
+        let secret = vec!["super secret".to_string()];
+        let layer = AuthLayer {
+            shared_secret: secret,
+        };
+        let mut service = layer.layer(tower::service_fn(|_req| async {
+            let body = tonic::body::empty_body();
+            let res = http::Response::builder()
+                .status(StatusCode::OK)
+                .body(body)
+                .unwrap();
+            Ok::<http::Response<_>, http::Error>(res)
+        }));
+
+        let body_bytes = Bytes::from("\0\0\0\0&A request data that is 38 bytes long..");
+        let request_body = tonic::body::boxed(Full::new(body_bytes));
+        let req = http::Request::builder()
+            .uri("http://localhost:8080/rpc/service/method")
+            .header("sentry-signature", "lol nope")
+            .body(tonic::body::boxed(request_body))
+            .unwrap();
+
+        let res = service.call(req).await.unwrap();
+        let headers = res.headers();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(headers.get("grpc-status").unwrap(), "16");
+        assert_eq!(
+            headers.get("grpc-message").unwrap(),
+            "Authentication%20failed"
+        );
     }
 }
