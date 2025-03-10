@@ -29,7 +29,8 @@ impl InflightActivationStoreConfig {
 }
 
 pub struct InflightActivationStore {
-    sqlite_pool: SqlitePool,
+    read_pool: SqlitePool,
+    write_pool: SqlitePool,
     config: InflightActivationStoreConfig,
 }
 
@@ -186,21 +187,33 @@ impl InflightActivationStore {
             Sqlite::create_database(url).await?
         }
 
-        let conn_options = SqliteConnectOptions::from_str(url)?
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Normal)
-            .auto_vacuum(SqliteAutoVacuum::Incremental)
-            .disable_statement_logging();
-
-        let sqlite_pool = PoolOptions::<Sqlite>::new()
-            .max_connections(1)
-            .connect_with(conn_options)
+        let read_pool = PoolOptions::<Sqlite>::new()
+            .max_connections(64)
+            .connect_with(
+                SqliteConnectOptions::from_str(url)?
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Normal)
+                    .read_only(true)
+                    .disable_statement_logging(),
+            )
             .await?;
 
-        sqlx::migrate!("./migrations").run(&sqlite_pool).await?;
+        let write_pool = PoolOptions::<Sqlite>::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::from_str(url)?
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .synchronous(SqliteSynchronous::Normal)
+                    .auto_vacuum(SqliteAutoVacuum::Incremental)
+                    .disable_statement_logging(),
+            )
+            .await?;
+
+        sqlx::migrate!("./migrations").run(&write_pool).await?;
 
         Ok(Self {
-            sqlite_pool,
+            read_pool,
+            write_pool,
             config,
         })
     }
@@ -209,7 +222,7 @@ impl InflightActivationStore {
     pub async fn vacuum_db(&self) -> Result<(), Error> {
         let timer = Instant::now();
         sqlx::query("PRAGMA incremental_vacuum")
-            .execute(&self.sqlite_pool)
+            .execute(&self.write_pool)
             .await?;
         metrics::histogram!("store.vacuum").record(timer.elapsed());
         Ok(())
@@ -220,7 +233,7 @@ impl InflightActivationStore {
         let row_result: Option<TableRow> =
             sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = $1")
                 .bind(id)
-                .fetch_optional(&self.sqlite_pool)
+                .fetch_optional(&self.read_pool)
                 .await?;
 
         let Some(row) = row_result else {
@@ -264,11 +277,11 @@ impl InflightActivationStore {
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
-        let result = Ok(query.execute(&self.sqlite_pool).await?.into());
+        let result = Ok(query.execute(&self.write_pool).await?.into());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-            .fetch_one(&self.sqlite_pool)
+            .fetch_one(&self.write_pool)
             .await?;
 
         metrics::gauge!("store.pages_written_to_wal").set(checkpoint_result.get::<i32, _>("log"));
@@ -308,7 +321,7 @@ impl InflightActivationStore {
 
         let result: Option<TableRow> = query_builder
             .build_query_as::<TableRow>()
-            .fetch_optional(&self.sqlite_pool)
+            .fetch_optional(&self.write_pool)
             .await?;
         let Some(row) = result else { return Ok(None) };
 
@@ -324,14 +337,14 @@ impl InflightActivationStore {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
                 .bind(status)
-                .fetch_one(&self.sqlite_pool)
+                .fetch_one(&self.read_pool)
                 .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
 
     pub async fn count(&self) -> Result<usize, Error> {
         let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
-            .fetch_one(&self.sqlite_pool)
+            .fetch_one(&self.read_pool)
             .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
@@ -345,7 +358,7 @@ impl InflightActivationStore {
         sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2")
             .bind(status)
             .bind(id)
-            .execute(&self.sqlite_pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -358,7 +371,7 @@ impl InflightActivationStore {
         sqlx::query("UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2")
             .bind(deadline.unwrap().timestamp())
             .bind(id)
-            .execute(&self.sqlite_pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -366,7 +379,7 @@ impl InflightActivationStore {
     pub async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
             .bind(id)
-            .execute(&self.sqlite_pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -375,7 +388,7 @@ impl InflightActivationStore {
         Ok(
             sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE status = $1")
                 .bind(InflightActivationStatus::Retry)
-                .fetch_all(&self.sqlite_pool)
+                .fetch_all(&self.read_pool)
                 .await?
                 .into_iter()
                 .map(|row: TableRow| row.into())
@@ -385,7 +398,7 @@ impl InflightActivationStore {
 
     pub async fn clear(&self) -> Result<(), Error> {
         sqlx::query("DELETE FROM inflight_taskactivations")
-            .execute(&self.sqlite_pool)
+            .execute(&self.write_pool)
             .await?;
         Ok(())
     }
@@ -395,7 +408,7 @@ impl InflightActivationStore {
     /// if a worker took the task and was killed, or failed.
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
-        let mut atomic = self.sqlite_pool.begin().await?;
+        let mut atomic = self.write_pool.begin().await?;
 
         // Idempotent tasks that fail their processing deadlines go directly to failure
         // there are no retries, as the worker will reject the task due to idempotency keys.
@@ -449,7 +462,7 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(self.config.max_processing_attempts as i32)
         .bind(InflightActivationStatus::Pending)
-        .execute(&self.sqlite_pool)
+        .execute(&self.write_pool)
         .await;
 
         if let Ok(query_res) = processing_attempts_result {
@@ -476,7 +489,7 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Pending)
-        .execute(&self.sqlite_pool)
+        .execute(&self.write_pool)
         .await?;
 
         Ok(update_result.rows_affected())
@@ -489,7 +502,7 @@ impl InflightActivationStore {
     /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
     /// complete.
     pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
-        let mut atomic = self.sqlite_pool.begin().await?;
+        let mut atomic = self.write_pool.begin().await?;
 
         let failed_tasks: Vec<SqliteRow> =
             sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
@@ -559,7 +572,7 @@ impl InflightActivationStore {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        let result = query_builder.build().execute(&self.sqlite_pool).await?;
+        let result = query_builder.build().execute(&self.write_pool).await?;
 
         Ok(result.rows_affected())
     }
@@ -569,7 +582,7 @@ impl InflightActivationStore {
     pub async fn remove_completed(&self) -> Result<u64, Error> {
         let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
             .bind(InflightActivationStatus::Complete)
-            .execute(&self.sqlite_pool)
+            .execute(&self.write_pool)
             .await?;
 
         Ok(query.rows_affected())
