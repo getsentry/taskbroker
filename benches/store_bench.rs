@@ -7,7 +7,7 @@ use taskbroker::{
     store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     },
-    test_utils::{generate_temp_filename, make_activations},
+    test_utils::{generate_temp_path, make_activations},
 };
 use tokio::task::JoinSet;
 
@@ -20,12 +20,13 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
             rng.r#gen::<u64>()
         )
     } else {
-        generate_temp_filename()
+        generate_temp_path()
     };
     let store = Arc::new(
         InflightActivationStore::new(
             &url,
             InflightActivationStoreConfig {
+                sharding_factor: 8,
                 max_processing_attempts: 1,
             },
         )
@@ -76,12 +77,13 @@ async fn set_status(num_activations: u32, num_workers: u32) {
             rng.r#gen::<u64>()
         )
     } else {
-        generate_temp_filename()
+        generate_temp_path()
     };
     let store = Arc::new(
         InflightActivationStore::new(
             &url,
             InflightActivationStoreConfig {
+                sharding_factor: 8,
                 max_processing_attempts: 1,
             },
         )
@@ -128,10 +130,10 @@ async fn set_status(num_activations: u32, num_workers: u32) {
 }
 
 fn store_bench(c: &mut Criterion) {
-    let num_activations: u32 = 4_096;
+    let num_activations: u32 = 8192;
     let num_workers = 64;
 
-    c.benchmark_group("bench_InflightActivationStore")
+    c.benchmark_group("bench_InflightActivationShard")
         .sample_size(256)
         .throughput(criterion::Throughput::Elements(num_activations.into()))
         .bench_function("get_pending_activation", |b| {
