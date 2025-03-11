@@ -92,7 +92,7 @@ integration-test: test-rebalance test-worker-processing test-upkeep-retry ## Run
 
 # Benchmarks
 
-bench::
+bench:
 	cargo bench
 .PHONY: bench
 
