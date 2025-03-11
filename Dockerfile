@@ -36,7 +36,7 @@ RUN cargo build --release
 RUN echo "${TASKWORKER_GIT_REVISION}" > ./VERSION
 
 # Runtime image
-FROM debian:bookworm-slim
+FROM rust:1-bookworm
 
 # Necessary for libssl bindings
 RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev
