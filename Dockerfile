@@ -16,6 +16,7 @@ COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
 COPY ./config/${config_file} ./config.yaml
+COPY ./benches ./benches
 
 # This is set by the cloudbuild.yaml file
 ARG TASKWORKER_GIT_REVISION=""

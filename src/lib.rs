@@ -9,7 +9,6 @@ pub mod metrics;
 pub mod store;
 pub mod upkeep;
 
-#[cfg(test)]
 pub mod test_utils;
 
 pub fn get_version() -> &'static str {
