@@ -13,6 +13,7 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
+use tracing::instrument;
 
 use crate::config::Config;
 
@@ -219,6 +220,7 @@ impl InflightActivationStore {
     }
 
     /// Trigger incremental vacuum to reclaim free pages in the database.
+    #[instrument(skip_all)]
     pub async fn vacuum_db(&self) -> Result<(), Error> {
         let timer = Instant::now();
         sqlx::query("PRAGMA incremental_vacuum")
@@ -259,6 +261,7 @@ impl InflightActivationStore {
         Ok(Some(row.into()))
     }
 
+    #[instrument(skip_all)]
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         if batch.is_empty() {
             return Ok(QueryResult { rows_affected: 0 });
@@ -322,6 +325,7 @@ impl InflightActivationStore {
         result
     }
 
+    #[instrument(skip_all)]
     pub async fn get_pending_activation(
         &self,
         namespace: Option<&str>,
@@ -365,11 +369,13 @@ impl InflightActivationStore {
         Ok(Some(row.into()))
     }
 
+    #[instrument(skip_all)]
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
         self.count_by_status(InflightActivationStatus::Pending)
             .await
     }
 
+    #[instrument(skip_all)]
     pub async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
@@ -387,6 +393,7 @@ impl InflightActivationStore {
     }
 
     /// Update the status of a specific activation
+    #[instrument(skip_all)]
     pub async fn set_status(
         &self,
         id: &str,
@@ -400,6 +407,7 @@ impl InflightActivationStore {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub async fn set_processing_deadline(
         &self,
         id: &str,
@@ -413,6 +421,7 @@ impl InflightActivationStore {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
             .bind(id)
@@ -421,6 +430,7 @@ impl InflightActivationStore {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         Ok(sqlx::query_as(
             "
@@ -458,6 +468,7 @@ impl InflightActivationStore {
     /// Update tasks that are in processing and have exceeded their processing deadline
     /// Exceeding a processing deadline does not consume a retry as we don't know
     /// if a worker took the task and was killed, or failed.
+    #[instrument(skip_all)]
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
@@ -505,6 +516,7 @@ impl InflightActivationStore {
 
     /// Update tasks that have exceeded their max processing attempts.
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
+    #[instrument(skip_all)]
     pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
         let processing_attempts_result = sqlx::query(
             "UPDATE inflight_taskactivations 
@@ -530,6 +542,7 @@ impl InflightActivationStore {
     /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
     ///
     /// The number of impacted records is returned in a Result.
+    #[instrument(skip_all)]
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let update_result = sqlx::query(
@@ -553,6 +566,7 @@ impl InflightActivationStore {
     /// or need to be moved to deadletter and are returned in the Result.
     /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
     /// complete.
+    #[instrument(skip_all)]
     pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
         let mut atomic = self.write_pool.begin().await?;
 
@@ -612,6 +626,7 @@ impl InflightActivationStore {
     }
 
     /// Mark a collection of tasks as complete by id
+    #[instrument(skip_all)]
     pub async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
         query_builder
@@ -631,6 +646,7 @@ impl InflightActivationStore {
 
     /// Remove completed tasks.
     /// This method is a garbage collector for the inflight task store.
+    #[instrument(skip_all)]
     pub async fn remove_completed(&self) -> Result<u64, Error> {
         let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
             .bind(InflightActivationStatus::Complete)

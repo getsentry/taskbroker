@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{select, time};
-use tracing::{Instrument, error, info, info_span, instrument};
+use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -99,11 +99,7 @@ pub async fn do_upkeep(
 
     // 1. Handle retry tasks
     let handle_retries_start = Instant::now();
-    if let Ok(retries) = store
-        .get_retry_activations()
-        .instrument(info_span!("get_retry_activations"))
-        .await
-    {
+    if let Ok(retries) = store.get_retry_activations().await {
         // 2. Append retries to kafka
         let deliveries = retries
             .into_iter()
@@ -149,11 +145,7 @@ pub async fn do_upkeep(
 
     // 4. Handle processing deadlines
     let handle_processing_deadline_start = Instant::now();
-    if let Ok(processing_deadline_reset) = store
-        .handle_processing_deadline()
-        .instrument(info_span!("handle_processing_deadline"))
-        .await
-    {
+    if let Ok(processing_deadline_reset) = store.handle_processing_deadline().await {
         result_context.processing_deadline_reset = processing_deadline_reset;
     }
     metrics::histogram!("upkeep.handle_processing_deadline")
@@ -161,11 +153,7 @@ pub async fn do_upkeep(
 
     // 5. Handle processing attempts exceeded
     let handle_processing_attempts_exceeded_start = Instant::now();
-    if let Ok(processing_attempts_exceeded) = store
-        .handle_processing_attempts()
-        .instrument(info_span!("handle_processing_attempts"))
-        .await
-    {
+    if let Ok(processing_attempts_exceeded) = store.handle_processing_attempts().await {
         result_context.processing_attempts_exceeded = processing_attempts_exceeded;
     }
     metrics::histogram!("upkeep.handle_processing_attempts_exceeded")
@@ -173,22 +161,14 @@ pub async fn do_upkeep(
 
     // 6. Handle tasks that are past their expires_at deadline
     let handle_expires_at_start = Instant::now();
-    if let Ok(expired_count) = store
-        .handle_expires_at()
-        .instrument(info_span!("handle_expires_at"))
-        .await
-    {
+    if let Ok(expired_count) = store.handle_expires_at().await {
         result_context.expired = expired_count;
     }
     metrics::histogram!("upkeep.handle_expires_at").record(handle_expires_at_start.elapsed());
 
     // 7. Handle failure state tasks
     let handle_failed_tasks_start = Instant::now();
-    if let Ok(failed_tasks_forwarder) = store
-        .handle_failed_tasks()
-        .instrument(info_span!("handle_failed_tasks"))
-        .await
-    {
+    if let Ok(failed_tasks_forwarder) = store.handle_failed_tasks().await {
         result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
         result_context.failed =
             result_context.discarded + failed_tasks_forwarder.to_deadletter.len() as u64;
@@ -240,11 +220,7 @@ pub async fn do_upkeep(
 
     // 9. Cleanup completed tasks
     let remove_completed_start = Instant::now();
-    if let Ok(count) = store
-        .remove_completed()
-        .instrument(info_span!("remove_completed"))
-        .await
-    {
+    if let Ok(count) = store.remove_completed().await {
         result_context.completed = count;
     }
     metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
