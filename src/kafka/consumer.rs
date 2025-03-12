@@ -570,7 +570,7 @@ pub async fn reduce<T, U>(
 ) -> Result<(), Error> {
     let config = reducer.get_reduce_config();
     let mut flush_timer = config.flush_interval.map(time::interval);
-    let mut repoll_timer = time::interval(Duration::from_secs(1));
+    let mut repoll_timer = time::interval(Duration::from_millis(250));
     repoll_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut inflight_msgs = Vec::new();
 
