@@ -19,8 +19,8 @@ COPY ./config/${config_file} ./config.yaml
 COPY ./benches ./benches
 
 # This is set by the cloudbuild.yaml file
-ARG TASKWORKER_GIT_REVISION=""
-ENV TASKWORKER_GIT_REVISION=${TASKWORKER_GIT_REVISION}
+ARG TASKBROKER_GIT_REVISION=""
+ENV TASKBROKER_GIT_REVISION=${TASKBROKER_GIT_REVISION}
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release
@@ -33,7 +33,7 @@ COPY ./src ./src
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
-RUN echo "${TASKWORKER_GIT_REVISION}" > ./VERSION
+RUN echo "${TASKBROKER_GIT_REVISION}" > ./VERSION
 
 # Runtime image
 FROM rust:1-bookworm
