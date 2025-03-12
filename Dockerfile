@@ -9,18 +9,18 @@ RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compi
 RUN USER=root cargo new --bin taskbroker
 WORKDIR /taskbroker
 
-ARG config_file=config-sentry-dev.yaml
+# This is set by the cloudbuild.yaml file
+ARG TASKBROKER_GIT_REVISION
+ARG CONFIG_FILE=config-sentry-dev.yaml
+
+ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
 
 # All these files are required to build or run the application
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
-COPY ./config/${config_file} ./config.yaml
+COPY ./config/${CONFIG_FILE} ./config.yaml
 COPY ./benches ./benches
-
-# This is set by the cloudbuild.yaml file
-ARG TASKBROKER_GIT_REVISION=""
-ENV TASKBROKER_GIT_REVISION=${TASKBROKER_GIT_REVISION}
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release
@@ -33,7 +33,7 @@ COPY ./src ./src
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
-RUN echo "${TASKBROKER_GIT_REVISION}" > ./VERSION
+RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
 # Runtime image
 FROM rust:1-bookworm
