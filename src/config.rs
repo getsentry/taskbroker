@@ -78,6 +78,9 @@ pub struct Config {
     /// The number of physical files to shard the database by
     pub db_sharding_factor: u8,
 
+    /// The frequency at which sqlite runs the VACUUM command.
+    pub db_vacuum_interval_ms: u64,
+
     /// The maximum number of pending records that can be
     /// in the InflightTaskStore (sqlite)
     pub max_pending_count: usize,
@@ -120,6 +123,7 @@ impl Default for Config {
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight".to_owned(),
             db_sharding_factor: 8,
+            db_vacuum_interval_ms: 60000,
             max_pending_count: 2048,
             max_pending_buffer_count: 128,
             max_processing_attempts: 5,

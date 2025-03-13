@@ -4,7 +4,7 @@ use std::{
     path::Path,
     str::FromStr,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Error, anyhow};
@@ -22,14 +22,15 @@ use sqlx::{
         SqliteSynchronous,
     },
 };
-use tokio::{fs, task::JoinSet};
-use tracing::instrument;
+use tokio::{fs, select, task::JoinSet, time};
+use tracing::{info, instrument};
 
 use crate::config::Config;
 
 pub struct InflightActivationStore {
     config: InflightActivationStoreConfig,
     shards: Vec<Arc<InflightActivationShard>>,
+    _maintenance_handles: JoinSet<()>,
 }
 
 impl InflightActivationStore {
@@ -39,8 +40,10 @@ impl InflightActivationStore {
     ) -> Result<Self, Error> {
         let path = Path::new(directory);
         if path.is_file() {
-            Err(anyhow!("DB directory is a file, expecting a directory"))
-        } else if path.exists() {
+            return Err(anyhow!("DB directory is a file, expecting a directory"));
+        }
+
+        let shards = if path.exists() {
             let expected: BTreeSet<String> = (0..config.sharding_factor)
                 .map(|i| format!("{}/{}.sqlite", directory, i))
                 .collect();
@@ -59,7 +62,7 @@ impl InflightActivationStore {
                     InflightActivationShard::new(&path, config.clone()).await?,
                 ))
             }
-            Ok(Self { config, shards })
+            shards
         } else {
             fs::create_dir(path).await?;
             let mut shards = vec![];
@@ -68,8 +71,41 @@ impl InflightActivationStore {
                     InflightActivationShard::new(&path, config.clone()).await?,
                 ))
             }
-            Ok(Self { config, shards })
+            shards
+        };
+
+        let mut maintenance_handles = JoinSet::new();
+
+        for (i, shard) in shards.iter().cloned().enumerate() {
+            maintenance_handles.spawn(async move {
+                let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+
+                let mut timer = time::interval(Duration::from_millis(config.vacuum_interval_ms));
+
+                timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+                loop {
+                    select! {
+                        _ = timer.tick() => {
+                            shard.vacuum_db().await.expect(&format!(
+                                "Failed to run maintenance vacuum on shard {:}",
+                                i
+                            ));
+                            info!("ran maintenance vacuum on shard {:}", i);
+                        }
+
+                        _ = guard.wait() => {
+                            break;
+                        }
+                    }
+                }
+            });
         }
+
+        Ok(Self {
+            config,
+            shards,
+            _maintenance_handles: maintenance_handles,
+        })
     }
 
     fn route(&self, id: &str) -> usize {
@@ -78,24 +114,6 @@ impl InflightActivationStore {
         (s.finish() % self.config.sharding_factor as u64)
             .try_into()
             .unwrap()
-    }
-
-    /// Trigger incremental vacuum to reclaim free pages in the database.
-    pub async fn vacuum_db(&self) -> Result<(), Error> {
-        let timer = Instant::now();
-
-        self.shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.vacuum_db().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<()>, _>>()?;
-
-        metrics::histogram!("store.vacuum").record(timer.elapsed());
-        Ok(())
     }
 
     /// Get an activation by id. Primarily used for testing
@@ -370,6 +388,7 @@ impl InflightActivationStore {
 #[derive(Clone)]
 pub struct InflightActivationStoreConfig {
     pub sharding_factor: u8,
+    pub vacuum_interval_ms: u64,
     pub max_processing_attempts: usize,
 }
 
@@ -377,6 +396,7 @@ impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             sharding_factor: config.db_sharding_factor,
+            vacuum_interval_ms: config.db_vacuum_interval_ms,
             max_processing_attempts: config.max_processing_attempts,
         }
     }

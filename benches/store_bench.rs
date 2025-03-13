@@ -27,6 +27,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
             &url,
             InflightActivationStoreConfig {
                 sharding_factor: 8,
+                vacuum_interval_ms: 60000,
                 max_processing_attempts: 1,
             },
         )
@@ -85,6 +86,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
             InflightActivationStoreConfig {
                 sharding_factor: 8,
                 max_processing_attempts: 1,
+                vacuum_interval_ms: 60000,
             },
         )
         .await
