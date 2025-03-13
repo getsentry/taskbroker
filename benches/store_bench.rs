@@ -99,19 +99,32 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     );
 
     let mut join_set = JoinSet::new();
-    for i in 0..num_workers {
+    for worker_idx in 0..num_workers {
         let store = store.clone();
         join_set.spawn(async move {
-            for idx in 0..num_activations {
-                if idx % num_workers == i {
+            for task_id in 0..num_activations {
+                if task_id % num_workers == worker_idx {
                     store
-                        .set_status(&format!("id_{}", i), InflightActivationStatus::Complete)
+                        .set_status(
+                            &format!("id_{}", task_id),
+                            InflightActivationStatus::Complete,
+                        )
                         .await
                         .unwrap();
                 }
             }
         });
     }
+
+    join_set.join_all().await;
+
+    assert_eq!(
+        store
+            .count_by_status(InflightActivationStatus::Complete)
+            .await
+            .unwrap(),
+        num_activations as usize
+    );
 }
 
 fn store_bench(c: &mut Criterion) {
