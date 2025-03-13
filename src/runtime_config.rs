@@ -4,6 +4,7 @@ use tracing::info;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RuntimeConfig {
+    /// A list of tasks to drop before inserting into sqlite.
     pub drop_task_killswitch: Vec<String>,
 }
 
