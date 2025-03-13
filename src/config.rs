@@ -75,6 +75,9 @@ pub struct Config {
     /// The path to the sqlite database
     pub db_path: String,
 
+    /// The path to the runtime config file
+    pub runtime_config_path: String,
+
     /// The maximum number of pending records that can be
     /// in the InflightTaskStore (sqlite)
     pub max_pending_count: usize,
@@ -116,6 +119,7 @@ impl Default for Config {
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
+            runtime_config_path: "./runtime_config_defaults.yaml".to_owned(),
             max_pending_count: 2048,
             max_pending_buffer_count: 128,
             max_processing_attempts: 5,

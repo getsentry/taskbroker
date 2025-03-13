@@ -6,10 +6,10 @@ pub mod grpc;
 pub mod kafka;
 pub mod logging;
 pub mod metrics;
+pub mod runtime_config;
 pub mod store;
-pub mod upkeep;
-
 pub mod test_utils;
+pub mod upkeep;
 
 pub fn get_version() -> &'static str {
     let release_name = fs::read_to_string("./VERSION").expect("Unable to read version");
