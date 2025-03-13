@@ -51,10 +51,7 @@ async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
     let config = Arc::new(Config::from_args(&args)?);
-    let runtime_config =
-        Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
-    let rt_config = runtime_config.read().await;
-    println!("rt_config: {:?}", rt_config);
+    let _ = Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
 
     println!("taskbroker starting");
     println!("version: {}", get_version().trim());
