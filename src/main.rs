@@ -53,6 +53,8 @@ async fn main() -> Result<(), Error> {
     let config = Arc::new(Config::from_args(&args)?);
     let runtime_config =
         Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
+    let rt_config = runtime_config.read().await;
+    println!("rt_config: {:?}", rt_config);
 
     println!("taskbroker starting");
     println!("version: {}", get_version().trim());
@@ -102,7 +104,6 @@ async fn main() -> Result<(), Error> {
                     _ = timer.tick() => {
                         let _ = maintenance_store.vacuum_db().await;
                         info!("ran maintenance vacuum");
-                        let _ = runtime_config.reload_config().await;
                     },
                     _ = guard.wait() => {
                         break;

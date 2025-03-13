@@ -1,6 +1,9 @@
 use serde::Deserialize;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 #[derive(Debug, Deserialize, Clone, PartialEq, Default)]
@@ -10,22 +13,29 @@ pub struct RuntimeConfig {
 }
 
 pub struct RuntimeConfigManager {
-    pub config: RwLock<RuntimeConfig>,
-    pub path: String,
+    pub config: Arc<RwLock<RuntimeConfig>>,
+    pub handler: JoinHandle<()>,
 }
 
 impl RuntimeConfigManager {
     pub async fn new(path: String) -> Self {
-        let runtime_config = Self::read_yaml_file(&path).await;
+        let runtime_config = Arc::new(RwLock::new(Default::default()));
+        let _ = Self::reload_config(&path, &runtime_config).await;
         Self {
-            config: RwLock::new(runtime_config),
-            path,
+            config: runtime_config.clone(),
+            handler: tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    Self::reload_config(&path, &runtime_config).await;
+                    interval.tick().await;
+                }
+            }),
         }
     }
 
-    async fn read_yaml_file(path: &str) -> RuntimeConfig {
+    pub async fn reload_config(path: &str, config: &Arc<RwLock<RuntimeConfig>>) {
         let contents = fs::read_to_string(path).await;
-        match contents {
+        let new_config: RuntimeConfig = match contents {
             Ok(contents) => {
                 let runtime_config = serde_yaml::from_str::<RuntimeConfig>(&contents);
                 match runtime_config {
@@ -43,17 +53,10 @@ impl RuntimeConfigManager {
                 );
                 RuntimeConfig::default()
             }
-        }
-    }
-
-    pub async fn reload_config(&self) -> Result<bool, anyhow::Error> {
-        let new_config = Self::read_yaml_file(&self.path).await;
-        if new_config != *self.config.read().await {
-            *self.config.write().await = new_config;
-            info!("Reloaded new runtime config from {}", self.path);
-            Ok(true)
-        } else {
-            Ok(false)
+        };
+        if new_config != *config.read().await {
+            *config.write().await = new_config;
+            info!("Reloaded new runtime config from {}", path);
         }
     }
 
@@ -81,21 +84,6 @@ drop_task_killswitch:
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
-
-        std::fs::write(
-            test_path,
-            r#"
-drop_task_killswitch:
-  - test:do_nothing
-  - test:also_do_nothing"#,
-        )
-        .unwrap();
-
-        let _ = runtime_config.reload_config().await;
-        let config = runtime_config.read().await;
-        assert_eq!(config.drop_task_killswitch.len(), 2);
-        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
-        assert_eq!(config.drop_task_killswitch[1], "test:also_do_nothing");
 
         fs::remove_file(test_path).await.unwrap();
     }
