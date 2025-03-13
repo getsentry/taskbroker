@@ -33,7 +33,6 @@ COPY ./src ./src
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
-RUN echo "${TASKBROKER_GIT_REVISION} : ${TASKBROKER_VERSION}";
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
 # Runtime image
