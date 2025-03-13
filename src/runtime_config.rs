@@ -40,3 +40,40 @@ impl RuntimeConfigManager {
         m.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeConfigManager;
+
+    #[tokio::test]
+    async fn test_runtime_config_manager() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  - test:do_nothing"#;
+
+        let test_path = "runtime_test_config.yaml";
+        std::fs::write(test_path, test_yaml).unwrap();
+
+        let runtime_config = RuntimeConfigManager::new(test_path.to_string());
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 1);
+        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+
+        std::fs::write(
+            test_path,
+            r#"
+drop_task_killswitch:
+  - test:do_nothing
+  - test:also_do_nothing"#,
+        )
+        .unwrap();
+
+        runtime_config.reload_config().await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 2);
+        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+        assert_eq!(config.drop_task_killswitch[1], "test:also_do_nothing");
+
+        std::fs::remove_file(test_path).unwrap();
+    }
+}
