@@ -66,6 +66,7 @@ impl RuntimeConfigManager {
 #[cfg(test)]
 mod tests {
     use super::RuntimeConfigManager;
+    use tokio::fs;
 
     #[tokio::test]
     async fn test_runtime_config_manager() {
@@ -74,7 +75,7 @@ drop_task_killswitch:
   - test:do_nothing"#;
 
         let test_path = "runtime_test_config.yaml";
-        std::fs::write(test_path, test_yaml).unwrap();
+        fs::write(test_path, test_yaml).await.unwrap();
 
         let runtime_config = RuntimeConfigManager::new(test_path.to_string()).await;
         let config = runtime_config.read().await;
@@ -96,6 +97,6 @@ drop_task_killswitch:
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
         assert_eq!(config.drop_task_killswitch[1], "test:also_do_nothing");
 
-        std::fs::remove_file(test_path).unwrap();
+        fs::remove_file(test_path).await.unwrap();
     }
 }
