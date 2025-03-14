@@ -18,7 +18,7 @@ pub struct RuntimeConfigManager {
 }
 
 impl RuntimeConfigManager {
-    pub async fn new(path: String) -> Self {
+    pub async fn new(path: Option<String>) -> Self {
         let runtime_config = Arc::new(RwLock::new(Default::default()));
         let _ = Self::reload_config(&path, &runtime_config).await;
         Self {
@@ -33,8 +33,12 @@ impl RuntimeConfigManager {
         }
     }
 
-    pub async fn reload_config(path: &str, config: &Arc<RwLock<RuntimeConfig>>) {
-        let contents = fs::read_to_string(path).await;
+    async fn reload_config(path: &Option<String>, config: &Arc<RwLock<RuntimeConfig>>) {
+        if path.is_none() {
+            return;
+        }
+        let yaml_path = path.as_ref().unwrap();
+        let contents = fs::read_to_string(yaml_path).await;
         let new_config: RuntimeConfig = match contents {
             Ok(contents) => {
                 let runtime_config = serde_yaml::from_str::<RuntimeConfig>(&contents);
@@ -56,7 +60,7 @@ impl RuntimeConfigManager {
         };
         if new_config != *config.read().await {
             *config.write().await = new_config;
-            info!("Reloaded new runtime config from {}", path);
+            info!("Reloaded new runtime config from {}", yaml_path);
         }
     }
 
