@@ -87,14 +87,13 @@ impl Reducer for InflightActivationWriter {
                 .min_by_key(|item| item.timestamp())
                 .unwrap();
 
-        let res = self.store.store(take(&mut self.batch).unwrap()).await?;
+        let rows_affected = self.store.store(take(&mut self.batch).unwrap()).await?;
         metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
             .record(lag.num_seconds() as f64);
-        metrics::counter!("consumer.inflight_activation_writer.stored")
-            .increment(res.rows_affected);
+        metrics::counter!("consumer.inflight_activation_writer.stored").increment(rows_affected);
         debug!(
             "Inserted {:?} entries with max lag: {:?}s",
-            res.rows_affected,
+            rows_affected,
             lag.num_seconds()
         );
 

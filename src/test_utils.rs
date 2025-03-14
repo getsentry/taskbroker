@@ -20,9 +20,9 @@ use chrono::{Timelike, Utc};
 use sentry_protos::taskbroker::v1::TaskActivation;
 
 /// Generate a unique filename for isolated SQLite databases.
-pub fn generate_temp_filename() -> String {
+pub fn generate_temp_path() -> String {
     let mut rng = rand::thread_rng();
-    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+    format!("/var/tmp/{}-{}", Utc::now(), rng.r#gen::<u64>())
 }
 
 /// Create a collection of pending unsaved activations.
@@ -81,7 +81,7 @@ pub fn create_config() -> Arc<Config> {
 
 /// Create an InflightActivationStore instance
 pub async fn create_test_store() -> InflightActivationStore {
-    let url = generate_temp_filename();
+    let url = generate_temp_path();
 
     InflightActivationStore::new(
         &url,
