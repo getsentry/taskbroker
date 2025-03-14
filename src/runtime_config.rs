@@ -84,7 +84,7 @@ drop_task_killswitch:
         let test_path = "runtime_test_config.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
 
-        let runtime_config = RuntimeConfigManager::new(test_path.to_string()).await;
+        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
