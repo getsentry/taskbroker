@@ -318,7 +318,7 @@ impl InflightActivationStore {
     /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
     /// complete.
     pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
-        let results: Vec<FailedTasksForwarder> = self
+        let results = self
             .shards
             .iter()
             .cloned()
@@ -327,9 +327,7 @@ impl InflightActivationStore {
             .join_all()
             .await
             .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(FailedTasksForwarder {
             to_discard: results
