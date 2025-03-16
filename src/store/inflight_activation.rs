@@ -159,43 +159,33 @@ impl InflightActivationStore {
     }
 
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.count_pending_activations().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum())
+        Ok(join_all(
+            self.shards
+                .iter()
+                .map(|shard| shard.count_pending_activations()),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum())
     }
 
     pub async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.count_by_status(status).await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum())
+        Ok(join_all(
+            self.shards
+                .iter()
+                .map(|shard| shard.count_by_status(status)),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum())
     }
 
     pub async fn count(&self) -> Result<usize, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.count().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
+        Ok(join_all(self.shards.iter().map(|shard| shard.count()))
             .await
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?
@@ -227,28 +217,21 @@ impl InflightActivationStore {
     }
 
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.get_retry_activations().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect())
+        Ok(join_all(
+            self.shards
+                .iter()
+                .map(|shard| shard.get_retry_activations()),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect())
     }
 
     pub async fn clear(&self) -> Result<(), Error> {
-        self.shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.clear().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
+        join_all(self.shards.iter().map(|shard| shard.clear()))
             .await
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?;
@@ -259,35 +242,31 @@ impl InflightActivationStore {
     /// Exceeding a processing deadline does not consume a retry as we don't know
     /// if a worker took the task and was killed, or failed.
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.handle_processing_deadline().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum())
+        Ok(join_all(
+            self.shards
+                .iter()
+                .map(|shard| shard.handle_processing_deadline()),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum())
     }
 
     /// Update tasks that have exceeded their max processing attempts.
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
     pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.handle_processing_attempts().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum())
+        Ok(join_all(
+            self.shards
+                .iter()
+                .map(|shard| shard.handle_processing_attempts()),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum())
     }
 
     /// Perform upkeep work for tasks that are past expires_at deadlines
@@ -297,18 +276,14 @@ impl InflightActivationStore {
     ///
     /// The number of impacted records is returned in a Result.
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.handle_expires_at().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum())
+        Ok(
+            join_all(self.shards.iter().map(|shard| shard.handle_expires_at()))
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .sum(),
+        )
     }
 
     /// Perform upkeep work related to status=failure
@@ -318,13 +293,7 @@ impl InflightActivationStore {
     /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
     /// complete.
     pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
-        let results = self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.handle_failed_tasks().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
+        let results = join_all(self.shards.iter().map(|shard| shard.handle_failed_tasks()))
             .await
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?;
@@ -350,36 +319,30 @@ impl InflightActivationStore {
         ids.into_iter()
             .for_each(|id| routed[self.route(&id)].push(id));
 
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .zip(routed.into_iter())
-            .map(|(shard, ids)| async move { shard.mark_completed(ids).await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum())
+        Ok(join_all(
+            self.shards
+                .iter()
+                .zip(routed.into_iter())
+                .map(|(shard, ids)| shard.mark_completed(ids)),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum())
     }
 
     /// Remove completed tasks.
     /// This method is a garbage collector for the inflight task store.
     pub async fn remove_completed(&self) -> Result<u64, Error> {
-        Ok(self
-            .shards
-            .iter()
-            .cloned()
-            .map(|shard| async move { shard.remove_completed().await })
-            .collect::<JoinSet<_>>()
-            .join_all()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .sum())
+        Ok(
+            join_all(self.shards.iter().map(|shard| shard.remove_completed()))
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .sum(),
+        )
     }
 }
 
