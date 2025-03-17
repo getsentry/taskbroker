@@ -30,7 +30,6 @@ use crate::config::Config;
 pub struct InflightActivationStore {
     config: InflightActivationStoreConfig,
     shards: Vec<Arc<InflightActivationShard>>,
-    _maintenance_handles: JoinSet<()>,
 }
 
 impl InflightActivationStore {
@@ -74,10 +73,8 @@ impl InflightActivationStore {
             shards
         };
 
-        let mut maintenance_handles = JoinSet::new();
-
         for (i, shard) in shards.iter().cloned().enumerate() {
-            maintenance_handles.spawn(async move {
+            tokio::spawn(async move {
                 let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
 
                 let mut timer = time::interval(Duration::from_millis(config.vacuum_interval_ms));
@@ -86,10 +83,9 @@ impl InflightActivationStore {
                 loop {
                     select! {
                         _ = timer.tick() => {
-                            shard.vacuum_db().await.expect(&format!(
-                                "Failed to run maintenance vacuum on shard {:}",
-                                i
-                            ));
+                            shard.vacuum_db().await.unwrap_or_else(|_| {
+                                panic!("Failed to run maintenance vacuum on shard {:}", i)
+                            });
                             info!("ran maintenance vacuum on shard {:}", i);
                         }
 
@@ -101,11 +97,7 @@ impl InflightActivationStore {
             });
         }
 
-        Ok(Self {
-            config,
-            shards,
-            _maintenance_handles: maintenance_handles,
-        })
+        Ok(Self { config, shards })
     }
 
     fn route(&self, id: &str) -> usize {
