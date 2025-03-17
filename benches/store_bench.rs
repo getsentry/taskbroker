@@ -7,11 +7,11 @@ use taskbroker::{
     store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     },
-    test_utils::{generate_temp_filename, make_activations},
+    test_utils::{generate_temp_path, make_activations},
 };
 use tokio::task::JoinSet;
 
-async fn get_pending_activations(num_activations: u32, num_workers: u32) {
+async fn get_pending_activations(num_activations: u32, num_workers: u32, shards: u8) {
     let url = if cfg!(feature = "bench-with-mnt-disk") {
         let mut rng = rand::thread_rng();
         format!(
@@ -20,12 +20,14 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
             rng.r#gen::<u64>()
         )
     } else {
-        generate_temp_filename()
+        generate_temp_path()
     };
     let store = Arc::new(
         InflightActivationStore::new(
             &url,
             InflightActivationStoreConfig {
+                sharding_factor: shards,
+                vacuum_interval_ms: 60000,
                 max_processing_attempts: 1,
             },
         )
@@ -65,7 +67,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     );
 }
 
-async fn set_status(num_activations: u32, num_workers: u32) {
+async fn set_status(num_activations: u32, num_workers: u32, shards: u8) {
     assert!(num_activations % num_workers == 0);
 
     let url = if cfg!(feature = "bench-with-mnt-disk") {
@@ -76,13 +78,15 @@ async fn set_status(num_activations: u32, num_workers: u32) {
             rng.r#gen::<u64>()
         )
     } else {
-        generate_temp_filename()
+        generate_temp_path()
     };
     let store = Arc::new(
         InflightActivationStore::new(
             &url,
             InflightActivationStoreConfig {
+                sharding_factor: shards,
                 max_processing_attempts: 1,
+                vacuum_interval_ms: 60000,
             },
         )
         .await
@@ -131,7 +135,7 @@ fn store_bench(c: &mut Criterion) {
     let num_activations: u32 = 4_096;
     let num_workers = 64;
 
-    c.benchmark_group("bench_InflightActivationStore")
+    c.benchmark_group("bench_InflightActivationStore_2_shards")
         .sample_size(256)
         .throughput(criterion::Throughput::Elements(num_activations.into()))
         .bench_function("get_pending_activation", |b| {
@@ -140,7 +144,7 @@ fn store_bench(c: &mut Criterion) {
                 .build()
                 .unwrap();
             b.to_async(runtime)
-                .iter(|| get_pending_activations(num_activations, num_workers));
+                .iter(|| get_pending_activations(num_activations, num_workers, 2));
         })
         .bench_function("set_status", |b| {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -148,7 +152,67 @@ fn store_bench(c: &mut Criterion) {
                 .build()
                 .unwrap();
             b.to_async(runtime)
-                .iter(|| set_status(num_activations, num_workers));
+                .iter(|| set_status(num_activations, num_workers, 2));
+        });
+
+    c.benchmark_group("bench_InflightActivationStore_4_shards")
+        .sample_size(256)
+        .throughput(criterion::Throughput::Elements(num_activations.into()))
+        .bench_function("get_pending_activation", |b| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            b.to_async(runtime)
+                .iter(|| get_pending_activations(num_activations, num_workers, 4));
+        })
+        .bench_function("set_status", |b| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            b.to_async(runtime)
+                .iter(|| set_status(num_activations, num_workers, 4));
+        });
+
+    c.benchmark_group("bench_InflightActivationStore_8_shards")
+        .sample_size(256)
+        .throughput(criterion::Throughput::Elements(num_activations.into()))
+        .bench_function("get_pending_activation", |b| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            b.to_async(runtime)
+                .iter(|| get_pending_activations(num_activations, num_workers, 8));
+        })
+        .bench_function("set_status", |b| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            b.to_async(runtime)
+                .iter(|| set_status(num_activations, num_workers, 8));
+        });
+
+    c.benchmark_group("bench_InflightActivationStore_16_shards")
+        .sample_size(256)
+        .throughput(criterion::Throughput::Elements(num_activations.into()))
+        .bench_function("get_pending_activation", |b| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            b.to_async(runtime)
+                .iter(|| get_pending_activations(num_activations, num_workers, 16));
+        })
+        .bench_function("set_status", |b| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            b.to_async(runtime)
+                .iter(|| set_status(num_activations, num_workers, 16));
         });
 }
 

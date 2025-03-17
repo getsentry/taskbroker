@@ -309,13 +309,13 @@ mod tests {
         },
         test_utils::{
             consume_topic, create_config, create_integration_config, create_producer,
-            generate_temp_filename, make_activations, reset_topic,
+            generate_temp_path, make_activations, reset_topic,
         },
         upkeep::do_upkeep,
     };
 
     async fn create_inflight_store() -> Arc<InflightActivationStore> {
-        let url = generate_temp_filename();
+        let url = generate_temp_path();
         let config = create_integration_config();
 
         Arc::new(

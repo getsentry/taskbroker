@@ -75,6 +75,12 @@ pub struct Config {
     /// The path to the sqlite database
     pub db_path: String,
 
+    /// The number of physical files to shard the database by
+    pub db_sharding_factor: u8,
+
+    /// The frequency at which sqlite runs the VACUUM command.
+    pub db_vacuum_interval_ms: u64,
+
     /// The maximum number of pending records that can be
     /// in the InflightTaskStore (sqlite)
     pub max_pending_count: usize,
@@ -115,9 +121,11 @@ impl Default for Config {
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
-            db_path: "./taskbroker-inflight.sqlite".to_owned(),
+            db_path: "./taskbroker-inflight".to_owned(),
+            db_sharding_factor: 4,
+            db_vacuum_interval_ms: 60000,
             max_pending_count: 2048,
-            max_pending_buffer_count: 128,
+            max_pending_buffer_count: 1024,
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
         }
@@ -197,7 +205,7 @@ mod tests {
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "task-worker");
-        assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
+        assert_eq!(config.db_path, "./taskbroker-inflight");
         assert_eq!(config.max_pending_count, 2048);
     }
 
@@ -284,7 +292,7 @@ mod tests {
             assert_eq!(config.log_filter, "error");
             assert_eq!(config.kafka_topic, "task-worker".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
-            assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
+            assert_eq!(config.db_path, "./taskbroker-inflight".to_owned());
             assert_eq!(config.max_pending_count, 2048);
             assert_eq!(config.max_processing_attempts, 5);
             assert_eq!(
