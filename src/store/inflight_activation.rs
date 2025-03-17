@@ -1,35 +1,406 @@
-use std::{str::FromStr, time::Instant};
+use std::{
+    collections::BTreeSet,
+    hash::{DefaultHasher, Hash, Hasher},
+    path::Path,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
+use futures::future::join_all;
 use prost::Message;
+use rand::{SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
 use sqlx::{
     ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::PoolOptions,
     sqlite::{
-        SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
-        SqliteRow, SqliteSynchronous,
+        SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteRow,
+        SqliteSynchronous,
     },
 };
-use tracing::instrument;
+use tokio::{fs, select, task::JoinSet, time};
+use tokio_util::sync::{CancellationToken, DropGuard};
+use tracing::{info, instrument};
 
 use crate::config::Config;
 
+pub struct InflightActivationStore {
+    config: InflightActivationStoreConfig,
+    shards: Vec<Arc<InflightActivationShard>>,
+    _maintenance_shutdown: DropGuard,
+}
+
+impl InflightActivationStore {
+    pub async fn new(
+        directory: &str,
+        config: InflightActivationStoreConfig,
+    ) -> Result<Self, Error> {
+        let path = Path::new(directory);
+        if path.is_file() {
+            return Err(anyhow!("DB directory is a file, expecting a directory"));
+        }
+
+        let shards = if path.exists() {
+            let expected: BTreeSet<String> = (0..config.sharding_factor)
+                .map(|i| format!("{}/{}.sqlite", directory, i))
+                .collect();
+
+            let contents = path
+                .read_dir()?
+                .map(|res| res.map(|e| e.path().into_os_string().into_string().unwrap()))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+
+            if !contents.is_superset(&expected) {
+                return Err(anyhow!("Unexpected contents in DB directory"));
+            }
+            let mut shards = vec![];
+            for path in expected {
+                shards.push(Arc::new(
+                    InflightActivationShard::new(&path, config.clone()).await?,
+                ))
+            }
+            shards
+        } else {
+            fs::create_dir(path).await?;
+            let mut shards = vec![];
+            for path in (0..config.sharding_factor).map(|i| format!("{}/{}.sqlite", directory, i)) {
+                shards.push(Arc::new(
+                    InflightActivationShard::new(&path, config.clone()).await?,
+                ))
+            }
+            shards
+        };
+
+        let maintenance_shutdown = CancellationToken::new();
+
+        for (i, shard) in shards.iter().cloned().enumerate() {
+            let cancellation = maintenance_shutdown.clone();
+            tokio::spawn(async move {
+                let mut timer = time::interval(Duration::from_millis(config.vacuum_interval_ms));
+
+                timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+                loop {
+                    select! {
+                        _ = timer.tick() => {
+                            shard.vacuum_db().await.unwrap_or_else(|_| {
+                                drop(elegant_departure::get_shutdown_guard().shutdown_on_drop());
+                                panic!("Failed to run maintenance vacuum on shard {:}", i)
+                            });
+                            info!("ran maintenance vacuum on shard {:}", i);
+                        }
+
+                        _ = cancellation.cancelled() => {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+
+        Ok(Self {
+            config,
+            shards,
+            _maintenance_shutdown: maintenance_shutdown.drop_guard(),
+        })
+    }
+
+    fn route(&self, id: &str) -> usize {
+        let mut s = DefaultHasher::new();
+        id.hash(&mut s);
+        (s.finish() % self.config.sharding_factor as u64)
+            .try_into()
+            .unwrap()
+    }
+
+    /// Get an activation by id. Primarily used for testing
+    pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+        self.shards[self.route(id)].get_by_id(id).await
+    }
+
+    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
+        let mut routed: Vec<_> = (0..self.config.sharding_factor)
+            .map(|_| Vec::new())
+            .collect();
+
+        batch
+            .into_iter()
+            .for_each(|inflight| routed[self.route(&inflight.activation.id)].push(inflight));
+
+        Ok(join_all(
+            self.shards
+                .iter()
+                .zip(routed.into_iter())
+                .map(|(shard, batch)| shard.store(batch)),
+        )
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .sum())
+    }
+
+    pub async fn get_pending_activation(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Option<InflightActivation>, Error> {
+        let mut rng = SmallRng::from_entropy();
+
+        for shard in self.shards.choose_multiple(&mut rng, self.shards.len()) {
+            if let Some(activation) = shard.get_pending_activation(namespace).await? {
+                return Ok(Some(activation));
+            }
+        }
+
+        Ok(None)
+    }
+
+    pub async fn count_pending_activations(&self) -> Result<usize, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.count_pending_activations().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+
+    pub async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.count_by_status(status).await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+
+    pub async fn count(&self) -> Result<usize, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.count().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+
+    /// Update the status of a specific activation
+    pub async fn set_status(
+        &self,
+        id: &str,
+        status: InflightActivationStatus,
+    ) -> Result<(), Error> {
+        self.shards[self.route(id)].set_status(id, status).await
+    }
+
+    pub async fn set_processing_deadline(
+        &self,
+        id: &str,
+        deadline: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        self.shards[self.route(id)]
+            .set_processing_deadline(id, deadline)
+            .await
+    }
+
+    pub async fn delete_activation(&self, id: &str) -> Result<(), Error> {
+        self.shards[self.route(id)].delete_activation(id).await
+    }
+
+    pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.get_retry_activations().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    pub async fn clear(&self) -> Result<(), Error> {
+        self.shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.clear().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(())
+    }
+
+    /// Update tasks that are in processing and have exceeded their processing deadline
+    /// Exceeding a processing deadline does not consume a retry as we don't know
+    /// if a worker took the task and was killed, or failed.
+    pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.handle_processing_deadline().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+
+    /// Update tasks that have exceeded their max processing attempts.
+    /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
+    pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.handle_processing_attempts().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+
+    /// Perform upkeep work for tasks that are past expires_at deadlines
+    ///
+    /// Tasks that are pending and past their expires_at deadline are updated
+    /// to have status=failure so that they can be discarded/deadlettered by handle_failed_tasks
+    ///
+    /// The number of impacted records is returned in a Result.
+    pub async fn handle_expires_at(&self) -> Result<u64, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.handle_expires_at().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+
+    /// Perform upkeep work related to status=failure
+    ///
+    /// Activations that are status=failure need to either be discarded by setting status=complete
+    /// or need to be moved to deadletter and are returned in the Result.
+    /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
+    /// complete.
+    pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
+        let results = self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.handle_failed_tasks().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(FailedTasksForwarder {
+            to_discard: results
+                .iter()
+                .flat_map(|res| res.to_discard.clone())
+                .collect(),
+            to_deadletter: results
+                .iter()
+                .flat_map(|res| res.to_deadletter.clone())
+                .collect(),
+        })
+    }
+
+    /// Mark a collection of tasks as complete by id
+    pub async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        let mut routed: Vec<_> = (0..self.config.sharding_factor)
+            .map(|_| Vec::new())
+            .collect();
+
+        ids.into_iter()
+            .for_each(|id| routed[self.route(&id)].push(id));
+
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .zip(routed.into_iter())
+            .map(|(shard, ids)| async move { shard.mark_completed(ids).await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+
+    /// Remove completed tasks.
+    /// This method is a garbage collector for the inflight task store.
+    pub async fn remove_completed(&self) -> Result<u64, Error> {
+        Ok(self
+            .shards
+            .iter()
+            .cloned()
+            .map(|shard| async move { shard.remove_completed().await })
+            .collect::<JoinSet<_>>()
+            .join_all()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .sum())
+    }
+}
+
+#[derive(Clone)]
 pub struct InflightActivationStoreConfig {
+    pub sharding_factor: u8,
+    pub vacuum_interval_ms: u64,
     pub max_processing_attempts: usize,
 }
 
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            sharding_factor: config.db_sharding_factor,
+            vacuum_interval_ms: config.db_vacuum_interval_ms,
             max_processing_attempts: config.max_processing_attempts,
         }
     }
 }
 
-pub struct InflightActivationStore {
+pub struct InflightActivationShard {
     read_pool: SqlitePool,
     write_pool: SqlitePool,
     config: InflightActivationStoreConfig,
@@ -108,19 +479,6 @@ pub struct InflightActivation {
     pub namespace: String,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct QueryResult {
-    pub rows_affected: u64,
-}
-
-impl From<SqliteQueryResult> for QueryResult {
-    fn from(value: SqliteQueryResult) -> Self {
-        Self {
-            rows_affected: value.rows_affected(),
-        }
-    }
-}
-
 pub struct FailedTasksForwarder {
     pub to_discard: Vec<String>,
     pub to_deadletter: Vec<TaskActivation>,
@@ -182,7 +540,7 @@ impl From<TableRow> for InflightActivation {
     }
 }
 
-impl InflightActivationStore {
+impl InflightActivationShard {
     pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
         if !Sqlite::database_exists(url).await? {
             Sqlite::create_database(url).await?
@@ -262,9 +620,9 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
         if batch.is_empty() {
-            return Ok(QueryResult { rows_affected: 0 });
+            return Ok(0);
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "
@@ -311,7 +669,7 @@ impl InflightActivationStore {
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
-        let result = Ok(query.execute(&self.write_pool).await?.into());
+        let result = Ok(query.execute(&self.write_pool).await?.rows_affected());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")

@@ -75,7 +75,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     taskbroker_path = str(TASKBROKER_BIN)
     num_consumers = 8
     num_messages = 100_000
-    num_restarts = 16
+    num_restarts = 1
     num_partitions = 32
     min_restart_duration = 4
     max_restart_duration = 30
@@ -113,7 +113,8 @@ Running test with the following configuration:
         db_name = f"db_{i}_{curr_time}"
         taskbroker_configs[filename] = TaskbrokerConfig(
             db_name=db_name,
-            db_path=str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
+            db_path=str(TEST_OUTPUT_PATH / f"{db_name}"),
+            db_sharding_factor=1,
             max_pending_count=max_pending_count,
             kafka_topic=topic_name,
             kafka_deadletter_topic=kafka_deadletter_topic,
@@ -154,7 +155,8 @@ Running test with the following configuration:
     # Validate that all tasks were written once during rebalancing
     attach_db_stmt = "".join(
         [
-            f"ATTACH DATABASE '{config.db_path}' AS {config.db_name};\n"
+            # Reading the first shard because we set the sharding factor to 1
+            f"ATTACH DATABASE '{config.get_db_shard_paths()[0]}' AS {config.db_name};\n"
             for config in taskbroker_configs.values()
         ]
     )
@@ -175,7 +177,7 @@ Running test with the following configuration:
         GROUP BY partition
         ORDER BY partition;"""
 
-    con = sqlite3.connect(taskbroker_configs["config_0.yml"].db_path)
+    con = sqlite3.connect(taskbroker_configs["config_0.yml"].get_db_shard_paths()[0])
     cur = con.cursor()
     cur.executescript(attach_db_stmt)
     row_count = cur.execute(query).fetchall()

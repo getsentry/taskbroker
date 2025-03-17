@@ -33,6 +33,7 @@ class TaskbrokerConfig:
         self,
         db_name: str,
         db_path: str,
+        db_sharding_factor: int,
         max_pending_count: int,
         kafka_topic: str,
         kafka_deadletter_topic: str,
@@ -42,6 +43,7 @@ class TaskbrokerConfig:
     ):
         self.db_name = db_name
         self.db_path = db_path
+        self.db_sharding_factor = db_sharding_factor
         self.max_pending_count = max_pending_count
         self.kafka_topic = kafka_topic
         self.kafka_deadletter_topic = kafka_deadletter_topic
@@ -53,6 +55,7 @@ class TaskbrokerConfig:
         return {
             "db_name": self.db_name,
             "db_path": self.db_path,
+            "db_sharding_factor": self.db_sharding_factor,
             "max_pending_count": self.max_pending_count,
             "kafka_topic": self.kafka_topic,
             "kafka_deadletter_topic": self.kafka_deadletter_topic,
@@ -60,6 +63,9 @@ class TaskbrokerConfig:
             "kafka_auto_offset_reset": self.kafka_auto_offset_reset,
             "grpc_port": self.grpc_port,
         }
+
+    def get_db_shard_paths(self) -> list[str]:
+        return [self.db_path + f"/{i}.sqlite" for i in range(self.db_sharding_factor)]
 
 
 def create_topic(topic_name: str, num_partitions: int) -> None:
