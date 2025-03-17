@@ -1118,12 +1118,18 @@ mod tests {
 
     struct MockFilter {
         task_killswitch: Vec<String>,
+        error_on_offset: Option<i64>,
     }
 
     impl Filter for MockFilter {
         type Input = InflightActivation;
 
-        fn filter(&self, t: &Self::Input) -> impl Future<Output = Result<bool, Error>> {
+        fn filter(&self, t: &Self::Input) -> impl Future<Output = Result<bool, anyhow::Error>> {
+            if let Some(offset) = self.error_on_offset {
+                if offset == t.offset {
+                    return future::ready(Err(anyhow!("err")));
+                }
+            }
             future::ready(Ok(self.task_killswitch.contains(&t.activation.taskname)))
         }
     }
@@ -1901,6 +1907,7 @@ mod tests {
         tokio::spawn(filter(
             MockFilter {
                 task_killswitch: vec!["task_filtered".to_string()],
+                error_on_offset: None,
             },
             receiver,
             ok_sender,
@@ -1999,9 +2006,230 @@ mod tests {
         assert!(err_receiver.is_closed());
     }
 
-    // Test fail on filter
+    #[tokio::test]
+    async fn test_fail_on_filter() {
+        let (sender, receiver) = mpsc::channel(2);
+        let (ok_sender, mut ok_receiver) = mpsc::channel(2);
+        let (err_sender, mut err_receiver) = mpsc::channel(2);
+        let shutdown = CancellationToken::new();
 
-    // Test sequential filters
+        tokio::spawn(filter(
+            MockFilter {
+                task_killswitch: vec!["task_filtered".to_string()],
+                error_on_offset: Some(1),
+            },
+            receiver,
+            ok_sender,
+            err_sender,
+            shutdown.clone(),
+        ));
+
+        sleep(Duration::from_secs(1)).await;
+
+        let msg_0 = OwnedMessage::new(
+            Some(vec![0, 2, 4, 6]),
+            None,
+            "topic".to_string(),
+            Timestamp::now(),
+            0,
+            0,
+            None,
+        );
+        let inflight_activation_0 = InflightActivation {
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "task_not_filtered".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        };
+        let msg_1 = OwnedMessage::new(
+            Some(vec![1, 3, 5, 7]),
+            None,
+            "topic".to_string(),
+            Timestamp::now(),
+            0,
+            1,
+            None,
+        );
+        let inflight_activation_1 = InflightActivation {
+            activation: TaskActivation {
+                id: "1".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "task_filtered".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 1,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        };
+
+        assert!(
+            sender
+                .send((iter::once(msg_0.clone()), inflight_activation_0.clone()))
+                .await
+                .is_ok()
+        );
+        assert!(err_receiver.is_empty());
+        let res_0 = ok_receiver.recv().await.unwrap();
+        assert_eq!(res_0.0.collect::<Vec<_>>()[0].payload(), msg_0.payload(),);
+        assert_eq!(res_0.1, inflight_activation_0);
+
+        assert!(
+            sender
+                .send((iter::once(msg_1.clone()), inflight_activation_1.clone()))
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            err_receiver.recv().await.unwrap().payload(),
+            msg_1.payload()
+        );
+
+        shutdown.cancel();
+        sleep(Duration::from_secs(1)).await;
+        assert!(ok_receiver.is_closed());
+        assert!(err_receiver.is_closed());
+    }
+
+    #[tokio::test]
+    async fn test_sequential_filters() {
+        let (sender, receiver) = mpsc::channel(2);
+        let (ok_sender_0, ok_receiver_0) = mpsc::channel(2);
+        let (err_sender_0, err_receiver_0) = mpsc::channel(2);
+
+        let (ok_sender_1, ok_receiver_1) = mpsc::channel(2);
+        let (err_sender_1, err_receiver_1) = mpsc::channel(2);
+
+        let shutdown = CancellationToken::new();
+
+        let msg_0 = OwnedMessage::new(
+            Some(vec![0, 2, 4, 6]),
+            None,
+            "topic".to_string(),
+            Timestamp::now(),
+            0,
+            0,
+            None,
+        );
+        let inflight_activation_0 = InflightActivation {
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "task_filtered_0".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        };
+        let msg_1 = OwnedMessage::new(
+            Some(vec![1, 3, 5, 7]),
+            None,
+            "topic".to_string(),
+            Timestamp::now(),
+            0,
+            1,
+            None,
+        );
+        let inflight_activation_1 = InflightActivation {
+            activation: TaskActivation {
+                id: "1".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "task_filtered_1".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 1,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        };
+
+        tokio::spawn(filter(
+            MockFilter {
+                task_killswitch: vec!["task_filtered_0".to_string()],
+                error_on_offset: None,
+            },
+            receiver,
+            ok_sender_0,
+            err_sender_0,
+            shutdown.clone(),
+        ));
+
+        tokio::spawn(filter(
+            MockFilter {
+                task_killswitch: vec!["task_filtered_1".to_string()],
+                error_on_offset: None,
+            },
+            ok_receiver_0,
+            ok_sender_1,
+            err_sender_1,
+            shutdown.clone(),
+        ));
+
+        sleep(Duration::from_secs(1)).await;
+
+        assert!(
+            sender
+                .send((iter::once(msg_0.clone()), inflight_activation_0.clone()))
+                .await
+                .is_ok()
+        );
+        assert!(
+            sender
+                .send((iter::once(msg_1.clone()), inflight_activation_1.clone()))
+                .await
+                .is_ok()
+        );
+
+        // TODO: rest
+    }
 
     pub struct NoopFilter<T> {
         phantom: PhantomData<T>,
@@ -2072,7 +2300,8 @@ mod tests {
             map:
                 |_: Arc<OwnedMessage>| Ok(()),
             filter:
-                NoopFilter::new(),
+                NoopFilter::new()
+                => NoopFilter::new(),
             reduce:
                 NoopReducer::new()
                 => NoopReducer::new()
