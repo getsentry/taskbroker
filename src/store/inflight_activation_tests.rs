@@ -147,11 +147,7 @@ async fn test_get_pending_activation_with_race() {
         let store = store.clone();
         join_set.spawn(async move {
             rx.recv().await.unwrap();
-            store
-                .get_pending_activation(Some("namespace"))
-                .await
-                .unwrap()
-                .unwrap()
+            store.get_pending_activation(None).await.unwrap().unwrap()
         });
     }
 
@@ -219,6 +215,26 @@ async fn test_get_pending_activation_earliest() {
 }
 
 #[tokio::test]
+async fn test_get_pending_activations() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(5);
+    batch[1].namespace = "other_namespace".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    let result = store
+        .get_pending_activations(Some(vec!["namespace", "other_namespace"]), Some(2))
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].activation.id, "id_0");
+    assert_eq!(result[1].activation.id, "id_1");
+    assert_count_by_status(&store, InflightActivationStatus::Pending, 3).await;
+}
+
+#[tokio::test]
 async fn test_count_pending_activations() {
     let store = create_test_store().await;
 
@@ -266,7 +282,13 @@ async fn set_activation_status() {
             .is_ok()
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
-    assert!(store.get_pending_activation(None).await.unwrap().is_none());
+    assert!(
+        store
+            .get_pending_activation(Some("namespace"))
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]

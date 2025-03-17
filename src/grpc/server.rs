@@ -25,11 +25,8 @@ impl ConsumerService for TaskbrokerServer {
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
         let start_time = Instant::now();
-        let namespace = &request.get_ref().namespace;
-        let inflight = self
-            .store
-            .get_pending_activation(namespace.as_deref())
-            .await;
+        let namespace = request.get_ref().namespace.as_deref();
+        let inflight = self.store.get_pending_activation(namespace).await;
 
         match inflight {
             Ok(Some(inflight)) => {
@@ -123,7 +120,6 @@ impl ConsumerService for TaskbrokerServer {
         };
 
         let start_time = Instant::now();
-
         let res = match self
             .store
             .get_pending_activation(namespace.as_deref())

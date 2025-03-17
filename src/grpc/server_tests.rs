@@ -92,7 +92,9 @@ async fn test_set_task_status_success() {
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
-        fetch_next_task: Some(FetchNextTask { namespace: None }),
+        fetch_next_task: Some(FetchNextTask {
+            namespace: Some("namespace".to_string()),
+        }),
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());

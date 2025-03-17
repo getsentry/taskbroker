@@ -326,11 +326,13 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn get_pending_activation(
+    pub async fn get_pending_activations(
         &self,
-        namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
+        namespaces: Option<Vec<&str>>,
+        limit: Option<i32>,
+    ) -> Result<Option<Vec<InflightActivation>>, Error> {
         let now = Utc::now();
+        let to_return = limit.unwrap_or(1);
 
         let mut query_builder = QueryBuilder::new(
             "
@@ -344,7 +346,7 @@ impl InflightActivationStore {
         query_builder.push_bind(InflightActivationStatus::Processing);
         query_builder.push(
             "
-            WHERE id = (
+            WHERE id IN (
                 SELECT id
                 FROM inflight_taskactivations
                 WHERE status = ",
@@ -354,19 +356,54 @@ impl InflightActivationStore {
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        if let Some(namespace) = namespace {
-            query_builder.push(" AND namespace = ");
-            query_builder.push_bind(namespace);
+        let namespaces_vec: Vec<String>;
+        if let Some(namespaces) = namespaces {
+            query_builder.push(" AND namespace IN (");
+            let mut separated = query_builder.separated(", ");
+            namespaces_vec = namespaces.iter().map(|ns| ns.to_string()).collect();
+            for namespace in namespaces_vec.iter() {
+                separated.push_bind(namespace);
+            }
+            separated.push_unseparated(")");
         }
-        query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
+        query_builder.push(" ORDER BY added_at LIMIT ");
+        query_builder.push_bind(to_return);
+        query_builder.push(") RETURNING *");
 
-        let result: Option<TableRow> = query_builder
-            .build_query_as::<TableRow>()
-            .fetch_optional(&self.write_pool)
-            .await?;
-        let Some(row) = result else { return Ok(None) };
+        let rows: Vec<InflightActivation> = query_builder
+            .build_query_as()
+            .fetch_all(&self.write_pool)
+            .await?
+            .into_iter()
+            .map(|row: TableRow| row.into())
+            .collect();
 
-        Ok(Some(row.into()))
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(rows))
+    }
+
+    #[instrument(skip_all)]
+    pub async fn get_pending_activation(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<Option<InflightActivation>, Error> {
+        if let Some(namespace) = namespace {
+            match self
+                .get_pending_activations(Some(vec![namespace]), Some(1))
+                .await?
+            {
+                Some(rows) => Ok(Some(rows[0].clone())),
+                None => Ok(None),
+            }
+        } else {
+            match self.get_pending_activations(None, Some(1)).await? {
+                Some(rows) => Ok(Some(rows[0].clone())),
+                None => Ok(None),
+            }
+        }
     }
 
     #[instrument(skip_all)]
