@@ -398,13 +398,20 @@ impl InflightActivationStore {
         &self,
         id: &str,
         status: InflightActivationStatus,
-    ) -> Result<(), Error> {
-        sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = $2")
-            .bind(status)
-            .bind(id)
-            .execute(&self.write_pool)
-            .await?;
-        Ok(())
+    ) -> Result<Option<InflightActivation>, Error> {
+        let result: Option<TableRow> = sqlx::query_as(
+            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
+        )
+        .bind(status)
+        .bind(id)
+        .fetch_optional(&self.write_pool)
+        .await?;
+
+        let Some(row) = result else {
+            return Ok(None);
+        };
+
+        Ok(Some(row.into()))
     }
 
     #[instrument(skip_all)]

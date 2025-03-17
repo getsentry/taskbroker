@@ -267,6 +267,25 @@ async fn set_activation_status() {
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert!(store.get_pending_activation(None).await.unwrap().is_none());
+
+    let result = store
+        .set_status("not_there", InflightActivationStatus::Complete)
+        .await;
+    assert!(result.is_ok(), "no query error");
+
+    let activation = result.unwrap();
+    assert!(activation.is_none(), "no activation found");
+
+    let result = store
+        .set_status("id_0", InflightActivationStatus::Complete)
+        .await;
+    assert!(result.is_ok(), "no query error");
+
+    let result_opt = result.unwrap();
+    assert!(result_opt.is_some(), "activation should be returned");
+    let inflight = result_opt.unwrap();
+    assert_eq!(inflight.activation.id, "id_0");
+    assert_eq!(inflight.status, InflightActivationStatus::Complete);
 }
 
 #[tokio::test]
