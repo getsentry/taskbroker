@@ -77,7 +77,7 @@ impl RuntimeConfigManager {
 mod tests {
     use super::RuntimeConfigManager;
     use tokio::fs;
-    use tokio::time::Duration;
+
     #[tokio::test]
     async fn test_runtime_config_manager() {
         let test_yaml = r#"
