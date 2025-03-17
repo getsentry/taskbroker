@@ -122,10 +122,10 @@ impl Default for Config {
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight".to_owned(),
-            db_sharding_factor: 8,
+            db_sharding_factor: 4,
             db_vacuum_interval_ms: 60000,
             max_pending_count: 2048,
-            max_pending_buffer_count: 128,
+            max_pending_buffer_count: 1024,
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
         }
