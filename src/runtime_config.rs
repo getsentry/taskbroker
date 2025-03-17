@@ -45,17 +45,20 @@ impl RuntimeConfigManager {
                 match runtime_config {
                     Ok(runtime_config) => runtime_config,
                     Err(e) => {
-                        error!("Using default runtime configs. Failed to parse file: {}", e);
-                        RuntimeConfig::default()
+                        error!(
+                            "Failed to parse runtime config file: {}. Continue to use existing runtime configs.",
+                            e
+                        );
+                        return;
                     }
                 }
             }
             Err(e) => {
                 error!(
-                    "Using default runtime configs. Failed to read yaml file: {}",
+                    "Failed to read yaml file: {}. Continue to use existing runtime configs.",
                     e
                 );
-                RuntimeConfig::default()
+                return;
             }
         };
         if new_config != *config.read().await {
@@ -85,6 +88,61 @@ drop_task_killswitch:
         fs::write(test_path, test_yaml).await.unwrap();
 
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 1);
+        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+
+        fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_missing_runtime_config_file() {
+        let test_path = "runtime_test_config.yaml";
+
+        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 0);
+
+        fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_invalid_runtime_config_file() {
+        let test_yaml = r#"
+droop_task_killswitch:
+  - test:do_nothing"#;
+
+        let test_path = "runtime_test_config.yaml";
+        fs::write(test_path, test_yaml).await.unwrap();
+
+        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 0);
+
+        fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_preserve_runtime_config_file() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  - test:do_nothing"#;
+
+        let test_path = "runtime_test_config.yaml";
+        fs::write(test_path, test_yaml).await.unwrap();
+
+        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 1);
+        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+
+        let invalid_yaml = r#"
+droop_task_killswitch:
+  - test:do_nothing"#;
+
+        fs::write(test_path, invalid_yaml).await.unwrap();
+        RuntimeConfigManager::reload_config(&Some(test_path.to_string()), &runtime_config.config)
+            .await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
