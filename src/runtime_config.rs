@@ -28,7 +28,6 @@ impl RuntimeConfigManager {
                 loop {
                     Self::reload_config(&path, &runtime_config).await;
                     interval.tick().await;
-                    println!("runtime_config: {:?}", runtime_config.read().await);
                 }
             }),
         }
@@ -85,7 +84,7 @@ mod tests {
 drop_task_killswitch:
   - test:do_nothing"#;
 
-        let test_path = "runtime_test_config.yaml";
+        let test_path = "test_runtime_config_manager.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
 
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
@@ -103,8 +102,6 @@ drop_task_killswitch:
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 0);
-
-        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]
@@ -113,11 +110,12 @@ drop_task_killswitch:
 droop_task_killswitch:
   - test:do_nothing"#;
 
-        let test_path = "runtime_test_config.yaml";
+        let test_path = "test_invalid_runtime_config_file.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
 
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
         let config = runtime_config.read().await;
+        println!("config: {:?}", config);
         assert_eq!(config.drop_task_killswitch.len(), 0);
 
         fs::remove_file(test_path).await.unwrap();
@@ -129,7 +127,7 @@ droop_task_killswitch:
 drop_task_killswitch:
   - test:do_nothing"#;
 
-        let test_path = "runtime_test_config.yaml";
+        let test_path = "test_preserve_runtime_config_file.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
 
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
