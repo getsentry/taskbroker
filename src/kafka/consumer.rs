@@ -213,6 +213,53 @@ impl ActorHandles {
 #[macro_export]
 macro_rules! processing_strategy {
     (
+        @filters,
+        ($filter:expr),
+        $prev_receiver:ident,
+        $err_sender:ident,
+        $shutdown_signal:ident,
+        $handles:ident,
+    ) => {{
+        let (filter_sender, reduce_receiver) = tokio::sync::mpsc::channel(1);
+
+        $handles.spawn($crate::kafka::consumer::filter(
+            $filter,
+            $prev_receiver,
+            filter_sender.clone(),
+            $err_sender.clone(),
+            $shutdown_signal.clone(),
+        ));
+
+        (filter_sender, reduce_receiver)
+    }};
+    (
+        @filters,
+        ($filter_first:expr $(,$filter_rest:expr)+),
+        $prev_receiver:ident,
+        $err_sender:ident,
+        $shutdown_signal:ident,
+        $handles:ident,
+    ) => {{
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+
+        $handles.spawn($crate::kafka::consumer::filter(
+            $filter_first,
+            $prev_receiver,
+            sender.clone(),
+            $err_sender.clone(),
+            $shutdown_signal.clone(),
+        ));
+
+        processing_strategy!(
+            @filters,
+            ($($filter_rest),+),
+            receiver,
+            $err_sender,
+            $shutdown_signal,
+            $handles,
+        )
+    }};
+    (
         @reducers,
         ($reduce:expr),
         $prev_receiver:ident,
@@ -262,6 +309,7 @@ macro_rules! processing_strategy {
     (
         {
             map: $map_fn:expr,
+            filter: $filter_first:expr $(=> $filter_rest:expr)*,
             reduce: $reduce_first:expr $(=> $reduce_rest:expr)*,
             err: $reduce_err:expr,
         }
@@ -277,7 +325,7 @@ macro_rules! processing_strategy {
             let (rendezvous_sender, rendezvous_receiver) = tokio::sync::oneshot::channel();
 
             const CHANNEL_BUFF_SIZE: usize = 1024;
-            let (map_sender, reduce_receiver) = tokio::sync::mpsc::channel(CHANNEL_BUFF_SIZE);
+            let (map_sender, filter_receiver) = tokio::sync::mpsc::channel(CHANNEL_BUFF_SIZE);
             let (err_sender, err_receiver) = tokio::sync::mpsc::channel(CHANNEL_BUFF_SIZE);
 
             for (topic, partition) in tpl.iter() {
@@ -293,6 +341,15 @@ macro_rules! processing_strategy {
                     shutdown_signal.clone(),
                 ));
             }
+
+            let (_, reduce_receiver) = $crate::processing_strategy!(
+                @filters,
+                ($filter_first $(,$filter_rest)*),
+                filter_receiver,
+                err_sender,
+                shutdown_signal,
+                handles,
+            );
 
             let (_, commit_receiver) = $crate::processing_strategy!(
                 @reducers,
@@ -480,6 +537,54 @@ pub async fn map<T>(
                         )
                         .await
                         .expect("reduce_err is not available");
+                    }
+                }
+            }
+        }
+    }
+    debug!("Shutdown complete");
+    Ok(())
+}
+
+pub trait Filter {
+    type Input;
+    fn filter(&self, t: &Self::Input) -> impl Future<Output = Result<bool, Error>>;
+}
+
+#[instrument(skip_all)]
+pub async fn filter<T>(
+    filter: impl Filter<Input = T>,
+    mut receiver: mpsc::Receiver<(iter::Once<OwnedMessage>, T)>,
+    ok: mpsc::Sender<(iter::Once<OwnedMessage>, T)>,
+    err: mpsc::Sender<OwnedMessage>,
+    shutdown: CancellationToken,
+) -> Result<(), Error> {
+    loop {
+        select! {
+            biased;
+
+            _  = shutdown.cancelled() => {
+                debug!("Receive shutdown signal, shutting down...");
+                break;
+            }
+
+            val = receiver.recv() => {
+                let Some((msgs, value)) = val else {
+                    break;
+                };
+                match filter.filter(&value).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if ok.send((msgs, value)).await.is_err() {
+                            debug!("Receive half of ok channel is closed, shutting down...");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to filter message, reason: {}", e);
+                        for msg in msgs {
+                            err.send(msg).await.expect("reduce_err is not available");
+                        }
                     }
                 }
             }
@@ -807,6 +912,7 @@ pub async fn commit(
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use std::{
         collections::HashMap,
         iter,
@@ -817,7 +923,7 @@ mod tests {
     };
 
     use anyhow::{Error, anyhow};
-    use futures::Stream;
+    use futures::{Stream, future};
     use rdkafka::{
         Message, Offset, Timestamp, TopicPartitionList,
         error::{KafkaError, KafkaResult},
@@ -830,13 +936,18 @@ mod tests {
     use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
     use tokio_util::sync::CancellationToken;
 
-    use crate::kafka::{
-        consumer::{
-            CommitClient, KafkaMessage, MessageQueue, ReduceConfig, ReduceShutdownBehaviour,
-            ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour, commit, map, reduce,
-            reduce_err,
+    use sentry_protos::taskbroker::v1::TaskActivation;
+
+    use crate::{
+        kafka::{
+            consumer::{
+                CommitClient, Filter, KafkaMessage, MessageQueue, ReduceConfig,
+                ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
+                ReducerWhenFullBehaviour, commit, filter, map, reduce, reduce_err,
+            },
+            os_stream_writer::{OsStream, OsStreamWriter},
         },
-        os_stream_writer::{OsStream, OsStreamWriter},
+        store::inflight_activation::{InflightActivation, InflightActivationStatus},
     };
 
     struct MockCommitClient {
@@ -1002,6 +1113,18 @@ mod tests {
                 when_full_behaviour: ReducerWhenFullBehaviour::Backpressure,
                 flush_interval: Some(Duration::from_secs(1)),
             }
+        }
+    }
+
+    struct MockFilter {
+        task_killswitch: Vec<String>,
+    }
+
+    impl Filter for MockFilter {
+        type Input = InflightActivation;
+
+        fn filter(&self, t: &Self::Input) -> impl Future<Output = Result<bool, Error>> {
+            future::ready(Ok(self.task_killswitch.contains(&t.activation.taskname)))
         }
     }
 
@@ -1768,6 +1891,138 @@ mod tests {
         assert!(err_receiver.is_closed());
     }
 
+    #[tokio::test]
+    async fn test_filter() {
+        let (sender, receiver) = mpsc::channel(2);
+        let (ok_sender, mut ok_receiver) = mpsc::channel(2);
+        let (err_sender, err_receiver) = mpsc::channel(2);
+        let shutdown = CancellationToken::new();
+
+        tokio::spawn(filter(
+            MockFilter {
+                task_killswitch: vec!["task_filtered".to_string()],
+            },
+            receiver,
+            ok_sender,
+            err_sender,
+            shutdown.clone(),
+        ));
+
+        sleep(Duration::from_secs(1)).await;
+
+        let msg_0 = OwnedMessage::new(
+            Some(vec![0, 2, 4, 6]),
+            None,
+            "topic".to_string(),
+            Timestamp::now(),
+            0,
+            0,
+            None,
+        );
+        let inflight_activation_0 = InflightActivation {
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "task_not_filtered".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        };
+        let msg_1 = OwnedMessage::new(
+            Some(vec![1, 3, 5, 7]),
+            None,
+            "topic".to_string(),
+            Timestamp::now(),
+            0,
+            1,
+            None,
+        );
+        let inflight_activation_1 = InflightActivation {
+            activation: TaskActivation {
+                id: "1".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "task_filtered".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        };
+
+        assert!(
+            sender
+                .send((iter::once(msg_0.clone()), inflight_activation_0.clone()))
+                .await
+                .is_ok()
+        );
+        assert!(err_receiver.is_empty());
+        let res_0 = ok_receiver.recv().await.unwrap();
+        assert_eq!(res_0.0.collect::<Vec<_>>()[0].payload(), msg_0.payload(),);
+        assert_eq!(res_0.1, inflight_activation_0);
+
+        assert!(
+            sender
+                .send((iter::once(msg_1.clone()), inflight_activation_1.clone()))
+                .await
+                .is_ok()
+        );
+        assert!(err_receiver.is_empty());
+        assert!(ok_receiver.is_empty());
+
+        shutdown.cancel();
+        sleep(Duration::from_secs(1)).await;
+        assert!(ok_receiver.is_closed());
+        assert!(err_receiver.is_closed());
+    }
+
+    // Test fail on filter
+
+    // Test sequential filters
+
+    pub struct NoopFilter<T> {
+        phantom: PhantomData<T>,
+    }
+
+    impl<T> NoopFilter<T> {
+        pub fn new() -> Self {
+            Self {
+                phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T> Filter for NoopFilter<T> {
+        type Input = T;
+
+        fn filter(&self, _t: &Self::Input) -> impl Future<Output = Result<bool, Error>> {
+            future::ready(Ok(false))
+        }
+    }
+
     pub struct NoopReducer<T> {
         phantom: PhantomData<T>,
     }
@@ -1816,6 +2071,8 @@ mod tests {
         let _ = processing_strategy!({
             map:
                 |_: Arc<OwnedMessage>| Ok(()),
+            filter:
+                NoopFilter::new(),
             reduce:
                 NoopReducer::new()
                 => NoopReducer::new()
@@ -1831,6 +2088,8 @@ mod tests {
         let _ = processing_strategy!({
             map:
                 |_: Arc<OwnedMessage>| Ok(()),
+            filter:
+                NoopFilter::new(),
             reduce:
                 NoopReducer::new(),
             err:
