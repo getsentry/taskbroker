@@ -73,6 +73,12 @@ impl RuntimeConfigManager {
     }
 }
 
+impl Drop for RuntimeConfigManager {
+    fn drop(&mut self) {
+        self.handler.abort();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RuntimeConfigManager;
