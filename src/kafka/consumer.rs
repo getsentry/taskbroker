@@ -2228,7 +2228,16 @@ mod tests {
                 .is_ok()
         );
 
-        // TODO: rest
+        assert!(ok_receiver_1.is_empty()); // Both messages are filtered out first and second filters respectively
+
+        assert!(err_receiver_0.is_empty());
+        assert!(err_receiver_1.is_empty());
+
+        shutdown.cancel();
+        sleep(Duration::from_secs(1)).await;
+        assert!(err_receiver_0.is_closed());
+        assert!(ok_receiver_1.is_closed());
+        assert!(err_receiver_1.is_closed());
     }
 
     pub struct NoopFilter<T> {
