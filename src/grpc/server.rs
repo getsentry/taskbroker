@@ -81,7 +81,8 @@ impl ConsumerService for TaskbrokerServer {
             )));
         }
 
-        if let Err(e) = self.store.set_status(&id, status).await {
+        let update_result = self.store.set_status(&id, status).await;
+        if let Err(e) = update_result {
             error!(
                 "Unable to update status of {:?} to {:?}: {:?}",
                 id, status, e
@@ -93,12 +94,13 @@ impl ConsumerService for TaskbrokerServer {
         }
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
-        if let Ok(Some(inflight_activation)) = self.store.get_by_id(&id).await {
+        if let Ok(Some(inflight_activation)) = update_result {
             let duration = Utc::now() - inflight_activation.added_at;
+            let activation = inflight_activation.activation;
             metrics::histogram!(
                 "task_execution.conclusion.duration",
-                "namespace" => inflight_activation.activation.namespace.clone(),
-                "taskname" => inflight_activation.activation.taskname.clone(),
+                "namespace" => activation.namespace.clone(),
+                "taskname" => activation.taskname.clone(),
             )
             .record(duration.num_milliseconds() as f64);
 
@@ -111,10 +113,13 @@ impl ConsumerService for TaskbrokerServer {
                 // If the task has passed the processing deadline, then execution_remaining will be negative
                 // This then gets added to the processing deadline duration to get the execution time
                 let execution_time =
-                    (inflight_activation.activation.processing_deadline_duration as i64 * 1000)
-                        - execution_remaining;
-                metrics::histogram!("task_execution.completion_time", "namespace" => inflight_activation.activation.namespace.clone(),
-                    "taskname" => inflight_activation.activation.taskname.clone()).record(execution_time as f64);
+                    (activation.processing_deadline_duration as i64 * 1000) - execution_remaining;
+                metrics::histogram!(
+                    "task_execution.completion_time",
+                    "namespace" => activation.namespace.clone(),
+                    "taskname" => activation.taskname.clone(),
+                )
+                .record(execution_time as f64);
             }
         }
 
