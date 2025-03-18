@@ -49,7 +49,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             status: InflightActivationStatus::Pending,
             partition: 0,
             offset: i as i64,
-            added_at: Utc::now(),
+            added_at: Utc::now() + chrono::Duration::seconds(i as i64),
             processing_attempts: 0,
             expires_at: None,
             processing_deadline: None,
