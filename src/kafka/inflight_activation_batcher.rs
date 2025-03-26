@@ -18,7 +18,7 @@ impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            max_buf_len: config.max_pending_buffer_count,
+            max_buf_len: config.db_insert_batch_size,
         }
     }
 }

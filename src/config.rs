@@ -75,16 +75,16 @@ pub struct Config {
     /// The path to the sqlite database
     pub db_path: String,
 
+    /// The maximum number of tasks that are buffered
+    /// before being written to InflightTaskStore (sqlite).
+    pub db_insert_batch_size: usize,
+
     /// The path to the runtime config file
     pub runtime_config_path: Option<String>,
 
     /// The maximum number of pending records that can be
     /// in the InflightTaskStore (sqlite)
     pub max_pending_count: usize,
-
-    /// The maximum number of tasks that are buffered
-    /// before being written to InflightTaskStore (sqlite).
-    pub max_pending_buffer_count: usize,
 
     /// The maximum number of times a task can be reset from
     /// processing back to pending. When this limit is reached,
@@ -119,9 +119,9 @@ impl Default for Config {
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
+            db_insert_batch_size: 1024,
             runtime_config_path: None,
             max_pending_count: 2048,
-            max_pending_buffer_count: 128,
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
         }
