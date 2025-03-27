@@ -80,8 +80,8 @@ def test_tasks_written_once_during_rebalancing() -> None:
     min_restart_duration = 4
     max_restart_duration = 30
     max_pending_count = 15_000
-    topic_name = "task-worker"
-    kafka_deadletter_topic = "task-worker-dlq"
+    topic_name = "taskworker"
+    kafka_deadletter_topic = "taskworker-dlq"
     grpc_ports = get_available_ports(num_consumers)
     curr_time = int(time.time())
 

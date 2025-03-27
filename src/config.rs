@@ -109,10 +109,10 @@ impl Default for Config {
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             default_metrics_tags: Default::default(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
-            kafka_consumer_group: "task-worker".to_owned(),
-            kafka_topic: "task-worker".to_owned(),
+            kafka_consumer_group: "taskworker".to_owned(),
+            kafka_topic: "taskworker".to_owned(),
             create_missing_topics: false,
-            kafka_deadletter_topic: "task-worker-dlq".to_owned(),
+            kafka_deadletter_topic: "taskworker-dlq".to_owned(),
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(config.log_filter, "debug,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
-        assert_eq!(config.kafka_topic, "task-worker");
+        assert_eq!(config.kafka_topic, "taskworker");
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 2048);
     }
@@ -246,7 +246,7 @@ mod tests {
                 config.default_metrics_tags,
                 BTreeMap::from([("key_1".to_owned(), "value_1".to_owned())])
             );
-            assert_eq!(config.kafka_consumer_group, "task-worker".to_owned());
+            assert_eq!(config.kafka_consumer_group, "taskworker".to_owned());
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
@@ -286,8 +286,8 @@ mod tests {
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
             assert_eq!(config.log_filter, "error");
-            assert_eq!(config.kafka_topic, "task-worker".to_owned());
-            assert_eq!(config.kafka_deadletter_topic, "task-worker-dlq".to_owned());
+            assert_eq!(config.kafka_topic, "taskworker".to_owned());
+            assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 2048);
             assert_eq!(config.max_processing_attempts, 5);
@@ -310,7 +310,7 @@ mod tests {
             consumer_config.get("bootstrap.servers").unwrap(),
             "127.0.0.1:9092"
         );
-        assert_eq!(consumer_config.get("group.id").unwrap(), "task-worker");
+        assert_eq!(consumer_config.get("group.id").unwrap(), "taskworker");
         assert!(consumer_config.get("session.timeout.ms").is_some());
     }
 

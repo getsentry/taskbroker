@@ -255,8 +255,8 @@ def test_upkeep_retry() -> None:
         60  # the time in seconds to wait for all messages to be written to sqlite
     )
     taskworker_timeout = 600  # the time in seconds for taskworker to finish processing
-    topic_name = "task-worker"
-    kafka_deadletter_topic = "task-worker-dlq"
+    topic_name = "taskworker"
+    kafka_deadletter_topic = "taskworker-dlq"
     curr_time = int(time.time())
 
     print(

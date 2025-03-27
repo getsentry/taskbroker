@@ -17,4 +17,4 @@ SSH into the Compute Instance.
 
 `docker exec -it <container_id> /bin/bash` to get into the container.
 
-`/bin/kafka-topics --bootstrap-server 127.0.0.1:9093 --topic task-worker --create --partitions 4 --replication-factor 1` to create the topic.
+`/bin/kafka-topics --bootstrap-server 127.0.0.1:9093 --topic taskworker --create --partitions 4 --replication-factor 1` to create the topic.

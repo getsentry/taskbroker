@@ -189,8 +189,8 @@ def test_upkeep_expiry() -> None:
     num_partitions = 4
     max_pending_count = 100_000
     taskbroker_timeout = 600  # the time in seconds to wait for taskbroker to process
-    topic_name = "task-worker"
-    dlq_topic_name = "task-worker-dlq"
+    topic_name = "taskworker"
+    dlq_topic_name = "taskworker-dlq"
     curr_time = int(time.time())
 
     print(
