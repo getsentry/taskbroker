@@ -1,10 +1,15 @@
 # Build image
-# Note that it is important which debian image is used, because not all of them have a
-# recent enough version of protobuf-compiler
-FROM rust:1-bookworm AS build
+FROM cgr.dev/chainguard/rust:latest-dev AS build
 
-RUN apt-get update && apt-get upgrade -y 
-RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
+# The -dev variant includes package manager and shell for building
+# Switch to root to install packages
+USER root
+# Use correct package names for Wolfi
+RUN apk add cmake pkgconf openssl-dev librdkafka-dev protobuf protobuf-dev
+
+# Find where protoc is located and set the environment variable
+RUN which protoc || echo "protoc not found"
+ENV PROTOC=/usr/bin/protoc
 
 RUN USER=root cargo new --bin taskbroker
 WORKDIR /taskbroker
@@ -24,36 +29,37 @@ COPY ./benches ./benches
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release
-RUN rm src/*.rs
+# RUN rm src/*.rs
 
 # Copy source tree
 COPY ./src ./src
 
 # Build the main binary
-RUN rm ./target/release/deps/taskbroker*
+# RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
-# Runtime image
-FROM rust:1-bookworm
+# Create directory for sqlite
+RUN mkdir -p /opt/sqlite
 
-# Necessary for libssl bindings
-RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev
+# Runtime image - use minimal image with only required libraries
+FROM cgr.dev/chainguard/glibc-dynamic:latest
 
+# Expose the service port
 EXPOSE 50051
 
-# For the sqlite to be mounted too
-RUN mkdir /opt/sqlite
-
-# Import the built binary and config file and run it
+# Import the built binary and config file
 COPY --from=build /taskbroker/VERSION /opt/VERSION
 COPY --from=build /taskbroker/config.yaml /opt/config.yaml
 COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 
 WORKDIR /opt
 
+# You can switch back to non-root user for better security if desired
+USER nonroot
+
 CMD ["/opt/taskbroker", "--config", "/opt/config.yaml"]
 
 # To build and run locally:
-# docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50051:50051 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry  taskbroker
+# docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50051:50051 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry taskbroker
