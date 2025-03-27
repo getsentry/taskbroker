@@ -194,8 +194,8 @@ def test_task_worker_processing() -> None:
     taskbroker_timeout = (
         60  # the time in seconds to wait for all messages to be written to sqlite
     )
-    topic_name = "task-worker"
-    kafka_deadletter_topic = "task-worker-dlq"
+    topic_name = "taskworker"
+    kafka_deadletter_topic = "taskworker-dlq"
     curr_time = int(time.time())
 
     print(
