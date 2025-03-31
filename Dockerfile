@@ -60,7 +60,7 @@ COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 
 WORKDIR /opt
 
-USER broker
+USER $BROKER_UID
 
 CMD ["/opt/taskbroker", "--config", "/opt/config.yaml"]
 
