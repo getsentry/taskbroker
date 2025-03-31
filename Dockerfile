@@ -38,13 +38,20 @@ RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 # Runtime image
 FROM rust:1-bookworm
 
+ENV \
+  BROKER_UID=10001 \
+  BROKER_GID=10001
+
+RUN groupadd --system broker --gid $BROKER_GID \
+  && useradd --system --gid broker --uid $BROKER_UID broker
+
 # Necessary for libssl bindings
 RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev
 
 EXPOSE 50051
 
 # For the sqlite to be mounted too
-RUN mkdir /opt/sqlite
+RUN mkdir /opt/sqlite && chown broker:broker /opt/sqlite
 
 # Import the built binary and config file and run it
 COPY --from=build /taskbroker/VERSION /opt/VERSION
@@ -52,6 +59,8 @@ COPY --from=build /taskbroker/config.yaml /opt/config.yaml
 COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 
 WORKDIR /opt
+
+USER broker
 
 CMD ["/opt/taskbroker", "--config", "/opt/config.yaml"]
 
