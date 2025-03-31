@@ -27,18 +27,12 @@ COPY ./migrations ./migrations
 COPY ./config/${CONFIG_FILE} ./config.yaml
 COPY ./benches ./benches
 
-# Build dependencies in a way they can be cached
-RUN cargo build --release
-# RUN rm src/*.rs
+RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
 # Copy source tree
 COPY ./src ./src
 
-# Build the main binary
-# RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
-
-RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
 # Create directory for sqlite
 RUN mkdir -p /opt/sqlite
@@ -56,7 +50,6 @@ COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 
 WORKDIR /opt
 
-# You can switch back to non-root user for better security if desired
 USER nonroot
 
 CMD ["/opt/taskbroker", "--config", "/opt/config.yaml"]
