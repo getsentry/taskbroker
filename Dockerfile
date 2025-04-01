@@ -19,7 +19,6 @@ ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
-COPY ./config/${CONFIG_FILE} ./config.yaml
 COPY ./benches ./benches
 
 # Build dependencies in a way they can be cached
@@ -48,12 +47,11 @@ RUN mkdir /opt/sqlite
 
 # Import the built binary and config file and run it
 COPY --from=build /taskbroker/VERSION /opt/VERSION
-COPY --from=build /taskbroker/config.yaml /opt/config.yaml
 COPY --from=build /taskbroker/target/release/taskbroker /opt/taskbroker
 
 WORKDIR /opt
 
-CMD ["/opt/taskbroker", "--config", "/opt/config.yaml"]
+CMD ["/opt/taskbroker"]
 
 # To build and run locally:
 # docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50051:50051 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry  taskbroker

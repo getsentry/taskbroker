@@ -17,6 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
+
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -59,6 +62,9 @@ jobs:
         run: |
           devservices up
 
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
+
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -94,6 +100,9 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
+
       - name: Install protoc
         uses: arduino/setup-protoc@v3
 
@@ -123,6 +132,9 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
+
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -149,6 +161,9 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
+
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
@@ -167,13 +182,16 @@ jobs:
       - name: Run worker processing integration test
         run: |
           make test-worker-processing
-  
+
   upkeep-retry-integration-test:
     name: Upkeep retry integration test
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v2
+
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -193,13 +211,16 @@ jobs:
       - name: Run upkeep retry integration test
         run: |
           make test-upkeep-retry
-  
+
   upkeep-expiry-integration-test:
     name: Upkeep expiry integration test
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v2
+
+      - name: Install cmake
+        uses: lukka/get-cmake@latest
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
