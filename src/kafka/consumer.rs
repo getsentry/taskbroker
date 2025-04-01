@@ -12,6 +12,7 @@ use rdkafka::{
     },
     error::{KafkaError, KafkaResult},
     message::{BorrowedMessage, OwnedMessage},
+    types::RDKafkaErrorCode,
 };
 use std::{
     cmp,
@@ -85,19 +86,27 @@ pub fn handle_shutdown_signals(event_sender: UnboundedSender<(Event, SyncSender<
 #[instrument(skip_all)]
 pub fn poll_consumer_client(
     consumer: Arc<StreamConsumer<KafkaContext>>,
-    shutdown: oneshot::Receiver<()>,
+    mut shutdown: oneshot::Receiver<()>,
 ) {
     task::spawn_blocking(|| {
         Handle::current().block_on(async move {
             let _guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            select! {
-                biased;
-                _ = shutdown => {
-                    debug!("Received shutdown signal, commiting state in sync mode...");
-                    let _ = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync);
-                }
-                msg = consumer.recv() => {
-                    error!("Got unexpected message from consumer client: {:?}", msg);
+            loop {
+                select! {
+                    biased;
+                    _ = &mut shutdown => {
+                        debug!("Received shutdown signal, commiting state in sync mode...");
+                        let _ = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync);
+                        break;
+                    }
+                    msg = consumer.recv() => {
+                        if let Err(KafkaError::MessageConsumption(RDKafkaErrorCode::BrokerTransportFailure)) = msg {
+                            error!("Failed to connect to broker, retrying...")
+                        } else {
+                            error!("Got unexpected status from consumer client: {:?}", msg);
+                            break
+                        }
+                    }
                 }
             }
             debug!("Shutdown complete");
