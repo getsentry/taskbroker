@@ -122,6 +122,12 @@ async fn main() -> Result<(), Error> {
                 &[&consumer_config.kafka_topic],
                 &consumer_config.kafka_consumer_config(),
                 processing_strategy!({
+                    err:
+                        OsStreamWriter::new(
+                            Duration::from_secs(1),
+                            OsStream::StdErr,
+                        ),
+
                     map:
                         deserialize_activation::new(),
 
@@ -129,17 +135,12 @@ async fn main() -> Result<(), Error> {
                         InflightActivationBatcher::new(
                             ActivationBatcherConfig::from_config(&consumer_config),
                             runtime_config_manager.clone()
-                        )
-                        => InflightActivationWriter::new(
+                        ),
+                        InflightActivationWriter::new(
                             consumer_store.clone(),
                             ActivationWriterConfig::from_config(&consumer_config)
                         ),
 
-                    err:
-                        OsStreamWriter::new(
-                            Duration::from_secs(1),
-                            OsStream::StdErr,
-                        ),
                 }),
             )
             .await

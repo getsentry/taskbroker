@@ -223,27 +223,17 @@ impl ActorHandles {
 macro_rules! processing_strategy {
     (
         @reducers,
-        ($reduce:expr),
+        (),
         $prev_receiver:ident,
         $err_sender:ident,
         $shutdown_signal:ident,
         $handles:ident,
     ) => {{
-        let (commit_sender, commit_receiver) = tokio::sync::mpsc::channel(1);
-
-        $handles.spawn($crate::kafka::consumer::reduce(
-            $reduce,
-            $prev_receiver,
-            commit_sender.clone(),
-            $err_sender.clone(),
-            $shutdown_signal.clone(),
-        ));
-
-        (commit_sender, commit_receiver)
+        $prev_receiver
     }};
     (
         @reducers,
-        ($reduce_first:expr $(,$reduce_rest:expr)+),
+        ($reduce_first:expr $(,$reduce_rest:expr)*),
         $prev_receiver:ident,
         $err_sender:ident,
         $shutdown_signal:ident,
@@ -261,7 +251,7 @@ macro_rules! processing_strategy {
 
         processing_strategy!(
             @reducers,
-            ($($reduce_rest),+),
+            ($($reduce_rest),*),
             receiver,
             $err_sender,
             $shutdown_signal,
@@ -270,9 +260,9 @@ macro_rules! processing_strategy {
     }};
     (
         {
-            map: $map_fn:expr,
-            reduce: $reduce_first:expr $(=> $reduce_rest:expr)*,
             err: $reduce_err:expr,
+            map: $map_fn:expr,
+            reduce: $reduce_first:expr $(,$reduce_rest:expr)*,
         }
     ) => {{
         |consumer: Arc<rdkafka::consumer::StreamConsumer<$crate::kafka::consumer::KafkaContext>>,
@@ -303,7 +293,7 @@ macro_rules! processing_strategy {
                 ));
             }
 
-            let (_, commit_receiver) = $crate::processing_strategy!(
+            let commit_receiver = $crate::processing_strategy!(
                 @reducers,
                 ($reduce_first $(,$reduce_rest)*),
                 reduce_receiver,
@@ -1823,30 +1813,33 @@ mod tests {
     #[tokio::test]
     async fn test_processing_strategy_can_compile() {
         let _ = processing_strategy!({
-            map:
-                |_: Arc<OwnedMessage>| Ok(()),
-            reduce:
-                NoopReducer::new()
-                => NoopReducer::new()
-                => NoopReducer::new()
-                => NoopReducer::new(),
             err:
                 OsStreamWriter::new(
                     Duration::from_secs(1),
                     OsStream::StdErr,
                 ),
-        });
 
-        let _ = processing_strategy!({
             map:
                 |_: Arc<OwnedMessage>| Ok(()),
             reduce:
                 NoopReducer::new(),
+                NoopReducer::new(),
+                NoopReducer::new(),
+                NoopReducer::new(),
+        });
+
+        let _ = processing_strategy!({
+
             err:
                 OsStreamWriter::new(
                     Duration::from_secs(1),
                     OsStream::StdErr,
                 ),
+
+            map:
+                |_: Arc<OwnedMessage>| Ok(()),
+            reduce:
+                NoopReducer::new(),
         });
     }
 }
