@@ -92,8 +92,7 @@ async fn main() -> Result<(), Error> {
     let maintenance_task = tokio::spawn({
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
         let maintenance_store = store.clone();
-        // TODO make this configurable.
-        let mut timer = time::interval(Duration::from_secs(60));
+        let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
         timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
         async move {
