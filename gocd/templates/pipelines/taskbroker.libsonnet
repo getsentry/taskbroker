@@ -5,7 +5,7 @@ local checks_stage = {
     fetch_materials: true,
     jobs: {
       checks: {
-        timeout: 1200,
+        timeout: 20,
         elastic_profile_id: 'taskbroker',
         environment_variables: {
           GITHUB_TOKEN: '{{SECRET:[devinfra-github][token]}}',
@@ -27,7 +27,7 @@ local deploy_canary_stage(region) =
           fetch_materials: true,
           jobs: {
             deploy: {
-              timeout: 600,
+              timeout: 30,
               elastic_profile_id: 'taskbroker',
               environment_variables: {
                 LABEL_SELECTOR: 'service=taskbroker,env=canary',
@@ -47,7 +47,7 @@ local deployPrimaryStage = {
     fetch_materials: true,
     jobs: {
       deploy: {
-        timeout: 600,
+        timeout: 30,
         elastic_profile_id: 'taskbroker',
         environment_variables: {
           LABEL_SELECTOR: 'service=taskbroker',
