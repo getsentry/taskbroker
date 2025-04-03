@@ -91,8 +91,13 @@ pub struct Config {
     /// the activation will be discarded/deadlettered.
     pub max_processing_attempts: usize,
 
-    /// The frequency at which upkeep tasks are spawned.
+    /// The frequency at which upkeep tasks
+    /// (discarding, retrying activations, etc.) are executed.
     pub upkeep_task_interval_ms: u64,
+
+    /// The frequency at which db maintenance tasks
+    /// (reclaiming free pages) are executed
+    pub maintenance_task_interval_ms: u64,
 }
 
 impl Default for Config {
@@ -124,6 +129,7 @@ impl Default for Config {
             max_pending_count: 2048,
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
+            maintenance_task_interval_ms: 6000,
         }
     }
 }
