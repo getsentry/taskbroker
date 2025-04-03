@@ -360,7 +360,7 @@ pub async fn handle_events(
 
     let mut state = ConsumerState::Ready;
 
-    while let ConsumerState::Ready { .. } | ConsumerState::Consuming { .. } = state {
+    while let ConsumerState::Ready | ConsumerState::Consuming { .. } = state {
         select! {
             res = match state {
                 ConsumerState::Consuming(ref mut handles, _) => Either::Left(handles.join_next()),
