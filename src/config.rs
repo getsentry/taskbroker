@@ -42,7 +42,7 @@ pub struct Config {
     /// We support a list of secrets to allow for key rotation.
     pub grpc_shared_secret: Vec<String>,
 
-    /// comma separated list of kafka brokers to connect to
+    /// Comma separated list of kafka brokers to connect to
     pub kafka_cluster: String,
 
     /// The kafka consumer group name
@@ -53,6 +53,10 @@ pub struct Config {
 
     /// Whether to create missing topics if they don't exist.
     pub create_missing_topics: bool,
+
+    /// Comma separated list of kafka brokers to
+    /// publish dead letter messages on
+    pub kafka_deadletter_cluster: Option<String>,
 
     /// The kafka topic to publish dead letter messages on
     pub kafka_deadletter_topic: String,
@@ -112,6 +116,7 @@ impl Default for Config {
             kafka_consumer_group: "taskworker".to_owned(),
             kafka_topic: "taskworker".to_owned(),
             create_missing_topics: false,
+            kafka_deadletter_cluster: None,
             kafka_deadletter_topic: "taskworker-dlq".to_owned(),
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
@@ -167,7 +172,12 @@ impl Config {
     /// Convert the application Config into rdkafka::ClientConfig
     pub fn kafka_producer_config(&self) -> ClientConfig {
         let mut new_config = ClientConfig::new();
-        let config = new_config.set("bootstrap.servers", self.kafka_cluster.clone());
+        let config = new_config.set(
+            "bootstrap.servers",
+            self.kafka_deadletter_cluster
+                .as_ref()
+                .unwrap_or_else(|| &self.kafka_cluster),
+        );
         config.clone()
     }
 }

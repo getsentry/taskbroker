@@ -26,10 +26,11 @@ use crate::{
 /// on the inflight store
 pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
     let kafka_config = config.kafka_producer_config();
-    let producer: FutureProducer = kafka_config
-        .create()
-        .expect("Could not create kafka producer in upkeep");
-    let producer_arc = Arc::new(producer);
+    let producer: Arc<FutureProducer> = Arc::new(
+        kafka_config
+            .create()
+            .expect("Could not create kafka producer in upkeep"),
+    );
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
@@ -37,7 +38,7 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
     loop {
         select! {
             _ = timer.tick() => {
-                let _ = do_upkeep(config.clone(), store.clone(), producer_arc.clone()).await;
+                let _ = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
