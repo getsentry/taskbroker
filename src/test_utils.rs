@@ -117,7 +117,7 @@ pub fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
 /// Reset a kafka topic by destroying it and recreating it.
 pub async fn reset_topic(config: Arc<Config>) {
     let admin_client: AdminClient<_> = config
-        .kafka_producer_config()
+        .kafka_consumer_config()
         .create()
         .expect("Could not create admin client");
 
