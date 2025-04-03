@@ -182,7 +182,7 @@ impl Config {
             "bootstrap.servers",
             self.kafka_deadletter_cluster
                 .as_ref()
-                .unwrap_or_else(|| &self.kafka_cluster),
+                .unwrap_or(&self.kafka_cluster),
         );
         config.clone()
     }
