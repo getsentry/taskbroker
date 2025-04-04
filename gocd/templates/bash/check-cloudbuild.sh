@@ -1,6 +1,8 @@
 #!/bin/bash
 
-/devinfra/scripts/checks/googlecloud/checkcloudbuild.py \
+/devinfra/scripts/checks/googlecloud/check_cloudbuild.py \
+	sentryio \
+	taskbroker \
+	build-on-taskbroker-branch-push \
 	"${GO_REVISION_TASKBROKER_REPO}" \
-	"sentryio" \
-	"us-central1-docker.pkg.dev/sentryio/taskbroker/image"
+	main
