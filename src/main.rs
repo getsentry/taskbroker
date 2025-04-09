@@ -4,6 +4,7 @@ use std::{sync::Arc, time::Duration};
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::kafka::kafka_writer::{KafkaWriter, KafkaWriterConfig};
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -18,10 +19,10 @@ use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
 use taskbroker::kafka::{
+    activation_store_writer::{ActivationStoreWriter, ActivationStoreWriterConfig},
     admin::create_missing_topics,
     consumer::start_consumer,
     deserialize_activation::{self},
-    inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     os_stream_writer::{OsStream, OsStreamWriter},
 };
 use taskbroker::logging;
@@ -136,9 +137,12 @@ async fn main() -> Result<(), Error> {
                             ActivationBatcherConfig::from_config(&consumer_config),
                             runtime_config_manager.clone()
                         ),
-                        InflightActivationWriter::new(
+                        ActivationStoreWriter::new(
                             consumer_store.clone(),
-                            ActivationWriterConfig::from_config(&consumer_config)
+                            ActivationStoreWriterConfig::from_config(&consumer_config)
+                        ),
+                        KafkaWriter::new(
+                            KafkaWriterConfig::from_config(&consumer_config)
                         ),
 
                 }),
