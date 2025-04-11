@@ -46,6 +46,7 @@ pub enum InflightActivationStatus {
     Failure,
     Retry,
     Complete,
+    Delay,
 }
 
 impl InflightActivationStatus {
@@ -98,6 +99,9 @@ pub struct InflightActivation {
     /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
     pub expires_at: Option<DateTime<Utc>>,
 
+    /// If the task has specified a delay, this is the timestamp after which the task can be sent to workers
+    pub delay_until: Option<DateTime<Utc>>,
+
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
 
@@ -135,6 +139,7 @@ struct TableRow {
     added_at: DateTime<Utc>,
     processing_attempts: i32,
     expires_at: Option<DateTime<Utc>>,
+    delay_until: Option<DateTime<Utc>>,
     processing_deadline_duration: u32,
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
@@ -154,6 +159,7 @@ impl TryFrom<InflightActivation> for TableRow {
             added_at: value.added_at,
             processing_attempts: value.processing_attempts,
             expires_at: value.expires_at,
+            delay_until: value.delay_until,
             processing_deadline_duration: value.activation.processing_deadline_duration as u32,
             processing_deadline: value.processing_deadline,
             status: value.status,
@@ -175,6 +181,7 @@ impl From<TableRow> for InflightActivation {
             added_at: value.added_at,
             processing_attempts: value.processing_attempts,
             expires_at: value.expires_at,
+            delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
             namespace: value.namespace,
@@ -241,6 +248,7 @@ impl InflightActivationStore {
                 added_at,
                 processing_attempts,
                 expires_at,
+                delay_until,
                 processing_deadline_duration,
                 processing_deadline,
                 status,
@@ -277,6 +285,7 @@ impl InflightActivationStore {
                     added_at,
                     processing_attempts,
                     expires_at,
+                    delay_until,
                     processing_deadline_duration,
                     processing_deadline,
                     status,
@@ -298,6 +307,7 @@ impl InflightActivationStore {
                 b.push_bind(row.added_at.timestamp());
                 b.push_bind(row.processing_attempts);
                 b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
+                b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline.timestamp());
@@ -448,6 +458,7 @@ impl InflightActivationStore {
                 added_at,
                 processing_attempts,
                 expires_at,
+                delay_until,
                 processing_deadline_duration,
                 processing_deadline,
                 status,
@@ -561,6 +572,30 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Pending)
+        .execute(&self.write_pool)
+        .await?;
+
+        Ok(update_result.rows_affected())
+    }
+
+    /// Perform upkeep work for tasks that are past delay_until deadlines
+    ///
+    /// Tasks that are delayed and past their delay_until deadline are updated
+    /// to have status=pending so that they can be executed by workers
+    ///
+    /// The number of impacted records is returned in a Result.
+    #[instrument(skip_all)]
+    pub async fn handle_delay_until(&self) -> Result<u64, Error> {
+        let now = Utc::now();
+        let update_result = sqlx::query(
+            r#"UPDATE inflight_taskactivations
+            SET status = $1
+            WHERE delay_until IS NOT NULL AND delay_until < $2 AND status = $3
+            "#,
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Delay)
         .execute(&self.write_pool)
         .await?;
 
