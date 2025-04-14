@@ -675,7 +675,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delay_elapse() {
+    async fn test_delay_elapsed() {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
