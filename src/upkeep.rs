@@ -54,6 +54,7 @@ struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
     processing_attempts_exceeded: u64,
+    delay_elapsed: u64,
     expired: u64,
     completed: u64,
     failed: u64,
@@ -89,6 +90,7 @@ pub async fn do_upkeep(
         retried: 0,
         processing_deadline_reset: 0,
         processing_attempts_exceeded: 0,
+        delay_elapsed: 0,
         expired: 0,
         completed: 0,
         failed: 0,
@@ -167,7 +169,14 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.handle_expires_at").record(handle_expires_at_start.elapsed());
 
-    // 7. Handle failure state tasks
+    // 7. Handle tasks that are past their expires_at deadline
+    let handle_delay_until_start = Instant::now();
+    if let Ok(delay_elapsed) = store.handle_delay_until().await {
+        result_context.delay_elapsed = delay_elapsed;
+    }
+    metrics::histogram!("upkeep.handle_delay_until").record(handle_delay_until_start.elapsed());
+
+    // 8. Handle failure state tasks
     let handle_failed_tasks_start = Instant::now();
     if let Ok(failed_tasks_forwarder) = store.handle_failed_tasks().await {
         result_context.discarded = failed_tasks_forwarder.to_discard.len() as u64;
@@ -212,14 +221,14 @@ pub async fn do_upkeep(
             })
             .collect();
 
-        // 8. Update deadlettered tasks to complete
+        // 9. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
             result_context.deadlettered = deadletter_count;
         }
     }
     metrics::histogram!("upkeep.handle_failed_tasks").record(handle_failed_tasks_start.elapsed());
 
-    // 9. Cleanup completed tasks
+    // 10. Cleanup completed tasks
     let remove_completed_start = Instant::now();
     if let Ok(count) = store.remove_completed().await {
         result_context.completed = count;
@@ -268,6 +277,7 @@ pub async fn do_upkeep(
         .increment(result_context.processing_attempts_exceeded);
     metrics::counter!("upkeep.processing_deadline_reset")
         .increment(result_context.processing_deadline_reset);
+    metrics::counter!("upkeep.delay_elapsed").increment(result_context.delay_elapsed);
 
     // State of inflight tasks
     metrics::gauge!("upkeep.pending_count").set(result_context.pending);
@@ -300,6 +310,7 @@ mod tests {
     use chrono::{TimeDelta, TimeZone, Utc};
     use prost_types::Timestamp;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState};
+    use tokio::time::sleep;
 
     use std::sync::Arc;
     use std::time::Duration;
@@ -660,6 +671,77 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "fourth task should be kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delay_elapsed() {
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut batch = make_activations(2);
+
+        batch[0].status = InflightActivationStatus::Delay;
+        batch[0].delay_until = Some(Utc::now() - Duration::from_secs(1));
+
+        batch[1].status = InflightActivationStatus::Delay;
+        batch[1].delay_until = Some(Utc::now() + Duration::from_secs(1));
+
+        assert!(store.store(batch.clone()).await.is_ok());
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Delay)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            0
+        );
+        let result_context = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
+        assert_eq!(result_context.delay_elapsed, 1);
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_pending_activation(None)
+                .await
+                .unwrap()
+                .unwrap()
+                .activation
+                .id,
+            "id_0",
+        );
+        assert!(store.get_pending_activation(None).await.unwrap().is_none());
+        sleep(Duration::from_secs(2)).await;
+        let result_context = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
+        assert_eq!(result_context.delay_elapsed, 1);
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .get_pending_activation(None)
+                .await
+                .unwrap()
+                .unwrap()
+                .activation
+                .id,
+            "id_1",
         );
     }
 }
