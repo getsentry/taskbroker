@@ -1,25 +1,22 @@
-use std::{mem::take, sync::Arc};
-
-use anyhow::Ok;
-use chrono::{DateTime, Utc};
-use tracing::{debug, instrument};
-
-use crate::{
-    config::Config,
-    store::inflight_activation::{InflightActivation, InflightActivationStore},
-};
-
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
+use crate::{
+    config::Config,
+    store::inflight_activation::{InflightActivation, InflightActivationStore},
+};
+use anyhow::Ok;
+use chrono::{DateTime, Utc};
+use std::{mem::take, sync::Arc};
+use tracing::{debug, instrument};
 
-pub struct ActivationWriterConfig {
+pub struct ActivationStoreWriterConfig {
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
 }
 
-impl ActivationWriterConfig {
+impl ActivationStoreWriterConfig {
     /// Convert from application configuration into InflightActivationWriter config.
     pub fn from_config(config: &Config) -> Self {
         Self {
@@ -29,14 +26,14 @@ impl ActivationWriterConfig {
     }
 }
 
-pub struct InflightActivationWriter {
-    config: ActivationWriterConfig,
+pub struct ActivationStoreWriter {
+    config: ActivationStoreWriterConfig,
     store: Arc<InflightActivationStore>,
     batch: Option<Vec<InflightActivation>>,
 }
 
-impl InflightActivationWriter {
-    pub fn new(store: Arc<InflightActivationStore>, config: ActivationWriterConfig) -> Self {
+impl ActivationStoreWriter {
+    pub fn new(store: Arc<InflightActivationStore>, config: ActivationStoreWriterConfig) -> Self {
         Self {
             config,
             store,
@@ -45,10 +42,10 @@ impl InflightActivationWriter {
     }
 }
 
-impl Reducer for InflightActivationWriter {
+impl Reducer for ActivationStoreWriter {
     type Input = Vec<InflightActivation>;
 
-    type Output = ();
+    type Output = Vec<InflightActivation>;
 
     async fn reduce(&mut self, batch: Self::Input) -> Result<(), anyhow::Error> {
         assert!(self.batch.is_none());
@@ -58,7 +55,7 @@ impl Reducer for InflightActivationWriter {
 
     #[instrument(skip_all)]
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
-        let Some(ref batch) = self.batch else {
+        let Some(ref mut batch) = self.batch else {
             return Ok(None);
         };
 
@@ -73,8 +70,13 @@ impl Reducer for InflightActivationWriter {
             return Ok(None);
         }
 
+        let (ready_activations, delayed_activations): (Vec<_>, Vec<_>) = take(&mut self.batch)
+            .unwrap()
+            .into_iter()
+            .partition(|_| true);
+
         let lag = Utc::now()
-            - batch
+            - ready_activations
                 .iter()
                 .map(|item| {
                     let ts = item
@@ -87,7 +89,7 @@ impl Reducer for InflightActivationWriter {
                 .min_by_key(|item| item.timestamp())
                 .unwrap();
 
-        let res = self.store.store(take(&mut self.batch).unwrap()).await?;
+        let res = self.store.store(ready_activations).await?;
         metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
             .record(lag.num_seconds() as f64);
         metrics::counter!("consumer.inflight_activation_writer.stored")
@@ -98,7 +100,7 @@ impl Reducer for InflightActivationWriter {
             lag.num_seconds()
         );
 
-        Ok(Some(()))
+        Ok(Some(delayed_activations))
     }
 
     fn reset(&mut self) {}
