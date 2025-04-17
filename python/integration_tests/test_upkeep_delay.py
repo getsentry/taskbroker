@@ -25,9 +25,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_delay"
 
 
-def generate_task_activation(
-    delay: int
-) -> TaskActivation:
+def generate_task_activation(delay: int) -> TaskActivation:
     return TaskActivation(
         id=uuid4().hex,
         namespace="integration_tests",
@@ -92,9 +90,7 @@ def manage_taskbroker(
         )
         cur_time = time.time()
         while (cur_time < end) and finished_writing_tasks:
-            task_count_in_sqlite = get_num_tasks_group_by_status(
-                taskbroker_config
-            )
+            task_count_in_sqlite = get_num_tasks_group_by_status(taskbroker_config)
 
             complete = False
             delay_count = task_count_in_sqlite.get("Delay", 0)
@@ -162,7 +158,7 @@ def manage_taskbroker(
 def test_upkeep_delay() -> None:
     """
     What does this test do?
-    This tests is responsible for checking the integrity of the countdown
+    This test is responsible for checking the integrity of the countdown
     mechanism responsible for delaying tasks to be executed at a later time.
     This functionality is made possible by the the upkeep thread of taskbroker
     which is responsible for shifting tasks from the delay state to the
@@ -170,7 +166,7 @@ def test_upkeep_delay() -> None:
     messages is produced to kafka with a set delay time. These messages are
     first written into sqlite with a delay state. During an interval, the
     upkeep thread periodically checks whether a delayed tasks can be updated.
-    This process continues until all tasks have been shifted to a pendiong
+    This process continues until all tasks have been shifted to a pending
     state.
 
     How does it accomplish this?
@@ -261,8 +257,7 @@ Running test with the following configuration:
 
         # Create taskbroker thread
         results_log_path = str(
-            TEST_OUTPUT_PATH
-            / f"taskbroker_0_{curr_time}_test_upkeep_delay_results.log"
+            TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_delay_results.log"
         )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
@@ -271,8 +266,7 @@ Running test with the following configuration:
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
                 str(
-                    TEST_OUTPUT_PATH
-                    / f"taskbroker_0_{curr_time}_test_upkeep_delay.log"
+                    TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_delay.log"
                 ),
                 results_log_path,
                 taskbroker_timeout,
@@ -291,12 +285,8 @@ Running test with the following configuration:
         total_pending_tasks = int(line.split(",")[1].split(":")[1])
         delay_has_elapsed = int(line.split(",")[2].split(":")[1])
 
-    assert (
-        total_delayed_tasks == 0
-    )  # there should no delayed tasks in sqlite
+    assert total_delayed_tasks == 0  # there should no delayed tasks in sqlite
     assert (
         total_pending_tasks == num_messages
     )  # all tasks should have been moved to pending state
-    assert (
-        delay_has_elapsed == 1
-    )  # delay should have elapsed
+    assert delay_has_elapsed == 1  # delay should have elapsed
