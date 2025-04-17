@@ -6,9 +6,24 @@ use prost::Message as _;
 use rdkafka::{Message, message::OwnedMessage};
 use sentry_protos::taskbroker::v1::TaskActivation;
 
+use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
 
-pub fn new() -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
+pub struct DeserializeActivationConfig {
+    pub max_delayed_allowed: u64,
+}
+
+impl DeserializeActivationConfig {
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            max_delayed_allowed: config.max_delayed_task_allowed_sec,
+        }
+    }
+}
+
+pub fn new(
+    config: DeserializeActivationConfig,
+) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
     move |msg: Arc<OwnedMessage>| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
@@ -31,7 +46,10 @@ pub fn new() -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> 
         });
 
         let delay_until = activation.delay.map(|secs| {
-            let delay = Duration::from_secs(secs);
+            let mut delay = Duration::from_secs(secs);
+            if secs > config.max_delayed_allowed {
+                delay = Duration::from_secs(config.max_delayed_allowed)
+            }
             activation_time + delay
         });
 
@@ -70,11 +88,12 @@ mod tests {
 
     use crate::store::inflight_activation::InflightActivationStatus;
 
-    use super::new;
+    use super::{Config, DeserializeActivationConfig, new};
 
     #[test]
     fn test_processing_attempts_set() {
-        let deserializer = new();
+        let config = Arc::new(Config::default());
+        let deserializer = new(DeserializeActivationConfig::from_config(&config));
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
@@ -117,7 +136,8 @@ mod tests {
 
     #[test]
     fn test_expires() {
-        let deserializer = new();
+        let config = Arc::new(Config::default());
+        let deserializer = new(DeserializeActivationConfig::from_config(&config));
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
@@ -161,7 +181,8 @@ mod tests {
 
     #[test]
     fn test_delay_past() {
-        let deserializer = new();
+        let config = Arc::new(Config::default());
+        let deserializer = new(DeserializeActivationConfig::from_config(&config));
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
@@ -206,7 +227,8 @@ mod tests {
 
     #[test]
     fn test_delay_future() {
-        let deserializer = new();
+        let config = Arc::new(Config::default());
+        let deserializer = new(DeserializeActivationConfig::from_config(&config));
         let now = Utc::now();
 
         #[allow(deprecated)]
@@ -244,6 +266,52 @@ mod tests {
         assert!(
             delta.num_seconds() >= 99,
             "Should have ~100 seconds of delay from received_at"
+        );
+        assert_eq!(inflight.status, InflightActivationStatus::Delay)
+    }
+
+    #[test]
+    fn test_delay_max_allowed() {
+        let config = Arc::new(Config::default());
+        let deserializer = new(DeserializeActivationConfig::from_config(&config));
+        let now = Utc::now();
+        let delay_sec = config.max_delayed_task_allowed_sec * 2;
+
+        #[allow(deprecated)]
+        let activation = TaskActivation {
+            id: "id_0".into(),
+            namespace: "namespace".into(),
+            taskname: "taskname".into(),
+            parameters: "{}".into(),
+            headers: HashMap::new(),
+            // used because the activation has delay
+            received_at: Some(prost_types::Timestamp {
+                seconds: now.timestamp(),
+                nanos: 0,
+            }),
+            retry_state: None,
+            processing_deadline_duration: 10,
+            expires: None,
+            delay: Some(delay_sec),
+        };
+        let message = OwnedMessage::new(
+            Some(activation.encode_to_vec()),
+            None,
+            "taskworker".into(),
+            Timestamp::now(),
+            0,
+            0,
+            None,
+        );
+        let arc_message = Arc::new(message);
+        let inflight_opt = deserializer(arc_message);
+
+        assert!(inflight_opt.is_ok());
+        let inflight = inflight_opt.unwrap();
+        let delta = inflight.delay_until.unwrap() - now;
+        assert!(
+            delta.num_seconds() <= (config.max_delayed_task_allowed_sec as f64 * 1.1) as i64,
+            "Should have approxmiately max_delayed_task_allowed_sec of delay from received_at"
         );
         assert_eq!(inflight.status, InflightActivationStatus::Delay)
     }

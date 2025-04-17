@@ -102,6 +102,10 @@ pub struct Config {
     /// The frequency at which db maintenance tasks
     /// (reclaiming free pages) are executed
     pub maintenance_task_interval_ms: u64,
+
+    /// The maximum number of seconds a task can be delayed until.
+    /// Tasks delayed greater than this duration are capped.
+    pub max_delayed_task_allowed_sec: u64,
 }
 
 impl Default for Config {
@@ -135,6 +139,7 @@ impl Default for Config {
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
             maintenance_task_interval_ms: 6000,
+            max_delayed_task_allowed_sec: 3600,
         }
     }
 }
