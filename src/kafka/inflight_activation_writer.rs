@@ -6,7 +6,9 @@ use tracing::{debug, instrument};
 
 use crate::{
     config::Config,
-    store::inflight_activation::{InflightActivation, InflightActivationStore},
+    store::inflight_activation::{
+        InflightActivation, InflightActivationStatus, InflightActivationStore,
+    },
 };
 
 use super::consumer::{
@@ -17,6 +19,7 @@ use super::consumer::{
 pub struct ActivationWriterConfig {
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
+    pub max_delay_activations: usize,
 }
 
 impl ActivationWriterConfig {
@@ -25,6 +28,7 @@ impl ActivationWriterConfig {
         Self {
             max_buf_len: config.db_insert_batch_size,
             max_pending_activations: config.max_pending_count,
+            max_delay_activations: config.max_delay_count,
         }
     }
 }
@@ -69,6 +73,17 @@ impl Reducer for InflightActivationWriter {
             .expect("Error communicating with activation store")
             + batch.len()
             > self.config.max_pending_activations
+        {
+            return Ok(None);
+        }
+
+        if self
+            .store
+            .count_by_status(InflightActivationStatus::Delay)
+            .await
+            .expect("Error communicating with activation store")
+            + batch.len()
+            > self.config.max_delay_activations
         {
             return Ok(None);
         }
