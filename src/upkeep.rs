@@ -60,6 +60,7 @@ struct UpkeepResults {
     failed: u64,
     pending: u32,
     processing: u32,
+    delay: u32,
     deadlettered: u64,
     discarded: u64,
 }
@@ -74,6 +75,7 @@ impl UpkeepResults {
             && self.failed == 0
             && self.pending == 0
             && self.processing == 0
+            && self.delay == 0
             && self.discarded == 0
             && self.deadlettered == 0
     }
@@ -96,6 +98,7 @@ pub async fn do_upkeep(
         failed: 0,
         pending: 0,
         processing: 0,
+        delay: 0,
         deadlettered: 0,
         discarded: 0,
     };
@@ -247,6 +250,9 @@ pub async fn do_upkeep(
     {
         result_context.processing = processing_count as u32;
     }
+    if let Ok(delay_count) = store.count_by_status(InflightActivationStatus::Delay).await {
+        result_context.delay = delay_count as u32;
+    }
 
     if !result_context.empty() {
         info!(
@@ -259,6 +265,8 @@ pub async fn do_upkeep(
             result_context.retried,
             result_context.pending,
             result_context.processing,
+            result_context.delay,
+            result_context.delay_elapsed,
             "upkeep.complete",
         );
     }
@@ -282,6 +290,7 @@ pub async fn do_upkeep(
     // State of inflight tasks
     metrics::gauge!("upkeep.pending_count").set(result_context.pending);
     metrics::gauge!("upkeep.processing_count").set(result_context.processing);
+    metrics::gauge!("upkeep.delay_count").set(result_context.delay);
 
     result_context
 }

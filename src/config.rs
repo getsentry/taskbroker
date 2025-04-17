@@ -90,6 +90,10 @@ pub struct Config {
     /// in the InflightTaskStore (sqlite)
     pub max_pending_count: usize,
 
+    /// The maximum number of delay records that can be
+    /// in the InflightTaskStore (sqlite)
+    pub max_delay_count: usize,
+
     /// The maximum number of times a task can be reset from
     /// processing back to pending. When this limit is reached,
     /// the activation will be discarded/deadlettered.
@@ -136,6 +140,7 @@ impl Default for Config {
             db_insert_batch_size: 1024,
             runtime_config_path: None,
             max_pending_count: 2048,
+            max_delay_count: 8192,
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
             maintenance_task_interval_ms: 6000,
