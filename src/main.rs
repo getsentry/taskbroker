@@ -20,7 +20,7 @@ use taskbroker::grpc::server::TaskbrokerServer;
 use taskbroker::kafka::{
     admin::create_missing_topics,
     consumer::start_consumer,
-    deserialize_activation::{self},
+    deserialize_activation::{self, DeserializeActivationConfig},
     inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
     os_stream_writer::{OsStream, OsStreamWriter},
 };
@@ -129,7 +129,7 @@ async fn main() -> Result<(), Error> {
                         ),
 
                     map:
-                        deserialize_activation::new(),
+                        deserialize_activation::new(DeserializeActivationConfig::from_config(&consumer_config)),
 
                     reduce:
                         InflightActivationBatcher::new(
