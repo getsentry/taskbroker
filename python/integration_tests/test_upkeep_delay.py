@@ -3,6 +3,8 @@ import signal
 import subprocess
 import threading
 import time
+import random
+from datetime import datetime
 
 import yaml
 from uuid import uuid4
@@ -20,7 +22,7 @@ from python.integration_tests.helpers import (
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
 
-TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_expiry"
+TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_delay"
 
 
 def generate_task_activation(
@@ -81,29 +83,51 @@ def manage_taskbroker(
                 "sqlite within timeout."
             )
 
-        print("[taskbroker_0]: Waiting for upkeep to move delayed tasks to pending state")
+        # Keep runniung taskbroekr until:
+        # - timeout is reached
+        # - all tasks have been moved to pending state
+        print(
+            "[taskbroker_0]: Waiting for upkeep to move delayed tasks to "
+            "pending state"
+        )
         cur_time = time.time()
         while (cur_time < end) and finished_writing_tasks:
-            task_count_in_sqlite = get_num_tasks_group_by_status(taskbroker_config)
+            task_count_in_sqlite = get_num_tasks_group_by_status(
+                taskbroker_config
+            )
 
             complete = False
-            task_count_by_status = task_count_in_sqlite.items()
-            delay_count = task_count_by_status.get("Delay", 0)
+            delay_count = task_count_in_sqlite.get("Delay", 0)
             if delay_count == 0:
                 if cur_time < end_of_delay:
-                    print(f"[taskbroker_0]: Current time: {cur_time}. All delayed tasks have been moved to pending state before countdown elapsed at {end_of_delay}.")
+                    print(
+                        f"[taskbroker_0]: Current time: "
+                        f"{datetime.fromtimestamp(cur_time)}. "
+                        "All delayed tasks have been moved to pending state "
+                        f"before countdown elapsed at "
+                        f"{datetime.fromtimestamp(end_of_delay)}."
+                    )
                     break
                 else:
-                    print(f"[taskbroker_0]: Current time: {cur_time}. All delayed tasks have been moved to pending state after countdown has elapsed at {end_of_delay}.")
+                    print(
+                        f"[taskbroker_0]: Current time: "
+                        f"{datetime.fromtimestamp(cur_time)}. "
+                        "All delayed tasks have been moved to pending state "
+                        f"after countdown has elapsed at "
+                        f"{datetime.fromtimestamp(end_of_delay)}."
+                    )
                     complete = True
-
-            if complete:
-                print("[taskbroker_0]: Upkeep has successfully move all delayed tasks to pending state")
-                break
             print(
-                f"[taskbroker_0]: Waiting for upkeep to move all delayed tasks to pending state. "
-                f"Sqlite count: {task_count_by_status}"
+                f"[taskbroker_0]: Waiting for upkeep to move all delayed "
+                "tasks to pending state. "
+                f"Sqlite count by status: {task_count_in_sqlite}"
             )
+            if complete:
+                print(
+                    "[taskbroker_0]: Upkeep has successfully move all delayed "
+                    "tasks to pending state"
+                )
+                break
 
             time.sleep(3)
             cur_time = time.time()
@@ -115,8 +139,13 @@ def manage_taskbroker(
                 "Shutting down taskbroker."
             )
 
+        pending_count = task_count_in_sqlite.get("Pending", 0)
         with open(results_log_path, "a") as results_log_file:
-            results_log_file.write(f"total_delayed_tasks:{delay_count},delay_has_elapsed:{int(cur_time >= end_of_delay)}")
+            results_log_file.write(
+                f"total_delayed_tasks:{delay_count},"
+                f"total_pending_tasks:{pending_count},"
+                f"delay_has_elapsed:{int(cur_time >= end_of_delay)}"
+            )
 
         time.sleep(5)  # Give some extra time for tasks to flush to DLQ topic
 
@@ -177,11 +206,12 @@ def test_upkeep_delay() -> None:
     num_messages = 5_000
     num_partitions = 4
     max_pending_count = 100_000
-    taskbroker_timeout = 600  # the time in seconds to wait for taskbroker to process
+    taskbroker_timeout = 600
     topic_name = "taskworker"
     dlq_topic_name = "taskworker-dlq"
     curr_time = int(time.time())
-    delay = 30
+    min_delay = 20
+    max_delay = 40
 
     print(
         f"""
@@ -191,7 +221,7 @@ Running test with the following configuration:
         max pending count: {max_pending_count},
         topic name: {topic_name},
         dlq topic name: {dlq_topic_name},
-        task delay: {delay}
+        delay range: {min_delay} - {max_delay}
     """
     )
 
@@ -219,13 +249,15 @@ Running test with the following configuration:
     try:
         custom_messages = []
         for _ in range(num_messages):
-            task_activation = generate_task_activation(delay)
+            task_activation = generate_task_activation(
+                random.randint(min_delay, max_delay)
+            )
             custom_messages.append(task_activation)
 
         send_custom_messages_to_topic(topic_name, custom_messages)
 
-        first_message_received_at = custom_messages[0].received_at
-        end_of_delay = first_message_received_at + delay
+        first_message_received_at = custom_messages[0].received_at.ToSeconds()
+        end_of_delay = first_message_received_at + max_delay
 
         # Create taskbroker thread
         results_log_path = str(
@@ -256,11 +288,15 @@ Running test with the following configuration:
     with open(results_log_path, "r") as log_file:
         line = log_file.readline()
         total_delayed_tasks = int(line.split(",")[0].split(":")[1])
-        delay_has_elapsed = int(line.split(",")[1].split(":")[1])
+        total_pending_tasks = int(line.split(",")[1].split(":")[1])
+        delay_has_elapsed = int(line.split(",")[2].split(":")[1])
 
     assert (
         total_delayed_tasks == 0
     )  # there should no delayed tasks in sqlite
+    assert (
+        total_pending_tasks == num_messages
+    )  # all tasks should have been moved to pending state
     assert (
         delay_has_elapsed == 1
     )  # delay should have elapsed
