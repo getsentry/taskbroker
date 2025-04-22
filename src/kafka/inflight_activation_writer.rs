@@ -66,25 +66,39 @@ impl Reducer for InflightActivationWriter {
             return Ok(None);
         };
 
-        if self
+        // Check if writing the batch would exceed the limits
+        let exceeded_pending_limit = self
             .store
             .count_pending_activations()
             .await
             .expect("Error communicating with activation store")
             + batch.len()
-            > self.config.max_pending_activations
-        {
-            return Ok(None);
-        }
-
-        if self
+            > self.config.max_pending_activations;
+        let exceeded_delay_limit = self
             .store
             .count_by_status(InflightActivationStatus::Delay)
             .await
             .expect("Error communicating with activation store")
             + batch.len()
-            > self.config.max_delay_activations
-        {
+            > self.config.max_delay_activations;
+        // Check if the entire batch is either pending or delay
+        let entire_batch_is_pending = batch
+            .iter()
+            .all(|activation| activation.status == InflightActivationStatus::Pending);
+        let entire_batch_is_delay = batch
+            .iter()
+            .all(|activation| activation.status == InflightActivationStatus::Delay);
+
+        // We want to allow the batch to be inserted if:
+        // 1. The batch does not exceed both the pending and delay limits
+        // 2. The batch exceeds the pending limit, does not exceed delay limit, and is entirely delay
+        // 3. The batch exceeds the delay limit, does not exceed pending limit, and is entirely pending
+        // Otherwise, emit backpressure.
+        if exceeded_pending_limit && exceeded_delay_limit {
+            return Ok(None);
+        } else if exceeded_delay_limit && !exceeded_pending_limit && !entire_batch_is_pending {
+            return Ok(None);
+        } else if exceeded_pending_limit && !exceeded_delay_limit && !entire_batch_is_delay {
             return Ok(None);
         }
 
@@ -129,5 +143,393 @@ impl Reducer for InflightActivationWriter {
             shutdown_condition: ReduceShutdownCondition::Signal,
             flush_interval: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ActivationWriterConfig, InflightActivation, InflightActivationWriter, Reducer};
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    use sentry_protos::taskbroker::v1::TaskActivation;
+    use std::sync::Arc;
+
+    use crate::store::inflight_activation::{
+        InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+    };
+    use crate::test_utils::{create_integration_config, generate_temp_filename};
+
+    #[tokio::test]
+    async fn test_writer_flush_batch() {
+        let writer_config = ActivationWriterConfig {
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_delay_activations: 10,
+        };
+        let mut writer = InflightActivationWriter::new(
+            Arc::new(
+                InflightActivationStore::new(
+                    &generate_temp_filename(),
+                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                )
+                .await
+                .unwrap(),
+            ),
+            writer_config,
+        );
+
+        let batch = vec![
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "0".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "pending_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                },
+                status: InflightActivationStatus::Pending,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                processing_attempts: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+            },
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "1".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "delay_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                },
+                status: InflightActivationStatus::Delay,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                processing_attempts: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+            },
+        ];
+
+        writer.reduce(batch).await.unwrap();
+        writer.flush().await.unwrap();
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        let count_delay = writer
+            .store
+            .count_by_status(InflightActivationStatus::Delay)
+            .await
+            .unwrap();
+        assert_eq!(count_pending + count_delay, 2);
+    }
+
+    #[tokio::test]
+    async fn test_writer_flush_only_pending() {
+        let writer_config = ActivationWriterConfig {
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_delay_activations: 0,
+        };
+        let mut writer = InflightActivationWriter::new(
+            Arc::new(
+                InflightActivationStore::new(
+                    &generate_temp_filename(),
+                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                )
+                .await
+                .unwrap(),
+            ),
+            writer_config,
+        );
+
+        let batch = vec![InflightActivation {
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "pending_task".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: Some(prost_types::Timestamp {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+                delay: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        }];
+
+        writer.reduce(batch).await.unwrap();
+        writer.flush().await.unwrap();
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 1);
+    }
+
+    #[tokio::test]
+    async fn test_writer_flush_only_delay() {
+        let writer_config = ActivationWriterConfig {
+            max_buf_len: 100,
+            max_pending_activations: 0,
+            max_delay_activations: 10,
+        };
+        let mut writer = InflightActivationWriter::new(
+            Arc::new(
+                InflightActivationStore::new(
+                    &generate_temp_filename(),
+                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                )
+                .await
+                .unwrap(),
+            ),
+            writer_config,
+        );
+
+        let batch = vec![InflightActivation {
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "pending_task".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: Some(prost_types::Timestamp {
+                    seconds: 0,
+                    nanos: 0,
+                }),
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+                delay: None,
+            },
+            status: InflightActivationStatus::Delay,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        }];
+
+        writer.reduce(batch).await.unwrap();
+        writer.flush().await.unwrap();
+        let count_delay = writer
+            .store
+            .count_by_status(InflightActivationStatus::Delay)
+            .await
+            .unwrap();
+        assert_eq!(count_delay, 1);
+    }
+
+    #[tokio::test]
+    async fn test_writer_backpressure() {
+        let writer_config = ActivationWriterConfig {
+            max_buf_len: 100,
+            max_pending_activations: 0,
+            max_delay_activations: 0,
+        };
+        let mut writer = InflightActivationWriter::new(
+            Arc::new(
+                InflightActivationStore::new(
+                    &generate_temp_filename(),
+                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                )
+                .await
+                .unwrap(),
+            ),
+            writer_config,
+        );
+
+        let batch = vec![
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "0".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "pending_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                },
+                status: InflightActivationStatus::Pending,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                processing_attempts: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+            },
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "1".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "delay_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                },
+                status: InflightActivationStatus::Delay,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                processing_attempts: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+            },
+        ];
+
+        writer.reduce(batch).await.unwrap();
+        writer.flush().await.unwrap();
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 0);
+        let count_delay = writer
+            .store
+            .count_by_status(InflightActivationStatus::Delay)
+            .await
+            .unwrap();
+        assert_eq!(count_delay, 0);
+    }
+
+    #[tokio::test]
+    async fn test_writer_backpressure_only_delay_limit_reached_and_entire_batch_is_pending() {
+        let writer_config = ActivationWriterConfig {
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_delay_activations: 0,
+        };
+        let mut writer = InflightActivationWriter::new(
+            Arc::new(
+                InflightActivationStore::new(
+                    &generate_temp_filename(),
+                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                )
+                .await
+                .unwrap(),
+            ),
+            writer_config,
+        );
+
+        let batch = vec![
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "0".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "pending_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                },
+                status: InflightActivationStatus::Pending,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                processing_attempts: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+            },
+            InflightActivation {
+                activation: TaskActivation {
+                    id: "1".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "pending_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(prost_types::Timestamp {
+                        seconds: 0,
+                        nanos: 0,
+                    }),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                },
+                status: InflightActivationStatus::Pending,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                processing_attempts: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+            },
+        ];
+
+        writer.reduce(batch).await.unwrap();
+        writer.flush().await.unwrap();
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 2);
+        let count_delay = writer
+            .store
+            .count_by_status(InflightActivationStatus::Delay)
+            .await
+            .unwrap();
+        assert_eq!(count_delay, 0);
     }
 }
