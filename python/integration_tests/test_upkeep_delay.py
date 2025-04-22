@@ -81,7 +81,7 @@ def manage_taskbroker(
                 "sqlite within timeout."
             )
 
-        # Keep runniung taskbroekr until:
+        # Keep running taskbroker until:
         # - timeout is reached
         # - all tasks have been moved to pending state
         print(
@@ -142,8 +142,6 @@ def manage_taskbroker(
                 f"total_pending_tasks:{pending_count},"
                 f"delay_has_elapsed:{int(cur_time >= end_of_delay)}"
             )
-
-        time.sleep(5)  # Give some extra time for tasks to flush to DLQ topic
 
         # Stop the taskbroker
         print("[taskbroker_0]: Shutting down taskbroker")
