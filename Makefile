@@ -86,6 +86,11 @@ test-upkeep-expiry: build reset-kafka ## Run the upkeep expiry integration test
 	rm -r python/integration_tests/.tests_output/test_upkeep_expiry
 .PHONY: test-upkeep-expiry
 
+test-upkeep-delay: build reset-kafka ## Run the upkeep delay integration test
+	python -m pytest python/integration_tests/test_upkeep_delay.py -s
+	rm -r python/integration_tests/.tests_output/test_upkeep_delay
+.PHONY: test-upkeep-delay
+
 integration-test: test-rebalance test-worker-processing test-upkeep-retry ## Run all integration tests
 .PHONY: integration-test
 
