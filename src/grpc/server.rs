@@ -37,7 +37,7 @@ impl ConsumerService for TaskbrokerServer {
                     inflight.activation.received_at.unwrap().seconds,
                     inflight.activation.received_at.unwrap().nanos as u32,
                 ) {
-                    metrics::histogram!("grpc_server.received_to_gettask.latency").record(
+                    metrics::histogram!("grpc_server.received_to_gettask.latency", "namespace" => inflight.namespace.clone()).record(
                         Utc::now()
                             .signed_duration_since(sentry_ts)
                             .num_milliseconds() as f64,
@@ -140,6 +140,16 @@ impl ConsumerService for TaskbrokerServer {
             }
             Ok(None) => Err(Status::not_found("No pending activation")),
             Ok(Some(InflightActivation { activation, .. })) => {
+                if let Some(sentry_ts) = DateTime::from_timestamp(
+                    activation.received_at.unwrap().seconds,
+                    activation.received_at.unwrap().nanos as u32,
+                ) {
+                    metrics::histogram!("grpc_server.received_to_gettask.latency", "namespace" => activation.namespace.clone()).record(
+                        Utc::now()
+                            .signed_duration_since(sentry_ts)
+                            .num_milliseconds() as f64,
+                    );
+                }
                 Ok(Response::new(SetTaskStatusResponse {
                     task: Some(activation),
                 }))
