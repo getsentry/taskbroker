@@ -40,7 +40,7 @@ impl ConsumerService for TaskbrokerServer {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
                         "namespace" => inflight.namespace.clone(),
-                        "taskname" => inflight.activation.taskname.clone()
+                        "taskname" => inflight.activation.taskname.clone(),
                     )
                     .record(
                         Utc::now()
@@ -149,7 +149,12 @@ impl ConsumerService for TaskbrokerServer {
                     activation.received_at.unwrap().seconds,
                     activation.received_at.unwrap().nanos as u32,
                 ) {
-                    metrics::histogram!("grpc_server.received_to_gettask.latency", "namespace" => activation.namespace.clone(), "taskname" => activation.taskname.clone(),).record(
+                    metrics::histogram!(
+                        "grpc_server.received_to_gettask.latency",
+                        "namespace" => activation.namespace.clone(),
+                        "taskname" => activation.taskname.clone(),
+                    )
+                    .record(
                         Utc::now()
                             .signed_duration_since(sentry_ts)
                             .num_milliseconds() as f64,
