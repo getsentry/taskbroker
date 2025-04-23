@@ -90,13 +90,12 @@ impl Reducer for InflightActivationWriter {
             .iter()
             .any(|activation| activation.status == InflightActivationStatus::Pending);
 
-        // We want to allow the batch to be inserted if:
-        // 1. The batch does not exceed both the pending and delay limits
-        // 2. The batch exceeds the pending limit, does not exceed delay limit, and is entirely delay
-        // 3. The batch exceeds the delay limit, does not exceed pending limit, and is entirely pending
-        // Otherwise, emit backpressure.
-        if exceeded_pending_limit && exceeded_delay_limit
-            || exceeded_delay_limit && has_delay
+        // Backpressure if any of these conditions are met:
+        // 1. The delay limit is exceeded AND either:
+        //    - there are delay activations in the batch, OR
+        //    - the pending limit is also exceeded
+        // 2. The pending limit is exceeded AND there are pending activations
+        if (has_delay || exceeded_pending_limit) && exceeded_delay_limit
             || exceeded_pending_limit && has_pending
         {
             return Ok(None);
