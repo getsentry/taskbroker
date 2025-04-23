@@ -81,13 +81,14 @@ impl Reducer for InflightActivationWriter {
             .expect("Error communicating with activation store")
             + batch.len()
             > self.config.max_delay_activations;
+
         // Check if the entire batch is either pending or delay
-        let entire_batch_is_pending = batch
+        let has_delay = batch
             .iter()
-            .all(|activation| activation.status == InflightActivationStatus::Pending);
-        let entire_batch_is_delay = batch
+            .any(|activation| activation.status == InflightActivationStatus::Delay);
+        let has_pending = batch
             .iter()
-            .all(|activation| activation.status == InflightActivationStatus::Delay);
+            .any(|activation| activation.status == InflightActivationStatus::Pending);
 
         // We want to allow the batch to be inserted if:
         // 1. The batch does not exceed both the pending and delay limits
@@ -95,8 +96,8 @@ impl Reducer for InflightActivationWriter {
         // 3. The batch exceeds the delay limit, does not exceed pending limit, and is entirely pending
         // Otherwise, emit backpressure.
         if (exceeded_pending_limit && exceeded_delay_limit)
-            || (exceeded_delay_limit && !exceeded_pending_limit && !entire_batch_is_pending)
-            || (exceeded_pending_limit && !exceeded_delay_limit && !entire_batch_is_delay)
+            || (exceeded_delay_limit && !exceeded_pending_limit && has_delay)
+            || (exceeded_pending_limit && !exceeded_delay_limit && has_pending)
         {
             return Ok(None);
         }
