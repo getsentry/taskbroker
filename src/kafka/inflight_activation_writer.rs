@@ -95,9 +95,9 @@ impl Reducer for InflightActivationWriter {
         // 2. The batch exceeds the pending limit, does not exceed delay limit, and is entirely delay
         // 3. The batch exceeds the delay limit, does not exceed pending limit, and is entirely pending
         // Otherwise, emit backpressure.
-        if (exceeded_pending_limit && exceeded_delay_limit)
-            || (exceeded_delay_limit && !exceeded_pending_limit && has_delay)
-            || (exceeded_pending_limit && !exceeded_delay_limit && has_pending)
+        if exceeded_pending_limit && exceeded_delay_limit
+            || exceeded_delay_limit && has_delay
+            || exceeded_pending_limit && has_pending
         {
             return Ok(None);
         }
