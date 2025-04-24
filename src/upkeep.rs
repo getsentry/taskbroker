@@ -369,6 +369,7 @@ mod tests {
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
+        records[0].activation.delay = Some(30);
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());

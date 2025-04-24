@@ -8,7 +8,6 @@ use sentry_protos::taskbroker::v1::{
 };
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
-use tracing_subscriber::field::RecordFields;
 
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
