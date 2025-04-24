@@ -307,6 +307,7 @@ fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActi
         seconds: now.timestamp(),
         nanos: now.nanosecond() as i32,
     });
+    new_activation.delay = None;
     if new_activation.retry_state.is_some() {
         new_activation.retry_state.as_mut().unwrap().attempts += 1;
     }
