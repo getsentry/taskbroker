@@ -19,7 +19,7 @@ from python.integration_tests.helpers import (
     TaskbrokerConfig,
 )
 
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation, RetryState, OnAttemptsExceeded
 
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_delay"
@@ -31,7 +31,11 @@ def generate_task_activation(delay: int) -> TaskActivation:
         namespace="integration_tests",
         taskname="integration_tests.say_hello",
         parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}),
-        retry_state=None,
+        retry_state=RetryState(
+            attempts=0,
+            max_attempts=1,
+            on_attempts_exceeded=OnAttemptsExceeded.ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
         processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),
         expires=None,

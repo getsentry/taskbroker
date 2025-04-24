@@ -368,6 +368,7 @@ mod tests {
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
         });
+        records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -396,6 +397,8 @@ mod tests {
                 > records[0].activation.received_at.unwrap().seconds,
             "retry activation should have a later timestamp"
         );
+        // The delay_until of a retry task should be set to None
+        assert!(activation.delay.is_none());
     }
 
     #[tokio::test]

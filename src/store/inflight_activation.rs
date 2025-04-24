@@ -565,7 +565,7 @@ impl InflightActivationStore {
         let now = Utc::now();
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
-            SET status = $1
+            SET status = $1, delay_until = null
             WHERE expires_at IS NOT NULL AND expires_at < $2 AND status = $3
             "#,
         )
@@ -589,7 +589,7 @@ impl InflightActivationStore {
         let now = Utc::now();
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
-            SET status = $1
+            SET status = $1, delay_until = null
             WHERE delay_until IS NOT NULL AND delay_until < $2 AND status = $3
             "#,
         )
