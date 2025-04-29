@@ -28,10 +28,12 @@ pub fn new(
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
         };
-        metrics::histogram!("consumer.message.payload_size_bytes").record(payload.len() as f64);
 
         let activation = TaskActivation::decode(payload)?;
         let namespace = activation.namespace.clone();
+
+        metrics::histogram!("consumer.message.payload_size_bytes", "namespace" => namespace.clone())
+            .record(payload.len() as f64);
 
         let at_most_once = activation
             .retry_state
