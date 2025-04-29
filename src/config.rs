@@ -51,6 +51,18 @@ pub struct Config {
     /// The topic to fetch task messages from.
     pub kafka_topic: String,
 
+    /// The security method used for authentication eg. sasl_plaintext
+    pub kafka_security_protocol: Option<String>,
+
+    /// The hashing algorithm used for authentication eg. scram-sha-256
+    pub kafka_sasl_mechanism: Option<String>,
+
+    /// The sasl username for ingesting messages
+    pub kafka_sasl_username: Option<String>,
+
+    /// The sasl password for ingesting messages
+    pub kafka_sasl_password: Option<String>,
+
     /// Whether to create missing topics if they don't exist.
     pub create_missing_topics: bool,
 
@@ -60,6 +72,18 @@ pub struct Config {
 
     /// The kafka topic to publish dead letter messages on
     pub kafka_deadletter_topic: String,
+
+    /// The security method used for authentication to the DLQ eg. sasl_plaintext
+    pub kafka_deadletter_security_protocol: Option<String>,
+
+    /// The hashing algorithm used for authentication to the DLQ eg. scram-sha-256
+    pub kafka_deadletter_sasl_mechanism: Option<String>,
+
+    /// The sasl username for DLQ publishing
+    pub kafka_deadletter_sasl_username: Option<String>,
+
+    /// The sasl password for DLQ publishing
+    pub kafka_deadletter_sasl_password: Option<String>,
 
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
@@ -127,10 +151,18 @@ impl Default for Config {
             default_metrics_tags: Default::default(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
             kafka_consumer_group: "taskworker".to_owned(),
+            kafka_sasl_mechanism: None,
+            kafka_sasl_username: None,
+            kafka_sasl_password: None,
+            kafka_security_protocol: None,
             kafka_topic: "taskworker".to_owned(),
             create_missing_topics: false,
             kafka_deadletter_cluster: None,
             kafka_deadletter_topic: "taskworker-dlq".to_owned(),
+            kafka_deadletter_sasl_mechanism: None,
+            kafka_deadletter_sasl_username: None,
+            kafka_deadletter_sasl_password: None,
+            kafka_deadletter_security_protocol: None,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
@@ -182,6 +214,20 @@ impl Config {
                 self.kafka_auto_offset_reset.to_string(),
             )
             .set("enable.auto.offset.store", "false");
+
+        if let Some(sasl_mechanism) = &self.kafka_sasl_mechanism {
+            config.set("sasl.mechanism", sasl_mechanism);
+        }
+        if let Some(sasl_username) = &self.kafka_sasl_username {
+            config.set("sasl.username", sasl_username);
+        }
+        if let Some(sasl_password) = &self.kafka_sasl_password {
+            config.set("sasl.password", sasl_password);
+        }
+        if let Some(security_protocol) = &self.kafka_security_protocol {
+            config.set("security.protocol", security_protocol);
+        }
+
         config.clone()
     }
 
@@ -194,6 +240,18 @@ impl Config {
                 .as_ref()
                 .unwrap_or(&self.kafka_cluster),
         );
+        if let Some(sasl_mechanism) = &self.kafka_deadletter_sasl_mechanism {
+            config.set("sasl.mechanism", sasl_mechanism);
+        }
+        if let Some(sasl_username) = &self.kafka_deadletter_sasl_username {
+            config.set("sasl.username", sasl_username);
+        }
+        if let Some(sasl_password) = &self.kafka_deadletter_sasl_password {
+            config.set("sasl.password", sasl_password);
+        }
+        if let Some(security_protocol) = &self.kafka_deadletter_security_protocol {
+            config.set("security.protocol", security_protocol);
+        }
         config.clone()
     }
 }
@@ -341,6 +399,33 @@ mod tests {
     }
 
     #[test]
+    fn test_kafka_consumer_config_auth() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_KAFKA_SECURITY_PROTOCOL", "sasl_plaintext");
+            jail.set_env("TASKBROKER_KAFKA_SASL_MECHANISM", "SCRAM-SHA-256");
+            jail.set_env("TASKBROKER_KAFKA_SASL_USERNAME", "taskbroker");
+            jail.set_env("TASKBROKER_KAFKA_SASL_PASSWORD", "secret-tech");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let consumer_config = config.kafka_consumer_config();
+
+            assert_eq!(
+                consumer_config.get("security.protocol").unwrap(),
+                "sasl_plaintext",
+            );
+            assert_eq!(
+                consumer_config.get("sasl.mechanism").unwrap(),
+                "SCRAM-SHA-256"
+            );
+            assert_eq!(consumer_config.get("sasl.username").unwrap(), "taskbroker");
+            assert_eq!(consumer_config.get("sasl.password").unwrap(), "secret-tech");
+
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_kafka_producer_config() {
         let args = Args { config: None };
         let config = Config::from_args(&args).unwrap();
@@ -352,5 +437,38 @@ mod tests {
         );
         assert!(producer_config.get("group.id").is_none());
         assert!(producer_config.get("session.timeout.ms").is_none());
+    }
+
+    #[test]
+    fn test_kafka_producer_config_auth() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TASKBROKER_KAFKA_DEADLETTER_SECURITY_PROTOCOL",
+                "sasl_plaintext",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_DEADLETTER_SASL_MECHANISM",
+                "SCRAM-SHA-256",
+            );
+            jail.set_env("TASKBROKER_KAFKA_DEADLETTER_SASL_USERNAME", "taskbroker");
+            jail.set_env("TASKBROKER_KAFKA_DEADLETTER_SASL_PASSWORD", "secret-tech");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let producer_config = config.kafka_producer_config();
+
+            assert_eq!(
+                producer_config.get("security.protocol").unwrap(),
+                "sasl_plaintext"
+            );
+            assert_eq!(
+                producer_config.get("sasl.mechanism").unwrap(),
+                "SCRAM-SHA-256"
+            );
+            assert_eq!(producer_config.get("sasl.username").unwrap(), "taskbroker");
+            assert_eq!(producer_config.get("sasl.password").unwrap(), "secret-tech");
+
+            Ok(())
+        });
     }
 }
