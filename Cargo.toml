@@ -53,3 +53,4 @@ harness = false
 
 [features]
 bench-with-mnt-disk = []
+ssl = ["rdkafka/ssl"]
