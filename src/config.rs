@@ -142,7 +142,7 @@ impl Default for Config {
             sentry_dsn: None,
             sentry_env: None,
             traces_sample_rate: Some(0.0),
-            log_filter: "debug,librdkafka=warn,h2=off".to_owned(),
+            log_filter: "info,librdkafka=warn,h2=off".to_owned(),
             log_format: LogFormat::Text,
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
@@ -281,7 +281,7 @@ mod tests {
         };
         assert_eq!(config.sentry_dsn, None);
         assert_eq!(config.sentry_env, None);
-        assert_eq!(config.log_filter, "debug,librdkafka=warn,h2=off");
+        assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "taskworker");
