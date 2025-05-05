@@ -258,6 +258,4 @@ Running test with the following configuration:
         line = log_file.readline()
         total_hanging_tasks = int(line.split(":")[1])
 
-    assert (
-        total_hanging_tasks == 0
-    )  # there should no tasks in sqlite left
+    assert total_hanging_tasks == 0  # there should no tasks in sqlite left
