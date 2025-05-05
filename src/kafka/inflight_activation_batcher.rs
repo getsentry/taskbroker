@@ -50,7 +50,6 @@ impl Reducer for InflightActivationBatcher {
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
         let task_name = &t.activation.taskname;
-        // drop the task if it has expired
 
         if runtime_config.drop_task_killswitch.contains(task_name) {
             metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
