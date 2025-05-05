@@ -279,12 +279,12 @@ pub async fn do_upkeep(
         .increment(result_context.failed);
     metrics::counter!("upkeep.task.state_transition", "state" => "retried")
         .increment(result_context.retried);
-    metrics::counter!("upkeep.task.state_transition", "state" => "expired")
-        .increment(result_context.expired);
 
     // Upkeep cleanup actions
     metrics::counter!("upkeep.cleanup_action", "kind" => "deadlettered")
         .increment(result_context.deadlettered);
+    metrics::counter!("upkeep.task.cleanup_action", "kind" => "expired")
+        .increment(result_context.expired);
     metrics::counter!("upkeep.cleanup_action", "kind" => "discarded")
         .increment(result_context.discarded);
     metrics::counter!("upkeep.cleanup_action", "kind" => "processing_attempts_exceeded")
