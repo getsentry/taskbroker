@@ -194,6 +194,7 @@ pub async fn do_upkeep(
                 let config = config.clone();
                 async move {
                     let payload = activation.encode_to_vec();
+                    metrics::histogram!("upkeep.dlq.message_size").record(payload.len() as f64);
                     let delivery = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
