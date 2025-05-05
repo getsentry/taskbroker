@@ -733,7 +733,8 @@ async fn test_handle_expires_at() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 2);
 
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
+    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    assert_count_by_status(&store, InflightActivationStatus::Failure, 0).await;
 }
 
 #[tokio::test]

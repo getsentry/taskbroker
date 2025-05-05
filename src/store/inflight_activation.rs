@@ -563,19 +563,15 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
         let now = Utc::now();
-        let update_result = sqlx::query(
-            r#"UPDATE inflight_taskactivations
-            SET status = $1
-            WHERE expires_at IS NOT NULL AND expires_at < $2 AND status = $3
-            "#,
+        let query = sqlx::query(
+            "DELETE FROM inflight_taskactivations WHERE expires_at IS NOT NULL AND expires_at < $1",
         )
-        .bind(InflightActivationStatus::Failure)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Pending)
         .execute(&self.write_pool)
         .await?;
 
-        Ok(update_result.rows_affected())
+        Ok(query.rows_affected())
     }
 
     /// Perform upkeep work for tasks that are past delay_until deadlines
