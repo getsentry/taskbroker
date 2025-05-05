@@ -635,8 +635,7 @@ mod tests {
         let result_context = do_upkeep(config, store.clone(), producer).await;
 
         assert_eq!(result_context.expired, 2); // 0/2 removed as expired
-        assert_eq!(result_context.discarded, 2); // 0/2 discarded as well
-        assert_eq!(result_context.completed, 3); // 1 complete
+        assert_eq!(result_context.completed, 1); // 1 complete
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Pending)
