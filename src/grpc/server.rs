@@ -35,22 +35,20 @@ impl ConsumerService for TaskbrokerServer {
                     inflight.activation.received_at.unwrap().seconds,
                     inflight.activation.received_at.unwrap().nanos as u32,
                 ) {
-                    let mut received_to_gettask_latency = Utc::now()
+                    let received_to_gettask_latency = Utc::now()
                         .signed_duration_since(sentry_ts)
                         .num_milliseconds()
-                        as f64;
-                    if let Some(delay_until) = inflight.delay_until {
-                        received_to_gettask_latency -= delay_until
-                            .signed_duration_since(sentry_ts)
-                            .num_milliseconds()
-                            as f64;
-                    }
+                        - inflight.delay_until.map_or(0, |delay_until| {
+                            delay_until
+                                .signed_duration_since(sentry_ts)
+                                .num_milliseconds()
+                        });
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
                         "namespace" => inflight.namespace.clone(),
                         "taskname" => inflight.activation.taskname.clone(),
                     )
-                    .record(received_to_gettask_latency);
+                    .record(received_to_gettask_latency as f64);
                 }
 
                 let resp = GetTaskResponse {
@@ -153,22 +151,20 @@ impl ConsumerService for TaskbrokerServer {
                     inflight.activation.received_at.unwrap().seconds,
                     inflight.activation.received_at.unwrap().nanos as u32,
                 ) {
-                    let mut received_to_gettask_latency = Utc::now()
+                    let received_to_gettask_latency = Utc::now()
                         .signed_duration_since(sentry_ts)
                         .num_milliseconds()
-                        as f64;
-                    if let Some(delay_until) = inflight.delay_until {
-                        received_to_gettask_latency -= delay_until
-                            .signed_duration_since(sentry_ts)
-                            .num_milliseconds()
-                            as f64;
-                    }
+                        - inflight.delay_until.map_or(0, |delay_until| {
+                            delay_until
+                                .signed_duration_since(sentry_ts)
+                                .num_milliseconds()
+                        });
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
                         "namespace" => inflight.namespace.clone(),
                         "taskname" => inflight.activation.taskname.clone(),
                     )
-                    .record(received_to_gettask_latency);
+                    .record(received_to_gettask_latency as f64);
                 }
                 Ok(Response::new(SetTaskStatusResponse {
                     task: Some(inflight.activation),
