@@ -205,7 +205,13 @@ pub async fn do_upkeep(
 
                     match delivery {
                         Ok(_) => Ok(activation.id),
-                        Err(err) => Err(err),
+                        Err((err, _msg)) => {
+                            error!(
+                                "deadletter.publish.failure: {}, message: {:?}",
+                                err, payload
+                            );
+                            Err(err)
+                        }
                     }
                 }
             })
@@ -218,10 +224,7 @@ pub async fn do_upkeep(
             .into_iter()
             .filter_map(|result| match result {
                 Ok(id) => Some(id),
-                Err((err, _msg)) => {
-                    error!("deadletter.publish.failure {}", err);
-                    None
-                }
+                Err(_) => None,
             })
             .collect();
 
