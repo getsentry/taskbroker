@@ -281,17 +281,17 @@ pub async fn do_upkeep(
         .increment(result_context.retried);
 
     // Upkeep cleanup actions
-    metrics::counter!("upkeep.cleanup_action", "kind" => "deadlettered")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "publish_deadlettered")
         .increment(result_context.deadlettered);
-    metrics::counter!("upkeep.task.cleanup_action", "kind" => "expired")
+    metrics::counter!("upkeep.task.cleanup_action", "kind" => "mark_expired_as_failure")
         .increment(result_context.expired);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "discarded")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "delete_discarded")
         .increment(result_context.discarded);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "processing_attempts_exceeded")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_attempts_exceeded_as_failure")
         .increment(result_context.processing_attempts_exceeded);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "processing_deadline_reset")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_deadline_exceeded_as_failure")
         .increment(result_context.processing_deadline_reset);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "delay_elapsed")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
         .increment(result_context.delay_elapsed);
 
     // State of inflight tasks
