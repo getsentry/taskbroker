@@ -295,9 +295,9 @@ pub async fn do_upkeep(
         .increment(result_context.delay_elapsed);
 
     // State of inflight tasks
-    metrics::gauge!("upkeep.cur_pending_tasks").set(result_context.pending);
-    metrics::gauge!("upkeep.cur_processing_tasks").set(result_context.processing);
-    metrics::gauge!("upkeep.cur_delayed_tasks").set(result_context.delay);
+    metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
+    metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
+    metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
 
     result_context
 }
