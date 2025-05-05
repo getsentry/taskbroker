@@ -134,6 +134,10 @@ pub struct Config {
     /// The maximum number of seconds a task can be delayed until.
     /// Tasks delayed greater than this duration are capped.
     pub max_delayed_task_allowed_sec: u64,
+
+    /// The maximum size allowed for a message on the Kafka producer.
+    /// If a message is bigger than this then the produce will fail.
+    pub max_message_size: u64,
 }
 
 impl Default for Config {
@@ -177,6 +181,7 @@ impl Default for Config {
             upkeep_task_interval_ms: 1000,
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
+            max_message_size: 10485760,
         }
     }
 }
@@ -234,12 +239,14 @@ impl Config {
     /// Convert the application Config into rdkafka::ClientConfig
     pub fn kafka_producer_config(&self) -> ClientConfig {
         let mut new_config = ClientConfig::new();
-        let config = new_config.set(
-            "bootstrap.servers",
-            self.kafka_deadletter_cluster
-                .as_ref()
-                .unwrap_or(&self.kafka_cluster),
-        );
+        let config = new_config
+            .set(
+                "bootstrap.servers",
+                self.kafka_deadletter_cluster
+                    .as_ref()
+                    .unwrap_or(&self.kafka_cluster),
+            )
+            .set("message.max.bytes", format!("{}", self.max_message_size));
         if let Some(sasl_mechanism) = &self.kafka_deadletter_sasl_mechanism {
             config.set("sasl.mechanism", sasl_mechanism);
         }
