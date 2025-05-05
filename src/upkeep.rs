@@ -165,14 +165,14 @@ pub async fn do_upkeep(
     metrics::histogram!("upkeep.handle_processing_attempts_exceeded")
         .record(handle_processing_attempts_exceeded_start.elapsed());
 
-    // 6. Handle tasks that are past their expires_at deadline
+    // 6. Remove tasks that are past their expires_at deadline
     let handle_expires_at_start = Instant::now();
     if let Ok(expired_count) = store.handle_expires_at().await {
         result_context.expired = expired_count;
     }
     metrics::histogram!("upkeep.handle_expires_at").record(handle_expires_at_start.elapsed());
 
-    // 7. Handle tasks that are past their expires_at deadline
+    // 7. Handle tasks that are past their delay_until deadline
     let handle_delay_until_start = Instant::now();
     if let Ok(delay_elapsed) = store.handle_delay_until().await {
         result_context.delay_elapsed = delay_elapsed;

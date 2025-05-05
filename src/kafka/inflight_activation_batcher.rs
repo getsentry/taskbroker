@@ -1,9 +1,9 @@
-use std::{mem::replace, sync::Arc, time::Duration};
-
 use crate::{
     config::Config, runtime_config::RuntimeConfigManager,
     store::inflight_activation::InflightActivation,
 };
+use chrono::Utc;
+use std::{mem::replace, sync::Arc, time::Duration};
 
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
@@ -50,12 +50,22 @@ impl Reducer for InflightActivationBatcher {
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
         let task_name = &t.activation.taskname;
-        if !runtime_config.drop_task_killswitch.contains(task_name) {
-            self.buffer.push(t);
-        } else {
+        // drop the task if it has expired
+
+        if runtime_config.drop_task_killswitch.contains(task_name) {
             metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
                 .increment(1);
+            return Ok(());
         }
+
+        if let Some(expires_at) = t.expires_at {
+            if Utc::now() > expires_at {
+                metrics::counter!("upkeep.expired").increment(1);
+                return Ok(());
+            }
+        }
+
+        self.buffer.push(t);
 
         Ok(())
     }
