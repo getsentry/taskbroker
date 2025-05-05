@@ -89,23 +89,19 @@ def manage_taskbroker(
                 "sqlite within timeout."
             )
 
-        print("[taskbroker_0]: Waiting for upkeep to discard/deadletter tasks")
+        print("[taskbroker_0]: Waiting for upkeep to remove expired tasks")
         cur_time = time.time()
         while (cur_time < end) and finished_writing_tasks:
-            task_count_in_sqlite = get_num_tasks_group_by_status(taskbroker_config)
+            task_count_in_sqlite = get_num_tasks_in_sqlite(taskbroker_config)
 
             # Break successfully there are either no tasks in sqlite or
             # all tasks are completed
-            complete = True
-            for status, count in task_count_in_sqlite.items():
-                if status != "Complete" and count != 0:
-                    complete = False
-            if complete:
+            if task_count_in_sqlite == 0:
                 print("[taskbroker_0]: Upkeep has completed all tasks.")
                 break
             print(
                 f"[taskbroker_0]: Waiting for upkeep to complete all tasks. "
-                f"Sqlite count: {task_count_in_sqlite}"
+                f"Tasks in sqlite count: {task_count_in_sqlite}"
             )
 
             time.sleep(3)
@@ -117,13 +113,7 @@ def manage_taskbroker(
                 "discarding/deadlettering all tasks before timeout. "
                 "Shutting down taskbroker."
             )
-        total_hanging_tasks = sum(
-            [
-                count
-                for status, count in task_count_in_sqlite.items()
-                if status != "Complete"
-            ]
-        )
+        total_hanging_tasks = task_count_in_sqlite
 
         with open(results_log_path, "a") as results_log_file:
             results_log_file.write(f"total_hanging_tasks:{total_hanging_tasks}")
@@ -144,16 +134,12 @@ def test_upkeep_expiry() -> None:
     """
     What does this test do?
     This tests is responsible for checking the integrity of the expires_at
-    mechanism responsible for discarding/deadlettering tasks. This
+    mechanism responsible for removing tasks. This
     functionality is executed in the upkeep thread of taskbroker.
-    An initial amount of messages is produced to kafka where half of the
-    messages' on_attempts_exceeded is set to discard and the other half
-    to deadletter. These messages have an `expires_at` value of 3 second.
-    During an interval, the upkeep thread collect all tasks that have expired,
-    sets them all to a failed status, then appropriately discards or
-    deadletters these messages. This process continues until all tasks have
-    have a completed status (this means all tasks have either been discarded
-    or deadlettered).
+    An initial amount of messages with an expiry of 3 seconds are produced to
+    kafka. During an interval, the upkeep thread collect all tasks that have
+    expired, and remove them from the activation store. This process continues
+    until all tasks have been purged.
 
     How does it accomplish this?
     The test starts 1 taskworker thread. Once the upkeep thread
@@ -272,9 +258,6 @@ Running test with the following configuration:
         line = log_file.readline()
         total_hanging_tasks = int(line.split(":")[1])
 
-    dlq_size = get_topic_size(dlq_topic_name)
-
     assert (
         total_hanging_tasks == 0
-    )  # there should no tasks in sqlite that are not completed or removed
-    assert dlq_size == (num_messages) / 2  # half of the tasks should be deadlettered
+    )  # there should no tasks in sqlite left
