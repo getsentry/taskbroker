@@ -284,7 +284,7 @@ pub async fn do_upkeep(
     // Upkeep cleanup actions
     metrics::counter!("upkeep.cleanup_action", "kind" => "publish_deadlettered")
         .increment(result_context.deadlettered);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_expired_as_failure")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "removed_expired")
         .increment(result_context.expired);
     metrics::counter!("upkeep.cleanup_action", "kind" => "delete_discarded")
         .increment(result_context.discarded);
