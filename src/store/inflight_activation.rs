@@ -564,10 +564,10 @@ impl InflightActivationStore {
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let query = sqlx::query(
-            "DELETE FROM inflight_taskactivations WHERE expires_at IS NOT NULL AND expires_at < $1",
+            "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
         )
-        .bind(now.timestamp())
         .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
         .execute(&self.write_pool)
         .await?;
 
