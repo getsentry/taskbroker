@@ -273,24 +273,31 @@ pub async fn do_upkeep(
     metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
 
     // Task statuses
-    metrics::counter!("upkeep.completed").increment(result_context.completed);
-    metrics::counter!("upkeep.failed").increment(result_context.failed);
-    metrics::counter!("upkeep.retried").increment(result_context.retried);
-    metrics::counter!("upkeep.expired").increment(result_context.expired);
+    metrics::counter!("upkeep.task.state_transition", "state" => "completed")
+        .increment(result_context.completed);
+    metrics::counter!("upkeep.task.state_transition", "state" => "failed")
+        .increment(result_context.failed);
+    metrics::counter!("upkeep.task.state_transition", "state" => "retried")
+        .increment(result_context.retried);
 
     // Upkeep cleanup actions
-    metrics::counter!("upkeep.deadlettered").increment(result_context.deadlettered);
-    metrics::counter!("upkeep.discarded").increment(result_context.discarded);
-    metrics::counter!("upkeep.processing_attempts_exceeded")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "publish_deadlettered")
+        .increment(result_context.deadlettered);
+    metrics::counter!("upkeep.task.cleanup_action", "kind" => "mark_expired_as_failure")
+        .increment(result_context.expired);
+    metrics::counter!("upkeep.cleanup_action", "kind" => "delete_discarded")
+        .increment(result_context.discarded);
+    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_attempts_exceeded_as_failure")
         .increment(result_context.processing_attempts_exceeded);
-    metrics::counter!("upkeep.processing_deadline_reset")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_deadline_exceeded_as_failure")
         .increment(result_context.processing_deadline_reset);
-    metrics::counter!("upkeep.delay_elapsed").increment(result_context.delay_elapsed);
+    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
+        .increment(result_context.delay_elapsed);
 
     // State of inflight tasks
-    metrics::gauge!("upkeep.pending_count").set(result_context.pending);
-    metrics::gauge!("upkeep.processing_count").set(result_context.processing);
-    metrics::gauge!("upkeep.delay_count").set(result_context.delay);
+    metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
+    metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
+    metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
 
     result_context
 }
