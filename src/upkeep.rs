@@ -3,23 +3,20 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::{
-    producer::{FutureProducer, FutureRecord},
-    util::Timeout,
+    message::OwnedMessage, producer::{FutureProducer, FutureRecord}, util::Timeout
 };
 use sentry_protos::taskbroker::v1::TaskActivation;
 use std::{
-    sync::Arc,
-    time::{Duration, Instant},
+    fmt::Error, sync::Arc, time::{Duration, Instant}
 };
 use tokio::{select, time};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    config::Config,
-    store::inflight_activation::{
+    config::Config, kafka::consumer::KafkaMessage, store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
-    },
+    }
 };
 
 /// The upkeep task that periodically performs upkeep
@@ -210,7 +207,7 @@ pub async fn do_upkeep(
                                 "deadletter.publish.failure: {}, message: {:?}",
                                 err, payload
                             );
-                            Err(err)
+                            Err((err, _msg, activation.id))
                         }
                     }
                 }
@@ -224,7 +221,7 @@ pub async fn do_upkeep(
             .into_iter()
             .filter_map(|result| match result {
                 Ok(id) => Some(id),
-                Err(_) => None,
+                Err((_err, _msg, id)) => Some(id),
             })
             .collect();
 
@@ -345,6 +342,7 @@ mod tests {
             generate_temp_filename, make_activations, reset_topic,
         },
         upkeep::do_upkeep,
+        config::Config,
     };
 
     async fn create_inflight_store() -> Arc<InflightActivationStore> {
@@ -564,6 +562,50 @@ mod tests {
     async fn test_remove_at_remove_failed_publish_to_kafka() {
         let config = create_integration_config();
         reset_topic(config.clone()).await;
+
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+        let mut records = make_activations(2);
+        records[0].activation.parameters = r#"{"a":"b"}"#.into();
+        records[0].status = InflightActivationStatus::Failure;
+        records[0].activation.retry_state = Some(RetryState {
+            attempts: 1,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
+            at_most_once: None,
+        });
+        records[1].added_at += Duration::from_secs(1);
+        assert!(store.store(records.clone()).await.is_ok());
+
+        let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
+
+        // Only 1 record left as the failure task should be appended to dlq
+        assert_eq!(result_context.deadlettered, 1);
+        assert_eq!(store.count().await.unwrap(), 1);
+
+        let messages =
+            consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
+        assert_eq!(messages.len(), 1);
+        let activation = &messages[0];
+
+        // Should move the task without changing the id
+        assert_eq!(activation.id, records[0].activation.id);
+        // DLQ should retain parameters of original task
+        assert_eq!(activation.parameters, records[0].activation.parameters);
+    }
+
+    #[tokio::test]
+    async fn test_remove_even_if_deadletter_fails() {
+        // Clean up the old topics
+        let old_config = create_integration_config();
+        reset_topic(old_config.clone()).await;
+
+        let config = Arc::new(Config {
+            kafka_topic: "taskbroker-test".into(),
+            kafka_auto_offset_reset: "earliest".into(),
+            kafka_deadletter_topic: "doesnotexist".into(),
+            ..Config::default()
+        });
 
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
