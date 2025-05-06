@@ -8,9 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use crate::store::inflight_activation::{
-    InflightActivation, InflightActivationStatus, InflightActivationStore,
-};
+use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
@@ -37,16 +35,20 @@ impl ConsumerService for TaskbrokerServer {
                     inflight.activation.received_at.unwrap().seconds,
                     inflight.activation.received_at.unwrap().nanos as u32,
                 ) {
+                    let received_to_gettask_latency = Utc::now()
+                        .signed_duration_since(sentry_ts)
+                        .num_milliseconds()
+                        - inflight.delay_until.map_or(0, |delay_until| {
+                            delay_until
+                                .signed_duration_since(sentry_ts)
+                                .num_milliseconds()
+                        });
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
                         "namespace" => inflight.namespace.clone(),
                         "taskname" => inflight.activation.taskname.clone(),
                     )
-                    .record(
-                        Utc::now()
-                            .signed_duration_since(sentry_ts)
-                            .num_milliseconds() as f64,
-                    );
+                    .record(received_to_gettask_latency as f64);
                 }
 
                 let resp = GetTaskResponse {
@@ -144,24 +146,28 @@ impl ConsumerService for TaskbrokerServer {
                 Err(Status::internal("Unable to fetch next task"))
             }
             Ok(None) => Err(Status::not_found("No pending activation")),
-            Ok(Some(InflightActivation { activation, .. })) => {
+            Ok(Some(inflight)) => {
                 if let Some(sentry_ts) = DateTime::from_timestamp(
-                    activation.received_at.unwrap().seconds,
-                    activation.received_at.unwrap().nanos as u32,
+                    inflight.activation.received_at.unwrap().seconds,
+                    inflight.activation.received_at.unwrap().nanos as u32,
                 ) {
+                    let received_to_gettask_latency = Utc::now()
+                        .signed_duration_since(sentry_ts)
+                        .num_milliseconds()
+                        - inflight.delay_until.map_or(0, |delay_until| {
+                            delay_until
+                                .signed_duration_since(sentry_ts)
+                                .num_milliseconds()
+                        });
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
-                        "namespace" => activation.namespace.clone(),
-                        "taskname" => activation.taskname.clone(),
+                        "namespace" => inflight.namespace.clone(),
+                        "taskname" => inflight.activation.taskname.clone(),
                     )
-                    .record(
-                        Utc::now()
-                            .signed_duration_since(sentry_ts)
-                            .num_milliseconds() as f64,
-                    );
+                    .record(received_to_gettask_latency as f64);
                 }
                 Ok(Response::new(SetTaskStatusResponse {
-                    task: Some(activation),
+                    task: Some(inflight.activation),
                 }))
             }
         };
