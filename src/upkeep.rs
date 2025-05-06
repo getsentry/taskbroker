@@ -3,20 +3,23 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::{
-    message::OwnedMessage, producer::{FutureProducer, FutureRecord}, util::Timeout
+    producer::{FutureProducer, FutureRecord},
+    util::Timeout,
 };
 use sentry_protos::taskbroker::v1::TaskActivation;
 use std::{
-    fmt::Error, sync::Arc, time::{Duration, Instant}
+    sync::Arc,
+    time::{Duration, Instant},
 };
 use tokio::{select, time};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
-    config::Config, kafka::consumer::KafkaMessage, store::inflight_activation::{
+    config::Config,
+    store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
-    }
+    },
 };
 
 /// The upkeep task that periodically performs upkeep
@@ -334,6 +337,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::{
+        config::Config,
         store::inflight_activation::{
             InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
         },
@@ -342,7 +346,6 @@ mod tests {
             generate_temp_filename, make_activations, reset_topic,
         },
         upkeep::do_upkeep,
-        config::Config,
     };
 
     async fn create_inflight_store() -> Arc<InflightActivationStore> {
@@ -606,7 +609,6 @@ mod tests {
             kafka_deadletter_topic: "doesnotexist".into(),
             ..Config::default()
         });
-
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
