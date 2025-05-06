@@ -87,6 +87,9 @@ impl ConsumerService for TaskbrokerServer {
                 status
             )));
         }
+        if status == InflightActivationStatus::Failure {
+            metrics::counter!("grpc_server.set_status.failure").increment(1);
+        }
 
         let update_result = self.store.set_status(&id, status).await;
         if let Err(e) = update_result {
