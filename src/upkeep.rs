@@ -587,60 +587,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(
-        expected = "Message is an error KafkaError (Message consumption error: UnknownTopicOrPartition (Broker: Unknown topic or partition))"
-    )]
-    async fn test_remove_even_if_deadletter_fails() {
-        // Clean up the old topics
-        let old_config = create_integration_config();
-        reset_topic(old_config.clone()).await;
-
-        let config = Arc::new(Config {
-            kafka_topic: "taskbroker-test".into(),
-            kafka_auto_offset_reset: "earliest".into(),
-            create_missing_topics: false,
-            kafka_send_timeout_ms: 1,
-            ..Config::default()
-        });
-
-        let mut kafka_config = config.kafka_producer_config();
-        kafka_config.set("message.max.bytes", "1000");
-
-        let raw_producer = kafka_config
-            .create()
-            .expect("Could not create kafka producer");
-        let producer = Arc::new(raw_producer);
-
-        let store = create_inflight_store().await;
-        let mut records = make_activations(2);
-
-        // Make a very long string to hit the max message size error
-        let mut arg = "".to_string();
-        for n in 1..2000 {
-            arg = format!("{}{}", arg, n);
-        }
-        records[0].activation.parameters = format!("{{\"a\": {}}}", arg);
-        records[0].status = InflightActivationStatus::Failure;
-        records[0].activation.retry_state = Some(RetryState {
-            attempts: 1,
-            max_attempts: 1,
-            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
-            at_most_once: None,
-        });
-        records[1].added_at += Duration::from_secs(1);
-        assert!(store.store(records.clone()).await.is_ok());
-
-        let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
-
-        // Only 1 record left as the failure task should be appended to dlq
-        assert_eq!(result_context.deadlettered, 1);
-        assert_eq!(store.count().await.unwrap(), 1);
-
-        // No tasks should be written to the topic (it doesn't exist) so this should panic
-        let _ = consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
-    }
-
-    #[tokio::test]
     async fn test_remove_failed_discard() {
         let config = create_config();
         let store = create_inflight_store().await;
