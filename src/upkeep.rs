@@ -203,30 +203,19 @@ pub async fn do_upkeep(
                         )
                         .await;
 
-                    match delivery {
-                        Ok(_) => Ok(activation.id),
-                        Err((err, _msg)) => {
-                            error!(
-                                "deadletter.publish.failure: {}, message: {:?}",
-                                err, payload
-                            );
-                            Err((err, _msg, activation.id))
-                        }
+                    if let Err((err, _msg)) = delivery {
+                        error!(
+                            "deadletter.publish.failure: {}, message: {:?}",
+                            err, payload
+                        );
                     }
+                    activation.id
                 }
             })
             .collect::<FuturesUnordered<_>>();
 
         // Submit deadlettered tasks to dlq.
-        let ids = deadletters
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .filter_map(|result| match result {
-                Ok(id) => Some(id),
-                Err((_err, _msg, id)) => Some(id),
-            })
-            .collect();
+        let ids = deadletters.collect::<Vec<_>>().await.into_iter().collect();
 
         // 9. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
@@ -598,6 +587,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[should_panic(
+        expected = "Message is an error KafkaError (Message consumption error: UnknownTopicOrPartition (Broker: Unknown topic or partition))"
+    )]
     async fn test_remove_even_if_deadletter_fails() {
         // Clean up the old topics
         let old_config = create_integration_config();
@@ -606,13 +598,28 @@ mod tests {
         let config = Arc::new(Config {
             kafka_topic: "taskbroker-test".into(),
             kafka_auto_offset_reset: "earliest".into(),
-            kafka_deadletter_topic: "doesnotexist".into(),
+            create_missing_topics: false,
+            kafka_send_timeout_ms: 1,
             ..Config::default()
         });
+
+        let mut kafka_config = config.kafka_producer_config();
+        kafka_config.set("message.max.bytes", "1000");
+
+        let raw_producer = kafka_config
+            .create()
+            .expect("Could not create kafka producer");
+        let producer = Arc::new(raw_producer);
+
         let store = create_inflight_store().await;
-        let producer = create_producer(config.clone());
         let mut records = make_activations(2);
-        records[0].activation.parameters = r#"{"a":"b"}"#.into();
+
+        // Make a very long string to hit the max message size error
+        let mut arg = "".to_string();
+        for n in 1..2000 {
+            arg = format!("{}{}", arg, n);
+        }
+        records[0].activation.parameters = format!("{{\"a\": {}}}", arg);
         records[0].status = InflightActivationStatus::Failure;
         records[0].activation.retry_state = Some(RetryState {
             attempts: 1,
@@ -629,15 +636,8 @@ mod tests {
         assert_eq!(result_context.deadlettered, 1);
         assert_eq!(store.count().await.unwrap(), 1);
 
-        let messages =
-            consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
-        assert_eq!(messages.len(), 1);
-        let activation = &messages[0];
-
-        // Should move the task without changing the id
-        assert_eq!(activation.id, records[0].activation.id);
-        // DLQ should retain parameters of original task
-        assert_eq!(activation.parameters, records[0].activation.parameters);
+        // No tasks should be written to the topic (it doesn't exist) so this should panic
+        let _ = consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
     }
 
     #[tokio::test]
