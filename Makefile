@@ -91,7 +91,12 @@ test-upkeep-delay: build reset-kafka ## Run the upkeep delay integration test
 	rm -r python/integration_tests/.tests_output/test_upkeep_delay
 .PHONY: test-upkeep-delay
 
-integration-test: test-rebalance test-worker-processing test-upkeep-retry ## Run all integration tests
+test-failed-tasks: build reset-kafka ## Run the failed tasks integration test
+	python -m pytest python/integration_tests/test_failed_tasks.py -s
+	rm -r python/integration_tests/.tests_output/test_failed_tasks
+.PHONY: test-failed-tasks
+
+integration-test: test-rebalance test-worker-processing test-upkeep-retry test-upkeep-expiry test-upkeep-delay test-failed-tasks ## Run all integration tests
 .PHONY: integration-test
 
 

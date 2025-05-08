@@ -13,9 +13,7 @@ from python.integration_tests.helpers import (
     send_custom_messages_to_topic,
     create_topic,
     get_num_tasks_in_sqlite,
-    get_num_tasks_group_by_status,
     TaskbrokerConfig,
-    get_topic_size,
 )
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
