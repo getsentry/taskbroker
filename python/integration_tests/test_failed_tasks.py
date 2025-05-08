@@ -9,7 +9,6 @@ import yaml
 
 from uuid import uuid4
 from google.protobuf.timestamp_pb2 import Timestamp
-from collections import defaultdict
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
@@ -52,13 +51,12 @@ def generate_task_activation(
 
 
 def manage_taskworker(
-    worker_id: int,
     taskbroker_config: TaskbrokerConfig,
     taskworker_results_log: str,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
 ) -> None:
-    print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
+    print(f"[taskworker_0] Starting taskworker_0")
     worker = ConfigurableTaskWorker(
         TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"),
         failure_rate=1.0,
@@ -70,14 +68,13 @@ def manage_taskworker(
 
     # Wait for taskbroker to initialize sqlite and write tasks to it
     print(
-        f"[taskworker_{worker_id}]: Waiting for taskbroker to initialize "
-        f"sqlite and write tasks to it..."
+        "[taskworker_0]: Waiting for taskbroker to initialize sqlite and write tasks to it..."
     )
     while not tasks_written_event.is_set() and not shutdown_event.is_set():
         time.sleep(1)
 
     if not shutdown_event.is_set():
-        print(f"[taskworker_{worker_id}]: Failing tasks on purpose...")
+        print(f"[taskworker_0]: Failing tasks on purpose...")
     try:
         while not shutdown_event.is_set():
             if next_task:
@@ -91,9 +88,10 @@ def manage_taskworker(
             failed_tasks += 1
 
     except Exception as e:
-        print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
+        print(f"[taskworker_0]: Worker process crashed: {e}")
         return
 
+    print("[taskworker_0]: Finished failing all tasks in sqlite")
     with open(taskworker_results_log, "a") as log_file:
         log_file.write(f"failed_tasks:{failed_tasks}")
 
@@ -153,7 +151,6 @@ def manage_taskbroker(
     config_file_path: str,
     taskbroker_config: TaskbrokerConfig,
     log_file_path: str,
-    results_log_path: str,
     timeout: int,
     num_messages: int,
     tasks_written_event: threading.Event,
@@ -194,10 +191,6 @@ def manage_taskbroker(
                 "[taskbroker_0]: Waiting for taskworker(s) to finish processing..."
             )
             wait_for_upkeep_to_handle_tasks(taskbroker_config, timeout)
-
-        task_count = get_num_tasks_in_sqlite(taskbroker_config)
-        with open(results_log_path, "a") as results_log_file:
-            results_log_file.write(f"remaining_tasks:{task_count}")
 
         # Stop the taskbroker
         print("[taskbroker_0]: Shutting down taskbroker")
@@ -323,10 +316,6 @@ Running test with the following configuration:
             TEST_OUTPUT_PATH
             / f"taskbroker_0_{curr_time}_test_failed_tasks.log"
         )
-        taskbroker_results_log_path = str(
-            TEST_OUTPUT_PATH
-            / f"taskbroker_0_{curr_time}_test_failed_tasks.log"
-        )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
             args=(
@@ -334,7 +323,6 @@ Running test with the following configuration:
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
                 taskbroker_log_path,
-                taskbroker_results_log_path,
                 taskbroker_timeout,
                 num_messages,
                 tasks_written_event,
@@ -350,7 +338,6 @@ Running test with the following configuration:
         worker_thread = threading.Thread(
             target=manage_taskworker,
             args=(
-                i,
                 taskbroker_config,
                 worker_results_log_path,
                 tasks_written_event,
@@ -372,14 +359,11 @@ Running test with the following configuration:
         line = worker_results_file.readline()
         total_failed += int(line.split(":")[1])
 
-    remaining_in_sqlite = 0
-    with open(taskbroker_results_log_path, "r") as taskbroker_results_file:
-        line = taskbroker_results_file.readline()
-        remaining_in_sqlite += int(line.split(":")[1])
+    remaining_in_sqlite = get_num_tasks_in_sqlite(taskbroker_config)
 
     print(
         f"\nTotal tasks failed by worker on purpose: {total_failed},"
-        f"Total tasks remaining in sqlite: {remaining_in_sqlite}"
+        f"\nTotal tasks remaining in sqlite: {remaining_in_sqlite}"
     )
 
     dlq_size = get_topic_size(kafka_deadletter_topic)
