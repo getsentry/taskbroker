@@ -34,7 +34,7 @@ TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_failed_tasks"
 
 
 def generate_task_activation(
-    on_attempts_exceeded: OnAttemptsExceeded
+    on_attempts_exceeded: OnAttemptsExceeded,
 ) -> TaskActivation:
     """Generate a task activation with the specified retry behavior."""
     retry_state = RetryState(
@@ -195,8 +195,7 @@ def manage_taskbroker(
         else:
             # Wait for tasks to be processed
             print(
-                "[taskbroker_0]: Waiting for taskworker(s) to finish "
-                "processing..."
+                "[taskbroker_0]: Waiting for taskworker(s) to finish " "processing..."
             )
             wait_for_upkeep_to_handle_tasks(taskbroker_config, timeout)
 
@@ -320,8 +319,7 @@ Running test with the following configuration:
         tasks_written_event = threading.Event()
         shutdown_event = threading.Event()
         taskbroker_log_path = str(
-            TEST_OUTPUT_PATH
-            / f"taskbroker_0_{curr_time}_test_failed_tasks.log"
+            TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_failed_tasks.log"
         )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
@@ -339,8 +337,7 @@ Running test with the following configuration:
         taskbroker_thread.start()
 
         worker_results_log_path = str(
-            TEST_OUTPUT_PATH
-            / f"taskworker_results_{curr_time}_test_failed_tasks.log"
+            TEST_OUTPUT_PATH / f"taskworker_results_{curr_time}_test_failed_tasks.log"
         )
         worker_thread = threading.Thread(
             target=manage_taskworker,
