@@ -19,7 +19,10 @@ from python.integration_tests.helpers import (
     get_topic_size,
 )
 
-from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
+from python.integration_tests.worker import (
+    ConfigurableTaskWorker,
+    TaskWorkerClient,
+)
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     OnAttemptsExceeded,
     RetryState,
@@ -33,6 +36,7 @@ TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_failed_tasks"
 def generate_task_activation(
     on_attempts_exceeded: OnAttemptsExceeded
 ) -> TaskActivation:
+    """Generate a task activation with the specified retry behavior."""
     retry_state = RetryState(
         attempts=0,
         max_attempts=1,
@@ -56,7 +60,15 @@ def manage_taskworker(
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
 ) -> None:
-    print(f"[taskworker_0] Starting taskworker_0")
+    """Manage the taskworker process lifecycle.
+
+    This function:
+    1. Initializes a taskworker that will fail all tasks
+    2. Waits for tasks to be written to sqlite
+    3. Processes and fails all tasks
+    4. Records the number of failed tasks
+    """
+    print("[taskworker_0] Starting taskworker_0")
     worker = ConfigurableTaskWorker(
         TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"),
         failure_rate=1.0,
@@ -68,13 +80,14 @@ def manage_taskworker(
 
     # Wait for taskbroker to initialize sqlite and write tasks to it
     print(
-        "[taskworker_0]: Waiting for taskbroker to initialize sqlite and write tasks to it..."
+        "[taskworker_0]: Waiting for taskbroker to initialize sqlite "
+        "and write tasks to it..."
     )
     while not tasks_written_event.is_set() and not shutdown_event.is_set():
         time.sleep(1)
 
     if not shutdown_event.is_set():
-        print(f"[taskworker_0]: Failing tasks on purpose...")
+        print("[taskworker_0]: Failing tasks on purpose...")
     try:
         while not shutdown_event.is_set():
             if next_task:
@@ -127,17 +140,12 @@ def wait_for_upkeep_to_handle_tasks(
     taskbroker_config: TaskbrokerConfig,
     timeout: int,
 ) -> None:
-    """
-    Wait for all tasks to be handled by upkeep (discarded or DLQ'ed).
-    Returns whether all tasks were handled successfully.
-    """
+    """Wait for all tasks to be handled by upkeep (discarded or DLQ'ed)."""
     end = time.time() + timeout
     while time.time() < end:
         task_count = get_num_tasks_in_sqlite(taskbroker_config)
         if task_count == 0:
-            print(
-                "[taskbroker_0]: Upkeep has discarded or DLQ'ed all tasks."
-            )
+            print("[taskbroker_0]: Upkeep has discarded or DLQ'ed all tasks.")
             return
         print(
             f"[taskbroker_0]: Waiting for upkeep to discard or DLQ all tasks. "
@@ -157,7 +165,6 @@ def manage_taskbroker(
     shutdown_event: threading.Event,
 ) -> None:
     """Manage the taskbroker process lifecycle.
-
     This function:
     1. Starts the taskbroker process
     2. Waits for tasks to be written to sqlite
@@ -188,7 +195,8 @@ def manage_taskbroker(
         else:
             # Wait for tasks to be processed
             print(
-                "[taskbroker_0]: Waiting for taskworker(s) to finish processing..."
+                "[taskbroker_0]: Waiting for taskworker(s) to finish "
+                "processing..."
             )
             wait_for_upkeep_to_handle_tasks(taskbroker_config, timeout)
 
@@ -256,9 +264,8 @@ def test_failed_tasks() -> None:
     num_partitions = 1
     num_workers = 1
     max_pending_count = 100_000
-    taskbroker_timeout = (
-        60  # the time in seconds to wait for all messages to be written to sqlite
-    )
+    # Time in seconds to for messages to be written to sqlite and processeed by upkeep
+    taskbroker_timeout = 60
     topic_name = "taskworker"
     kafka_deadletter_topic = "taskworker-dlq"
     curr_time = int(time.time())
@@ -367,8 +374,9 @@ Running test with the following configuration:
     )
 
     dlq_size = get_topic_size(kafka_deadletter_topic)
-    assert (
-        total_failed == num_messages
-    )  # there should no tasks in sqlite that are not completed or removed
-    assert dlq_size == (num_messages) / 2  # half of the tasks should be deadlettered
+    # Verify all tasks were failed on purpose
+    assert total_failed == num_messages
+    # Verify half of tasks were sent to DLQ
+    assert dlq_size == num_messages / 2
+    # Verify no tasks remain in sqlite
     assert remaining_in_sqlite == 0
