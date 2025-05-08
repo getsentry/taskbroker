@@ -307,7 +307,10 @@ fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActi
         seconds: now.timestamp(),
         nanos: now.nanosecond() as i32,
     });
-    new_activation.delay = None;
+    new_activation.delay = new_activation
+        .retry_state
+        .and_then(|retry_state| retry_state.delay_on_retry);
+
     if new_activation.retry_state.is_some() {
         new_activation.retry_state.as_mut().unwrap().attempts += 1;
     }
@@ -333,7 +336,7 @@ mod tests {
             consume_topic, create_config, create_integration_config, create_producer,
             generate_temp_filename, make_activations, reset_topic,
         },
-        upkeep::do_upkeep,
+        upkeep::{create_retry_activation, do_upkeep},
     };
 
     async fn create_inflight_store() -> Arc<InflightActivationStore> {
@@ -345,6 +348,84 @@ mod tests {
                 .await
                 .unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn test_retry_activation_sets_delay_with_delay_on_retry() {
+        let mut activation = make_activations(1).remove(0);
+        activation.activation.delay = None;
+        activation.activation.retry_state = Some(RetryState {
+            attempts: 0,
+            max_attempts: 3,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+            at_most_once: Some(false),
+            delay_on_retry: Some(60),
+        });
+
+        let retry = create_retry_activation(&activation);
+        assert_eq!(retry.delay, Some(60));
+        assert_eq!(
+            retry.retry_state,
+            Some(RetryState {
+                attempts: 1,
+                max_attempts: 3,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+                at_most_once: Some(false),
+                delay_on_retry: Some(60),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retry_activation_updates_delay_with_delay_on_retry() {
+        let mut activation = make_activations(1).remove(0);
+        activation.activation.delay = Some(100);
+        activation.activation.retry_state = Some(RetryState {
+            attempts: 0,
+            max_attempts: 3,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+            at_most_once: Some(false),
+            delay_on_retry: Some(60),
+        });
+
+        let retry = create_retry_activation(&activation);
+        assert_eq!(retry.delay, Some(60));
+        assert_eq!(
+            retry.retry_state,
+            Some(RetryState {
+                attempts: 1,
+                max_attempts: 3,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+                at_most_once: Some(false),
+                delay_on_retry: Some(60),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn test_retry_activation_clears_delay_without_delay_on_retry() {
+        let mut activation = make_activations(1).remove(0);
+        activation.activation.delay = Some(60);
+        activation.activation.retry_state = Some(RetryState {
+            attempts: 0,
+            max_attempts: 3,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+            at_most_once: Some(false),
+            delay_on_retry: None,
+        });
+
+        let retry = create_retry_activation(&activation);
+        assert_eq!(retry.delay, None);
+        assert_eq!(
+            retry.retry_state,
+            Some(RetryState {
+                attempts: 1,
+                max_attempts: 3,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+                at_most_once: Some(false),
+                delay_on_retry: None,
+            })
+        );
     }
 
     #[tokio::test]
@@ -368,6 +449,7 @@ mod tests {
             max_attempts: 2,
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
+            delay_on_retry: None,
         });
         records[0].activation.delay = Some(30);
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
@@ -486,6 +568,7 @@ mod tests {
             max_attempts: 1,
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: Some(true),
+            delay_on_retry: None,
         });
         assert!(store.store(batch.clone()).await.is_ok());
 
@@ -564,6 +647,7 @@ mod tests {
             max_attempts: 1,
             on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
             at_most_once: None,
+            delay_on_retry: None,
         });
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
