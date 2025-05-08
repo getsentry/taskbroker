@@ -225,7 +225,7 @@ def test_failed_tasks() -> None:
 
     How does it accomplish this?
     To accomplish this, the test starts a taskworker and a taskbroker in
-    separate threads. Synchronization events are use to instruct the
+    separate threads. Synchronization events are used to instruct the
     taskworker when start processing and shutdown. The taskworker will
     purposely fail to process a task and set it to a failed state.
     During the upkeep interval, the upkeep thread will appropriately
