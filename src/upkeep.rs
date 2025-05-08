@@ -203,27 +203,19 @@ pub async fn do_upkeep(
                         )
                         .await;
 
-                    match delivery {
-                        Ok(_) => Ok(activation.id),
-                        Err(err) => Err(err),
+                    if let Err((err, _msg)) = delivery {
+                        error!(
+                            "deadletter.publish.failure: {}, message: {:?}",
+                            err, payload
+                        );
                     }
+                    activation.id
                 }
             })
             .collect::<FuturesUnordered<_>>();
 
         // Submit deadlettered tasks to dlq.
-        let ids = deadletters
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .filter_map(|result| match result {
-                Ok(id) => Some(id),
-                Err((err, _msg)) => {
-                    error!("deadletter.publish.failure {}", err);
-                    None
-                }
-            })
-            .collect();
+        let ids = deadletters.collect::<Vec<_>>().await.into_iter().collect();
 
         // 9. Update deadlettered tasks to complete
         if let Ok(deadletter_count) = store.mark_completed(ids).await {
