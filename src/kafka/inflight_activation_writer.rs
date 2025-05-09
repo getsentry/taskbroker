@@ -115,7 +115,12 @@ impl Reducer for InflightActivationWriter {
                 .min_by_key(|item| item.timestamp())
                 .unwrap();
 
-        let res = self.store.store(take(&mut self.batch).unwrap()).await?;
+        let res = self
+            .store
+            .store(take(&mut self.batch).unwrap())
+            .await
+            .expect("Unable to store batch to sqlite");
+
         metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
             .record(lag.num_seconds() as f64);
         metrics::counter!("consumer.inflight_activation_writer.stored")
