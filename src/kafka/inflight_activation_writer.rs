@@ -1,8 +1,7 @@
-use std::{mem::take, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
-use anyhow::Ok;
 use chrono::{DateTime, Utc};
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument};
 
 use crate::{
     config::Config,
@@ -101,36 +100,44 @@ impl Reducer for InflightActivationWriter {
             return Ok(None);
         }
 
-        let lag = Utc::now()
-            - batch
-                .iter()
-                .map(|item| {
-                    let ts = item
-                        .activation
-                        .received_at
-                        .expect("All activations should have received_at");
-
-                    DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap()
-                })
-                .min_by_key(|item| item.timestamp())
-                .unwrap();
-
+        let batch = self.batch.clone().unwrap();
         let write_to_store_start = Instant::now();
-        let res = self.store.store(take(&mut self.batch).unwrap()).await?;
+        let res = self.store.store(batch.clone()).await;
+        match res {
+            Ok(res) => {
+                self.batch.take();
+                let lag = Utc::now()
+                    - batch
+                        .iter()
+                        .map(|item| {
+                            let ts = item
+                                .activation
+                                .received_at
+                                .expect("All activations should have received_at");
 
-        metrics::histogram!("consumer.inflight_activation_writer.write_to_store")
-            .record(write_to_store_start.elapsed());
-        metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
-            .record(lag.num_seconds() as f64);
-        metrics::counter!("consumer.inflight_activation_writer.stored")
-            .increment(res.rows_affected);
-        debug!(
-            "Inserted {:?} entries with max lag: {:?}s",
-            res.rows_affected,
-            lag.num_seconds()
-        );
+                            DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap()
+                        })
+                        .min_by_key(|item| item.timestamp())
+                        .unwrap();
 
-        Ok(Some(()))
+                metrics::histogram!("consumer.inflight_activation_writer.write_to_store")
+                    .record(write_to_store_start.elapsed());
+                metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
+                    .record(lag.num_seconds() as f64);
+                metrics::counter!("consumer.inflight_activation_writer.stored")
+                    .increment(res.rows_affected);
+                debug!(
+                    "Inserted {:?} entries with max lag: {:?}s",
+                    res.rows_affected,
+                    lag.num_seconds()
+                );
+                Ok(Some(()))
+            }
+            Err(err) => {
+                error!("Unable to write to sqlite: {}", err);
+                Ok(None)
+            }
+        }
     }
 
     fn reset(&mut self) {}
