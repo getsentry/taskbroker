@@ -3,7 +3,8 @@ name = "taskbroker"
 version = "0.1.0"
 edition = "2024"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[profile.release]
+debug = 1
 
 [dependencies]
 sentry_protos = "0.2.0"
