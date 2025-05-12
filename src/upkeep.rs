@@ -41,7 +41,7 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
         select! {
             _ = timer.tick() => {
                 let permit_attempt = upkeep_semaphore.try_acquire();
-                if permit_attempt.err().is_none() {
+                if permit_attempt.is_ok() {
                     let _ = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
                 }
             }

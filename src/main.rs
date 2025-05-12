@@ -102,7 +102,7 @@ async fn main() -> Result<(), Error> {
                 select! {
                     _ = timer.tick() => {
                         let permit_attempt = vacuum_semaphore.try_acquire();
-                        if permit_attempt.err().is_none() {
+                        if permit_attempt.is_ok() {
                             let _ = maintenance_store.vacuum_db().await;
                         }
                         debug!("ran maintenance vacuum");
