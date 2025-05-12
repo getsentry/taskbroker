@@ -103,6 +103,9 @@ pub struct Config {
     /// The path to the sqlite database
     pub db_path: String,
 
+    /// The amount of time to wait before retrying writes to db when write fails.
+    pub db_write_failure_backoff_ms: u64,
+
     /// The maximum number of tasks that are buffered
     /// before being written to InflightTaskStore (sqlite).
     pub db_insert_batch_size: usize,
@@ -173,6 +176,7 @@ impl Default for Config {
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
+            db_write_failure_backoff_ms: 4000,
             db_insert_batch_size: 1024,
             runtime_config_path: None,
             max_pending_count: 2048,

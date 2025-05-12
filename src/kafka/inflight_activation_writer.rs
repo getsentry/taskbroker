@@ -1,6 +1,10 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use chrono::{DateTime, Utc};
+use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
 use crate::{
@@ -19,6 +23,7 @@ pub struct ActivationWriterConfig {
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
     pub max_delay_activations: usize,
+    pub write_failure_backoff_ms: u64,
 }
 
 impl ActivationWriterConfig {
@@ -28,6 +33,7 @@ impl ActivationWriterConfig {
             max_buf_len: config.db_insert_batch_size,
             max_pending_activations: config.max_pending_count,
             max_delay_activations: config.max_delay_count,
+            write_failure_backoff_ms: config.db_write_failure_backoff_ms,
         }
     }
 }
@@ -135,6 +141,7 @@ impl Reducer for InflightActivationWriter {
             }
             Err(err) => {
                 error!("Unable to write to sqlite: {}", err);
+                sleep(Duration::from_millis(self.config.write_failure_backoff_ms)).await;
                 Ok(None)
             }
         }
@@ -176,6 +183,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 10,
             max_delay_activations: 10,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -263,6 +271,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 10,
             max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -316,6 +325,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 0,
             max_delay_activations: 10,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -373,6 +383,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 0,
             max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -461,6 +472,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 10,
             max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
