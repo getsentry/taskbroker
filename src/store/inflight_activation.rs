@@ -112,6 +112,27 @@ pub struct InflightActivation {
     pub namespace: String,
 }
 
+impl InflightActivation {
+    /// The number of milliseconds between an acitivation's received timestamp
+    /// and the provided datetime
+    pub fn received_latency(&self, now: DateTime<Utc>) -> i64 {
+        let activation_received = self.activation.received_at.unwrap();
+        let received_datetime = DateTime::from_timestamp(
+            activation_received.seconds,
+            activation_received.nanos as u32,
+        );
+
+        received_datetime.map_or(0, |received| {
+            now.signed_duration_since(received).num_milliseconds()
+                - self.delay_until.map_or(0, |delay_until| {
+                    delay_until
+                        .signed_duration_since(received)
+                        .num_milliseconds()
+                })
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct QueryResult {
     pub rows_affected: u64,

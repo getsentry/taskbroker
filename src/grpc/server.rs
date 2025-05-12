@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
@@ -31,18 +31,9 @@ impl ConsumerService for TaskbrokerServer {
 
         match inflight {
             Ok(Some(inflight)) => {
-                if let Some(sentry_ts) = DateTime::from_timestamp(
-                    inflight.activation.received_at.unwrap().seconds,
-                    inflight.activation.received_at.unwrap().nanos as u32,
-                ) {
-                    let received_to_gettask_latency = Utc::now()
-                        .signed_duration_since(sentry_ts)
-                        .num_milliseconds()
-                        - inflight.delay_until.map_or(0, |delay_until| {
-                            delay_until
-                                .signed_duration_since(sentry_ts)
-                                .num_milliseconds()
-                        });
+                let now = Utc::now();
+                let received_to_gettask_latency = inflight.received_latency(now);
+                if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
                         "namespace" => inflight.namespace.clone(),
@@ -150,18 +141,9 @@ impl ConsumerService for TaskbrokerServer {
             }
             Ok(None) => Err(Status::not_found("No pending activation")),
             Ok(Some(inflight)) => {
-                if let Some(sentry_ts) = DateTime::from_timestamp(
-                    inflight.activation.received_at.unwrap().seconds,
-                    inflight.activation.received_at.unwrap().nanos as u32,
-                ) {
-                    let received_to_gettask_latency = Utc::now()
-                        .signed_duration_since(sentry_ts)
-                        .num_milliseconds()
-                        - inflight.delay_until.map_or(0, |delay_until| {
-                            delay_until
-                                .signed_duration_since(sentry_ts)
-                                .num_milliseconds()
-                        });
+                let now = Utc::now();
+                let received_to_gettask_latency = inflight.received_latency(now);
+                if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
                         "namespace" => inflight.namespace.clone(),
