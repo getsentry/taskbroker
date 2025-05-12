@@ -248,7 +248,7 @@ pub async fn do_upkeep(
     }
 
     if !result_context.empty() {
-        info!(
+        debug!(
             result_context.completed,
             result_context.deadlettered,
             result_context.discarded,
