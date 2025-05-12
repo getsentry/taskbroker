@@ -11,6 +11,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::Semaphore;
 use tokio::{select, time};
 use tracing::{error, info, instrument};
 use uuid::Uuid;
@@ -32,13 +33,17 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
             .expect("Could not create kafka producer in upkeep"),
     );
 
+    let upkeep_semaphore = Semaphore::new(config.max_concurrent_upkeep);
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     loop {
         select! {
             _ = timer.tick() => {
-                let _ = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
+                let permit_attempt = upkeep_semaphore.try_acquire();
+                if permit_attempt.err().is_none() {
+                    let _ = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
+                }
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");

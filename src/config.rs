@@ -138,6 +138,12 @@ pub struct Config {
     /// The maximum size allowed for a message on the Kafka producer.
     /// If a message is bigger than this then the produce will fail.
     pub max_message_size: u64,
+
+    /// The maximum number of concurrent upkeep processes
+    pub max_concurrent_upkeep: usize,
+
+    /// The maximum number of concurrent sqlite vacuum processes
+    pub max_concurrent_vacuum: usize,
 }
 
 impl Default for Config {
@@ -182,6 +188,8 @@ impl Default for Config {
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 10485760,
+            max_concurrent_upkeep: 3,
+            max_concurrent_vacuum: 3,
         }
     }
 }

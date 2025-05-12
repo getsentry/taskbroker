@@ -6,6 +6,7 @@ use taskbroker::kafka::inflight_activation_batcher::{
 };
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
+use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
@@ -94,12 +95,16 @@ async fn main() -> Result<(), Error> {
         let maintenance_store = store.clone();
         let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
         timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
+        let max_vacuum = config.max_concurrent_vacuum;
         async move {
+            let vacuum_semaphore = Semaphore::new(max_vacuum);
             loop {
                 select! {
                     _ = timer.tick() => {
-                        let _ = maintenance_store.vacuum_db().await;
+                        let permit_attempt = vacuum_semaphore.try_acquire();
+                        if permit_attempt.err().is_none() {
+                            let _ = maintenance_store.vacuum_db().await;
+                        }
                         debug!("ran maintenance vacuum");
                     },
                     _ = guard.wait() => {
