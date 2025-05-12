@@ -1,4 +1,4 @@
-use std::{mem::take, sync::Arc};
+use std::{mem::take, sync::Arc, time::Instant};
 
 use anyhow::Ok;
 use chrono::{DateTime, Utc};
@@ -115,7 +115,11 @@ impl Reducer for InflightActivationWriter {
                 .min_by_key(|item| item.timestamp())
                 .unwrap();
 
+        let write_to_store_start = Instant::now();
         let res = self.store.store(take(&mut self.batch).unwrap()).await?;
+
+        metrics::histogram!("consumer.inflight_activation_writer.write_to_store")
+            .record(write_to_store_start.elapsed());
         metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
             .record(lag.num_seconds() as f64);
         metrics::counter!("consumer.inflight_activation_writer.stored")
