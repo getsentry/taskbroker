@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{select, time};
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 use uuid::Uuid;
 
 use crate::{
@@ -248,7 +248,7 @@ pub async fn do_upkeep(
     }
 
     if !result_context.empty() {
-        info!(
+        debug!(
             result_context.completed,
             result_context.deadlettered,
             result_context.discarded,
