@@ -19,7 +19,7 @@ local pipedream_config = {
     stage: 'deploy-primary',
     elastic_profile_id: 'taskbroker',
   },
-  include_regions: ['s4s', 'customer-1', 'customer-2'],
+  exclude_regions: ['de', 'us', 'customer-4', 'customer-7'],
 };
 
 pipedream.render(pipedream_config, taskbroker)
