@@ -1,9 +1,9 @@
-use std::{mem::replace, sync::Arc, time::Duration};
-
 use crate::{
     config::Config, runtime_config::RuntimeConfigManager,
     store::inflight_activation::InflightActivation,
 };
+use chrono::Utc;
+use std::{mem::replace, sync::Arc, time::Duration};
 
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
@@ -50,12 +50,21 @@ impl Reducer for InflightActivationBatcher {
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
         let task_name = &t.activation.taskname;
-        if !runtime_config.drop_task_killswitch.contains(task_name) {
-            self.buffer.push(t);
-        } else {
+
+        if runtime_config.drop_task_killswitch.contains(task_name) {
             metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
                 .increment(1);
+            return Ok(());
         }
+
+        if let Some(expires_at) = t.expires_at {
+            if Utc::now() > expires_at {
+                metrics::counter!("filter.expired_at_consumer").increment(1);
+                return Ok(());
+            }
+        }
+
+        self.buffer.push(t);
 
         Ok(())
     }
@@ -148,5 +157,43 @@ drop_task_killswitch:
         assert_eq!(batcher.buffer.len(), 0);
 
         fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_task_due_to_expiry() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let config = Arc::new(Config::default());
+        let mut batcher = InflightActivationBatcher::new(
+            ActivationBatcherConfig::from_config(&config),
+            runtime_config,
+        );
+
+        let inflight_activation_0 = InflightActivation {
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "task_to_be_filtered".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: Some(0),
+                delay: None,
+            },
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            processing_attempts: 0,
+            expires_at: Some(Utc::now()),
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+        };
+
+        batcher.reduce(inflight_activation_0).await.unwrap();
+        assert_eq!(batcher.buffer.len(), 0);
     }
 }

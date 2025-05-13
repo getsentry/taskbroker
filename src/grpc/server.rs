@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
@@ -8,9 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use crate::store::inflight_activation::{
-    InflightActivation, InflightActivationStatus, InflightActivationStore,
-};
+use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
@@ -33,20 +31,15 @@ impl ConsumerService for TaskbrokerServer {
 
         match inflight {
             Ok(Some(inflight)) => {
-                if let Some(sentry_ts) = DateTime::from_timestamp(
-                    inflight.activation.received_at.unwrap().seconds,
-                    inflight.activation.received_at.unwrap().nanos as u32,
-                ) {
+                let now = Utc::now();
+                let received_to_gettask_latency = inflight.received_latency(now);
+                if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
                         "namespace" => inflight.namespace.clone(),
                         "taskname" => inflight.activation.taskname.clone(),
                     )
-                    .record(
-                        Utc::now()
-                            .signed_duration_since(sentry_ts)
-                            .num_milliseconds() as f64,
-                    );
+                    .record(received_to_gettask_latency as f64);
                 }
 
                 let resp = GetTaskResponse {
@@ -84,6 +77,9 @@ impl ConsumerService for TaskbrokerServer {
                 "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {:?}",
                 status
             )));
+        }
+        if status == InflightActivationStatus::Failure {
+            metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
         let update_result = self.store.set_status(&id, status).await;
@@ -144,24 +140,19 @@ impl ConsumerService for TaskbrokerServer {
                 Err(Status::internal("Unable to fetch next task"))
             }
             Ok(None) => Err(Status::not_found("No pending activation")),
-            Ok(Some(InflightActivation { activation, .. })) => {
-                if let Some(sentry_ts) = DateTime::from_timestamp(
-                    activation.received_at.unwrap().seconds,
-                    activation.received_at.unwrap().nanos as u32,
-                ) {
+            Ok(Some(inflight)) => {
+                let now = Utc::now();
+                let received_to_gettask_latency = inflight.received_latency(now);
+                if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
-                        "namespace" => activation.namespace.clone(),
-                        "taskname" => activation.taskname.clone(),
+                        "namespace" => inflight.namespace.clone(),
+                        "taskname" => inflight.activation.taskname.clone(),
                     )
-                    .record(
-                        Utc::now()
-                            .signed_duration_since(sentry_ts)
-                            .num_milliseconds() as f64,
-                    );
+                    .record(received_to_gettask_latency as f64);
                 }
                 Ok(Response::new(SetTaskStatusResponse {
-                    task: Some(activation),
+                    task: Some(inflight.activation),
                 }))
             }
         };

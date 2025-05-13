@@ -428,6 +428,7 @@ async fn test_handle_processing_at_most_once() {
         max_attempts: 1,
         on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
         at_most_once: Some(true),
+        delay_on_retry: None,
     });
     batch[1].at_most_once = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
@@ -462,6 +463,7 @@ async fn test_handle_processing_deadline_discard_after() {
         max_attempts: 1,
         on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
         at_most_once: None,
+        delay_on_retry: None,
     });
 
     assert!(store.store(batch).await.is_ok());
@@ -483,6 +485,7 @@ async fn test_handle_processing_deadline_deadletter_after() {
         max_attempts: 1,
         on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
         at_most_once: None,
+        delay_on_retry: None,
     });
 
     assert!(store.store(batch).await.is_ok());
@@ -505,6 +508,7 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
         max_attempts: 1,
         on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
         at_most_once: None,
+        delay_on_retry: None,
     });
 
     assert!(store.store(batch).await.is_ok());
@@ -648,6 +652,7 @@ async fn test_handle_failed_tasks() {
         max_attempts: 1,
         on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
         at_most_once: None,
+        delay_on_retry: None,
     });
     // discard
     records[1].status = InflightActivationStatus::Failure;
@@ -656,6 +661,7 @@ async fn test_handle_failed_tasks() {
         max_attempts: 1,
         on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
         at_most_once: None,
+        delay_on_retry: None,
     });
     // no retry state = discard
     records[2].status = InflightActivationStatus::Failure;
@@ -668,6 +674,7 @@ async fn test_handle_failed_tasks() {
         max_attempts: 1,
         on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
         at_most_once: None,
+        delay_on_retry: None,
     });
     assert!(store.store(records.clone()).await.is_ok());
 
@@ -733,7 +740,8 @@ async fn test_handle_expires_at() {
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 2);
 
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
+    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    assert_count_by_status(&store, InflightActivationStatus::Failure, 0).await;
 }
 
 #[tokio::test]

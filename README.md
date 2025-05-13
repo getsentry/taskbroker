@@ -55,6 +55,10 @@ The simplest way to run taskbroker is with `cargo`. You'll also need
 `kafka` running. Kafka is typically managed with [devservices](https://github.com/getsentry/devservices):
 
 ```bash
+# Run with default config
+cargo run
+
+# Run with a specific config file
 cargo run -- -c ./config/config-sentry-dev.yaml
 ```
 
