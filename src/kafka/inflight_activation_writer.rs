@@ -141,6 +141,7 @@ impl Reducer for InflightActivationWriter {
             }
             Err(err) => {
                 error!("Unable to write to sqlite: {}", err);
+                metrics::counter!("consumer.inflight_activation_writer.write_failed").increment(1);
                 sleep(Duration::from_millis(self.config.write_failure_backoff_ms)).await;
                 Ok(None)
             }
