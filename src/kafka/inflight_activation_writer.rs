@@ -1,8 +1,11 @@
-use std::{mem::take, sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use anyhow::Ok;
 use chrono::{DateTime, Utc};
-use tracing::{debug, instrument};
+use tokio::time::sleep;
+use tracing::{debug, error, instrument};
 
 use crate::{
     config::Config,
@@ -20,6 +23,7 @@ pub struct ActivationWriterConfig {
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
     pub max_delay_activations: usize,
+    pub write_failure_backoff_ms: u64,
 }
 
 impl ActivationWriterConfig {
@@ -29,6 +33,7 @@ impl ActivationWriterConfig {
             max_buf_len: config.db_insert_batch_size,
             max_pending_activations: config.max_pending_count,
             max_delay_activations: config.max_delay_count,
+            write_failure_backoff_ms: config.db_write_failure_backoff_ms,
         }
     }
 }
@@ -101,36 +106,46 @@ impl Reducer for InflightActivationWriter {
             return Ok(None);
         }
 
-        let lag = Utc::now()
-            - batch
-                .iter()
-                .map(|item| {
-                    let ts = item
-                        .activation
-                        .received_at
-                        .expect("All activations should have received_at");
-
-                    DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap()
-                })
-                .min_by_key(|item| item.timestamp())
-                .unwrap();
-
+        let batch = self.batch.clone().unwrap();
         let write_to_store_start = Instant::now();
-        let res = self.store.store(take(&mut self.batch).unwrap()).await?;
+        let res = self.store.store(batch.clone()).await;
+        match res {
+            Ok(res) => {
+                self.batch.take();
+                let lag = Utc::now()
+                    - batch
+                        .iter()
+                        .map(|item| {
+                            let ts = item
+                                .activation
+                                .received_at
+                                .expect("All activations should have received_at");
 
-        metrics::histogram!("consumer.inflight_activation_writer.write_to_store")
-            .record(write_to_store_start.elapsed());
-        metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
-            .record(lag.num_seconds() as f64);
-        metrics::counter!("consumer.inflight_activation_writer.stored")
-            .increment(res.rows_affected);
-        debug!(
-            "Inserted {:?} entries with max lag: {:?}s",
-            res.rows_affected,
-            lag.num_seconds()
-        );
+                            DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap()
+                        })
+                        .min_by_key(|item| item.timestamp())
+                        .unwrap();
 
-        Ok(Some(()))
+                metrics::histogram!("consumer.inflight_activation_writer.write_to_store")
+                    .record(write_to_store_start.elapsed());
+                metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
+                    .record(lag.num_seconds() as f64);
+                metrics::counter!("consumer.inflight_activation_writer.stored")
+                    .increment(res.rows_affected);
+                debug!(
+                    "Inserted {:?} entries with max lag: {:?}s",
+                    res.rows_affected,
+                    lag.num_seconds()
+                );
+                Ok(Some(()))
+            }
+            Err(err) => {
+                error!("Unable to write to sqlite: {}", err);
+                metrics::counter!("consumer.inflight_activation_writer.write_failed").increment(1);
+                sleep(Duration::from_millis(self.config.write_failure_backoff_ms)).await;
+                Ok(None)
+            }
+        }
     }
 
     fn reset(&mut self) {}
@@ -169,6 +184,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 10,
             max_delay_activations: 10,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -256,6 +272,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 10,
             max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -309,6 +326,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 0,
             max_delay_activations: 10,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -366,6 +384,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 0,
             max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
@@ -454,6 +473,7 @@ mod tests {
             max_buf_len: 100,
             max_pending_activations: 10,
             max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
