@@ -275,9 +275,8 @@ macro_rules! processing_strategy {
 
             let (rendezvous_sender, rendezvous_receiver) = tokio::sync::oneshot::channel();
 
-            const CHANNEL_BUFF_SIZE: usize = 1024;
-            let (map_sender, reduce_receiver) = tokio::sync::mpsc::channel(CHANNEL_BUFF_SIZE);
-            let (err_sender, err_receiver) = tokio::sync::mpsc::channel(CHANNEL_BUFF_SIZE);
+            let (map_sender, reduce_receiver) = tokio::sync::mpsc::channel(1);
+            let (err_sender, err_receiver) = tokio::sync::mpsc::channel(1);
 
             for (topic, partition) in tpl.iter() {
                 let queue = consumer
