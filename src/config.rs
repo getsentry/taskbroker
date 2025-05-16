@@ -192,7 +192,7 @@ impl Default for Config {
 
 impl Config {
     /// Build a config instance from defaults, env vars, file + CLI options
-    pub fn from_args(args: &Args) -> Result<Self, figment::Error> {
+    pub fn from_args(args: &Args) -> Result<Self, Box<figment::Error>> {
         let mut builder = Figment::from(Config::default());
         if let Some(path) = &args.config {
             builder = builder.merge(Yaml::file(path));
