@@ -1,6 +1,5 @@
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{FetchNextTask, GetTaskRequest, SetTaskStatusRequest};
-use std::sync::Arc;
 use tonic::{Code, Request};
 
 use crate::grpc::server::TaskbrokerServer;
@@ -9,7 +8,7 @@ use crate::test_utils::{create_test_store, make_activations};
 
 #[tokio::test]
 async fn test_get_task() {
-    let store = Arc::new(create_test_store().await);
+    let store = create_test_store().await;
     let service = TaskbrokerServer { store };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
@@ -22,7 +21,7 @@ async fn test_get_task() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_set_task_status() {
-    let store = Arc::new(create_test_store().await);
+    let store = create_test_store().await;
     let service = TaskbrokerServer { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -38,7 +37,7 @@ async fn test_set_task_status() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_set_task_status_invalid() {
-    let store = Arc::new(create_test_store().await);
+    let store = create_test_store().await;
     let service = TaskbrokerServer { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -58,7 +57,7 @@ async fn test_set_task_status_invalid() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_get_task_success() {
-    let store = Arc::new(create_test_store().await);
+    let store = create_test_store().await;
     let activations = make_activations(1);
     store.store(activations).await.unwrap();
 
@@ -75,7 +74,7 @@ async fn test_get_task_success() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_set_task_status_success() {
-    let store = Arc::new(create_test_store().await);
+    let store = create_test_store().await;
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 

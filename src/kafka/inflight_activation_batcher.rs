@@ -49,7 +49,7 @@ impl Reducer for InflightActivationBatcher {
 
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
-        let task_name = &t.activation.taskname;
+        let task_name = &t.get_activation().taskname;
 
         if runtime_config.drop_task_killswitch.contains(task_name) {
             metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
@@ -110,7 +110,7 @@ mod tests {
     use sentry_protos::taskbroker::v1::TaskActivation;
     use std::sync::Arc;
 
-    use crate::store::inflight_activation::InflightActivationStatus;
+    use crate::store::inflight_activation::{InflightActivationStatus, InflightOnAttemptsExceeded};
 
     #[tokio::test]
     async fn test_drop_task_due_to_killswitch() {
@@ -129,7 +129,8 @@ drop_task_killswitch:
         );
 
         let inflight_activation_0 = InflightActivation {
-            activation: TaskActivation {
+            id: "0".to_string(),
+            activation: Some(TaskActivation {
                 id: "0".to_string(),
                 namespace: "namespace".to_string(),
                 taskname: "task_to_be_filtered".to_string(),
@@ -140,7 +141,7 @@ drop_task_killswitch:
                 processing_deadline_duration: 0,
                 expires: None,
                 delay: None,
-            },
+            }),
             status: InflightActivationStatus::Pending,
             partition: 0,
             offset: 0,
@@ -149,6 +150,8 @@ drop_task_killswitch:
             expires_at: None,
             delay_until: None,
             processing_deadline: None,
+            processing_deadline_duration: 0,
+            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             at_most_once: false,
             namespace: "namespace".to_string(),
         };
@@ -169,7 +172,8 @@ drop_task_killswitch:
         );
 
         let inflight_activation_0 = InflightActivation {
-            activation: TaskActivation {
+            id: "0".to_string(),
+            activation: Some(TaskActivation {
                 id: "0".to_string(),
                 namespace: "namespace".to_string(),
                 taskname: "task_to_be_filtered".to_string(),
@@ -180,7 +184,7 @@ drop_task_killswitch:
                 processing_deadline_duration: 0,
                 expires: Some(0),
                 delay: None,
-            },
+            }),
             status: InflightActivationStatus::Pending,
             partition: 0,
             offset: 0,
@@ -189,6 +193,8 @@ drop_task_killswitch:
             expires_at: Some(Utc::now()),
             delay_until: None,
             processing_deadline: None,
+            processing_deadline_duration: 0,
+            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             at_most_once: false,
             namespace: "namespace".to_string(),
         };

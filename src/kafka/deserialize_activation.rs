@@ -7,7 +7,9 @@ use rdkafka::{Message, message::OwnedMessage};
 use sentry_protos::taskbroker::v1::TaskActivation;
 
 use crate::config::Config;
-use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
+use crate::store::inflight_activation::{
+    InflightActivation, InflightActivationStatus, InflightOnAttemptsExceeded,
+};
 
 pub struct DeserializeActivationConfig {
     pub max_delayed_allowed: u64,
@@ -43,6 +45,13 @@ pub fn new(
             .retry_state
             .is_some_and(|retry_state| retry_state.at_most_once.unwrap_or(false));
 
+        let on_attempts_exceeded: InflightOnAttemptsExceeded = activation
+            .retry_state
+            .unwrap_or_default()
+            .on_attempts_exceeded
+            .try_into()
+            .unwrap();
+
         let activation_time = activation
             .received_at
             .and_then(|ts| DateTime::from_timestamp(ts.seconds, ts.nanos as u32))
@@ -70,13 +79,16 @@ pub fn new(
         });
 
         Ok(InflightActivation {
-            activation,
+            id: activation.id.clone(),
+            activation: Some(activation.clone()),
             status,
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: Utc::now(),
             processing_deadline: None,
+            processing_deadline_duration: activation.processing_deadline_duration as u32,
             processing_attempts: 0,
+            on_attempts_exceeded,
             expires_at,
             delay_until,
             at_most_once,

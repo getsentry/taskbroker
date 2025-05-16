@@ -17,9 +17,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    store::inflight_activation::{
-        InflightActivation, InflightActivationStatus, InflightActivationStore,
-    },
+    store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
 };
 
 /// The upkeep task that periodically performs upkeep
@@ -63,6 +61,7 @@ struct UpkeepResults {
     delay: u32,
     deadlettered: u64,
     discarded: u64,
+    blobs_deleted: u64,
 }
 
 impl UpkeepResults {
@@ -78,6 +77,7 @@ impl UpkeepResults {
             && self.delay == 0
             && self.discarded == 0
             && self.deadlettered == 0
+            && self.blobs_deleted == 0
     }
 }
 
@@ -101,6 +101,7 @@ pub async fn do_upkeep(
         delay: 0,
         deadlettered: 0,
         discarded: 0,
+        blobs_deleted: 0,
     };
 
     // 1. Handle retry tasks
@@ -112,8 +113,14 @@ pub async fn do_upkeep(
             .map(|inflight| {
                 let producer = producer.clone();
                 let config = config.clone();
+                let store = store.clone();
                 async move {
-                    let serialized = create_retry_activation(&inflight).encode_to_vec();
+                    let result = store.get_activation_blob(&inflight.id).await;
+                    let activation = match result {
+                        Ok(activation) => activation,
+                        Err(err) => return Err(err),
+                    };
+                    let serialized = create_retry_activation(&activation).encode_to_vec();
                     let delivery = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
@@ -122,8 +129,8 @@ pub async fn do_upkeep(
                         )
                         .await;
                     match delivery {
-                        Ok(_) => Ok(inflight.activation.id),
-                        Err(err) => Err(err),
+                        Ok(_) => Ok(inflight.id),
+                        Err((err, _msg)) => Err(err.into()),
                     }
                 }
             })
@@ -135,7 +142,7 @@ pub async fn do_upkeep(
             .into_iter()
             .filter_map(|result| match result {
                 Ok(id) => Some(id),
-                Err((err, _msg)) => {
+                Err(err) => {
                     error!("retry.publish.failure {}", err);
                     None
                 }
@@ -189,11 +196,20 @@ pub async fn do_upkeep(
         let deadletters = failed_tasks_forwarder
             .to_deadletter
             .into_iter()
-            .map(|activation| {
+            .map(|id| {
                 let producer = producer.clone();
                 let config = config.clone();
+                let store = store.clone();
                 async move {
-                    let payload = activation.encode_to_vec();
+                    let result = store.get_activation_raw_blob(&id).await;
+                    let payload = match result {
+                        Ok(payload) => payload,
+                        Err(err) => {
+                            error!("deadletter.getbyid.failure: ({}) {:?}", id, err);
+                            return id;
+                        }
+                    };
+
                     metrics::histogram!("upkeep.dlq.message_size").record(payload.len() as f64);
                     let delivery = producer
                         .send(
@@ -209,7 +225,7 @@ pub async fn do_upkeep(
                             err, payload
                         );
                     }
-                    activation.id
+                    id
                 }
             })
             .collect::<FuturesUnordered<_>>();
@@ -230,6 +246,13 @@ pub async fn do_upkeep(
         result_context.completed = count;
     }
     metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
+
+    // 11. Cleanup orphaned activation blobs
+    let remove_orphaned_start = Instant::now();
+    if let Ok(count) = store.remove_orphaned_blobs().await {
+        result_context.blobs_deleted = count;
+    }
+    metrics::histogram!("upkeep.blobs_deleted").record(remove_orphaned_start.elapsed());
 
     if let Ok(pending_count) = store
         .count_by_status(InflightActivationStatus::Pending)
@@ -298,8 +321,8 @@ pub async fn do_upkeep(
 /// Create a new activation that is a 'retry' of the passed inflight_activation
 /// The retry_state.attempts is advanced as part of the retry state machine.
 #[instrument(skip_all)]
-fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActivation {
-    let mut new_activation = inflight_activation.activation.clone();
+fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
+    let mut new_activation = activation.clone();
 
     let now = Utc::now();
     new_activation.id = Uuid::new_v4().into();
@@ -325,36 +348,23 @@ mod tests {
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState};
     use tokio::time::sleep;
 
-    use std::sync::Arc;
     use std::time::Duration;
 
     use crate::{
-        store::inflight_activation::{
-            InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        },
+        store::inflight_activation::InflightActivationStatus,
         test_utils::{
             consume_topic, create_config, create_integration_config, create_producer,
-            generate_temp_filename, make_activations, reset_topic,
+            create_test_store, make_activations, replace_retry_state, reset_topic,
         },
         upkeep::{create_retry_activation, do_upkeep},
     };
 
-    async fn create_inflight_store() -> Arc<InflightActivationStore> {
-        let url = generate_temp_filename();
-        let config = create_integration_config();
-
-        Arc::new(
-            InflightActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
-                .await
-                .unwrap(),
-        )
-    }
-
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
-        let mut activation = make_activations(1).remove(0);
-        activation.activation.delay = None;
-        activation.activation.retry_state = Some(RetryState {
+        let inflight = make_activations(1).remove(0);
+        let mut activation = inflight.activation.unwrap();
+        activation.delay = None;
+        activation.retry_state = Some(RetryState {
             attempts: 0,
             max_attempts: 3,
             on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
@@ -378,9 +388,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_activation_updates_delay_with_delay_on_retry() {
-        let mut activation = make_activations(1).remove(0);
-        activation.activation.delay = Some(100);
-        activation.activation.retry_state = Some(RetryState {
+        let inflight = make_activations(1).remove(0);
+        let mut activation = inflight.activation.unwrap();
+        activation.delay = Some(100);
+        activation.retry_state = Some(RetryState {
             attempts: 0,
             max_attempts: 3,
             on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
@@ -404,9 +415,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_activation_clears_delay_without_delay_on_retry() {
-        let mut activation = make_activations(1).remove(0);
-        activation.activation.delay = Some(60);
-        activation.activation.retry_state = Some(RetryState {
+        let inflight = make_activations(1).remove(0);
+        let mut activation = inflight.activation.unwrap();
+        activation.delay = Some(60);
+        activation.retry_state = Some(RetryState {
             attempts: 0,
             max_attempts: 3,
             on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
@@ -433,26 +445,29 @@ mod tests {
         let config = create_integration_config();
         reset_topic(config.clone()).await;
 
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
 
         let old = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();
-        records[0].activation.received_at = Some(Timestamp {
+        let mut activation = records[0].get_activation();
+        activation.received_at = Some(Timestamp {
             seconds: old.timestamp(),
             nanos: 0,
         });
-        records[0].activation.parameters = r#"{"a":"b"}"#.into();
-        records[0].status = InflightActivationStatus::Retry;
-        records[0].activation.retry_state = Some(RetryState {
+        activation.parameters = r#"{"a":"b"}"#.into();
+        activation.retry_state = Some(RetryState {
             attempts: 1,
             max_attempts: 2,
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: None,
             delay_on_retry: None,
         });
-        records[0].activation.delay = Some(30);
+        activation.delay = Some(30);
+        records[0].status = InflightActivationStatus::Retry;
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
+        records[0].activation = Some(activation);
+
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -467,18 +482,19 @@ mod tests {
         let activation = &messages[0];
 
         // Should spawn a new task
-        assert_ne!(activation.id, records[0].activation.id);
+        let activation_to_check = records[0].get_activation();
+        assert_ne!(activation.id, activation_to_check.id);
         // Should increment the attempt counter
         assert_eq!(activation.retry_state.as_ref().unwrap().attempts, 2);
 
         // Retry should retain task and parameters of original task
-        assert_eq!(activation.taskname, records[0].activation.taskname);
-        assert_eq!(activation.namespace, records[0].activation.namespace);
-        assert_eq!(activation.parameters, records[0].activation.parameters);
+        assert_eq!(activation.taskname, activation_to_check.taskname);
+        assert_eq!(activation.namespace, activation_to_check.namespace);
+        assert_eq!(activation.parameters, activation_to_check.parameters);
         // received_at should be set be later than the original activation
         assert!(
             activation.received_at.unwrap().seconds
-                > records[0].activation.received_at.unwrap().seconds,
+                > activation_to_check.received_at.unwrap().seconds,
             "retry activation should have a later timestamp"
         );
         // The delay_until of a retry task should be set to None
@@ -488,7 +504,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_deadline_retains_future_deadline() {
         let config = create_config();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
@@ -512,7 +528,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_deadline_updates_past_deadline() {
         let config = create_config();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
@@ -554,22 +570,25 @@ mod tests {
     #[tokio::test]
     async fn test_processing_deadline_discard_at_most_once() {
         let config = create_config();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
-        batch[1].status = InflightActivationStatus::Processing;
-        batch[1].processing_deadline =
-            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-        batch[1].at_most_once = true;
-        batch[1].activation.retry_state = Some(RetryState {
+        let mut activation = batch[1].get_activation();
+        activation.retry_state = Some(RetryState {
             attempts: 0,
             max_attempts: 1,
             on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
             at_most_once: Some(true),
             delay_on_retry: None,
         });
+        batch[1].activation = Some(activation);
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].at_most_once = true;
+
         assert!(store.store(batch.clone()).await.is_ok());
 
         let result_context = do_upkeep(config, store.clone(), producer).await;
@@ -595,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_attempts_exceeded_discard() {
         let config = create_config();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(3);
@@ -637,18 +656,20 @@ mod tests {
         let config = create_integration_config();
         reset_topic(config.clone()).await;
 
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
-        records[0].activation.parameters = r#"{"a":"b"}"#.into();
+        replace_retry_state(
+            &mut records[0],
+            RetryState {
+                attempts: 1,
+                max_attempts: 1,
+                on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
+                at_most_once: None,
+                delay_on_retry: None,
+            },
+        );
         records[0].status = InflightActivationStatus::Failure;
-        records[0].activation.retry_state = Some(RetryState {
-            attempts: 1,
-            max_attempts: 1,
-            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
-            at_most_once: None,
-            delay_on_retry: None,
-        });
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -664,15 +685,16 @@ mod tests {
         let activation = &messages[0];
 
         // Should move the task without changing the id
-        assert_eq!(activation.id, records[0].activation.id);
+        let activation_to_check = records[0].activation.clone().unwrap();
+        assert_eq!(activation.id, activation_to_check.id);
         // DLQ should retain parameters of original task
-        assert_eq!(activation.parameters, records[0].activation.parameters);
+        assert_eq!(activation.parameters, activation_to_check.parameters);
     }
 
     #[tokio::test]
     async fn test_remove_failed_discard() {
         let config = create_config();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
@@ -702,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn test_expired_discard() {
         let config = create_config();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(4);
@@ -739,7 +761,7 @@ mod tests {
 
         assert!(
             store
-                .get_by_id(&batch[0].activation.id)
+                .get_by_id(&batch[0].get_activation().id, false)
                 .await
                 .unwrap()
                 .is_none(),
@@ -747,7 +769,7 @@ mod tests {
         );
         assert!(
             store
-                .get_by_id(&batch[1].activation.id)
+                .get_by_id(&batch[1].get_activation().id, false)
                 .await
                 .unwrap()
                 .is_none(),
@@ -755,7 +777,7 @@ mod tests {
         );
         assert!(
             store
-                .get_by_id(&batch[2].activation.id)
+                .get_by_id(&batch[2].get_activation().id, false)
                 .await
                 .unwrap()
                 .is_none(),
@@ -763,7 +785,7 @@ mod tests {
         );
         assert!(
             store
-                .get_by_id(&batch[3].activation.id)
+                .get_by_id(&batch[3].get_activation().id, false)
                 .await
                 .unwrap()
                 .is_some(),
@@ -774,7 +796,7 @@ mod tests {
     #[tokio::test]
     async fn test_delay_elapsed() {
         let config = create_config();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
@@ -815,7 +837,6 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .activation
                 .id,
             "id_0",
         );
@@ -836,9 +857,52 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .activation
                 .id,
             "id_1",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_orphaned() {
+        let config = create_config();
+        let store = create_test_store().await;
+        let producer = create_producer(config.clone());
+
+        let mut batch = make_activations(2);
+
+        batch[0].status = InflightActivationStatus::Complete;
+
+        assert!(store.store(batch.clone()).await.is_ok());
+        let result_context = do_upkeep(config, store.clone(), producer).await;
+
+        assert_eq!(result_context.completed, 1);
+        assert_eq!(result_context.blobs_deleted, 1);
+
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1,
+            "one pending task should remain"
+        );
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Complete)
+                .await
+                .unwrap(),
+            0,
+            "complete tasks were removed"
+        );
+
+        assert!(
+            store.get_activation_raw_blob(&batch[0].id).await.is_err(),
+            "completed task should have blob deleted",
+        );
+
+        assert!(
+            store.get_activation_raw_blob(&batch[1].id).await.is_ok(),
+            "other task should still exist",
         );
     }
 }

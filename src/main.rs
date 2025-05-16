@@ -62,6 +62,7 @@ async fn main() -> Result<(), Error> {
     let store = Arc::new(
         InflightActivationStore::new(
             &config.db_path,
+            &config.blob_db_path,
             InflightActivationStoreConfig::from_config(&config),
         )
         .await?,

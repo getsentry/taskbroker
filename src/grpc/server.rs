@@ -8,7 +8,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
+use crate::store::inflight_activation::{
+    InflightActivationStatus, InflightActivationStore, received_latency,
+};
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
@@ -31,19 +33,28 @@ impl ConsumerService for TaskbrokerServer {
 
         match inflight {
             Ok(Some(inflight)) => {
+                let result = self.store.get_activation_blob(&inflight.id).await;
+                let activation = match result {
+                    Ok(activation) => activation,
+                    Err(e) => {
+                        error!("Unable to retrieve pending activation: {:?}", e);
+                        return Err(Status::internal("Unable to retrieve pending activation"));
+                    }
+                };
                 let now = Utc::now();
-                let received_to_gettask_latency = inflight.received_latency(now);
+                let received_to_gettask_latency =
+                    received_latency(&activation, inflight.delay_until, now);
                 if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
-                        "namespace" => inflight.namespace.clone(),
-                        "taskname" => inflight.activation.taskname.clone(),
+                        "namespace" => inflight.namespace,
+                        "taskname" => activation.taskname.clone(),
                     )
                     .record(received_to_gettask_latency as f64);
                 }
 
                 let resp = GetTaskResponse {
-                    task: Some(inflight.activation),
+                    task: Some(activation),
                 };
                 metrics::histogram!("grpc_server.get_task.duration").record(start_time.elapsed());
 
@@ -96,8 +107,18 @@ impl ConsumerService for TaskbrokerServer {
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
         if let Ok(Some(inflight_activation)) = update_result {
+            let result = self
+                .store
+                .get_activation_blob(&inflight_activation.id)
+                .await;
+            let activation = match result {
+                Ok(activation) => activation,
+                Err(e) => {
+                    error!("Unable to retrieve activation body: {:?}", e);
+                    return Err(Status::internal("Unable to retrieve activation body"));
+                }
+            };
             let duration = Utc::now() - inflight_activation.added_at;
-            let activation = inflight_activation.activation;
             metrics::histogram!(
                 "task_execution.conclusion.duration",
                 "namespace" => activation.namespace.clone(),
@@ -117,8 +138,8 @@ impl ConsumerService for TaskbrokerServer {
                     (activation.processing_deadline_duration as i64 * 1000) - execution_remaining;
                 metrics::histogram!(
                     "task_execution.completion_time",
-                    "namespace" => activation.namespace.clone(),
-                    "taskname" => activation.taskname.clone(),
+                    "namespace" => activation.namespace,
+                    "taskname" => activation.taskname,
                 )
                 .record(execution_time as f64);
             }
@@ -141,18 +162,27 @@ impl ConsumerService for TaskbrokerServer {
             }
             Ok(None) => Err(Status::not_found("No pending activation")),
             Ok(Some(inflight)) => {
+                let result = self.store.get_activation_blob(&inflight.id).await;
+                let activation = match result {
+                    Ok(activation) => activation,
+                    Err(e) => {
+                        error!("Unable to retrieve pending activation: {:?}", e);
+                        return Err(Status::internal("Unable to retrieve pending activation"));
+                    }
+                };
                 let now = Utc::now();
-                let received_to_gettask_latency = inflight.received_latency(now);
+                let received_to_gettask_latency =
+                    received_latency(&activation, inflight.delay_until, now);
                 if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
-                        "namespace" => inflight.namespace.clone(),
-                        "taskname" => inflight.activation.taskname.clone(),
+                        "namespace" => activation.namespace.clone(),
+                        "taskname" => activation.taskname.clone(),
                     )
                     .record(received_to_gettask_latency as f64);
                 }
                 Ok(Response::new(SetTaskStatusResponse {
-                    task: Some(inflight.activation),
+                    task: Some(activation),
                 }))
             }
         };
