@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS taskactivation_blobs (
+    id TEXT NOT NULL PRIMARY KEY,
+    activation BLOB NOT NULL,
+    added_at INTEGER NOT NULL
+) WITHOUT ROWID, STRICT;
