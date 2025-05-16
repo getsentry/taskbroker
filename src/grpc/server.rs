@@ -43,7 +43,7 @@ impl ConsumerService for TaskbrokerServer {
                 };
                 let now = Utc::now();
                 let received_to_gettask_latency =
-                    received_latency(activation.clone(), inflight.delay_until, now);
+                    received_latency(&activation, inflight.delay_until, now);
                 if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
@@ -172,7 +172,7 @@ impl ConsumerService for TaskbrokerServer {
                 };
                 let now = Utc::now();
                 let received_to_gettask_latency =
-                    received_latency(activation.clone(), inflight.delay_until, now);
+                    received_latency(&activation, inflight.delay_until, now);
                 if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",

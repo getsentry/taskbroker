@@ -171,7 +171,7 @@ impl InflightActivation {
 /// The number of milliseconds between an activation's received timestamp
 /// and the provided datetime
 pub fn received_latency(
-    activation: TaskActivation,
+    activation: &TaskActivation,
     delay_until: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> i64 {
