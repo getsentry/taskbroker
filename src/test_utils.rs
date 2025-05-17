@@ -57,6 +57,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".into(),
+            payload_size: 1,
         };
         records.push(item);
     }

@@ -11,20 +11,23 @@ use super::consumer::{
 };
 
 pub struct ActivationBatcherConfig {
-    pub max_buf_len: usize,
+    pub max_buf_size: usize,
+    pub max_buf_rows: usize,
 }
 
 impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            max_buf_len: config.db_insert_batch_size,
+            max_buf_size: config.db_insert_batch_size_bytes,
+            max_buf_rows: config.db_insert_batch_size_rows,
         }
     }
 }
 
 pub struct InflightActivationBatcher {
     buffer: Vec<InflightActivation>,
+    buffer_size: usize,
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
 }
@@ -35,7 +38,8 @@ impl InflightActivationBatcher {
         runtime_config_manager: Arc<RuntimeConfigManager>,
     ) -> Self {
         Self {
-            buffer: Vec::with_capacity(config.max_buf_len),
+            buffer: Vec::with_capacity(config.max_buf_size),
+            buffer_size: 0,
             config,
             runtime_config_manager,
         }
@@ -52,18 +56,19 @@ impl Reducer for InflightActivationBatcher {
         let task_name = &t.activation.taskname;
 
         if runtime_config.drop_task_killswitch.contains(task_name) {
-            metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
+            metrics::counter!("consumer.drop_task_killswitch", "taskname" => task_name.clone())
                 .increment(1);
             return Ok(());
         }
 
         if let Some(expires_at) = t.expires_at {
             if Utc::now() > expires_at {
-                metrics::counter!("filter.expired_at_consumer").increment(1);
+                metrics::counter!("consumer.expired_at_consumer").increment(1);
                 return Ok(());
             }
         }
 
+        self.buffer_size += t.payload_size;
         self.buffer.push(t);
 
         Ok(())
@@ -73,18 +78,25 @@ impl Reducer for InflightActivationBatcher {
         if self.buffer.is_empty() {
             return Ok(None);
         }
+
+        metrics::histogram!("consumer.batch_size_rows").record(self.buffer.len() as f64);
+        metrics::histogram!("consumer.batch_size_bytes").record(self.buffer_size as f64);
+
+        self.buffer_size = 0;
         Ok(Some(replace(
             &mut self.buffer,
-            Vec::with_capacity(self.config.max_buf_len),
+            Vec::with_capacity(self.config.max_buf_size),
         )))
     }
 
     fn reset(&mut self) {
         self.buffer.clear();
+        self.buffer_size = 0;
     }
 
     async fn is_full(&self) -> bool {
-        self.buffer.len() >= self.config.max_buf_len
+        self.buffer.len() >= self.config.max_buf_rows
+            || self.buffer_size >= self.config.max_buf_size
     }
 
     fn get_reduce_config(&self) -> ReduceConfig {
@@ -151,6 +163,7 @@ drop_task_killswitch:
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".to_string(),
+            payload_size: 1,
         };
 
         batcher.reduce(inflight_activation_0).await.unwrap();
@@ -191,6 +204,7 @@ drop_task_killswitch:
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".to_string(),
+            payload_size: 1,
         };
 
         batcher.reduce(inflight_activation_0).await.unwrap();

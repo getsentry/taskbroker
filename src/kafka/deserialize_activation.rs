@@ -81,6 +81,7 @@ pub fn new(
             delay_until,
             at_most_once,
             namespace,
+            payload_size: payload.len(),
         })
     }
 }

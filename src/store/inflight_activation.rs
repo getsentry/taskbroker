@@ -109,7 +109,12 @@ pub struct InflightActivation {
     /// When enabled activations are not retried when processing_deadlines
     /// are exceeded.
     pub at_most_once: bool,
+
+    // The namespace of the function where the activation belongs to.
     pub namespace: String,
+
+    // Size of the protobuf payload.
+    pub payload_size: usize,
 }
 
 impl InflightActivation {
@@ -206,6 +211,7 @@ impl From<TableRow> for InflightActivation {
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
             namespace: value.namespace,
+            payload_size: (&value.activation as &[u8]).len(),
         }
     }
 }
