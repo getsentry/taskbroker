@@ -283,6 +283,7 @@ pub async fn do_upkeep(
             result_context.processing,
             result_context.delay,
             result_context.delay_elapsed,
+            result_context.blobs_deleted,
             "upkeep.complete",
         );
     }
@@ -309,6 +310,8 @@ pub async fn do_upkeep(
         .increment(result_context.processing_deadline_reset);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
         .increment(result_context.delay_elapsed);
+    metrics::counter!("upkeep.blobs_deleted", "kind" => "delete_orphaned_blobs")
+        .increment(result_context.blobs_deleted);
 
     // State of inflight tasks
     metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
