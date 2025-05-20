@@ -248,11 +248,11 @@ pub async fn do_upkeep(
     metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
 
     // 11. Cleanup orphaned activation blobs
-    let remove_orphaned_start = Instant::now();
-    if let Ok(count) = store.remove_orphaned_blobs().await {
-        result_context.blobs_deleted = count;
-    }
-    metrics::histogram!("upkeep.blobs_deleted").record(remove_orphaned_start.elapsed());
+    // let remove_orphaned_start = Instant::now();
+    // if let Ok(count) = store.remove_orphaned_blobs().await {
+    //     result_context.blobs_deleted = count;
+    // }
+    // metrics::histogram!("upkeep.blobs_deleted").record(remove_orphaned_start.elapsed());
 
     if let Ok(pending_count) = store
         .count_by_status(InflightActivationStatus::Pending)
