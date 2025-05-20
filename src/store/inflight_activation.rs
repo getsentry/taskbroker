@@ -404,7 +404,7 @@ impl InflightActivationStore {
 
         let mut inflight = result.unwrap();
 
-        if self.is_new_read() && with_data && self.is_new_read() {
+        if self.is_new_read() && with_data {
             let activation = self.get_activation_blob(id).await?;
             inflight.activation = Some(activation);
         }
