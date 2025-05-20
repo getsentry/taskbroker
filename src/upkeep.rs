@@ -2,6 +2,7 @@ use chrono::{Timelike, Utc};
 use futures::{StreamExt, stream::FuturesUnordered};
 use prost::Message;
 use prost_types::Timestamp;
+use rdkafka::error::KafkaError;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
@@ -17,9 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    store::inflight_activation::{
-        InflightActivation, InflightActivationStatus, InflightActivationStore,
-    },
+    store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
 };
 
 /// The upkeep task that periodically performs upkeep
@@ -112,8 +111,10 @@ pub async fn do_upkeep(
             .map(|inflight| {
                 let producer = producer.clone();
                 let config = config.clone();
+                // let store = store.clone();
                 async move {
-                    let serialized = create_retry_activation(&inflight).encode_to_vec();
+                    let activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
+                    let serialized = create_retry_activation(&activation).encode_to_vec();
                     let delivery = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
@@ -122,8 +123,8 @@ pub async fn do_upkeep(
                         )
                         .await;
                     match delivery {
-                        Ok(_) => Ok(inflight.activation.id),
-                        Err(err) => Err(err),
+                        Ok(_) => Ok(inflight.id),
+                        Err((err, _msg)) => Err(err),
                     }
                 }
             })
@@ -133,9 +134,9 @@ pub async fn do_upkeep(
             .collect::<Vec<_>>()
             .await
             .into_iter()
-            .filter_map(|result| match result {
+            .filter_map(|result: Result<String, KafkaError>| match result {
                 Ok(id) => Some(id),
-                Err((err, _msg)) => {
+                Err(err) => {
                     error!("retry.publish.failure {}", err);
                     None
                 }
@@ -189,16 +190,30 @@ pub async fn do_upkeep(
         let deadletters = failed_tasks_forwarder
             .to_deadletter
             .into_iter()
-            .map(|activation| {
+            .map(|id| {
                 let producer = producer.clone();
                 let config = config.clone();
+                let store = store.clone();
                 async move {
-                    let payload = activation.encode_to_vec();
-                    metrics::histogram!("upkeep.dlq.message_size").record(payload.len() as f64);
+                    let result = store.get_by_id(&id).await;
+                    let inflight = match result {
+                        Ok(Some(inflight)) => inflight,
+                        Ok(None) => {
+                            error!("deadletter.getbyid.notfound: ({})", id);
+                            return id;
+                        }
+                        Err(err) => {
+                            error!("deadletter.getbyid.failure: ({}) {:?}", id, err);
+                            return id;
+                        }
+                    };
+
+                    metrics::histogram!("upkeep.dlq.message_size")
+                        .record(inflight.activation.len() as f64);
                     let delivery = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
-                                .payload(&payload),
+                                .payload(&inflight.activation),
                             Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                         )
                         .await;
@@ -206,10 +221,10 @@ pub async fn do_upkeep(
                     if let Err((err, _msg)) = delivery {
                         error!(
                             "deadletter.publish.failure: {}, message: {:?}",
-                            err, payload
+                            err, inflight.activation
                         );
                     }
-                    activation.id
+                    inflight.id
                 }
             })
             .collect::<FuturesUnordered<_>>();
@@ -298,8 +313,8 @@ pub async fn do_upkeep(
 /// Create a new activation that is a 'retry' of the passed inflight_activation
 /// The retry_state.attempts is advanced as part of the retry state machine.
 #[instrument(skip_all)]
-fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActivation {
-    let mut new_activation = inflight_activation.activation.clone();
+fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
+    let mut new_activation = activation.clone();
 
     let now = Utc::now();
     new_activation.id = Uuid::new_v4().into();
@@ -320,13 +335,13 @@ fn create_retry_activation(inflight_activation: &InflightActivation) -> TaskActi
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeDelta, TimeZone, Utc};
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    use prost::Message;
     use prost_types::Timestamp;
-    use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState};
-    use tokio::time::sleep;
-
+    use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
     use std::sync::Arc;
     use std::time::Duration;
+    use tokio::time::sleep;
 
     use crate::{
         store::inflight_activation::{
@@ -334,7 +349,7 @@ mod tests {
         },
         test_utils::{
             consume_topic, create_config, create_integration_config, create_producer,
-            generate_temp_filename, make_activations, reset_topic,
+            generate_temp_filename, make_activations, replace_retry_state, reset_topic,
         },
         upkeep::{create_retry_activation, do_upkeep},
     };
@@ -352,9 +367,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
-        let mut activation = make_activations(1).remove(0);
-        activation.activation.delay = None;
-        activation.activation.retry_state = Some(RetryState {
+        let inflight = make_activations(1).remove(0);
+        let mut activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
+        activation.delay = None;
+        activation.retry_state = Some(RetryState {
             attempts: 0,
             max_attempts: 3,
             on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
@@ -378,9 +394,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_activation_updates_delay_with_delay_on_retry() {
-        let mut activation = make_activations(1).remove(0);
-        activation.activation.delay = Some(100);
-        activation.activation.retry_state = Some(RetryState {
+        let inflight = make_activations(1).remove(0);
+        let mut activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
+        activation.delay = Some(100);
+        activation.retry_state = Some(RetryState {
             attempts: 0,
             max_attempts: 3,
             on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
@@ -404,9 +421,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_activation_clears_delay_without_delay_on_retry() {
-        let mut activation = make_activations(1).remove(0);
-        activation.activation.delay = Some(60);
-        activation.activation.retry_state = Some(RetryState {
+        let inflight = make_activations(1).remove(0);
+        let mut activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
+        activation.delay = Some(60);
+        activation.retry_state = Some(RetryState {
             attempts: 0,
             max_attempts: 3,
             on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
@@ -438,21 +456,32 @@ mod tests {
         let mut records = make_activations(2);
 
         let old = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();
-        records[0].activation.received_at = Some(Timestamp {
+        replace_retry_state(
+            &mut records[0],
+            Some(RetryState {
+                attempts: 1,
+                max_attempts: 2,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
+                at_most_once: None,
+                delay_on_retry: None,
+            }),
+        );
+        let mut activation = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
+        activation.received_at = Some(Timestamp {
             seconds: old.timestamp(),
             nanos: 0,
         });
-        records[0].activation.parameters = r#"{"a":"b"}"#.into();
+        records[0].received_at = DateTime::from_timestamp(
+            activation.received_at.unwrap().seconds,
+            activation.received_at.unwrap().nanos as u32,
+        )
+        .expect("");
+        activation.parameters = r#"{"a":"b"}"#.into();
+        activation.delay = Some(30);
         records[0].status = InflightActivationStatus::Retry;
-        records[0].activation.retry_state = Some(RetryState {
-            attempts: 1,
-            max_attempts: 2,
-            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
-            at_most_once: None,
-            delay_on_retry: None,
-        });
-        records[0].activation.delay = Some(30);
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
+        records[0].activation = activation.encode_to_vec();
+
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -467,18 +496,20 @@ mod tests {
         let activation = &messages[0];
 
         // Should spawn a new task
-        assert_ne!(activation.id, records[0].activation.id);
+        let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
+        assert_ne!(activation.id, activation_to_check.id);
         // Should increment the attempt counter
         assert_eq!(activation.retry_state.as_ref().unwrap().attempts, 2);
 
         // Retry should retain task and parameters of original task
-        assert_eq!(activation.taskname, records[0].activation.taskname);
-        assert_eq!(activation.namespace, records[0].activation.namespace);
-        assert_eq!(activation.parameters, records[0].activation.parameters);
+        let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
+        assert_eq!(activation.taskname, activation_to_check.taskname);
+        assert_eq!(activation.namespace, activation_to_check.namespace);
+        assert_eq!(activation.parameters, activation_to_check.parameters);
         // received_at should be set be later than the original activation
         assert!(
             activation.received_at.unwrap().seconds
-                > records[0].activation.received_at.unwrap().seconds,
+                > activation_to_check.received_at.unwrap().seconds,
             "retry activation should have a later timestamp"
         );
         // The delay_until of a retry task should be set to None
@@ -559,17 +590,20 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
+        replace_retry_state(
+            &mut batch[1],
+            Some(RetryState {
+                attempts: 0,
+                max_attempts: 1,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
+                at_most_once: Some(true),
+                delay_on_retry: None,
+            }),
+        );
         batch[1].status = InflightActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].at_most_once = true;
-        batch[1].activation.retry_state = Some(RetryState {
-            attempts: 0,
-            max_attempts: 1,
-            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
-            at_most_once: Some(true),
-            delay_on_retry: None,
-        });
         assert!(store.store(batch.clone()).await.is_ok());
 
         let result_context = do_upkeep(config, store.clone(), producer).await;
@@ -640,15 +674,17 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
-        records[0].activation.parameters = r#"{"a":"b"}"#.into();
+        replace_retry_state(
+            &mut records[0],
+            Some(RetryState {
+                attempts: 1,
+                max_attempts: 1,
+                on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
+                at_most_once: None,
+                delay_on_retry: None,
+            }),
+        );
         records[0].status = InflightActivationStatus::Failure;
-        records[0].activation.retry_state = Some(RetryState {
-            attempts: 1,
-            max_attempts: 1,
-            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
-            at_most_once: None,
-            delay_on_retry: None,
-        });
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -664,9 +700,10 @@ mod tests {
         let activation = &messages[0];
 
         // Should move the task without changing the id
-        assert_eq!(activation.id, records[0].activation.id);
+        let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
+        assert_eq!(activation.id, activation_to_check.id);
         // DLQ should retain parameters of original task
-        assert_eq!(activation.parameters, records[0].activation.parameters);
+        assert_eq!(activation.parameters, activation_to_check.parameters);
     }
 
     #[tokio::test]
@@ -738,35 +775,19 @@ mod tests {
         );
 
         assert!(
-            store
-                .get_by_id(&batch[0].activation.id)
-                .await
-                .unwrap()
-                .is_none(),
+            store.get_by_id(&batch[0].id).await.unwrap().is_none(),
             "first task should be removed"
         );
         assert!(
-            store
-                .get_by_id(&batch[1].activation.id)
-                .await
-                .unwrap()
-                .is_none(),
+            store.get_by_id(&batch[1].id).await.unwrap().is_none(),
             "second task should be removed"
         );
         assert!(
-            store
-                .get_by_id(&batch[2].activation.id)
-                .await
-                .unwrap()
-                .is_none(),
+            store.get_by_id(&batch[2].id).await.unwrap().is_none(),
             "third task should be removed"
         );
         assert!(
-            store
-                .get_by_id(&batch[3].activation.id)
-                .await
-                .unwrap()
-                .is_some(),
+            store.get_by_id(&batch[3].id).await.unwrap().is_some(),
             "fourth task should be kept"
         );
     }
@@ -815,7 +836,6 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .activation
                 .id,
             "id_0",
         );
@@ -836,7 +856,6 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .activation
                 .id,
             "id_1",
         );

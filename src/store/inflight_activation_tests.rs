@@ -1,8 +1,9 @@
+use prost::Message;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{SubsecRound, TimeZone, Utc};
+use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{
     OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
 };
@@ -11,11 +12,11 @@ use tokio::task::JoinSet;
 
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
-    InflightActivationStoreConfig,
+    InflightActivationStoreConfig, InflightOnAttemptsExceeded,
 };
 use crate::test_utils::{
     assert_count_by_status, create_integration_config, create_test_store, generate_temp_filename,
-    make_activations,
+    make_activations, replace_retry_state,
 };
 
 #[test]
@@ -86,8 +87,8 @@ async fn test_store_duplicate_id_in_batch() {
 
     let mut batch = make_activations(2);
     // Coerce a conflict
-    batch[0].activation.id = "id_0".into();
-    batch[1].activation.id = "id_0".into();
+    batch[0].id = "id_0".into();
+    batch[1].id = "id_0".into();
 
     assert!(store.store(batch).await.is_ok());
 
@@ -106,8 +107,8 @@ async fn test_store_duplicate_id_between_batches() {
 
     let new_batch = make_activations(2);
     // Old batch and new should have conflicts
-    assert_eq!(batch[0].activation.id, new_batch[0].activation.id);
-    assert_eq!(batch[1].activation.id, new_batch[1].activation.id);
+    assert_eq!(batch[0].id, new_batch[0].id);
+    assert_eq!(batch[1].id, new_batch[1].id);
     assert!(store.store(new_batch).await.is_ok());
 
     let second_count = store.count().await;
@@ -123,7 +124,7 @@ async fn test_get_pending_activation() {
 
     let result = store.get_pending_activation(None).await.unwrap().unwrap();
 
-    assert_eq!(result.activation.id, "id_0");
+    assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
@@ -161,7 +162,7 @@ async fn test_get_pending_activation_with_race() {
         .join_all()
         .await
         .iter()
-        .map(|ifa| ifa.activation.id.clone())
+        .map(|ifa| ifa.id.clone())
         .collect();
 
     assert_eq!(res.len(), NUM_CONCURRENT_WRITES as usize);
@@ -181,7 +182,7 @@ async fn test_get_pending_activation_with_namespace() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(result.activation.id, "id_1");
+    assert_eq!(result.id, "id_1");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.namespace, "other_namespace");
@@ -284,7 +285,7 @@ async fn set_activation_status() {
     let result_opt = result.unwrap();
     assert!(result_opt.is_some(), "activation should be returned");
     let inflight = result_opt.unwrap();
-    assert_eq!(inflight.activation.id, "id_0");
+    assert_eq!(inflight.id, "id_0");
     assert_eq!(inflight.status, InflightActivationStatus::Complete);
 }
 
@@ -385,7 +386,7 @@ async fn test_handle_processing_deadline() {
     assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
     assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
 
-    let task = store.get_by_id(&batch[1].activation.id).await;
+    let task = store.get_by_id(&batch[1].id).await;
     assert_eq!(task.unwrap().unwrap().processing_attempts, 1);
 
     // Run again to check early return
@@ -423,13 +424,16 @@ async fn test_handle_processing_at_most_once() {
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
     batch[1].status = InflightActivationStatus::Processing;
-    batch[1].activation.retry_state = Some(RetryState {
-        attempts: 0,
-        max_attempts: 1,
-        on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
-        at_most_once: Some(true),
-        delay_on_retry: None,
-    });
+    replace_retry_state(
+        &mut batch[1],
+        Some(RetryState {
+            attempts: 0,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
+            at_most_once: Some(true),
+            delay_on_retry: None,
+        }),
+    );
     batch[1].at_most_once = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
@@ -443,11 +447,7 @@ async fn test_handle_processing_at_most_once() {
     assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
     assert_count_by_status(&store, InflightActivationStatus::Failure, 1).await;
 
-    let task = store
-        .get_by_id(&batch[1].activation.id)
-        .await
-        .unwrap()
-        .unwrap();
+    let task = store.get_by_id(&batch[1].id).await.unwrap().unwrap();
     assert_eq!(task.status, InflightActivationStatus::Failure);
 }
 
@@ -458,13 +458,16 @@ async fn test_handle_processing_deadline_discard_after() {
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[1].activation.retry_state = Some(RetryState {
-        attempts: 0,
-        max_attempts: 1,
-        on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
-        at_most_once: None,
-        delay_on_retry: None,
-    });
+    replace_retry_state(
+        &mut batch[1],
+        Some(RetryState {
+            attempts: 0,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
+            at_most_once: None,
+            delay_on_retry: None,
+        }),
+    );
 
     assert!(store.store(batch).await.is_ok());
 
@@ -480,13 +483,16 @@ async fn test_handle_processing_deadline_deadletter_after() {
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[1].activation.retry_state = Some(RetryState {
-        attempts: 0,
-        max_attempts: 1,
-        on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
-        at_most_once: None,
-        delay_on_retry: None,
-    });
+    replace_retry_state(
+        &mut batch[1],
+        Some(RetryState {
+            attempts: 0,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
+            at_most_once: None,
+            delay_on_retry: None,
+        }),
+    );
 
     assert!(store.store(batch).await.is_ok());
 
@@ -503,14 +509,16 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[1].activation.retry_state = Some(RetryState {
-        attempts: 1,
-        max_attempts: 1,
-        on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
-        at_most_once: None,
-        delay_on_retry: None,
-    });
-
+    replace_retry_state(
+        &mut batch[1],
+        Some(RetryState {
+            attempts: 1,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
+            at_most_once: None,
+            delay_on_retry: None,
+        }),
+    );
     assert!(store.store(batch).await.is_ok());
 
     let count = store.handle_processing_deadline().await;
@@ -565,21 +573,21 @@ async fn test_remove_completed() {
     assert_eq!(result.unwrap(), 2);
     assert!(
         store
-            .get_by_id(&records[0].activation.id)
+            .get_by_id(&records[0].id)
             .await
             .expect("no error")
             .is_none()
     );
     assert!(
         store
-            .get_by_id(&records[1].activation.id)
+            .get_by_id(&records[1].id)
             .await
             .expect("no error")
             .is_some()
     );
     assert!(
         store
-            .get_by_id(&records[2].activation.id)
+            .get_by_id(&records[2].id)
             .await
             .expect("no error")
             .is_none()
@@ -612,28 +620,28 @@ async fn test_remove_completed_multiple_gaps() {
     assert_eq!(result.unwrap(), 2);
     assert!(
         store
-            .get_by_id(&records[0].activation.id)
+            .get_by_id(&records[0].id)
             .await
             .expect("no error")
             .is_none()
     );
     assert!(
         store
-            .get_by_id(&records[1].activation.id)
+            .get_by_id(&records[1].id)
             .await
             .expect("no error")
             .is_some()
     );
     assert!(
         store
-            .get_by_id(&records[2].activation.id)
+            .get_by_id(&records[2].id)
             .await
             .expect("no error")
             .is_none()
     );
     assert!(
         store
-            .get_by_id(&records[3].activation.id)
+            .get_by_id(&records[3].id)
             .await
             .expect("no error")
             .is_some()
@@ -647,35 +655,44 @@ async fn test_handle_failed_tasks() {
     let mut records = make_activations(4);
     // deadletter
     records[0].status = InflightActivationStatus::Failure;
-    records[0].activation.retry_state = Some(RetryState {
-        attempts: 1,
-        max_attempts: 1,
-        on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
-        at_most_once: None,
-        delay_on_retry: None,
-    });
+    replace_retry_state(
+        &mut records[0],
+        Some(RetryState {
+            attempts: 1,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
+            at_most_once: None,
+            delay_on_retry: None,
+        }),
+    );
     // discard
     records[1].status = InflightActivationStatus::Failure;
-    records[1].activation.retry_state = Some(RetryState {
-        attempts: 1,
-        max_attempts: 1,
-        on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
-        at_most_once: None,
-        delay_on_retry: None,
-    });
+    replace_retry_state(
+        &mut records[1],
+        Some(RetryState {
+            attempts: 1,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard as i32,
+            at_most_once: None,
+            delay_on_retry: None,
+        }),
+    );
     // no retry state = discard
     records[2].status = InflightActivationStatus::Failure;
-    assert!(records[2].activation.retry_state.is_none());
+    replace_retry_state(&mut records[2], None);
 
     // Another deadletter
     records[3].status = InflightActivationStatus::Failure;
-    records[3].activation.retry_state = Some(RetryState {
-        attempts: 1,
-        max_attempts: 1,
-        on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
-        at_most_once: None,
-        delay_on_retry: None,
-    });
+    replace_retry_state(
+        &mut records[3],
+        Some(RetryState {
+            attempts: 1,
+            max_attempts: 1,
+            on_attempts_exceeded: OnAttemptsExceeded::Deadletter as i32,
+            at_most_once: None,
+            delay_on_retry: None,
+        }),
+    );
     assert!(store.store(records.clone()).await.is_ok());
 
     let result = store.handle_failed_tasks().await;
@@ -688,15 +705,15 @@ async fn test_handle_failed_tasks() {
         "should have two tasks to deadletter"
     );
     assert!(
-        store.get_by_id(&fowarder.to_deadletter[0].id).await.is_ok(),
+        store.get_by_id(&fowarder.to_deadletter[0]).await.is_ok(),
         "deadletter records still in sqlite"
     );
     assert!(
-        store.get_by_id(&fowarder.to_deadletter[1].id).await.is_ok(),
+        store.get_by_id(&fowarder.to_deadletter[1]).await.is_ok(),
         "deadletter records still in sqlite"
     );
-    assert_eq!(fowarder.to_deadletter[0].id, records[0].activation.id);
-    assert_eq!(fowarder.to_deadletter[1].id, records[3].activation.id);
+    assert_eq!(fowarder.to_deadletter[0], records[0].id);
+    assert_eq!(fowarder.to_deadletter[1], records[3].id);
 
     assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
 }
@@ -709,10 +726,7 @@ async fn test_mark_completed() {
     assert!(store.store(records.clone()).await.is_ok());
     assert_count_by_status(&store, InflightActivationStatus::Pending, 3).await;
 
-    let ids: Vec<String> = records
-        .iter()
-        .map(|item| item.activation.id.clone())
-        .collect();
+    let ids: Vec<String> = records.iter().map(|item| item.id.clone()).collect();
     let result = store.mark_completed(ids.clone()).await;
 
     assert!(result.is_ok());
@@ -749,32 +763,40 @@ async fn test_clear() {
     let store = create_test_store().await;
 
     #[allow(deprecated)]
+    let received_at = prost_types::Timestamp {
+        seconds: 0,
+        nanos: 0,
+    };
     let batch = vec![InflightActivation {
+        id: "id_0".into(),
         activation: TaskActivation {
             id: "id_0".into(),
             namespace: "namespace".into(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
             headers: HashMap::new(),
-            received_at: Some(prost_types::Timestamp {
-                seconds: 0,
-                nanos: 0,
-            }),
+            received_at: Some(received_at),
             retry_state: None,
             processing_deadline_duration: 0,
             expires: Some(1),
             delay: None,
-        },
+        }
+        .encode_to_vec(),
         status: InflightActivationStatus::Pending,
         partition: 0,
         offset: 0,
         added_at: Utc::now(),
+        received_at: DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32)
+            .expect(""),
         processing_attempts: 0,
+        processing_deadline_duration: 0,
+        on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
         expires_at: None,
         delay_until: None,
         processing_deadline: None,
         at_most_once: false,
         namespace: "namespace".into(),
+        taskname: "taskname".into(),
     }];
     assert!(store.store(batch).await.is_ok());
     assert_eq!(store.count().await.unwrap(), 1);

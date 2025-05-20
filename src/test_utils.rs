@@ -13,11 +13,11 @@ use crate::{
     config::Config,
     store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig,
+        InflightActivationStoreConfig, InflightOnAttemptsExceeded,
     },
 };
 use chrono::{Timelike, Utc};
-use sentry_protos::taskbroker::v1::TaskActivation;
+use sentry_protos::taskbroker::v1::{RetryState, TaskActivation};
 
 /// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
@@ -32,6 +32,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
         let now = Utc::now();
         #[allow(deprecated)]
         let item = InflightActivation {
+            id: format!("id_{}", i),
             activation: TaskActivation {
                 id: format!("id_{}", i),
                 namespace: "namespace".into(),
@@ -46,17 +47,22 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
                 processing_deadline_duration: 10,
                 expires: None,
                 delay: None,
-            },
+            }
+            .encode_to_vec(),
             status: InflightActivationStatus::Pending,
             partition: 0,
             offset: i as i64,
-            added_at: Utc::now(),
+            added_at: now,
+            received_at: now,
             processing_attempts: 0,
+            processing_deadline_duration: 10,
             expires_at: None,
             delay_until: None,
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".into(),
+            taskname: "taskname".into(),
+            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
         };
         records.push(item);
     }
@@ -82,15 +88,15 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create an InflightActivationStore instance
-pub async fn create_test_store() -> InflightActivationStore {
-    let url = generate_temp_filename();
-
-    InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig::from_config(&create_integration_config()),
+pub async fn create_test_store() -> Arc<InflightActivationStore> {
+    Arc::new(
+        InflightActivationStore::new(
+            &generate_temp_filename(),
+            InflightActivationStoreConfig::from_config(&create_integration_config()),
+        )
+        .await
+        .unwrap(),
     )
-    .await
-    .unwrap()
 }
 
 /// Create a Config instance that uses a testing topic
@@ -182,4 +188,19 @@ pub async fn consume_topic(
     }
 
     results
+}
+
+pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<RetryState>) {
+    let mut activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
+    activation.retry_state = retry;
+    inflight.activation = activation.encode_to_vec();
+    if retry.is_some() {
+        inflight.on_attempts_exceeded = retry
+            .unwrap()
+            .on_attempts_exceeded
+            .try_into()
+            .expect("invalid enum");
+    } else {
+        inflight.on_attempts_exceeded = InflightOnAttemptsExceeded::Discard;
+    }
 }

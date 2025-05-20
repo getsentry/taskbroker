@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
@@ -115,14 +115,7 @@ impl Reducer for InflightActivationWriter {
                 let lag = Utc::now()
                     - batch
                         .iter()
-                        .map(|item| {
-                            let ts = item
-                                .activation
-                                .received_at
-                                .expect("All activations should have received_at");
-
-                            DateTime::from_timestamp(ts.seconds, ts.nanos as u32).unwrap()
-                        })
+                        .map(|item| item.received_at)
                         .min_by_key(|item| item.timestamp())
                         .unwrap();
 
@@ -167,7 +160,9 @@ impl Reducer for InflightActivationWriter {
 #[cfg(test)]
 mod tests {
     use super::{ActivationWriterConfig, InflightActivation, InflightActivationWriter, Reducer};
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
+    use prost::Message;
+    use prost_types::Timestamp;
     use std::collections::HashMap;
 
     use sentry_protos::taskbroker::v1::TaskActivation;
@@ -175,6 +170,7 @@ mod tests {
 
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+        InflightOnAttemptsExceeded,
     };
     use crate::test_utils::{create_integration_config, generate_temp_filename};
 
@@ -197,61 +193,78 @@ mod tests {
             ),
             writer_config,
         );
-
+        let received_at = Timestamp {
+            seconds: 0,
+            nanos: 0,
+        };
         let batch = vec![
             InflightActivation {
+                id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
+                    received_at: Some(received_at),
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }
+                .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .expect(""),
                 processing_attempts: 0,
+                processing_deadline_duration: 0,
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                taskname: "pending_task".to_string(),
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             },
             InflightActivation {
+                id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
+                    received_at: Some(received_at),
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }
+                .encode_to_vec(),
                 status: InflightActivationStatus::Delay,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .expect(""),
                 processing_attempts: 0,
+                processing_deadline_duration: 0,
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                taskname: "delay_task".to_string(),
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             },
         ];
 
@@ -285,33 +298,40 @@ mod tests {
             ),
             writer_config,
         );
-
+        let received_at = Timestamp {
+            seconds: 0,
+            nanos: 0,
+        };
         let batch = vec![InflightActivation {
+            id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
-                received_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                received_at: Some(received_at),
                 retry_state: None,
                 processing_deadline_duration: 0,
                 expires: None,
                 delay: None,
-            },
+            }
+            .encode_to_vec(),
             status: InflightActivationStatus::Pending,
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
+            received_at: DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32)
+                .expect(""),
             processing_attempts: 0,
             expires_at: None,
             delay_until: None,
             processing_deadline: None,
+            processing_deadline_duration: 0,
             at_most_once: false,
             namespace: "namespace".to_string(),
+            taskname: "pending_task".to_string(),
+            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
         }];
 
         writer.reduce(batch).await.unwrap();
@@ -340,32 +360,40 @@ mod tests {
             writer_config,
         );
 
+        let received_at = Timestamp {
+            seconds: 0,
+            nanos: 0,
+        };
         let batch = vec![InflightActivation {
+            id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
-                received_at: Some(prost_types::Timestamp {
-                    seconds: 0,
-                    nanos: 0,
-                }),
+                received_at: Some(received_at),
                 retry_state: None,
                 processing_deadline_duration: 0,
                 expires: None,
                 delay: None,
-            },
+            }
+            .encode_to_vec(),
             status: InflightActivationStatus::Delay,
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
+            received_at: DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32)
+                .expect(""),
             processing_attempts: 0,
             expires_at: None,
             delay_until: None,
             processing_deadline: None,
+            processing_deadline_duration: 0,
             at_most_once: false,
             namespace: "namespace".to_string(),
+            taskname: "pending_task".to_string(),
+            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
         }];
 
         writer.reduce(batch).await.unwrap();
@@ -397,61 +425,78 @@ mod tests {
             ),
             writer_config,
         );
-
+        let received_at = Timestamp {
+            seconds: 0,
+            nanos: 0,
+        };
         let batch = vec![
             InflightActivation {
+                id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
+                    received_at: Some(received_at),
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }
+                .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .expect(""),
                 processing_attempts: 0,
+                processing_deadline_duration: 0,
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                taskname: "pending_task".to_string(),
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             },
             InflightActivation {
+                id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
+                    received_at: Some(received_at),
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }
+                .encode_to_vec(),
                 status: InflightActivationStatus::Delay,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .expect(""),
                 processing_attempts: 0,
+                processing_deadline_duration: 0,
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                taskname: "delay_task".to_string(),
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             },
         ];
 
@@ -487,60 +532,78 @@ mod tests {
             writer_config,
         );
 
+        let received_at = Timestamp {
+            seconds: 0,
+            nanos: 0,
+        };
         let batch = vec![
             InflightActivation {
+                id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
+                    received_at: Some(received_at),
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }
+                .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .expect(""),
                 processing_attempts: 0,
+                processing_deadline_duration: 0,
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                taskname: "pending_task".to_string(),
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             },
             InflightActivation {
+                id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
-                    received_at: Some(prost_types::Timestamp {
-                        seconds: 0,
-                        nanos: 0,
-                    }),
+                    received_at: Some(received_at),
                     retry_state: None,
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }
+                .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .expect(""),
                 processing_attempts: 0,
+                processing_deadline_duration: 0,
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                taskname: "pending_task".to_string(),
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             },
         ];
 
