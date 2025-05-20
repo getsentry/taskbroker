@@ -85,7 +85,7 @@ impl Reducer for InflightActivationBatcher {
         self.buffer_size = 0;
         Ok(Some(replace(
             &mut self.buffer,
-            Vec::with_capacity(self.config.max_buf_size),
+            Vec::with_capacity(self.config.max_buf_rows),
         )))
     }
 
