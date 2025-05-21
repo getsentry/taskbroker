@@ -111,7 +111,7 @@ pub async fn do_upkeep(
             .map(|inflight| {
                 let producer = producer.clone();
                 let config = config.clone();
-                // let store = store.clone();
+
                 async move {
                     let activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
                     let serialized = create_retry_activation(&activation).encode_to_vec();
