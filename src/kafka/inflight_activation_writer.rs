@@ -118,6 +118,8 @@ impl Reducer for InflightActivationWriter {
                         .map(|item| {
                             let ts = item
                                 .activation
+                                .as_ref()
+                                .unwrap()
                                 .received_at
                                 .expect("All activations should have received_at");
 
@@ -175,6 +177,7 @@ mod tests {
 
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+        InflightOnAttemptsExceeded,
     };
     use crate::test_utils::{create_integration_config, generate_temp_filename};
 
@@ -190,6 +193,7 @@ mod tests {
             Arc::new(
                 InflightActivationStore::new(
                     &generate_temp_filename(),
+                    &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
@@ -200,7 +204,8 @@ mod tests {
 
         let batch = vec![
             InflightActivation {
-                activation: TaskActivation {
+                id: "0".to_string(),
+                activation: Some(TaskActivation {
                     id: "0".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
@@ -214,7 +219,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
@@ -223,11 +228,14 @@ mod tests {
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
+                processing_deadline_duration: 0,
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
             },
             InflightActivation {
-                activation: TaskActivation {
+                id: "1".to_string(),
+                activation: Some(TaskActivation {
                     id: "1".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "delay_task".to_string(),
@@ -241,7 +249,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }),
                 status: InflightActivationStatus::Delay,
                 partition: 0,
                 offset: 0,
@@ -250,6 +258,8 @@ mod tests {
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
+                processing_deadline_duration: 0,
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Unspecified,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
             },
@@ -278,6 +288,7 @@ mod tests {
             Arc::new(
                 InflightActivationStore::new(
                     &generate_temp_filename(),
+                    &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
@@ -287,7 +298,8 @@ mod tests {
         );
 
         let batch = vec![InflightActivation {
-            activation: TaskActivation {
+            id: "0".to_string(),
+            activation: Some(TaskActivation {
                 id: "0".to_string(),
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
@@ -301,7 +313,7 @@ mod tests {
                 processing_deadline_duration: 0,
                 expires: None,
                 delay: None,
-            },
+            }),
             status: InflightActivationStatus::Pending,
             partition: 0,
             offset: 0,
@@ -310,6 +322,8 @@ mod tests {
             expires_at: None,
             delay_until: None,
             processing_deadline: None,
+            processing_deadline_duration: 0,
+            on_attempts_exceeded: InflightOnAttemptsExceeded::Unspecified,
             at_most_once: false,
             namespace: "namespace".to_string(),
         }];
@@ -332,6 +346,7 @@ mod tests {
             Arc::new(
                 InflightActivationStore::new(
                     &generate_temp_filename(),
+                    &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
@@ -341,7 +356,8 @@ mod tests {
         );
 
         let batch = vec![InflightActivation {
-            activation: TaskActivation {
+            id: "0".to_string(),
+            activation: Some(TaskActivation {
                 id: "0".to_string(),
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
@@ -355,7 +371,7 @@ mod tests {
                 processing_deadline_duration: 0,
                 expires: None,
                 delay: None,
-            },
+            }),
             status: InflightActivationStatus::Delay,
             partition: 0,
             offset: 0,
@@ -364,6 +380,8 @@ mod tests {
             expires_at: None,
             delay_until: None,
             processing_deadline: None,
+            processing_deadline_duration: 0,
+            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
             at_most_once: false,
             namespace: "namespace".to_string(),
         }];
@@ -390,6 +408,7 @@ mod tests {
             Arc::new(
                 InflightActivationStore::new(
                     &generate_temp_filename(),
+                    &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
@@ -400,7 +419,8 @@ mod tests {
 
         let batch = vec![
             InflightActivation {
-                activation: TaskActivation {
+                id: "0".to_string(),
+                activation: Some(TaskActivation {
                     id: "0".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
@@ -414,7 +434,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
@@ -423,11 +443,14 @@ mod tests {
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
+                processing_deadline_duration: 0,
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Unspecified,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
             },
             InflightActivation {
-                activation: TaskActivation {
+                id: "1".to_string(),
+                activation: Some(TaskActivation {
                     id: "1".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "delay_task".to_string(),
@@ -441,7 +464,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }),
                 status: InflightActivationStatus::Delay,
                 partition: 0,
                 offset: 0,
@@ -450,6 +473,8 @@ mod tests {
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
+                processing_deadline_duration: 0,
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Unspecified,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
             },
@@ -479,6 +504,7 @@ mod tests {
             Arc::new(
                 InflightActivationStore::new(
                     &generate_temp_filename(),
+                    &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
@@ -489,7 +515,8 @@ mod tests {
 
         let batch = vec![
             InflightActivation {
-                activation: TaskActivation {
+                id: "0".to_string(),
+                activation: Some(TaskActivation {
                     id: "0".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
@@ -503,7 +530,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
@@ -512,11 +539,14 @@ mod tests {
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
+                processing_deadline_duration: 0,
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Unspecified,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
             },
             InflightActivation {
-                activation: TaskActivation {
+                id: "1".to_string(),
+                activation: Some(TaskActivation {
                     id: "1".to_string(),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
@@ -530,7 +560,7 @@ mod tests {
                     processing_deadline_duration: 0,
                     expires: None,
                     delay: None,
-                },
+                }),
                 status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
@@ -539,6 +569,8 @@ mod tests {
                 expires_at: None,
                 delay_until: None,
                 processing_deadline: None,
+                processing_deadline_duration: 0,
+                on_attempts_exceeded: InflightOnAttemptsExceeded::Unspecified,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
             },

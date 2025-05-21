@@ -4,6 +4,7 @@ use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
 use taskbroker::{
+    config::BlobTableMode,
     store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     },
@@ -22,11 +23,24 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     } else {
         generate_temp_filename()
     };
+    let blob_url = if cfg!(feature = "bench-with-mnt-disk") {
+        let mut rng = rand::thread_rng();
+        format!(
+            "/mnt/disks/sqlite/{}-{}-blob.sqlite",
+            Utc::now(),
+            rng.r#gen::<u64>()
+        )
+    } else {
+        generate_temp_filename()
+    };
     let store = Arc::new(
         InflightActivationStore::new(
             &url,
+            &blob_url,
             InflightActivationStoreConfig {
                 max_processing_attempts: 1,
+                blob_delete_delay_ms: 30000,
+                blob_dual_write: BlobTableMode::OrigWriteOrigRead,
             },
         )
         .await
@@ -78,11 +92,24 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     } else {
         generate_temp_filename()
     };
+    let blob_url = if cfg!(feature = "bench-with-mnt-disk") {
+        let mut rng = rand::thread_rng();
+        format!(
+            "/mnt/disks/sqlite/{}-{}-blob.sqlite",
+            Utc::now(),
+            rng.r#gen::<u64>()
+        )
+    } else {
+        generate_temp_filename()
+    };
     let store = Arc::new(
         InflightActivationStore::new(
             &url,
+            &blob_url,
             InflightActivationStoreConfig {
                 max_processing_attempts: 1,
+                blob_delete_delay_ms: 30000,
+                blob_dual_write: BlobTableMode::OrigWriteOrigRead,
             },
         )
         .await

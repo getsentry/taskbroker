@@ -1,11 +1,14 @@
-use std::{str::FromStr, time::Instant};
+use std::{
+    str::FromStr,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
 use sqlx::{
-    ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
+    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::PoolOptions,
     sqlite::{
@@ -15,24 +18,22 @@ use sqlx::{
 };
 use tracing::instrument;
 
-use crate::config::Config;
+use crate::config::{BlobTableMode, Config};
 
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
+    pub blob_delete_delay_ms: u64,
+    pub blob_dual_write: BlobTableMode,
 }
 
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_processing_attempts: config.max_processing_attempts,
+            blob_delete_delay_ms: config.blob_delete_delay_ms,
+            blob_dual_write: config.blob_dual_write.try_into().expect("mode is required"),
         }
     }
-}
-
-pub struct InflightActivationStore {
-    read_pool: SqlitePool,
-    write_pool: SqlitePool,
-    config: InflightActivationStoreConfig,
 }
 
 /// The members of this enum should be synced with the members
@@ -74,10 +75,50 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
+pub enum InflightOnAttemptsExceeded {
+    /// Unused but necessary to align with sentry-protos
+    Unspecified,
+    Discard,
+    Deadletter,
+}
+
+impl From<InflightOnAttemptsExceeded> for OnAttemptsExceeded {
+    fn from(val: InflightOnAttemptsExceeded) -> Self {
+        match val {
+            InflightOnAttemptsExceeded::Unspecified => OnAttemptsExceeded::Unspecified,
+            InflightOnAttemptsExceeded::Discard => OnAttemptsExceeded::Discard,
+            InflightOnAttemptsExceeded::Deadletter => OnAttemptsExceeded::Deadletter,
+        }
+    }
+}
+
+impl TryFrom<i32> for InflightOnAttemptsExceeded {
+    type Error = ();
+
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        match v {
+            x if x == InflightOnAttemptsExceeded::Unspecified as i32 => {
+                Ok(InflightOnAttemptsExceeded::Unspecified)
+            }
+            x if x == InflightOnAttemptsExceeded::Discard as i32 => {
+                Ok(InflightOnAttemptsExceeded::Discard)
+            }
+            x if x == InflightOnAttemptsExceeded::Deadletter as i32 => {
+                Ok(InflightOnAttemptsExceeded::Deadletter)
+            }
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct InflightActivation {
+    /// The unique id of the activation
+    pub id: String,
+
     /// The protobuf activation that was received from kafka
-    pub activation: TaskActivation,
+    pub activation: Option<TaskActivation>,
 
     /// The current status of the activation
     pub status: InflightActivationStatus,
@@ -102,6 +143,9 @@ pub struct InflightActivation {
     /// If the task has specified a delay, this is the timestamp after which the task can be sent to workers
     pub delay_until: Option<DateTime<Utc>>,
 
+    /// The duration of the processing deadline
+    pub processing_deadline_duration: u32,
+
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
 
@@ -109,28 +153,42 @@ pub struct InflightActivation {
     /// When enabled activations are not retried when processing_deadlines
     /// are exceeded.
     pub at_most_once: bool,
+
     pub namespace: String,
+
+    /// What to do when the maximum number of attempts to complete a task is exceeded
+    pub on_attempts_exceeded: InflightOnAttemptsExceeded,
 }
 
 impl InflightActivation {
-    /// The number of milliseconds between an acitivation's received timestamp
-    /// and the provided datetime
-    pub fn received_latency(&self, now: DateTime<Utc>) -> i64 {
-        let activation_received = self.activation.received_at.unwrap();
-        let received_datetime = DateTime::from_timestamp(
-            activation_received.seconds,
-            activation_received.nanos as u32,
-        );
-
-        received_datetime.map_or(0, |received| {
-            now.signed_duration_since(received).num_milliseconds()
-                - self.delay_until.map_or(0, |delay_until| {
-                    delay_until
-                        .signed_duration_since(received)
-                        .num_milliseconds()
-                })
-        })
+    /// A convenience function to get the TaskActivation. This will panic if the
+    /// activation isn't set. Mostly used in tests.
+    pub fn get_activation(&self) -> TaskActivation {
+        self.activation.clone().unwrap()
     }
+}
+
+/// The number of milliseconds between an activation's received timestamp
+/// and the provided datetime
+pub fn received_latency(
+    activation: &TaskActivation,
+    delay_until: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> i64 {
+    let activation_received = activation.received_at.unwrap();
+    let received_datetime = DateTime::from_timestamp(
+        activation_received.seconds,
+        activation_received.nanos as u32,
+    );
+
+    received_datetime.map_or(0, |received| {
+        now.signed_duration_since(received).num_milliseconds()
+            - delay_until.map_or(0, |delay_until| {
+                delay_until
+                    .signed_duration_since(received)
+                    .num_milliseconds()
+            })
+    })
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,11 +206,11 @@ impl From<SqliteQueryResult> for QueryResult {
 
 pub struct FailedTasksForwarder {
     pub to_discard: Vec<String>,
-    pub to_deadletter: Vec<TaskActivation>,
+    pub to_deadletter: Vec<String>,
 }
 
 #[derive(Debug, FromRow)]
-struct TableRow {
+struct MetaTableRow {
     id: String,
     activation: Vec<u8>,
     partition: i32,
@@ -166,36 +224,39 @@ struct TableRow {
     status: InflightActivationStatus,
     at_most_once: bool,
     namespace: String,
+    on_attempts_exceeded: InflightOnAttemptsExceeded,
 }
 
-impl TryFrom<InflightActivation> for TableRow {
+impl TryFrom<InflightActivation> for MetaTableRow {
     type Error = anyhow::Error;
 
     fn try_from(value: InflightActivation) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: value.activation.id.clone(),
-            activation: value.activation.encode_to_vec(),
+            id: value.id,
+            activation: value.activation.unwrap_or_default().encode_to_vec(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
             processing_attempts: value.processing_attempts,
             expires_at: value.expires_at,
             delay_until: value.delay_until,
-            processing_deadline_duration: value.activation.processing_deadline_duration as u32,
+            processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
             namespace: value.namespace.clone(),
+            on_attempts_exceeded: value.on_attempts_exceeded,
         })
     }
 }
 
-impl From<TableRow> for InflightActivation {
-    fn from(value: TableRow) -> Self {
+impl From<MetaTableRow> for InflightActivation {
+    fn from(value: MetaTableRow) -> Self {
         Self {
-            activation: TaskActivation::decode(&value.activation as &[u8]).expect(
+            id: value.id,
+            activation: Some(TaskActivation::decode(&value.activation as &[u8]).expect(
                 "Decode should always be successful as we only store encoded data in this column",
-            ),
+            )),
             status: value.status,
             partition: value.partition,
             offset: value.offset,
@@ -203,46 +264,92 @@ impl From<TableRow> for InflightActivation {
             processing_attempts: value.processing_attempts,
             expires_at: value.expires_at,
             delay_until: value.delay_until,
+            processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
             namespace: value.namespace,
+            on_attempts_exceeded: value.on_attempts_exceeded,
         }
     }
 }
 
+#[derive(Debug, FromRow)]
+struct BlobTableRow {
+    id: String,
+    activation: Vec<u8>,
+    added_at: DateTime<Utc>,
+}
+
+impl TryFrom<InflightActivation> for BlobTableRow {
+    type Error = anyhow::Error;
+
+    fn try_from(value: InflightActivation) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: value.id,
+            activation: value.activation.unwrap().encode_to_vec(),
+            added_at: value.added_at,
+        })
+    }
+}
+
+async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>), Error> {
+    if !Sqlite::database_exists(url).await? {
+        Sqlite::create_database(url).await?
+    }
+
+    let read_pool = PoolOptions::<Sqlite>::new()
+        .max_connections(64)
+        .connect_with(
+            SqliteConnectOptions::from_str(url)?
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(SqliteSynchronous::Normal)
+                .read_only(true)
+                .disable_statement_logging(),
+        )
+        .await?;
+
+    let write_pool = PoolOptions::<Sqlite>::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::from_str(url)?
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(SqliteSynchronous::Normal)
+                .auto_vacuum(SqliteAutoVacuum::Incremental)
+                .disable_statement_logging(),
+        )
+        .await?;
+
+    Ok((read_pool, write_pool))
+}
+
+pub struct InflightActivationStore {
+    meta_read_pool: SqlitePool,
+    meta_write_pool: SqlitePool,
+    blob_write_pool: SqlitePool,
+    blob_read_pool: SqlitePool,
+    config: InflightActivationStoreConfig,
+}
+
 impl InflightActivationStore {
-    pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
-        if !Sqlite::database_exists(url).await? {
-            Sqlite::create_database(url).await?
-        }
+    pub async fn new(
+        url: &str,
+        blob_url: &str,
+        config: InflightActivationStoreConfig,
+    ) -> Result<Self, Error> {
+        // let meta_result = create_sqlite_pool(url);
+        let (meta_read_pool, meta_write_pool) = create_sqlite_pool(url).await?;
+        let (blob_read_pool, blob_write_pool) = create_sqlite_pool(blob_url).await?;
 
-        let read_pool = PoolOptions::<Sqlite>::new()
-            .max_connections(64)
-            .connect_with(
-                SqliteConnectOptions::from_str(url)?
-                    .journal_mode(SqliteJournalMode::Wal)
-                    .synchronous(SqliteSynchronous::Normal)
-                    .read_only(true)
-                    .disable_statement_logging(),
-            )
+        sqlx::migrate!("./migrations").run(&meta_write_pool).await?;
+        sqlx::migrate!("./migrations/blob")
+            .run(&blob_write_pool)
             .await?;
-
-        let write_pool = PoolOptions::<Sqlite>::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::from_str(url)?
-                    .journal_mode(SqliteJournalMode::Wal)
-                    .synchronous(SqliteSynchronous::Normal)
-                    .auto_vacuum(SqliteAutoVacuum::Incremental)
-                    .disable_statement_logging(),
-            )
-            .await?;
-
-        sqlx::migrate!("./migrations").run(&write_pool).await?;
 
         Ok(Self {
-            read_pool,
-            write_pool,
+            meta_read_pool,
+            meta_write_pool,
+            blob_read_pool,
+            blob_write_pool,
             config,
         })
     }
@@ -250,17 +357,63 @@ impl InflightActivationStore {
     /// Trigger incremental vacuum to reclaim free pages in the database.
     #[instrument(skip_all)]
     pub async fn vacuum_db(&self) -> Result<(), Error> {
-        let timer = Instant::now();
+        let mut timer = Instant::now();
         sqlx::query("PRAGMA incremental_vacuum")
-            .execute(&self.write_pool)
+            .execute(&self.meta_write_pool)
             .await?;
-        metrics::histogram!("store.vacuum").record(timer.elapsed());
+        metrics::histogram!("store.vacuum", "database" => "meta").record(timer.elapsed());
+
+        timer = Instant::now();
+        sqlx::query("PRAGMA incremental_vacuum")
+            .execute(&self.blob_write_pool)
+            .await?;
+        metrics::histogram!("store.vacuum", "database" => "blob").record(timer.elapsed());
         Ok(())
     }
 
+    /// Convenience function to determine whether activation blobs should be read from the new db
+    fn is_new_read(&self) -> bool {
+        self.config.blob_dual_write == BlobTableMode::DualWriteNewRead
+            || self.config.blob_dual_write == BlobTableMode::NewWriteNewRead
+    }
+
+    /// Convenience function to determine whether activation blobs should be written to the new db
+    fn is_new_write(&self) -> bool {
+        self.config.blob_dual_write == BlobTableMode::NewWriteNewRead
+            || self.config.blob_dual_write == BlobTableMode::DualWriteOrigRead
+            || self.config.blob_dual_write == BlobTableMode::DualWriteNewRead
+    }
+
+    /// Convenience function to determine whether activation blobs should be written to the original db
+    fn is_orig_write(&self) -> bool {
+        self.config.blob_dual_write == BlobTableMode::OrigWriteOrigRead
+            || self.config.blob_dual_write == BlobTableMode::DualWriteOrigRead
+            || self.config.blob_dual_write == BlobTableMode::DualWriteNewRead
+    }
+
     /// Get an activation by id. Primarily used for testing
-    pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
-        let row_result: Option<TableRow> = sqlx::query_as(
+    pub async fn get_by_id(
+        &self,
+        id: &str,
+        with_data: bool,
+    ) -> Result<Option<InflightActivation>, Error> {
+        let result = self.get_meta_by_id(id).await?;
+        if result.is_none() {
+            return Ok(result);
+        }
+
+        let mut inflight = result.unwrap();
+
+        if self.is_new_read() && with_data {
+            let activation = self.get_activation_blob(id).await?;
+            inflight.activation = Some(activation);
+        }
+
+        Ok(Some(inflight))
+    }
+
+    pub async fn get_meta_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+        let row_result: Option<MetaTableRow> = sqlx::query_as(
             "
             SELECT id,
                 activation,
@@ -272,6 +425,7 @@ impl InflightActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                on_attempts_exceeded,
                 status,
                 at_most_once,
                 namespace
@@ -280,7 +434,7 @@ impl InflightActivationStore {
             ",
         )
         .bind(id)
-        .fetch_optional(&self.read_pool)
+        .fetch_optional(&self.meta_read_pool)
         .await?;
 
         let Some(row) = row_result else {
@@ -290,11 +444,85 @@ impl InflightActivationStore {
         Ok(Some(row.into()))
     }
 
+    pub async fn get_activation_raw_blob(&self, id: &str) -> Result<Vec<u8>, Error> {
+        if self.is_new_read() {
+            let blob_result: Option<BlobTableRow> = sqlx::query_as(
+                "
+                SELECT id, activation, added_at
+                FROM taskactivation_blobs 
+                WHERE id = $1
+                ",
+            )
+            .bind(id)
+            .fetch_optional(&self.blob_read_pool)
+            .await?;
+
+            match blob_result {
+                Some(blob_row) => Ok(blob_row.activation),
+                None => Err(anyhow!("could not find blob for activation")),
+            }
+        } else {
+            let inflight = self.get_meta_by_id(id).await?.unwrap();
+            Ok(inflight.activation.unwrap().encode_to_vec())
+        }
+    }
+
+    pub async fn get_activation_blob(&self, id: &str) -> Result<TaskActivation, Error> {
+        let activation = self.get_activation_raw_blob(id).await?;
+        let activation_data: &[u8] = &activation;
+        Ok(TaskActivation::decode(activation_data)?)
+    }
+
     #[instrument(skip_all)]
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         if batch.is_empty() {
             return Ok(QueryResult { rows_affected: 0 });
         }
+
+        // A note about the consistency of the data in the two databases:
+        // If there is data in the blob database that isn't in the meta database, that is not
+        // a consistency issue. No extra tasks will get run or failed. The orphaned blobs
+        // will get cleaned up. However if there is data in the meta database that is not reflected
+        // in the blob database, that is a consistency error. As such, write the blobs first and
+        // that succeeds, then attempt to write the meta. A failure on either write will cause the
+        // entire batch to be failed.
+        if self.is_new_write() {
+            let mut blob_query_builder = QueryBuilder::<Sqlite>::new(
+                "
+                INSERT INTO taskactivation_blobs
+                    (
+                        id,
+                        activation,
+                        added_at
+                    )
+                ",
+            );
+            let blob_rows = batch
+                .clone()
+                .into_iter()
+                .map(BlobTableRow::try_from)
+                .collect::<Result<Vec<BlobTableRow>, _>>()?;
+            let blob_query = blob_query_builder
+                .push_values(blob_rows, |mut b, row| {
+                    b.push_bind(row.id);
+                    b.push_bind(row.activation);
+                    b.push_bind(row.added_at.timestamp());
+                })
+                .push(" ON CONFLICT(id) DO NOTHING")
+                .build();
+            blob_query.execute(&self.blob_write_pool).await?;
+
+            // Sync the WAL into the blob database so we don't lose data on host failure.
+            let blob_checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+                .fetch_one(&self.blob_write_pool)
+                .await?;
+
+            metrics::gauge!("store.pages_written_to_wal", "database" => "blob")
+                .set(blob_checkpoint_result.get::<i32, _>("log"));
+            metrics::gauge!("store.pages_committed_to_db", "database" => "blob")
+                .set(blob_checkpoint_result.get::<i32, _>("checkpointed"));
+        }
+
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "
             INSERT INTO inflight_taskactivations
@@ -309,6 +537,7 @@ impl InflightActivationStore {
                     delay_until,
                     processing_deadline_duration,
                     processing_deadline,
+                    on_attempts_exceeded,
                     status,
                     at_most_once,
                     namespace
@@ -317,12 +546,16 @@ impl InflightActivationStore {
         );
         let rows = batch
             .into_iter()
-            .map(TableRow::try_from)
-            .collect::<Result<Vec<TableRow>, _>>()?;
+            .map(MetaTableRow::try_from)
+            .collect::<Result<Vec<MetaTableRow>, _>>()?;
         let query = query_builder
             .push_values(rows, |mut b, row| {
                 b.push_bind(row.id);
-                b.push_bind(row.activation);
+                if self.is_orig_write() {
+                    b.push_bind(row.activation);
+                } else {
+                    b.push_bind(vec![]);
+                }
                 b.push_bind(row.partition);
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at.timestamp());
@@ -336,24 +569,26 @@ impl InflightActivationStore {
                     // Add a literal null
                     b.push("null");
                 }
+                b.push_bind(row.on_attempts_exceeded);
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
                 b.push_bind(row.namespace);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
-        let result = Ok(query.execute(&self.write_pool).await?.into());
+        let meta_result = Ok(query.execute(&self.meta_write_pool).await?.into());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-            .fetch_one(&self.write_pool)
+            .fetch_one(&self.meta_write_pool)
             .await?;
 
-        metrics::gauge!("store.pages_written_to_wal").set(checkpoint_result.get::<i32, _>("log"));
-        metrics::gauge!("store.pages_committed_to_db")
+        metrics::gauge!("store.pages_written_to_wal", "database" => "meta")
+            .set(checkpoint_result.get::<i32, _>("log"));
+        metrics::gauge!("store.pages_committed_to_db", "database" => "meta")
             .set(checkpoint_result.get::<i32, _>("checkpointed"));
 
-        result
+        meta_result
     }
 
     #[instrument(skip_all)]
@@ -391,9 +626,9 @@ impl InflightActivationStore {
         }
         query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
 
-        let result: Option<TableRow> = query_builder
-            .build_query_as::<TableRow>()
-            .fetch_optional(&self.write_pool)
+        let result: Option<MetaTableRow> = query_builder
+            .build_query_as::<MetaTableRow>()
+            .fetch_optional(&self.meta_write_pool)
             .await?;
         let Some(row) = result else { return Ok(None) };
 
@@ -411,14 +646,14 @@ impl InflightActivationStore {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
                 .bind(status)
-                .fetch_one(&self.read_pool)
+                .fetch_one(&self.meta_read_pool)
                 .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
 
     pub async fn count(&self) -> Result<usize, Error> {
         let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
-            .fetch_one(&self.read_pool)
+            .fetch_one(&self.meta_read_pool)
             .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
@@ -430,12 +665,12 @@ impl InflightActivationStore {
         id: &str,
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error> {
-        let result: Option<TableRow> = sqlx::query_as(
+        let result: Option<MetaTableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
         )
         .bind(status)
         .bind(id)
-        .fetch_optional(&self.write_pool)
+        .fetch_optional(&self.meta_write_pool)
         .await?;
 
         let Some(row) = result else {
@@ -454,7 +689,7 @@ impl InflightActivationStore {
         sqlx::query("UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2")
             .bind(deadline.unwrap().timestamp())
             .bind(id)
-            .execute(&self.write_pool)
+            .execute(&self.meta_write_pool)
             .await?;
         Ok(())
     }
@@ -463,8 +698,14 @@ impl InflightActivationStore {
     pub async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
             .bind(id)
-            .execute(&self.write_pool)
+            .execute(&self.meta_write_pool)
             .await?;
+
+        sqlx::query("DELETE FROM taskactivation_blobs WHERE id = $1")
+            .bind(id)
+            .execute(&self.blob_write_pool)
+            .await?;
+
         Ok(())
     }
 
@@ -482,6 +723,7 @@ impl InflightActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                on_attempts_exceeded,
                 status,
                 at_most_once,
                 namespace
@@ -490,16 +732,20 @@ impl InflightActivationStore {
             ",
         )
         .bind(InflightActivationStatus::Retry)
-        .fetch_all(&self.read_pool)
+        .fetch_all(&self.meta_read_pool)
         .await?
         .into_iter()
-        .map(|row: TableRow| row.into())
+        .map(|row: MetaTableRow| row.into())
         .collect())
     }
 
     pub async fn clear(&self) -> Result<(), Error> {
         sqlx::query("DELETE FROM inflight_taskactivations")
-            .execute(&self.write_pool)
+            .execute(&self.meta_write_pool)
+            .await?;
+
+        sqlx::query("DELETE FROM taskactivation_blobs")
+            .execute(&self.blob_write_pool)
             .await?;
         Ok(())
     }
@@ -510,7 +756,7 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
-        let mut atomic = self.write_pool.begin().await?;
+        let mut atomic = self.meta_write_pool.begin().await?;
 
         // Idempotent tasks that fail their processing deadlines go directly to failure
         // there are no retries, as the worker will reject the task due to idempotency keys.
@@ -565,7 +811,7 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(self.config.max_processing_attempts as i32)
         .bind(InflightActivationStatus::Pending)
-        .execute(&self.write_pool)
+        .execute(&self.meta_write_pool)
         .await;
 
         if let Ok(query_res) = processing_attempts_result {
@@ -589,7 +835,7 @@ impl InflightActivationStore {
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
-        .execute(&self.write_pool)
+        .execute(&self.meta_write_pool)
         .await?;
 
         Ok(query.rows_affected())
@@ -613,7 +859,7 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Delay)
-        .execute(&self.write_pool)
+        .execute(&self.meta_write_pool)
         .await?;
 
         Ok(update_result.rows_affected())
@@ -627,15 +873,16 @@ impl InflightActivationStore {
     /// complete.
     #[instrument(skip_all)]
     pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
-        let mut atomic = self.write_pool.begin().await?;
+        let mut atomic = self.meta_write_pool.begin().await?;
 
-        let failed_tasks: Vec<SqliteRow> =
-            sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
-                .bind(InflightActivationStatus::Failure)
-                .fetch_all(&mut *atomic)
-                .await?
-                .into_iter()
-                .collect();
+        let failed_tasks: Vec<SqliteRow> = sqlx::query(
+            "SELECT id, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1",
+        )
+        .bind(InflightActivationStatus::Failure)
+        .fetch_all(&mut *atomic)
+        .await?
+        .into_iter()
+        .collect();
 
         let mut forwarder = FailedTasksForwarder {
             to_discard: vec![],
@@ -643,23 +890,20 @@ impl InflightActivationStore {
         };
 
         for record in failed_tasks.iter() {
-            let activation_data: &[u8] = record.get("activation");
-            let activation = TaskActivation::decode(activation_data)?;
-
-            // Without a retry state, tasks are discarded
-            if activation.retry_state.as_ref().is_none() {
-                forwarder.to_discard.push(activation.id);
-                continue;
-            }
             // We could be deadlettering because of activation.expires
             // when a task expires we still deadletter if configured.
-            let retry_state = &activation.retry_state.as_ref().unwrap();
-            if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Discard as i32
-                || retry_state.on_attempts_exceeded == OnAttemptsExceeded::Unspecified as i32
+            // let retry_state = &activation.retry_state.as_ref().unwrap();
+            let id: &str = record.get("id");
+            let infl_on_attempts_exceeded: InflightOnAttemptsExceeded =
+                record.get("on_attempts_exceeded");
+            let on_attempts_exceeded: OnAttemptsExceeded = infl_on_attempts_exceeded.into();
+
+            if on_attempts_exceeded == OnAttemptsExceeded::Discard
+                || on_attempts_exceeded == OnAttemptsExceeded::Unspecified
             {
-                forwarder.to_discard.push(activation.id)
-            } else if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Deadletter as i32 {
-                forwarder.to_deadletter.push(activation)
+                forwarder.to_discard.push(id.to_string())
+            } else if on_attempts_exceeded == OnAttemptsExceeded::Deadletter {
+                forwarder.to_deadletter.push(id.to_string())
             }
         }
 
@@ -698,7 +942,7 @@ impl InflightActivationStore {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        let result = query_builder.build().execute(&self.write_pool).await?;
+        let result = query_builder.build().execute(&self.meta_write_pool).await?;
 
         Ok(result.rows_affected())
     }
@@ -709,9 +953,38 @@ impl InflightActivationStore {
     pub async fn remove_completed(&self) -> Result<u64, Error> {
         let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
             .bind(InflightActivationStatus::Complete)
-            .execute(&self.write_pool)
+            .execute(&self.meta_write_pool)
             .await?;
 
         Ok(query.rows_affected())
+    }
+
+    /// Remove orphaned blobs that don't have a corresponding ID in the meta table.
+    /// This method is a garbage collector for the blob store.
+    #[instrument(skip_all)]
+    pub async fn remove_orphaned_blobs(&self) -> Result<u64, Error> {
+        let active_ids: Vec<SqliteRow> = sqlx::query("SELECT id FROM inflight_taskactivations")
+            .fetch_all(&self.meta_read_pool)
+            .await?
+            .into_iter()
+            .collect();
+
+        let expiry_cutoff = Utc::now() - Duration::from_millis(self.config.blob_delete_delay_ms);
+        let mut query_builder = QueryBuilder::new("DELETE FROM taskactivation_blobs ");
+        query_builder
+            .push(" WHERE added_at <= ")
+            .push_bind(expiry_cutoff.timestamp())
+            .push("AND id NOT IN (");
+
+        let mut separated = query_builder.separated(", ");
+        for record in active_ids.iter() {
+            let id: &str = record.get("id");
+            separated.push_bind(id.to_string());
+        }
+        separated.push_unseparated(")");
+
+        let result = query_builder.build().execute(&self.blob_write_pool).await?;
+
+        Ok(result.rows_affected())
     }
 }

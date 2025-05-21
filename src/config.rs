@@ -8,6 +8,32 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use crate::{Args, logging::LogFormat};
 
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
+pub enum BlobTableMode {
+    OrigWriteOrigRead,
+    DualWriteOrigRead,
+    DualWriteNewRead,
+    NewWriteNewRead,
+}
+
+impl TryFrom<i32> for BlobTableMode {
+    type Error = ();
+
+    fn try_from(v: i32) -> Result<Self, Self::Error> {
+        match v {
+            x if x == BlobTableMode::OrigWriteOrigRead as i32 => {
+                Ok(BlobTableMode::OrigWriteOrigRead)
+            }
+            x if x == BlobTableMode::DualWriteOrigRead as i32 => {
+                Ok(BlobTableMode::DualWriteOrigRead)
+            }
+            x if x == BlobTableMode::DualWriteNewRead as i32 => Ok(BlobTableMode::DualWriteNewRead),
+            x if x == BlobTableMode::NewWriteNewRead as i32 => Ok(BlobTableMode::NewWriteNewRead),
+            _ => Err(()),
+        }
+    }
+}
+
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
     /// The sentry DSN to use for error reporting.
@@ -141,6 +167,15 @@ pub struct Config {
     /// The maximum size allowed for a message on the Kafka producer.
     /// If a message is bigger than this then the produce will fail.
     pub max_message_size: u64,
+
+    /// The location of the activation data database
+    pub blob_db_path: String,
+
+    /// How old orphaned activation data must be before it is deleted
+    pub blob_delete_delay_ms: u64,
+
+    /// Statuses for migrating to the two-db system.
+    pub blob_dual_write: i32,
 }
 
 impl Default for Config {
@@ -186,6 +221,9 @@ impl Default for Config {
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 10485760,
+            blob_db_path: "./taskbroker-activation-blob.sqlite".to_owned(),
+            blob_delete_delay_ms: 30000,
+            blob_dual_write: BlobTableMode::OrigWriteOrigRead as i32,
         }
     }
 }
