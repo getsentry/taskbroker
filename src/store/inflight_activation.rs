@@ -55,43 +55,6 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
-pub enum InflightOnAttemptsExceeded {
-    /// Unused but necessary to align with sentry-protos
-    Unspecified,
-    Discard,
-    Deadletter,
-}
-
-impl From<InflightOnAttemptsExceeded> for OnAttemptsExceeded {
-    fn from(val: InflightOnAttemptsExceeded) -> Self {
-        match val {
-            InflightOnAttemptsExceeded::Unspecified => OnAttemptsExceeded::Unspecified,
-            InflightOnAttemptsExceeded::Discard => OnAttemptsExceeded::Discard,
-            InflightOnAttemptsExceeded::Deadletter => OnAttemptsExceeded::Deadletter,
-        }
-    }
-}
-
-impl TryFrom<i32> for InflightOnAttemptsExceeded {
-    type Error = ();
-
-    fn try_from(v: i32) -> Result<Self, Self::Error> {
-        match v {
-            x if x == InflightOnAttemptsExceeded::Unspecified as i32 => {
-                Ok(InflightOnAttemptsExceeded::Unspecified)
-            }
-            x if x == InflightOnAttemptsExceeded::Discard as i32 => {
-                Ok(InflightOnAttemptsExceeded::Discard)
-            }
-            x if x == InflightOnAttemptsExceeded::Deadletter as i32 => {
-                Ok(InflightOnAttemptsExceeded::Deadletter)
-            }
-            _ => Err(()),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct InflightActivation {
     pub id: String,
@@ -132,15 +95,17 @@ pub struct InflightActivation {
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
 
+    /// What to do when the maximum number of attempts to complete a task is exceeded
+    pub on_attempts_exceeded: OnAttemptsExceeded,
+
     /// Whether or not the activation uses at_most_once.
     /// When enabled activations are not retried when processing_deadlines
     /// are exceeded.
     pub at_most_once: bool,
+
+    /// Details about the task
     pub namespace: String,
     pub taskname: String,
-
-    /// What to do when the maximum number of attempts to complete a task is exceeded
-    pub on_attempts_exceeded: InflightOnAttemptsExceeded,
 }
 
 impl InflightActivation {
@@ -192,7 +157,8 @@ struct TableRow {
     at_most_once: bool,
     namespace: String,
     taskname: String,
-    on_attempts_exceeded: InflightOnAttemptsExceeded,
+    #[sqlx(try_from = "i32")]
+    on_attempts_exceeded: OnAttemptsExceeded,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -404,7 +370,7 @@ impl InflightActivationStore {
                 b.push_bind(row.at_most_once);
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
-                b.push_bind(row.on_attempts_exceeded);
+                b.push_bind(row.on_attempts_exceeded as i32);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -716,13 +682,14 @@ impl InflightActivationStore {
             let id: String = record.get("id");
             // We could be deadlettering because of activation.expires
             // when a task expires we still deadletter if configured.
-            let on_attempts_exceeded: InflightOnAttemptsExceeded =
-                record.get("on_attempts_exceeded");
-            if on_attempts_exceeded == InflightOnAttemptsExceeded::Discard
-                || on_attempts_exceeded == InflightOnAttemptsExceeded::Unspecified
+            let on_attempts_exceeded_val: i32 = record.get("on_attempts_exceeded");
+            let on_attempts_exceeded: OnAttemptsExceeded =
+                on_attempts_exceeded_val.try_into().unwrap();
+            if on_attempts_exceeded == OnAttemptsExceeded::Discard
+                || on_attempts_exceeded == OnAttemptsExceeded::Unspecified
             {
                 forwarder.to_discard.push((id, activation_data.to_vec()))
-            } else if on_attempts_exceeded == InflightOnAttemptsExceeded::Deadletter {
+            } else if on_attempts_exceeded == OnAttemptsExceeded::Deadletter {
                 forwarder.to_deadletter.push((id, activation_data.to_vec()))
             }
         }

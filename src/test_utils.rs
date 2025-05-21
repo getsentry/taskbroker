@@ -13,11 +13,11 @@ use crate::{
     config::Config,
     store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig, InflightOnAttemptsExceeded,
+        InflightActivationStoreConfig,
     },
 };
 use chrono::{Timelike, Utc};
-use sentry_protos::taskbroker::v1::{RetryState, TaskActivation};
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
 
 /// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
@@ -62,7 +62,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             at_most_once: false,
             namespace: "namespace".into(),
             taskname: "taskname".into(),
-            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
         records.push(item);
     }
@@ -201,6 +201,6 @@ pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<Retr
             .try_into()
             .expect("invalid enum");
     } else {
-        inflight.on_attempts_exceeded = InflightOnAttemptsExceeded::Discard;
+        inflight.on_attempts_exceeded = OnAttemptsExceeded::Discard;
     }
 }

@@ -108,10 +108,10 @@ mod tests {
     use tokio::fs;
 
     use prost::Message;
-    use sentry_protos::taskbroker::v1::TaskActivation;
+    use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
     use std::sync::Arc;
 
-    use crate::store::inflight_activation::{InflightActivationStatus, InflightOnAttemptsExceeded};
+    use crate::store::inflight_activation::InflightActivationStatus;
 
     #[tokio::test]
     async fn test_drop_task_due_to_killswitch() {
@@ -157,7 +157,7 @@ drop_task_killswitch:
             at_most_once: false,
             namespace: "namespace".to_string(),
             taskname: "task_to_be_filtered".to_string(),
-            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
 
         batcher.reduce(inflight_activation_0).await.unwrap();
@@ -203,7 +203,7 @@ drop_task_killswitch:
             at_most_once: false,
             namespace: "namespace".to_string(),
             taskname: "task_to_be_filtered".to_string(),
-            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
 
         batcher.reduce(inflight_activation_0).await.unwrap();

@@ -165,12 +165,12 @@ mod tests {
     use prost_types::Timestamp;
     use std::collections::HashMap;
 
+    use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
     use sentry_protos::taskbroker::v1::TaskActivation;
     use std::sync::Arc;
 
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        InflightOnAttemptsExceeded,
     };
     use crate::test_utils::{create_integration_config, generate_temp_filename};
 
@@ -230,7 +230,7 @@ mod tests {
                 at_most_once: false,
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
-                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
             InflightActivation {
                 id: "1".to_string(),
@@ -264,7 +264,7 @@ mod tests {
                 at_most_once: false,
                 namespace: "namespace".to_string(),
                 taskname: "delay_task".to_string(),
-                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
         ];
 
@@ -331,7 +331,7 @@ mod tests {
             at_most_once: false,
             namespace: "namespace".to_string(),
             taskname: "pending_task".to_string(),
-            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
         }];
 
         writer.reduce(batch).await.unwrap();
@@ -393,7 +393,7 @@ mod tests {
             at_most_once: false,
             namespace: "namespace".to_string(),
             taskname: "pending_task".to_string(),
-            on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
         }];
 
         writer.reduce(batch).await.unwrap();
@@ -462,7 +462,7 @@ mod tests {
                 at_most_once: false,
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
-                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
             InflightActivation {
                 id: "1".to_string(),
@@ -496,7 +496,7 @@ mod tests {
                 at_most_once: false,
                 namespace: "namespace".to_string(),
                 taskname: "delay_task".to_string(),
-                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
         ];
 
@@ -569,7 +569,7 @@ mod tests {
                 at_most_once: false,
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
-                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
             InflightActivation {
                 id: "1".to_string(),
@@ -603,7 +603,7 @@ mod tests {
                 at_most_once: false,
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
-                on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
         ];
 

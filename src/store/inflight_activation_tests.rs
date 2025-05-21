@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
-    InflightActivationStoreConfig, InflightOnAttemptsExceeded,
+    InflightActivationStoreConfig,
 };
 use crate::test_utils::{
     assert_count_by_status, create_integration_config, create_test_store, generate_temp_filename,
@@ -790,7 +790,7 @@ async fn test_clear() {
             .expect(""),
         processing_attempts: 0,
         processing_deadline_duration: 0,
-        on_attempts_exceeded: InflightOnAttemptsExceeded::Discard,
+        on_attempts_exceeded: OnAttemptsExceeded::Discard,
         expires_at: None,
         delay_until: None,
         processing_deadline: None,

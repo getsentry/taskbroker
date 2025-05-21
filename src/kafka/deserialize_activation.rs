@@ -1,15 +1,13 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::config::Config;
+use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message as _;
 use rdkafka::{Message, message::OwnedMessage};
+use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sentry_protos::taskbroker::v1::TaskActivation;
-
-use crate::config::Config;
-use crate::store::inflight_activation::{
-    InflightActivation, InflightActivationStatus, InflightOnAttemptsExceeded,
-};
 
 pub struct DeserializeActivationConfig {
     pub max_delayed_allowed: u64,
@@ -72,7 +70,7 @@ pub fn new(
             }
         });
 
-        let on_attempts_exceeded: InflightOnAttemptsExceeded = activation
+        let on_attempts_exceeded: OnAttemptsExceeded = activation
             .retry_state
             .unwrap_or_default()
             .on_attempts_exceeded
