@@ -1,13 +1,13 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::config::Config;
+use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message as _;
 use rdkafka::{Message, message::OwnedMessage};
+use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sentry_protos::taskbroker::v1::TaskActivation;
-
-use crate::config::Config;
-use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
 
 pub struct DeserializeActivationConfig {
     pub max_delayed_allowed: u64,
@@ -31,11 +31,12 @@ pub fn new(
 
         let activation = TaskActivation::decode(payload)?;
         let namespace = activation.namespace.clone();
+        let taskname = activation.taskname.clone();
 
         metrics::histogram!(
             "consumer.message.payload_size_bytes",
             "namespace" => namespace.clone(),
-            "taskname" => activation.taskname.clone()
+            "taskname" => taskname.clone()
         )
         .record(payload.len() as f64);
 
@@ -69,18 +70,30 @@ pub fn new(
             }
         });
 
+        let on_attempts_exceeded: OnAttemptsExceeded = activation
+            .retry_state
+            .unwrap_or_default()
+            .on_attempts_exceeded
+            .try_into()
+            .unwrap();
+
         Ok(InflightActivation {
-            activation,
+            id: activation.id.clone(),
+            activation: payload.to_vec(),
             status,
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: Utc::now(),
+            received_at: activation_time,
             processing_deadline: None,
+            processing_deadline_duration: activation.processing_deadline_duration as u32,
             processing_attempts: 0,
             expires_at,
             delay_until,
             at_most_once,
             namespace,
+            taskname,
+            on_attempts_exceeded,
         })
     }
 }
