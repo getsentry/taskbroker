@@ -1,9 +1,8 @@
 use chrono::Utc;
-use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
-    TaskActivation, TaskActivationStatus,
+    TaskActivationStatus,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -37,14 +36,14 @@ impl ConsumerService for TaskbrokerServer {
                 if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
-                        "namespace" => inflight.namespace,
-                        "taskname" => inflight.taskname,
+                        "namespace" => inflight.namespace.clone(),
+                        "taskname" => inflight.activation.taskname.clone(),
                     )
                     .record(received_to_gettask_latency as f64);
                 }
 
                 let resp = GetTaskResponse {
-                    task: Some(TaskActivation::decode(&inflight.activation as &[u8]).unwrap()),
+                    task: Some(inflight.activation),
                 };
                 metrics::histogram!("grpc_server.get_task.duration").record(start_time.elapsed());
 
@@ -98,10 +97,11 @@ impl ConsumerService for TaskbrokerServer {
 
         if let Ok(Some(inflight_activation)) = update_result {
             let duration = Utc::now() - inflight_activation.added_at;
+            let activation = inflight_activation.activation;
             metrics::histogram!(
                 "task_execution.conclusion.duration",
-                "namespace" => inflight_activation.namespace.clone(),
-                "taskname" => inflight_activation.taskname.clone(),
+                "namespace" => activation.namespace.clone(),
+                "taskname" => activation.taskname.clone(),
             )
             .record(duration.num_milliseconds() as f64);
 
@@ -113,13 +113,12 @@ impl ConsumerService for TaskbrokerServer {
 
                 // If the task has passed the processing deadline, then execution_remaining will be negative
                 // This then gets added to the processing deadline duration to get the execution time
-                let execution_time = (inflight_activation.processing_deadline_duration as i64
-                    * 1000)
-                    - execution_remaining;
+                let execution_time =
+                    (activation.processing_deadline_duration as i64 * 1000) - execution_remaining;
                 metrics::histogram!(
                     "task_execution.completion_time",
-                    "namespace" => inflight_activation.namespace,
-                    "taskname" => inflight_activation.taskname,
+                    "namespace" => activation.namespace.clone(),
+                    "taskname" => activation.taskname.clone(),
                 )
                 .record(execution_time as f64);
             }
@@ -147,13 +146,13 @@ impl ConsumerService for TaskbrokerServer {
                 if received_to_gettask_latency > 0 {
                     metrics::histogram!(
                         "grpc_server.received_to_gettask.latency",
-                        "namespace" => inflight.namespace,
-                        "taskname" => inflight.taskname,
+                        "namespace" => inflight.namespace.clone(),
+                        "taskname" => inflight.activation.taskname.clone(),
                     )
                     .record(received_to_gettask_latency as f64);
                 }
                 Ok(Response::new(SetTaskStatusResponse {
-                    task: Some(TaskActivation::decode(&inflight.activation as &[u8]).unwrap()),
+                    task: Some(inflight.activation),
                 }))
             }
         };
