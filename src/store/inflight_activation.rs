@@ -214,8 +214,8 @@ impl TryFrom<InflightActivation> for MetaTableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
-            namespace: value.namespace.clone(),
-            taskname: value.taskname.clone(),
+            namespace: (move || value.namespace)(),
+            taskname: (move || value.taskname)(),
             on_attempts_exceeded: value.on_attempts_exceeded,
         })
     }
