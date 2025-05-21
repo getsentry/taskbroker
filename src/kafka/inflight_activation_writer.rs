@@ -221,7 +221,7 @@ mod tests {
                     received_at.seconds,
                     received_at.nanos as u32,
                 )
-                .expect(""),
+                .unwrap(),
                 processing_attempts: 0,
                 processing_deadline_duration: 0,
                 expires_at: None,
@@ -255,7 +255,7 @@ mod tests {
                     received_at.seconds,
                     received_at.nanos as u32,
                 )
-                .expect(""),
+                .unwrap(),
                 processing_attempts: 0,
                 processing_deadline_duration: 0,
                 expires_at: None,
@@ -322,7 +322,7 @@ mod tests {
             offset: 0,
             added_at: Utc::now(),
             received_at: DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32)
-                .expect(""),
+                .unwrap(),
             processing_attempts: 0,
             expires_at: None,
             delay_until: None,
@@ -384,7 +384,7 @@ mod tests {
             offset: 0,
             added_at: Utc::now(),
             received_at: DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32)
-                .expect(""),
+                .unwrap(),
             processing_attempts: 0,
             expires_at: None,
             delay_until: None,
@@ -453,7 +453,7 @@ mod tests {
                     received_at.seconds,
                     received_at.nanos as u32,
                 )
-                .expect(""),
+                .unwrap(),
                 processing_attempts: 0,
                 processing_deadline_duration: 0,
                 expires_at: None,
@@ -487,7 +487,7 @@ mod tests {
                     received_at.seconds,
                     received_at.nanos as u32,
                 )
-                .expect(""),
+                .unwrap(),
                 processing_attempts: 0,
                 processing_deadline_duration: 0,
                 expires_at: None,
@@ -560,7 +560,7 @@ mod tests {
                     received_at.seconds,
                     received_at.nanos as u32,
                 )
-                .expect(""),
+                .unwrap(),
                 processing_attempts: 0,
                 processing_deadline_duration: 0,
                 expires_at: None,
@@ -594,7 +594,7 @@ mod tests {
                     received_at.seconds,
                     received_at.nanos as u32,
                 )
-                .expect(""),
+                .unwrap(),
                 processing_attempts: 0,
                 processing_deadline_duration: 0,
                 expires_at: None,

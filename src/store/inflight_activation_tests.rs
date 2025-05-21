@@ -705,15 +705,15 @@ async fn test_handle_failed_tasks() {
         "should have two tasks to deadletter"
     );
     assert!(
-        store.get_by_id(&fowarder.to_deadletter[0]).await.is_ok(),
+        store.get_by_id(&fowarder.to_deadletter[0].0).await.is_ok(),
         "deadletter records still in sqlite"
     );
     assert!(
-        store.get_by_id(&fowarder.to_deadletter[1]).await.is_ok(),
+        store.get_by_id(&fowarder.to_deadletter[1].0).await.is_ok(),
         "deadletter records still in sqlite"
     );
-    assert_eq!(fowarder.to_deadletter[0], records[0].id);
-    assert_eq!(fowarder.to_deadletter[1], records[3].id);
+    assert_eq!(fowarder.to_deadletter[0].0, records[0].id);
+    assert_eq!(fowarder.to_deadletter[1].0, records[3].id);
 
     assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
 }

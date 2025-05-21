@@ -2,8 +2,7 @@ use std::{str::FromStr, time::Instant};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
-use prost::Message;
-use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
@@ -172,8 +171,8 @@ impl From<SqliteQueryResult> for QueryResult {
 }
 
 pub struct FailedTasksForwarder {
-    pub to_discard: Vec<String>,
-    pub to_deadletter: Vec<String>,
+    pub to_discard: Vec<(String, Vec<u8>)>,
+    pub to_deadletter: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Debug, FromRow)]
@@ -214,8 +213,8 @@ impl TryFrom<InflightActivation> for MetaTableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
-            namespace: (move || value.namespace)(),
-            taskname: (move || value.taskname)(),
+            namespace: value.namespace,
+            taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
         })
     }
@@ -295,19 +294,6 @@ pub struct InflightActivationStore {
 impl InflightActivationStore {
     pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
         let (read_pool, write_pool) = create_sqlite_pool(url).await?;
-
-        sqlx::migrate!("./migrations").run(&write_pool).await?;
-
-        let write_pool = PoolOptions::<Sqlite>::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::from_str(url)?
-                    .journal_mode(SqliteJournalMode::Wal)
-                    .synchronous(SqliteSynchronous::Normal)
-                    .auto_vacuum(SqliteAutoVacuum::Incremental)
-                    .disable_statement_logging(),
-            )
-            .await?;
 
         sqlx::migrate!("./migrations").run(&write_pool).await?;
 
@@ -713,7 +699,7 @@ impl InflightActivationStore {
         let mut atomic = self.write_pool.begin().await?;
 
         let failed_tasks: Vec<SqliteRow> =
-            sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
+            sqlx::query("SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1")
                 .bind(InflightActivationStatus::Failure)
                 .fetch_all(&mut *atomic)
                 .await?
@@ -727,22 +713,17 @@ impl InflightActivationStore {
 
         for record in failed_tasks.iter() {
             let activation_data: &[u8] = record.get("activation");
-            let activation = TaskActivation::decode(activation_data)?;
-
-            // Without a retry state, tasks are discarded
-            if activation.retry_state.as_ref().is_none() {
-                forwarder.to_discard.push(activation.id);
-                continue;
-            }
+            let id: String = record.get("id");
             // We could be deadlettering because of activation.expires
             // when a task expires we still deadletter if configured.
-            let retry_state = &activation.retry_state.as_ref().unwrap();
-            if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Discard as i32
-                || retry_state.on_attempts_exceeded == OnAttemptsExceeded::Unspecified as i32
+            let on_attempts_exceeded: InflightOnAttemptsExceeded =
+                record.get("on_attempts_exceeded");
+            if on_attempts_exceeded == InflightOnAttemptsExceeded::Discard
+                || on_attempts_exceeded == InflightOnAttemptsExceeded::Unspecified
             {
-                forwarder.to_discard.push(activation.id)
-            } else if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Deadletter as i32 {
-                forwarder.to_deadletter.push(activation.id)
+                forwarder.to_discard.push((id, activation_data.to_vec()))
+            } else if on_attempts_exceeded == InflightOnAttemptsExceeded::Deadletter {
+                forwarder.to_deadletter.push((id, activation_data.to_vec()))
             }
         }
 
@@ -754,7 +735,7 @@ impl InflightActivationStore {
                 .push(" WHERE id IN (");
 
             let mut separated = query_builder.separated(", ");
-            for id in forwarder.to_discard.iter() {
+            for (id, _body) in forwarder.to_discard.iter() {
                 separated.push_bind(id);
             }
             separated.push_unseparated(")");

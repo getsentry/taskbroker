@@ -190,30 +190,16 @@ pub async fn do_upkeep(
         let deadletters = failed_tasks_forwarder
             .to_deadletter
             .into_iter()
-            .map(|id| {
+            .map(|(id, activation_data)| {
                 let producer = producer.clone();
                 let config = config.clone();
-                let store = store.clone();
                 async move {
-                    let result = store.get_by_id(&id).await;
-                    let inflight = match result {
-                        Ok(Some(inflight)) => inflight,
-                        Ok(None) => {
-                            error!("deadletter.getbyid.notfound: ({})", id);
-                            return id;
-                        }
-                        Err(err) => {
-                            error!("deadletter.getbyid.failure: ({}) {:?}", id, err);
-                            return id;
-                        }
-                    };
-
                     metrics::histogram!("upkeep.dlq.message_size")
-                        .record(inflight.activation.len() as f64);
+                        .record(activation_data.len() as f64);
                     let delivery = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
-                                .payload(&inflight.activation),
+                                .payload(&activation_data),
                             Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                         )
                         .await;
@@ -221,10 +207,10 @@ pub async fn do_upkeep(
                     if let Err((err, _msg)) = delivery {
                         error!(
                             "deadletter.publish.failure: {}, message: {:?}",
-                            err, inflight.activation
+                            err, activation_data
                         );
                     }
-                    inflight.id
+                    id
                 }
             })
             .collect::<FuturesUnordered<_>>();
