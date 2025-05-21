@@ -30,7 +30,7 @@ impl ActivationWriterConfig {
     /// Convert from application configuration into InflightActivationWriter config.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            max_buf_len: config.db_insert_batch_size,
+            max_buf_len: config.db_insert_batch_size_rows,
             max_pending_activations: config.max_pending_count,
             max_delay_activations: config.max_delay_count,
             write_failure_backoff_ms: config.db_write_failure_backoff_ms,
@@ -225,6 +225,7 @@ mod tests {
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                payload_size: 1,
             },
             InflightActivation {
                 activation: TaskActivation {
@@ -252,6 +253,7 @@ mod tests {
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                payload_size: 1,
             },
         ];
 
@@ -312,6 +314,7 @@ mod tests {
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".to_string(),
+            payload_size: 1,
         }];
 
         writer.reduce(batch).await.unwrap();
@@ -366,6 +369,7 @@ mod tests {
             processing_deadline: None,
             at_most_once: false,
             namespace: "namespace".to_string(),
+            payload_size: 1,
         }];
 
         writer.reduce(batch).await.unwrap();
@@ -425,6 +429,7 @@ mod tests {
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                payload_size: 1,
             },
             InflightActivation {
                 activation: TaskActivation {
@@ -452,6 +457,7 @@ mod tests {
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                payload_size: 1,
             },
         ];
 
@@ -514,6 +520,7 @@ mod tests {
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                payload_size: 1,
             },
             InflightActivation {
                 activation: TaskActivation {
@@ -541,6 +548,7 @@ mod tests {
                 processing_deadline: None,
                 at_most_once: false,
                 namespace: "namespace".to_string(),
+                payload_size: 1,
             },
         ];
 

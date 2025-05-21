@@ -775,6 +775,7 @@ async fn test_clear() {
         processing_deadline: None,
         at_most_once: false,
         namespace: "namespace".into(),
+        payload_size: 1,
     }];
     assert!(store.store(batch).await.is_ok());
     assert_eq!(store.count().await.unwrap(), 1);
