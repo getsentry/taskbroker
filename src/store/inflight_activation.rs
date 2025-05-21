@@ -176,7 +176,7 @@ pub struct FailedTasksForwarder {
 }
 
 #[derive(Debug, FromRow)]
-struct MetaTableRow {
+struct TableRow {
     id: String,
     activation: Vec<u8>,
     partition: i32,
@@ -195,7 +195,7 @@ struct MetaTableRow {
     on_attempts_exceeded: InflightOnAttemptsExceeded,
 }
 
-impl TryFrom<InflightActivation> for MetaTableRow {
+impl TryFrom<InflightActivation> for TableRow {
     type Error = anyhow::Error;
 
     fn try_from(value: InflightActivation) -> Result<Self, Self::Error> {
@@ -220,8 +220,8 @@ impl TryFrom<InflightActivation> for MetaTableRow {
     }
 }
 
-impl From<MetaTableRow> for InflightActivation {
-    fn from(value: MetaTableRow) -> Self {
+impl From<TableRow> for InflightActivation {
+    fn from(value: TableRow) -> Self {
         Self {
             id: value.id,
             activation: value.activation,
@@ -317,7 +317,7 @@ impl InflightActivationStore {
 
     /// Get an activation by id. Primarily used for testing
     pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
-        let row_result: Option<MetaTableRow> = sqlx::query_as(
+        let row_result: Option<TableRow> = sqlx::query_as(
             "
             SELECT id,
                 activation,
@@ -380,8 +380,8 @@ impl InflightActivationStore {
         );
         let rows = batch
             .into_iter()
-            .map(MetaTableRow::try_from)
-            .collect::<Result<Vec<MetaTableRow>, _>>()?;
+            .map(TableRow::try_from)
+            .collect::<Result<Vec<TableRow>, _>>()?;
         let query = query_builder
             .push_values(rows, |mut b, row| {
                 b.push_bind(row.id);
@@ -457,8 +457,8 @@ impl InflightActivationStore {
         }
         query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
 
-        let result: Option<MetaTableRow> = query_builder
-            .build_query_as::<MetaTableRow>()
+        let result: Option<TableRow> = query_builder
+            .build_query_as::<TableRow>()
             .fetch_optional(&self.write_pool)
             .await?;
         let Some(row) = result else { return Ok(None) };
@@ -496,7 +496,7 @@ impl InflightActivationStore {
         id: &str,
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error> {
-        let result: Option<MetaTableRow> = sqlx::query_as(
+        let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
         )
         .bind(status)
@@ -562,7 +562,7 @@ impl InflightActivationStore {
         .fetch_all(&self.read_pool)
         .await?
         .into_iter()
-        .map(|row: MetaTableRow| row.into())
+        .map(|row: TableRow| row.into())
         .collect())
     }
 
