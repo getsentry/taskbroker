@@ -2,10 +2,9 @@ use std::{str::FromStr, time::Instant};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
-use prost::Message;
-use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
-    ConnectOptions, FromRow, QueryBuilder, Row, Sqlite, Type,
+    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::PoolOptions,
     sqlite::{
@@ -16,24 +15,6 @@ use sqlx::{
 use tracing::instrument;
 
 use crate::config::Config;
-
-pub struct InflightActivationStoreConfig {
-    pub max_processing_attempts: usize,
-}
-
-impl InflightActivationStoreConfig {
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            max_processing_attempts: config.max_processing_attempts,
-        }
-    }
-}
-
-pub struct InflightActivationStore {
-    read_pool: SqlitePool,
-    write_pool: SqlitePool,
-    config: InflightActivationStoreConfig,
-}
 
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
@@ -76,8 +57,9 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InflightActivation {
+    pub id: String,
     /// The protobuf activation that was received from kafka
-    pub activation: TaskActivation,
+    pub activation: Vec<u8>,
 
     /// The current status of the activation
     pub status: InflightActivationStatus,
@@ -91,10 +73,18 @@ pub struct InflightActivation {
     /// The timestamp when the activation was stored in activation store.
     pub added_at: DateTime<Utc>,
 
+    /// The timestamp a task was stored in Kafka
+    pub received_at: DateTime<Utc>,
+
     /// The number of times the activation has been attempted to be processed. This counter is
     /// incremented everytime a task is reset from processing back to pending. When this
     /// exceeds max_processing_attempts, the task is discarded/deadlettered.
     pub processing_attempts: i32,
+
+    /// The duration in seconds that a worker has to complete task execution.
+    /// When an activation is moved from pending -> processing a result is expected
+    /// in this many seconds.
+    pub processing_deadline_duration: u32,
 
     /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
     pub expires_at: Option<DateTime<Utc>>,
@@ -105,31 +95,30 @@ pub struct InflightActivation {
     /// The timestamp for when processing should be complete
     pub processing_deadline: Option<DateTime<Utc>>,
 
+    /// What to do when the maximum number of attempts to complete a task is exceeded
+    pub on_attempts_exceeded: OnAttemptsExceeded,
+
     /// Whether or not the activation uses at_most_once.
     /// When enabled activations are not retried when processing_deadlines
     /// are exceeded.
     pub at_most_once: bool,
+
+    /// Details about the task
     pub namespace: String,
+    pub taskname: String,
 }
 
 impl InflightActivation {
-    /// The number of milliseconds between an acitivation's received timestamp
+    /// The number of milliseconds between an activation's received timestamp
     /// and the provided datetime
     pub fn received_latency(&self, now: DateTime<Utc>) -> i64 {
-        let activation_received = self.activation.received_at.unwrap();
-        let received_datetime = DateTime::from_timestamp(
-            activation_received.seconds,
-            activation_received.nanos as u32,
-        );
-
-        received_datetime.map_or(0, |received| {
-            now.signed_duration_since(received).num_milliseconds()
-                - self.delay_until.map_or(0, |delay_until| {
-                    delay_until
-                        .signed_duration_since(received)
-                        .num_milliseconds()
-                })
-        })
+        now.signed_duration_since(self.received_at)
+            .num_milliseconds()
+            - self.delay_until.map_or(0, |delay_until| {
+                delay_until
+                    .signed_duration_since(self.received_at)
+                    .num_milliseconds()
+            })
     }
 }
 
@@ -147,8 +136,8 @@ impl From<SqliteQueryResult> for QueryResult {
 }
 
 pub struct FailedTasksForwarder {
-    pub to_discard: Vec<String>,
-    pub to_deadletter: Vec<TaskActivation>,
+    pub to_discard: Vec<(String, Vec<u8>)>,
+    pub to_deadletter: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Debug, FromRow)]
@@ -158,6 +147,7 @@ struct TableRow {
     partition: i32,
     offset: i64,
     added_at: DateTime<Utc>,
+    received_at: DateTime<Utc>,
     processing_attempts: i32,
     expires_at: Option<DateTime<Utc>>,
     delay_until: Option<DateTime<Utc>>,
@@ -166,6 +156,9 @@ struct TableRow {
     status: InflightActivationStatus,
     at_most_once: bool,
     namespace: String,
+    taskname: String,
+    #[sqlx(try_from = "i32")]
+    on_attempts_exceeded: OnAttemptsExceeded,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -173,19 +166,22 @@ impl TryFrom<InflightActivation> for TableRow {
 
     fn try_from(value: InflightActivation) -> Result<Self, Self::Error> {
         Ok(Self {
-            id: value.activation.id.clone(),
-            activation: value.activation.encode_to_vec(),
+            id: value.id,
+            activation: value.activation,
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
+            received_at: value.received_at,
             processing_attempts: value.processing_attempts,
             expires_at: value.expires_at,
             delay_until: value.delay_until,
-            processing_deadline_duration: value.activation.processing_deadline_duration as u32,
+            processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
-            namespace: value.namespace.clone(),
+            namespace: value.namespace,
+            taskname: value.taskname,
+            on_attempts_exceeded: value.on_attempts_exceeded,
         })
     }
 }
@@ -193,50 +189,77 @@ impl TryFrom<InflightActivation> for TableRow {
 impl From<TableRow> for InflightActivation {
     fn from(value: TableRow) -> Self {
         Self {
-            activation: TaskActivation::decode(&value.activation as &[u8]).expect(
-                "Decode should always be successful as we only store encoded data in this column",
-            ),
+            id: value.id,
+            activation: value.activation,
             status: value.status,
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
+            received_at: value.received_at,
             processing_attempts: value.processing_attempts,
+            processing_deadline_duration: value.processing_deadline_duration,
             expires_at: value.expires_at,
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
             namespace: value.namespace,
+            taskname: value.taskname,
+            on_attempts_exceeded: value.on_attempts_exceeded,
         }
     }
 }
 
+pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>), Error> {
+    if !Sqlite::database_exists(url).await? {
+        Sqlite::create_database(url).await?
+    }
+
+    let read_pool = PoolOptions::<Sqlite>::new()
+        .max_connections(64)
+        .connect_with(
+            SqliteConnectOptions::from_str(url)?
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(SqliteSynchronous::Normal)
+                .read_only(true)
+                .disable_statement_logging(),
+        )
+        .await?;
+
+    let write_pool = PoolOptions::<Sqlite>::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::from_str(url)?
+                .journal_mode(SqliteJournalMode::Wal)
+                .synchronous(SqliteSynchronous::Normal)
+                .auto_vacuum(SqliteAutoVacuum::Incremental)
+                .disable_statement_logging(),
+        )
+        .await?;
+
+    Ok((read_pool, write_pool))
+}
+
+pub struct InflightActivationStoreConfig {
+    pub max_processing_attempts: usize,
+}
+
+impl InflightActivationStoreConfig {
+    pub fn from_config(config: &Config) -> Self {
+        Self {
+            max_processing_attempts: config.max_processing_attempts,
+        }
+    }
+}
+
+pub struct InflightActivationStore {
+    read_pool: SqlitePool,
+    write_pool: SqlitePool,
+    config: InflightActivationStoreConfig,
+}
+
 impl InflightActivationStore {
     pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
-        if !Sqlite::database_exists(url).await? {
-            Sqlite::create_database(url).await?
-        }
-
-        let read_pool = PoolOptions::<Sqlite>::new()
-            .max_connections(64)
-            .connect_with(
-                SqliteConnectOptions::from_str(url)?
-                    .journal_mode(SqliteJournalMode::Wal)
-                    .synchronous(SqliteSynchronous::Normal)
-                    .read_only(true)
-                    .disable_statement_logging(),
-            )
-            .await?;
-
-        let write_pool = PoolOptions::<Sqlite>::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::from_str(url)?
-                    .journal_mode(SqliteJournalMode::Wal)
-                    .synchronous(SqliteSynchronous::Normal)
-                    .auto_vacuum(SqliteAutoVacuum::Incremental)
-                    .disable_statement_logging(),
-            )
-            .await?;
+        let (read_pool, write_pool) = create_sqlite_pool(url).await?;
 
         sqlx::migrate!("./migrations").run(&write_pool).await?;
 
@@ -254,7 +277,7 @@ impl InflightActivationStore {
         sqlx::query("PRAGMA incremental_vacuum")
             .execute(&self.write_pool)
             .await?;
-        metrics::histogram!("store.vacuum").record(timer.elapsed());
+        metrics::histogram!("store.vacuum", "database" => "meta").record(timer.elapsed());
         Ok(())
     }
 
@@ -267,6 +290,7 @@ impl InflightActivationStore {
                 partition,
                 offset,
                 added_at,
+                received_at,
                 processing_attempts,
                 expires_at,
                 delay_until,
@@ -274,7 +298,9 @@ impl InflightActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
-                namespace
+                namespace,
+                taskname,
+                on_attempts_exceeded
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -304,6 +330,7 @@ impl InflightActivationStore {
                     partition,
                     offset,
                     added_at,
+                    received_at,
                     processing_attempts,
                     expires_at,
                     delay_until,
@@ -311,7 +338,9 @@ impl InflightActivationStore {
                     processing_deadline,
                     status,
                     at_most_once,
-                    namespace
+                    namespace,
+                    taskname,
+                    on_attempts_exceeded
                 )
             ",
         );
@@ -326,6 +355,7 @@ impl InflightActivationStore {
                 b.push_bind(row.partition);
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at.timestamp());
+                b.push_bind(row.received_at.timestamp());
                 b.push_bind(row.processing_attempts);
                 b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
                 b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
@@ -339,10 +369,12 @@ impl InflightActivationStore {
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
                 b.push_bind(row.namespace);
+                b.push_bind(row.taskname);
+                b.push_bind(row.on_attempts_exceeded as i32);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
-        let result = Ok(query.execute(&self.write_pool).await?.into());
+        let meta_result = Ok(query.execute(&self.write_pool).await?.into());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
@@ -353,7 +385,7 @@ impl InflightActivationStore {
         metrics::gauge!("store.pages_committed_to_db")
             .set(checkpoint_result.get::<i32, _>("checkpointed"));
 
-        result
+        meta_result
     }
 
     #[instrument(skip_all)]
@@ -477,6 +509,7 @@ impl InflightActivationStore {
                 partition,
                 offset,
                 added_at,
+                received_at,
                 processing_attempts,
                 expires_at,
                 delay_until,
@@ -484,7 +517,9 @@ impl InflightActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
-                namespace
+                namespace,
+                taskname,
+                on_attempts_exceeded
             FROM inflight_taskactivations
             WHERE status = $1
             ",
@@ -630,7 +665,7 @@ impl InflightActivationStore {
         let mut atomic = self.write_pool.begin().await?;
 
         let failed_tasks: Vec<SqliteRow> =
-            sqlx::query("SELECT activation FROM inflight_taskactivations WHERE status = $1")
+            sqlx::query("SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1")
                 .bind(InflightActivationStatus::Failure)
                 .fetch_all(&mut *atomic)
                 .await?
@@ -644,22 +679,18 @@ impl InflightActivationStore {
 
         for record in failed_tasks.iter() {
             let activation_data: &[u8] = record.get("activation");
-            let activation = TaskActivation::decode(activation_data)?;
-
-            // Without a retry state, tasks are discarded
-            if activation.retry_state.as_ref().is_none() {
-                forwarder.to_discard.push(activation.id);
-                continue;
-            }
+            let id: String = record.get("id");
             // We could be deadlettering because of activation.expires
             // when a task expires we still deadletter if configured.
-            let retry_state = &activation.retry_state.as_ref().unwrap();
-            if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Discard as i32
-                || retry_state.on_attempts_exceeded == OnAttemptsExceeded::Unspecified as i32
+            let on_attempts_exceeded_val: i32 = record.get("on_attempts_exceeded");
+            let on_attempts_exceeded: OnAttemptsExceeded =
+                on_attempts_exceeded_val.try_into().unwrap();
+            if on_attempts_exceeded == OnAttemptsExceeded::Discard
+                || on_attempts_exceeded == OnAttemptsExceeded::Unspecified
             {
-                forwarder.to_discard.push(activation.id)
-            } else if retry_state.on_attempts_exceeded == OnAttemptsExceeded::Deadletter as i32 {
-                forwarder.to_deadletter.push(activation)
+                forwarder.to_discard.push((id, activation_data.to_vec()))
+            } else if on_attempts_exceeded == OnAttemptsExceeded::Deadletter {
+                forwarder.to_deadletter.push((id, activation_data.to_vec()))
             }
         }
 
@@ -671,7 +702,7 @@ impl InflightActivationStore {
                 .push(" WHERE id IN (");
 
             let mut separated = query_builder.separated(", ");
-            for id in forwarder.to_discard.iter() {
+            for (id, _body) in forwarder.to_discard.iter() {
                 separated.push_bind(id);
             }
             separated.push_unseparated(")");
