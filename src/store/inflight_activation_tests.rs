@@ -1,23 +1,26 @@
 use prost::Message;
 use std::collections::{HashMap, HashSet};
+use std::io::Error;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, SubsecRound, TimeZone, Utc};
-use sentry_protos::taskbroker::v1::{
-    OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
-};
-use tokio::sync::broadcast;
-use tokio::task::JoinSet;
-
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
-    InflightActivationStoreConfig,
+    InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
 };
 use crate::test_utils::{
     assert_count_by_status, create_integration_config, create_test_store, generate_temp_filename,
     make_activations, replace_retry_state,
 };
+use chrono::{DateTime, SubsecRound, TimeZone, Utc};
+use sentry_protos::taskbroker::v1::{
+    OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
+};
+use sqlx::{QueryBuilder, Sqlite};
+use std::fs;
+use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 
 #[test]
 fn test_inflightactivation_status_is_completion() {
@@ -804,4 +807,138 @@ async fn test_clear() {
     assert!(store.clear().await.is_ok());
 
     assert_eq!(store.count().await.unwrap(), 0);
+}
+
+struct TestFolders {
+    parent_folder: String,
+    initial_folder: String,
+    other_folder: String,
+}
+
+impl TestFolders {
+    fn new() -> Result<Self, Error> {
+        let parent_folder = "./testmigrations".to_string();
+        let parent = fs::create_dir(&parent_folder);
+        if parent.is_err() {
+            return Err(parent.err().unwrap());
+        }
+
+        let initial_folder = parent_folder.clone() + "/initial_migrations";
+        let other_folder = parent_folder.clone() + "/other_migrations";
+
+        let initial = fs::create_dir(&initial_folder);
+        if initial.is_err() {
+            return Err(initial.err().unwrap());
+        }
+        let other = fs::create_dir(&other_folder);
+        if other.is_err() {
+            return Err(other.err().unwrap());
+        }
+
+        Ok(TestFolders {
+            parent_folder,
+            initial_folder,
+            other_folder,
+        })
+    }
+}
+
+impl Drop for TestFolders {
+    fn drop(&mut self) {
+        let parent = fs::remove_dir_all(Path::new(&self.parent_folder));
+        if parent.is_err() {
+            println!("Could not remove dir {}, {:?}", self.parent_folder, parent);
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_migrations() {
+    // Create the folders that will be used
+    let folders = TestFolders::new().unwrap();
+
+    // Move migrations to different folders
+    let orig = fs::read_dir("./migrations");
+    assert!(orig.is_ok(), "{:?}", orig);
+
+    let origdir = orig.unwrap();
+    for result in origdir {
+        assert!(result.is_ok(), "{:?}", result);
+        let entry = result.unwrap();
+        let filename = entry.file_name().into_string().unwrap();
+        // Write the initial migration to a separate folder, so the table can be initialized without any migrations.
+        if filename.starts_with("0001") {
+            let result = fs::copy(
+                entry.path(),
+                folders.initial_folder.clone() + "/" + &filename,
+            );
+            assert!(result.is_ok(), "{:?}", result);
+        }
+
+        let result = fs::copy(entry.path(), folders.other_folder.clone() + "/" + &filename);
+        assert!(result.is_ok(), "{:?}", result);
+    }
+
+    // Run initial migration
+    let (_read_pool, write_pool) = create_sqlite_pool(&generate_temp_filename()).await.unwrap();
+    let result = sqlx::migrate::Migrator::new(Path::new(&folders.initial_folder))
+        .await
+        .unwrap()
+        .run(&write_pool)
+        .await;
+    assert!(result.is_ok(), "{:?}", result);
+
+    // Insert rows. Note that this query lines up with the 0001 migration table.
+    let mut query_builder = QueryBuilder::<Sqlite>::new(
+        "
+        INSERT INTO inflight_taskactivations
+            (
+                id,
+                activation,
+                partition,
+                offset,
+                added_at,
+                processing_attempts,
+                expires_at,
+                processing_deadline_duration,
+                processing_deadline,
+                status,
+                at_most_once
+            )
+        ",
+    );
+    let activations = make_activations(2);
+    let query = query_builder
+        .push_values(activations, |mut b, row| {
+            b.push_bind(row.id);
+            b.push_bind(row.activation);
+            b.push_bind(row.partition);
+            b.push_bind(row.offset);
+            b.push_bind(row.added_at.timestamp());
+            b.push_bind(row.processing_attempts);
+            b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
+            b.push_bind(row.processing_deadline_duration);
+            if let Some(deadline) = row.processing_deadline {
+                b.push_bind(deadline.timestamp());
+            } else {
+                // Add a literal null
+                b.push("null");
+            }
+            b.push_bind(row.status);
+            b.push_bind(row.at_most_once);
+        })
+        .push(" ON CONFLICT(id) DO NOTHING")
+        .build();
+    let result = query.execute(&write_pool).await;
+    assert!(result.is_ok(), "{:?}", result);
+    let meta_result: QueryResult = result.unwrap().into();
+    assert_eq!(meta_result.rows_affected, 2);
+
+    // Run other migrations
+    let result = sqlx::migrate::Migrator::new(Path::new(&folders.other_folder))
+        .await
+        .unwrap()
+        .run(&write_pool)
+        .await;
+    assert!(result.is_ok(), "{:?}", result);
 }

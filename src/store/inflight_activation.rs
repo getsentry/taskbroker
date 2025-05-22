@@ -209,7 +209,7 @@ impl From<TableRow> for InflightActivation {
     }
 }
 
-async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>), Error> {
+pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>), Error> {
     if !Sqlite::database_exists(url).await? {
         Sqlite::create_database(url).await?
     }
