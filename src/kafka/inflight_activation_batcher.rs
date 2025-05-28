@@ -11,20 +11,23 @@ use super::consumer::{
 };
 
 pub struct ActivationBatcherConfig {
-    pub max_buf_len: usize,
+    pub max_batch_len: usize,
+    pub max_batch_size: usize,
 }
 
 impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            max_buf_len: config.db_insert_batch_size,
+            max_batch_len: config.db_insert_batch_max_len,
+            max_batch_size: config.db_insert_batch_max_size,
         }
     }
 }
 
 pub struct InflightActivationBatcher {
-    buffer: Vec<InflightActivation>,
+    batch: Vec<InflightActivation>,
+    batch_size: usize,
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
 }
@@ -35,7 +38,8 @@ impl InflightActivationBatcher {
         runtime_config_manager: Arc<RuntimeConfigManager>,
     ) -> Self {
         Self {
-            buffer: Vec::with_capacity(config.max_buf_len),
+            batch: Vec::with_capacity(config.max_batch_len),
+            batch_size: 0,
             config,
             runtime_config_manager,
         }
@@ -64,27 +68,36 @@ impl Reducer for InflightActivationBatcher {
             }
         }
 
-        self.buffer.push(t);
+        self.batch_size += t.activation.len();
+        self.batch.push(t);
 
         Ok(())
     }
 
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
-        if self.buffer.is_empty() {
+        if self.batch.is_empty() {
             return Ok(None);
         }
+
+        metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
+        metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
+
+        self.batch_size = 0;
+
         Ok(Some(replace(
-            &mut self.buffer,
-            Vec::with_capacity(self.config.max_buf_len),
+            &mut self.batch,
+            Vec::with_capacity(self.config.max_batch_len),
         )))
     }
 
     fn reset(&mut self) {
-        self.buffer.clear();
+        self.batch_size = 0;
+        self.batch.clear();
     }
 
     async fn is_full(&self) -> bool {
-        self.buffer.len() >= self.config.max_buf_len
+        self.batch.len() >= self.config.max_batch_len
+            || self.batch_size >= self.config.max_batch_size
     }
 
     fn get_reduce_config(&self) -> ReduceConfig {
@@ -161,7 +174,7 @@ drop_task_killswitch:
         };
 
         batcher.reduce(inflight_activation_0).await.unwrap();
-        assert_eq!(batcher.buffer.len(), 0);
+        assert_eq!(batcher.batch.len(), 0);
 
         fs::remove_file(test_path).await.unwrap();
     }
@@ -207,6 +220,140 @@ drop_task_killswitch:
         };
 
         batcher.reduce(inflight_activation_0).await.unwrap();
-        assert_eq!(batcher.buffer.len(), 0);
+        assert_eq!(batcher.batch.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_close_by_bytes_limit() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let config = Arc::new(Config {
+            db_insert_batch_max_size: 1,
+            db_insert_batch_max_len: 2,
+            ..Default::default()
+        });
+
+        let mut batcher = InflightActivationBatcher::new(
+            ActivationBatcherConfig::from_config(&config),
+            runtime_config,
+        );
+
+        let inflight_activation_0 = InflightActivation {
+            id: "0".to_string(),
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "taskname".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: Some(0),
+                delay: None,
+            }
+            .encode_to_vec(),
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            received_at: Utc::now(),
+            processing_attempts: 0,
+            processing_deadline_duration: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+            taskname: "taskname".to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
+        };
+
+        batcher.reduce(inflight_activation_0).await.unwrap();
+        assert!(batcher.is_full().await);
+        batcher.flush().await.unwrap();
+        assert!(!batcher.is_full().await)
+    }
+
+    #[tokio::test]
+    async fn test_close_by_rows_limit() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let config = Arc::new(Config {
+            db_insert_batch_max_size: 100000,
+            db_insert_batch_max_len: 2,
+            ..Default::default()
+        });
+
+        let mut batcher = InflightActivationBatcher::new(
+            ActivationBatcherConfig::from_config(&config),
+            runtime_config,
+        );
+
+        let inflight_activation_0 = InflightActivation {
+            id: "0".to_string(),
+            activation: TaskActivation {
+                id: "0".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "taskname".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: Some(0),
+                delay: None,
+            }
+            .encode_to_vec(),
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            received_at: Utc::now(),
+            processing_attempts: 0,
+            processing_deadline_duration: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+            taskname: "taskname".to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
+        };
+
+        let inflight_activation_1 = InflightActivation {
+            id: "1".to_string(),
+            activation: TaskActivation {
+                id: "1".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "taskname".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: Some(0),
+                delay: None,
+            }
+            .encode_to_vec(),
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            received_at: Utc::now(),
+            processing_attempts: 0,
+            processing_deadline_duration: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+            taskname: "taskname".to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
+        };
+
+        batcher.reduce(inflight_activation_0).await.unwrap();
+        batcher.reduce(inflight_activation_1).await.unwrap();
+        assert!(batcher.is_full().await);
+        batcher.flush().await.unwrap();
+        assert!(!batcher.is_full().await)
     }
 }
