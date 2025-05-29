@@ -70,7 +70,7 @@ pub struct InflightActivation {
     /// The offset the activation had
     pub offset: i64,
 
-    /// The timestamp when the activation was stored in activation store.
+    /// The timestamp when the activation was stored in activation store.asd
     pub added_at: DateTime<Utc>,
 
     /// The timestamp a task was stored in Kafka
