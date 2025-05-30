@@ -108,7 +108,11 @@ pub struct Config {
 
     /// The maximum number of tasks that are buffered
     /// before being written to InflightTaskStore (sqlite).
-    pub db_insert_batch_size: usize,
+    pub db_insert_batch_max_len: usize,
+
+    /// The maximum number of bytes that are buffered
+    /// before being written to InflightTaskStore (sqlite).
+    pub db_insert_batch_max_size: usize,
 
     /// The path to the runtime config file
     pub runtime_config_path: Option<String>,
@@ -177,7 +181,8 @@ impl Default for Config {
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             db_write_failure_backoff_ms: 4000,
-            db_insert_batch_size: 1024,
+            db_insert_batch_max_len: 256,
+            db_insert_batch_max_size: 16_000_000,
             runtime_config_path: None,
             max_pending_count: 2048,
             max_delay_count: 8192,
