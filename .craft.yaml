@@ -6,7 +6,7 @@ statusProvider:
   name: github
   config:
     contexts:
-      - 'build-on-branch-push (sentryio)'
+      - 'build-on-taskbroker-branch-push (sentryio)'
 targets:
   - id: release
     name: docker
