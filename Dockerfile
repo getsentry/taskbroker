@@ -11,8 +11,6 @@ WORKDIR /taskbroker
 
 # This is set by the cloudbuild.yaml file
 ARG TASKBROKER_GIT_REVISION
-ARG CONFIG_FILE=config-sentry-dev.yaml
-
 ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
 
 # All these files are required to build or run the application
