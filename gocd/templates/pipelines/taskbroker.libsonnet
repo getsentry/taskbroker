@@ -20,7 +20,7 @@ local checks_stage = {
 };
 
 local deploy_canary_stage(region) =
-  if region == 'us' then
+  if region == 'us' || region == 'de' then
     [
       {
         'deploy-canary': {
