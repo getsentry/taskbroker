@@ -92,6 +92,29 @@ jobs:
 
           docker manifest push ghcr.io/getsentry/taskbroker:${{ github.sha }}
 
+  publish-taskbroker-to-dockerhub:
+    runs-on: ubuntu-latest
+    if: ${{ github.ref_name == 'main' }}
+    needs: [build]
+    steps:
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3
+
+      - shell: bash
+        run: |
+          IMAGE_URL="ghcr.io/getsentry/taskbroker:${{ github.sha }}"
+          docker login --username=sentrybuilder --password ${{ secrets.DOCKER_HUB_RW_TOKEN }}
+          # We push 3 tags to Dockerhub:
+          # first, the full sha of the commit
+          docker tag "$IMAGE_URL" getsentry/taskbroker:${GITHUB_SHA}
+          docker push getsentry/taskbroker:${GITHUB_SHA}
+          # second, the short sha of the commit
+          SHORT_SHA=$(git rev-parse --short "$GITHUB_SHA")
+          docker tag "$IMAGE_URL" getsentry/taskbroker:${SHORT_SHA}
+          docker push getsentry/taskbroker:${SHORT_SHA}
+          # finally, nightly
+          docker tag "$IMAGE_URL" getsentry/taskbroker:nightly
+          docker push getsentry/taskbroker:nightly
+
   build-taskworker:
     runs-on: ubuntu-latest
     steps:
