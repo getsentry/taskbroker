@@ -33,10 +33,10 @@ RUN cargo build --release
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
 # Runtime image
-FROM debian:bookworm-slim AS runtime
+FROM rust:1-bookworm
 
 # Necessary for libssl bindings
-RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev libsqlite3-0 libsqlite3-dev
+RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev
 
 EXPOSE 50051
 
