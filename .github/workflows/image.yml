@@ -113,6 +113,7 @@ jobs:
 
           # We push 3 tags to Dockerhub:
           # first, the full sha of the commit
+          GITHUB_SHA="${{ github.sha }}"
           docker buildx imagetools create --tag getsentry/taskbroker:${GITHUB_SHA} ghcr.io/getsentry/taskbroker:${{ github.sha }}
 
           # second, the short sha of the commit
