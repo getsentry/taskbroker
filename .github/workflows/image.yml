@@ -113,15 +113,14 @@ jobs:
 
           # We push 3 tags to Dockerhub:
           # first, the full sha of the commit
-          docker tag "$IMAGE_URL" getsentry/taskbroker:${GITHUB_SHA}
-          docker push getsentry/taskbroker:${GITHUB_SHA}
+          docker buildx imagetools create --tag getsentry/taskbroker:${GITHUB_SHA} ghcr.io/getsentry/taskbroker:${{ github.sha }}
+
           # second, the short sha of the commit
           SHORT_SHA=$(git rev-parse --short "$GITHUB_SHA")
-          docker tag "$IMAGE_URL" getsentry/taskbroker:${SHORT_SHA}
-          docker push getsentry/taskbroker:${SHORT_SHA}
+          docker buildx imagetools create --tag getsentry/taskbroker:${SHORT_SHA} ghcr.io/getsentry/taskbroker:${{ github.sha }}
+
           # finally, nightly
-          docker tag "$IMAGE_URL" getsentry/taskbroker:nightly
-          docker push getsentry/taskbroker:nightly
+          docker buildx imagetools create --tag getsentry/taskbroker:nightly ghcr.io/getsentry/taskbroker:${{ github.sha }}
 
   build-taskworker:
     runs-on: ubuntu-latest
