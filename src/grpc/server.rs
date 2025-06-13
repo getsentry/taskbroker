@@ -33,16 +33,17 @@ impl ConsumerService for TaskbrokerServer {
         match inflight {
             Ok(Some(inflight)) => {
                 let now = Utc::now();
-                let received_to_gettask_latency = inflight.received_latency(now);
-                if received_to_gettask_latency > 0 {
-                    metrics::histogram!(
-                        "grpc_server.received_to_gettask.latency",
-                        "namespace" => inflight.namespace,
-                        "taskname" => inflight.taskname,
-                    )
-                    .record(received_to_gettask_latency as f64);
+                if inflight.processing_attempts < 1 {
+                    let received_to_gettask_latency = inflight.received_latency(now);
+                    if received_to_gettask_latency > 0 {
+                        metrics::histogram!(
+                            "grpc_server.received_to_gettask.latency",
+                            "namespace" => inflight.namespace,
+                            "taskname" => inflight.taskname,
+                        )
+                        .record(received_to_gettask_latency as f64);
+                    }
                 }
-
                 let resp = GetTaskResponse {
                     task: Some(TaskActivation::decode(&inflight.activation as &[u8]).unwrap()),
                 };
@@ -142,15 +143,17 @@ impl ConsumerService for TaskbrokerServer {
             }
             Ok(None) => Err(Status::not_found("No pending activation")),
             Ok(Some(inflight)) => {
-                let now = Utc::now();
-                let received_to_gettask_latency = inflight.received_latency(now);
-                if received_to_gettask_latency > 0 {
-                    metrics::histogram!(
-                        "grpc_server.received_to_gettask.latency",
-                        "namespace" => inflight.namespace,
-                        "taskname" => inflight.taskname,
-                    )
-                    .record(received_to_gettask_latency as f64);
+                if inflight.processing_attempts < 1 {
+                    let now = Utc::now();
+                    let received_to_gettask_latency = inflight.received_latency(now);
+                    if received_to_gettask_latency > 0 {
+                        metrics::histogram!(
+                            "grpc_server.received_to_gettask.latency",
+                            "namespace" => inflight.namespace,
+                            "taskname" => inflight.taskname,
+                        )
+                        .record(received_to_gettask_latency as f64);
+                    }
                 }
                 Ok(Response::new(SetTaskStatusResponse {
                     task: Some(TaskActivation::decode(&inflight.activation as &[u8]).unwrap()),
