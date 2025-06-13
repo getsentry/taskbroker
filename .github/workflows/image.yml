@@ -105,11 +105,7 @@ jobs:
 
       - shell: bash
         run: |
-          IMAGE_URL="ghcr.io/getsentry/taskbroker:${{ github.sha }}"
           echo "${{ secrets.DOCKER_HUB_RW_TOKEN }}" | docker login --username=sentrybuilder --password-stdin
-
-          # fetch the image
-          docker pull "$IMAGE_URL"
 
           # We push 3 tags to Dockerhub:
           # first, the full sha of the commit
