@@ -114,6 +114,10 @@ pub struct Config {
     /// before being written to InflightTaskStore (sqlite).
     pub db_insert_batch_max_size: usize,
 
+    /// The time in milliseconds to buffered tasks for
+    /// before being written to InflightTaskStore (sqlite).
+    pub db_insert_batch_max_time_ms: u64,
+
     /// The path to the runtime config file
     pub runtime_config_path: Option<String>,
 
@@ -183,6 +187,7 @@ impl Default for Config {
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
+            db_insert_batch_max_time_ms: 1000,
             runtime_config_path: None,
             max_pending_count: 2048,
             max_delay_count: 8192,
