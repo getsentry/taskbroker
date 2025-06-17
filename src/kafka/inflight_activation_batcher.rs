@@ -11,6 +11,7 @@ use super::consumer::{
 };
 
 pub struct ActivationBatcherConfig {
+    pub max_batch_time_ms: u64,
     pub max_batch_len: usize,
     pub max_batch_size: usize,
 }
@@ -19,6 +20,7 @@ impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
         Self {
+            max_batch_time_ms: config.db_insert_batch_max_time_ms,
             max_batch_len: config.db_insert_batch_max_len,
             max_batch_size: config.db_insert_batch_max_size,
         }
@@ -105,7 +107,7 @@ impl Reducer for InflightActivationBatcher {
             shutdown_condition: ReduceShutdownCondition::Signal,
             shutdown_behaviour: ReduceShutdownBehaviour::Drop,
             when_full_behaviour: ReducerWhenFullBehaviour::Flush,
-            flush_interval: Some(Duration::from_secs(1)),
+            flush_interval: Some(Duration::from_millis(self.config.max_batch_time_ms)),
         }
     }
 }
