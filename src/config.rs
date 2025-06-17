@@ -114,7 +114,7 @@ pub struct Config {
     /// before being written to InflightTaskStore (sqlite).
     pub db_insert_batch_max_size: usize,
 
-    /// The time in milliseconds to buffered tasks for
+    /// The time in milliseconds to buffer tasks
     /// before being written to InflightTaskStore (sqlite).
     pub db_insert_batch_max_time_ms: u64,
 
