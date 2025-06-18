@@ -15,6 +15,10 @@ x-sentry-service-config:
     default: [kafka]
     containerized: [kafka, taskbroker]
 
+x-programs:
+  taskbroker:
+    command: cargo run
+
 services:
   taskbroker:
     image: ghcr.io/getsentry/taskbroker:latest
