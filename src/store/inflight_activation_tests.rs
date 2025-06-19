@@ -10,8 +10,8 @@ use crate::store::inflight_activation::{
     InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
 };
 use crate::test_utils::{
-    assert_count_by_status, create_integration_config, create_test_store, generate_temp_filename,
-    make_activations, replace_retry_state,
+    StatusCount, assert_counts, create_integration_config, create_test_store,
+    generate_temp_filename, make_activations, replace_retry_state,
 };
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{
@@ -130,7 +130,15 @@ async fn test_get_pending_activation() {
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            processing: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
@@ -203,7 +211,15 @@ async fn test_get_pending_activation_skip_expires() {
     assert!(result.is_ok());
     let res_option = result.unwrap();
     assert!(res_option.is_none());
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -231,8 +247,15 @@ async fn test_count_pending_activations() {
     assert!(store.store(batch).await.is_ok());
 
     assert_eq!(store.count_pending_activations().await.unwrap(), 2);
-
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
+    assert_counts(
+        StatusCount {
+            pending: 2,
+            processing: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -241,22 +264,45 @@ async fn set_activation_status() {
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
-    assert_eq!(store.count_pending_activations().await.unwrap(), 2);
     assert!(
         store
             .set_status("id_0", InflightActivationStatus::Failure)
             .await
             .is_ok()
     );
-    assert_eq!(store.count_pending_activations().await.unwrap(), 1);
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            failure: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
+
     assert!(
         store
             .set_status("id_0", InflightActivationStatus::Pending)
             .await
             .is_ok()
     );
-    assert_eq!(store.count_pending_activations().await.unwrap(), 2);
+    assert_counts(
+        StatusCount {
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
     assert!(
         store
             .set_status("id_0", InflightActivationStatus::Failure)
@@ -269,7 +315,15 @@ async fn set_activation_status() {
             .await
             .is_ok()
     );
-    assert_eq!(store.count_pending_activations().await.unwrap(), 0);
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            failure: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
     assert!(store.get_pending_activation(None).await.unwrap().is_none());
 
     let result = store
@@ -347,8 +401,14 @@ async fn test_get_retry_activations() {
 
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
-
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
+    assert_counts(
+        StatusCount {
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     assert!(
         store
@@ -356,7 +416,15 @@ async fn test_get_retry_activations() {
             .await
             .is_ok()
     );
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            retry: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     assert!(
         store
@@ -381,13 +449,27 @@ async fn test_handle_processing_deadline() {
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
     assert!(store.store(batch.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            processing: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 1);
-
-    assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 2).await;
+    assert_counts(
+        StatusCount {
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let task = store.get_by_id(&batch[1].id).await;
     assert_eq!(task.unwrap().unwrap().processing_attempts, 1);
@@ -408,13 +490,27 @@ async fn test_handle_processing_deadline_multiple_tasks() {
     batch[1].status = InflightActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
     assert!(store.store(batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            processing: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 1);
-
-    assert_count_by_status(&store, InflightActivationStatus::Processing, 1).await;
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            processing: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -441,14 +537,27 @@ async fn test_handle_processing_at_most_once() {
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
     assert!(store.store(batch.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            processing: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 2);
-
-    assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 1).await;
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            failure: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let task = store.get_by_id(&batch[1].id).await.unwrap().unwrap();
     assert_eq!(task.status, InflightActivationStatus::Failure);
@@ -473,10 +582,27 @@ async fn test_handle_processing_deadline_discard_after() {
     );
 
     assert!(store.store(batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            processing: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 1);
+    assert_counts(
+        StatusCount {
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -498,11 +624,27 @@ async fn test_handle_processing_deadline_deadletter_after() {
     );
 
     assert!(store.store(batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            processing: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 1);
-    assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
+    assert_counts(
+        StatusCount {
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -523,11 +665,28 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
         }),
     );
     assert!(store.store(batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            processing: 1,
+            pending: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 1);
-    assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
+    assert_counts(
+        StatusCount {
+            processing: 0,
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -548,14 +707,28 @@ async fn test_processing_attempts_exceeded() {
     batch[2].processing_attempts = config.max_processing_attempts as i32;
 
     assert!(store.store(batch.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            complete: 1,
+            pending: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let count = store.handle_processing_attempts().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 2);
-
-    assert_count_by_status(&store, InflightActivationStatus::Processing, 0).await;
-    assert_count_by_status(&store, InflightActivationStatus::Complete, 1).await;
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
+    assert_counts(
+        StatusCount {
+            complete: 1,
+            failure: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -570,6 +743,15 @@ async fn test_remove_completed() {
     records[2].added_at += Duration::from_secs(2);
 
     assert!(store.store(records.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            complete: 2,
+            pending: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let result = store.remove_completed().await;
     assert!(result.is_ok());
@@ -595,9 +777,15 @@ async fn test_remove_completed() {
             .expect("no error")
             .is_none()
     );
-
-    assert_count_by_status(&store, InflightActivationStatus::Complete, 0).await;
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
+    assert_counts(
+        StatusCount {
+            complete: 0,
+            pending: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -617,6 +805,16 @@ async fn test_remove_completed_multiple_gaps() {
     records[3].added_at += Duration::from_secs(3);
 
     assert!(store.store(records.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            complete: 2,
+            processing: 1,
+            failure: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let result = store.remove_completed().await;
     assert!(result.is_ok());
@@ -649,6 +847,16 @@ async fn test_remove_completed_multiple_gaps() {
             .expect("no error")
             .is_some()
     );
+    assert_counts(
+        StatusCount {
+            complete: 0,
+            processing: 1,
+            failure: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -697,6 +905,14 @@ async fn test_handle_failed_tasks() {
         }),
     );
     assert!(store.store(records.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            failure: 4,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let result = store.handle_failed_tasks().await;
     assert!(result.is_ok(), "handle_failed_tasks should be ok");
@@ -718,7 +934,15 @@ async fn test_handle_failed_tasks() {
     assert_eq!(fowarder.to_deadletter[0].0, records[0].id);
     assert_eq!(fowarder.to_deadletter[1].0, records[3].id);
 
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 2).await;
+    assert_counts(
+        StatusCount {
+            failure: 2,
+            complete: 2,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -727,19 +951,30 @@ async fn test_mark_completed() {
 
     let records = make_activations(3);
     assert!(store.store(records.clone()).await.is_ok());
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 3).await;
+    assert_counts(
+        StatusCount {
+            pending: 3,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let ids: Vec<String> = records.iter().map(|item| item.id.clone()).collect();
     let result = store.mark_completed(ids.clone()).await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 3, "three records updated");
-
     // No pending tasks left
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 0).await;
-
     // All tasks should be complete
-    assert_count_by_status(&store, InflightActivationStatus::Complete, 3).await;
+    assert_counts(
+        StatusCount {
+            complete: 3,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -753,12 +988,26 @@ async fn test_handle_expires_at() {
     batch[2].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
 
     assert!(store.store(batch.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 3,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
+
     let result = store.handle_expires_at().await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 2);
-
-    assert_count_by_status(&store, InflightActivationStatus::Pending, 1).await;
-    assert_count_by_status(&store, InflightActivationStatus::Failure, 0).await;
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -802,11 +1051,19 @@ async fn test_clear() {
         taskname: "taskname".into(),
     }];
     assert!(store.store(batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
     assert_eq!(store.count().await.unwrap(), 1);
 
     assert!(store.clear().await.is_ok());
-
     assert_eq!(store.count().await.unwrap(), 0);
+    assert_counts(StatusCount::default(), &store).await;
 }
 
 struct TestFolders {
