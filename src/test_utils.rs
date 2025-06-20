@@ -69,19 +69,6 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
     records
 }
 
-/// Assert that the inflight store has a given number of records with a status.
-pub async fn assert_count_by_status(
-    store: &InflightActivationStore,
-    status: InflightActivationStatus,
-    expected: usize,
-) {
-    let count = store.count_by_status(status).await.unwrap();
-    assert_eq!(
-        count, expected,
-        "Incorrect number of activations with {status:?}"
-    );
-}
-
 /// Create a basic default [`Config`]
 pub fn create_config() -> Arc<Config> {
     Arc::new(Config::default())
@@ -203,4 +190,67 @@ pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<Retr
     } else {
         inflight.on_attempts_exceeded = OnAttemptsExceeded::Discard;
     }
+}
+
+/// Helper struct for asserting counts on the InflightActivationStore.
+#[derive(Default)]
+pub struct StatusCount {
+    pub pending: usize,
+    pub processing: usize,
+    pub retry: usize,
+    pub delayed: usize,
+    pub complete: usize,
+    pub failure: usize,
+}
+
+/// Assert the state of all counts in the inflight activation store.
+pub async fn assert_counts(expected: StatusCount, store: &InflightActivationStore) {
+    assert_eq!(
+        expected.pending,
+        store
+            .count_by_status(InflightActivationStatus::Pending)
+            .await
+            .unwrap(),
+        "difference in pending count",
+    );
+    assert_eq!(
+        expected.processing,
+        store
+            .count_by_status(InflightActivationStatus::Processing)
+            .await
+            .unwrap(),
+        "difference in processing count",
+    );
+    assert_eq!(
+        expected.retry,
+        store
+            .count_by_status(InflightActivationStatus::Retry)
+            .await
+            .unwrap(),
+        "difference in retry count",
+    );
+    assert_eq!(
+        expected.delayed,
+        store
+            .count_by_status(InflightActivationStatus::Delay)
+            .await
+            .unwrap(),
+        "difference in delay count",
+    );
+    assert_eq!(
+        expected.complete,
+        store
+            .count_by_status(InflightActivationStatus::Complete)
+            .await
+            .unwrap(),
+        "difference in complete count",
+    );
+    assert_eq!(
+        expected.failure,
+        store
+            .count_by_status(InflightActivationStatus::Failure)
+            .await
+            .unwrap(),
+        "difference in failure count",
+    );
 }
