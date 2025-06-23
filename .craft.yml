@@ -6,16 +6,18 @@ statusProvider:
   name: github
   config:
     contexts:
-      - 'build-on-taskbroker-branch-push (sentryio)'
+      - 'build-arm64'
+      - 'build-amd64'
+      - 'assemble-taskbroker-image'
 preReleaseCommand: ""
 targets:
   - id: release
     name: docker
-    source: us-central1-docker.pkg.dev/sentryio/taskbroker/image
+    source: ghcr.io/getsentry/taskbroker
     target: getsentry/taskbroker
   - id: latest
     name: docker
-    source: us-central1-docker.pkg.dev/sentryio/taskbroker/image
+    source: ghcr.io/getsentry/taskbroker
     target: getsentry/taskbroker
     targetFormat: '{{{target}}}:latest'
   - name: github
