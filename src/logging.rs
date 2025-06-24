@@ -57,6 +57,7 @@ pub fn init(log_config: LoggingConfig) {
             release: Some(Cow::Borrowed(get_version())),
             environment: log_config.sentry_env.clone(),
             traces_sample_rate: log_config.traces_sample_rate,
+            enable_logs: true,
             ..Default::default()
         });
 
