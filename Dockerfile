@@ -43,9 +43,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev
 EXPOSE 50051
 
 # For the sqlite to be mounted too
-RUN mkdir /opt/sqlite && chown taskbroker:taskbroker /opt/sqlite
-
-USER taskbroker
+RUN mkdir /opt/sqlite
 
 # Import the built binary and config file and run it
 COPY --from=build /taskbroker/VERSION /opt/VERSION
