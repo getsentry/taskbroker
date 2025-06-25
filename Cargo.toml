@@ -24,7 +24,17 @@ serde = "1.0.214"
 serde_yaml = "0.9.34"
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 clap = { version = "4.5.20", features = ["derive"] }
-sentry = { version = "0.36.0", features = ["tracing"] }
+sentry = { version = "0.41.0", default-features = false, features = [
+    # default features, except `release-health` is disabled
+    "backtrace",
+    "contexts",
+    "debug-images",
+    "panic",
+    "transport",
+    # additional features
+    "tracing", 
+    "logs"
+] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = [
     "std",
