@@ -35,6 +35,8 @@ RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 # Runtime image
 FROM debian:bookworm-slim
 
+RUN groupadd taskbroker --gid 1000 && useradd --gid taskbroker --uid 1000 taskbroker
+
 # Necessary for libssl bindings
 RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev libsqlite3-dev libsqlite3-0 openssl ca-certificates
 
