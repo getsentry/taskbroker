@@ -93,8 +93,7 @@ impl Reducer for InflightActivationWriter {
             .count_by_status(InflightActivationStatus::Processing)
             .await
             .expect("Error communicating with activation store")
-            + batch.len()
-            > self.config.max_processing_activations;
+            >= self.config.max_processing_activations;
 
         // Check if the entire batch is either pending or delay
         let has_delay = batch
@@ -640,25 +639,57 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             max_buf_len: 100,
             max_pending_activations: 10,
-            max_processing_activations: 0,
+            max_processing_activations: 1,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(
-            Arc::new(
-                InflightActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
-                )
-                .await
-                .unwrap(),
-            ),
-            writer_config,
+        let store = Arc::new(
+            InflightActivationStore::new(
+                &generate_temp_filename(),
+                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            )
+            .await
+            .unwrap(),
         );
+
         let received_at = Timestamp {
             seconds: 0,
             nanos: 0,
         };
+        let existing_activation = InflightActivation {
+            id: "existing".to_string(),
+            activation: TaskActivation {
+                id: "existing".to_string(),
+                namespace: "namespace".to_string(),
+                taskname: "existing_task".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: Some(received_at),
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: None,
+                delay: None,
+            }
+            .encode_to_vec(),
+            status: InflightActivationStatus::Processing,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            received_at: DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32)
+                .unwrap(),
+            processing_attempts: 0,
+            processing_deadline_duration: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "namespace".to_string(),
+            taskname: "existing_task".to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
+        };
+        store.store(vec![existing_activation]).await.unwrap();
+
+        let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
         let batch = vec![
             InflightActivation {
                 id: "0".to_string(),
@@ -675,7 +706,7 @@ mod tests {
                     delay: None,
                 }
                 .encode_to_vec(),
-                status: InflightActivationStatus::Processing,
+                status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -709,7 +740,7 @@ mod tests {
                     delay: None,
                 }
                 .encode_to_vec(),
-                status: InflightActivationStatus::Processing,
+                status: InflightActivationStatus::Pending,
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -748,6 +779,7 @@ mod tests {
             .count_by_status(InflightActivationStatus::Processing)
             .await
             .unwrap();
-        assert_eq!(count_processing, 0);
+        // Only the existing processing activation should remain, new ones should be blocked
+        assert_eq!(count_processing, 1);
     }
 }
