@@ -70,14 +70,13 @@ impl ConsumerService for TaskbrokerServer {
         let status: InflightActivationStatus =
             TaskActivationStatus::try_from(request.get_ref().status)
                 .map_err(|e| {
-                    Status::invalid_argument(format!("Unable to deserialize status: {:?}", e))
+                    Status::invalid_argument(format!("Unable to deserialize status: {e:?}"))
                 })?
                 .into();
 
         if !status.is_conclusion() {
             return Err(Status::invalid_argument(format!(
-                "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {:?}",
-                status
+                "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {status:?}"
             )));
         }
         if status == InflightActivationStatus::Failure {
