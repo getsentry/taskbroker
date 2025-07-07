@@ -16,7 +16,7 @@ fn emit_version() {
             .unwrap_or("unknown-rev".to_string())
     };
 
-    let release_name = format!("{}@{}+{}", package_name, package_version, git_commit_sha);
+    let release_name = format!("{package_name}@{package_version}+{git_commit_sha}");
     fs::write("./VERSION", &release_name).expect("Unable to write version");
     println!("cargo:rustc-env=TASKWORKER_VERSION={}", &release_name);
 }
