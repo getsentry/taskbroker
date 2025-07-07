@@ -105,10 +105,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
             for task_id in 0..num_activations {
                 if task_id % num_workers == worker_idx {
                     store
-                        .set_status(
-                            &format!("id_{}", task_id),
-                            InflightActivationStatus::Complete,
-                        )
+                        .set_status(&format!("id_{task_id}"), InflightActivationStatus::Complete)
                         .await
                         .unwrap();
                 }

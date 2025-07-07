@@ -1116,11 +1116,11 @@ async fn test_migrations() {
 
     // Move migrations to different folders
     let orig = fs::read_dir("./migrations");
-    assert!(orig.is_ok(), "{:?}", orig);
+    assert!(orig.is_ok(), "{orig:?}");
 
     let origdir = orig.unwrap();
     for result in origdir {
-        assert!(result.is_ok(), "{:?}", result);
+        assert!(result.is_ok(), "{result:?}");
         let entry = result.unwrap();
         let filename = entry.file_name().into_string().unwrap();
         // Write the initial migration to a separate folder, so the table can be initialized without any migrations.
@@ -1129,11 +1129,11 @@ async fn test_migrations() {
                 entry.path(),
                 folders.initial_folder.clone() + "/" + &filename,
             );
-            assert!(result.is_ok(), "{:?}", result);
+            assert!(result.is_ok(), "{result:?}");
         }
 
         let result = fs::copy(entry.path(), folders.other_folder.clone() + "/" + &filename);
-        assert!(result.is_ok(), "{:?}", result);
+        assert!(result.is_ok(), "{result:?}");
     }
 
     // Run initial migration
@@ -1143,7 +1143,7 @@ async fn test_migrations() {
         .unwrap()
         .run(&write_pool)
         .await;
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
 
     // Insert rows. Note that this query lines up with the 0001 migration table.
     let mut query_builder = QueryBuilder::<Sqlite>::new(
@@ -1187,7 +1187,7 @@ async fn test_migrations() {
         .push(" ON CONFLICT(id) DO NOTHING")
         .build();
     let result = query.execute(&write_pool).await;
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
     let meta_result: QueryResult = result.unwrap().into();
     assert_eq!(meta_result.rows_affected, 2);
 
@@ -1197,5 +1197,5 @@ async fn test_migrations() {
         .unwrap()
         .run(&write_pool)
         .await;
-    assert!(result.is_ok(), "{:?}", result);
+    assert!(result.is_ok(), "{result:?}");
 }

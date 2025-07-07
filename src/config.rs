@@ -129,6 +129,10 @@ pub struct Config {
     /// in the InflightTaskStore (sqlite)
     pub max_delay_count: usize,
 
+    /// The maximum number of processing records that can be
+    /// in the InflightTaskStore (sqlite)
+    pub max_processing_count: usize,
+
     /// The maximum number of times a task can be reset from
     /// processing back to pending. When this limit is reached,
     /// the activation will be discarded/deadlettered.
@@ -191,6 +195,7 @@ impl Default for Config {
             runtime_config_path: None,
             max_pending_count: 2048,
             max_delay_count: 8192,
+            max_processing_count: 2048,
             max_processing_attempts: 5,
             upkeep_task_interval_ms: 1000,
             maintenance_task_interval_ms: 6000,
@@ -308,6 +313,7 @@ mod tests {
         assert_eq!(config.kafka_topic, "taskworker");
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 2048);
+        assert_eq!(config.max_processing_count, 2048);
     }
 
     #[test]
@@ -329,6 +335,7 @@ mod tests {
                 kafka_auto_offset_reset: earliest
                 db_path: ./taskbroker-error.sqlite
                 max_pending_count: 512
+                max_processing_count: 512
                 max_processing_attempts: 5
             "#,
             )?;
@@ -358,6 +365,7 @@ mod tests {
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 512);
+            assert_eq!(config.max_processing_count, 512);
             assert_eq!(config.max_processing_attempts, 5);
 
             Ok(())
@@ -395,6 +403,7 @@ mod tests {
             assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 2048);
+            assert_eq!(config.max_processing_count, 2048);
             assert_eq!(config.max_processing_attempts, 5);
             assert_eq!(
                 config.default_metrics_tags,
