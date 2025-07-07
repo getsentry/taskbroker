@@ -466,11 +466,10 @@ pub async fn map<T>(
                     }
                     Err(e) => {
                         error!(
-                            "Failed to map message at \
-                            (topic: {}, partition: {}, offset: {}), reason: {}",
-                            msg.topic(),
-                            msg.partition(),
-                            msg.offset(),
+                            topic = ?msg.topic(),
+                            partition = ?msg.partition(),
+                            offset = ?msg.offset(),
+                            "Failed to map message: {:?}",
                             e,
                         );
                         err.send(
