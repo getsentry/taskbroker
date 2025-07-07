@@ -22,6 +22,7 @@ use super::consumer::{
 pub struct ActivationWriterConfig {
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
+    pub max_processing_activations: usize,
     pub max_delay_activations: usize,
     pub write_failure_backoff_ms: u64,
 }
@@ -32,6 +33,7 @@ impl ActivationWriterConfig {
         Self {
             max_buf_len: config.db_insert_batch_max_len,
             max_pending_activations: config.max_pending_count,
+            max_processing_activations: config.max_processing_count,
             max_delay_activations: config.max_delay_count,
             write_failure_backoff_ms: config.db_write_failure_backoff_ms,
         }
@@ -86,6 +88,13 @@ impl Reducer for InflightActivationWriter {
             .expect("Error communicating with activation store")
             + batch.len()
             > self.config.max_delay_activations;
+        let exceeded_processing_limit = self
+            .store
+            .count_by_status(InflightActivationStatus::Processing)
+            .await
+            .expect("Error communicating with activation store")
+            + batch.len()
+            > self.config.max_processing_activations;
 
         // Check if the entire batch is either pending or delay
         let has_delay = batch
@@ -96,11 +105,13 @@ impl Reducer for InflightActivationWriter {
             .any(|activation| activation.status == InflightActivationStatus::Pending);
 
         // Backpressure if any of these conditions are met:
-        // 1. The delay limit is exceeded AND either:
-        //    - there are delay activations in the batch, OR
-        //    - the pending limit is also exceeded
-        // 2. The pending limit is exceeded AND there are pending activations
-        if (has_delay || exceeded_pending_limit) && exceeded_delay_limit
+        // 1. The processing limit is exceeded
+        // 2. The delay limit is exceeded AND either:
+        //    a. There are delay activations in the batch, OR
+        //    b. The pending limit is also exceeded
+        // 3. The pending limit is exceeded AND there are pending activations
+        if exceeded_processing_limit
+            || exceeded_delay_limit && (has_delay || exceeded_pending_limit)
             || exceeded_pending_limit && has_pending
         {
             return Ok(None);
@@ -179,6 +190,7 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_processing_activations: 10,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
@@ -284,6 +296,7 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_processing_activations: 10,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
@@ -345,6 +358,7 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             max_buf_len: 100,
             max_pending_activations: 0,
+            max_processing_activations: 10,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
@@ -407,10 +421,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_writer_backpressure() {
+    async fn test_writer_backpressure_pending_limit_reached() {
         let writer_config = ActivationWriterConfig {
             max_buf_len: 100,
             max_pending_activations: 0,
+            max_processing_activations: 10,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
@@ -517,6 +532,7 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_processing_activations: 10,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
@@ -617,5 +633,121 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
+    }
+
+    #[tokio::test]
+    async fn test_writer_backpressure_processing_limit_reached() {
+        let writer_config = ActivationWriterConfig {
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_processing_activations: 0,
+            max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
+        };
+        let mut writer = InflightActivationWriter::new(
+            Arc::new(
+                InflightActivationStore::new(
+                    &generate_temp_filename(),
+                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                )
+                .await
+                .unwrap(),
+            ),
+            writer_config,
+        );
+        let received_at = Timestamp {
+            seconds: 0,
+            nanos: 0,
+        };
+        let batch = vec![
+            InflightActivation {
+                id: "0".to_string(),
+                activation: TaskActivation {
+                    id: "0".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "pending_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(received_at),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                }
+                .encode_to_vec(),
+                status: InflightActivationStatus::Processing,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .unwrap(),
+                processing_attempts: 0,
+                processing_deadline_duration: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+                taskname: "pending_task".to_string(),
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
+            },
+            InflightActivation {
+                id: "1".to_string(),
+                activation: TaskActivation {
+                    id: "1".to_string(),
+                    namespace: "namespace".to_string(),
+                    taskname: "delay_task".to_string(),
+                    parameters: "{}".to_string(),
+                    headers: HashMap::new(),
+                    received_at: Some(received_at),
+                    retry_state: None,
+                    processing_deadline_duration: 0,
+                    expires: None,
+                    delay: None,
+                }
+                .encode_to_vec(),
+                status: InflightActivationStatus::Processing,
+                partition: 0,
+                offset: 0,
+                added_at: Utc::now(),
+                received_at: DateTime::from_timestamp(
+                    received_at.seconds,
+                    received_at.nanos as u32,
+                )
+                .unwrap(),
+                processing_attempts: 0,
+                processing_deadline_duration: 0,
+                expires_at: None,
+                delay_until: None,
+                processing_deadline: None,
+                at_most_once: false,
+                namespace: "namespace".to_string(),
+                taskname: "delay_task".to_string(),
+                on_attempts_exceeded: OnAttemptsExceeded::Discard,
+            },
+        ];
+
+        writer.reduce(batch).await.unwrap();
+        let flush_result = writer.flush().await.unwrap();
+
+        assert!(flush_result.is_none());
+
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 0);
+        let count_delay = writer
+            .store
+            .count_by_status(InflightActivationStatus::Delay)
+            .await
+            .unwrap();
+        assert_eq!(count_delay, 0);
+        let count_processing = writer
+            .store
+            .count_by_status(InflightActivationStatus::Processing)
+            .await
+            .unwrap();
+        assert_eq!(count_processing, 0);
     }
 }
