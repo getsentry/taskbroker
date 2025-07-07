@@ -32,9 +32,9 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
         let now = Utc::now();
         #[allow(deprecated)]
         let item = InflightActivation {
-            id: format!("id_{}", i),
+            id: format!("id_{i}"),
             activation: TaskActivation {
-                id: format!("id_{}", i),
+                id: format!("id_{i}"),
                 namespace: "namespace".into(),
                 taskname: "taskname".into(),
                 parameters: "{}".into(),

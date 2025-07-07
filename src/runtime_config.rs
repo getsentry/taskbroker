@@ -121,7 +121,7 @@ droop_task_killswitch:
 
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
         let config = runtime_config.read().await;
-        println!("config: {:?}", config);
+        println!("config: {config:?}");
         assert_eq!(config.drop_task_killswitch.len(), 0);
 
         fs::remove_file(test_path).await.unwrap();

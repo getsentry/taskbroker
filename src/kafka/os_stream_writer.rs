@@ -45,8 +45,8 @@ where
             return Ok(None);
         };
         match self.os_stream {
-            OsStream::StdOut => println!("{:?}", data),
-            OsStream::StdErr => eprintln!("{:?}", data),
+            OsStream::StdOut => println!("{data:?}"),
+            OsStream::StdErr => eprintln!("{data:?}"),
         }
         sleep(self.print_duration).await;
         Ok(Some(()))
