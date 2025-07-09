@@ -1,6 +1,6 @@
 #!/bin/bash
 
-/devinfra/scripts/checks/googlecloud/check_cloudbuild.py \
+checks-googlecloud-check-cloudbuild \
 	sentryio \
 	taskbroker \
 	build-on-taskbroker-branch-push \
