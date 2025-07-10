@@ -241,12 +241,14 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
 
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
+    pub vacuum_page_count: Option<usize>,
 }
 
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_processing_attempts: config.max_processing_attempts,
+            vacuum_page_count: config.vacuum_page_count,
         }
     }
 }
@@ -271,13 +273,28 @@ impl InflightActivationStore {
     }
 
     /// Trigger incremental vacuum to reclaim free pages in the database.
+    /// Depending on config data, will either vacuum a set number of
+    /// pages or attempt to reclaim all free pages.
     #[instrument(skip_all)]
     pub async fn vacuum_db(&self) -> Result<(), Error> {
         let timer = Instant::now();
-        sqlx::query("PRAGMA incremental_vacuum")
-            .execute(&self.write_pool)
-            .await?;
+
+        if let Some(page_count) = self.config.vacuum_page_count {
+            sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
+                .execute(&self.write_pool)
+                .await?;
+        } else {
+            sqlx::query("PRAGMA incremental_vacuum")
+                .execute(&self.write_pool)
+                .await?;
+        }
+        let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
+            .fetch_one(&self.read_pool)
+            .await?
+            .get("freelist_count");
+
         metrics::histogram!("store.vacuum", "database" => "meta").record(timer.elapsed());
+        metrics::gauge!("store.vacuum.freelist", "database" => "meta").set(freelist_count);
         Ok(())
     }
 

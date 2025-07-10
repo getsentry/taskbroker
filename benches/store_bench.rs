@@ -27,6 +27,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
             &url,
             InflightActivationStoreConfig {
                 max_processing_attempts: 1,
+                vacuum_page_count: None,
             },
         )
         .await
@@ -83,6 +84,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
             &url,
             InflightActivationStoreConfig {
                 max_processing_attempts: 1,
+                vacuum_page_count: None,
             },
         )
         .await

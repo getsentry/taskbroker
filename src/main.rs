@@ -9,7 +9,7 @@ use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
@@ -99,8 +99,10 @@ async fn main() -> Result<(), Error> {
             loop {
                 select! {
                     _ = timer.tick() => {
-                        let _ = maintenance_store.vacuum_db().await;
-                        debug!("ran maintenance vacuum");
+                        match maintenance_store.vacuum_db().await {
+                            Ok(_) => debug!("ran maintenance vacuum"),
+                            Err(err) => warn!("failed to run maintenance vacuum {:?}", err),
+                        }
                     },
                     _ = guard.wait() => {
                         break;
