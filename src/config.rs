@@ -63,6 +63,15 @@ pub struct Config {
     /// The sasl password for ingesting messages
     pub kafka_sasl_password: Option<String>,
 
+    /// The location to the CA certificate file
+    pub kafka_ssl_ca_location: Option<String>,
+
+    /// The location to the certificate file
+    pub kafka_ssl_certificate_location: Option<String>,
+
+    /// The location to the private key file
+    pub kafka_ssl_key_location: Option<String>,
+
     /// Whether to create missing topics if they don't exist.
     pub create_missing_topics: bool,
 
@@ -84,6 +93,15 @@ pub struct Config {
 
     /// The sasl password for DLQ publishing
     pub kafka_deadletter_sasl_password: Option<String>,
+
+    /// The location to the DLQ CA certificate file
+    pub kafka_deadletter_ssl_ca_location: Option<String>,
+
+    /// The location to the DLQ certificate file
+    pub kafka_deadletter_ssl_certificate_location: Option<String>,
+
+    /// The location to the DLQ private key file
+    pub kafka_deadletter_ssl_key_location: Option<String>,
 
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
@@ -173,6 +191,9 @@ impl Default for Config {
             kafka_sasl_mechanism: None,
             kafka_sasl_username: None,
             kafka_sasl_password: None,
+            kafka_ssl_ca_location: None,
+            kafka_ssl_certificate_location: None,
+            kafka_ssl_key_location: None,
             kafka_security_protocol: None,
             kafka_topic: "taskworker".to_owned(),
             create_missing_topics: false,
@@ -182,6 +203,9 @@ impl Default for Config {
             kafka_deadletter_sasl_username: None,
             kafka_deadletter_sasl_password: None,
             kafka_deadletter_security_protocol: None,
+            kafka_deadletter_ssl_ca_location: None,
+            kafka_deadletter_ssl_certificate_location: None,
+            kafka_deadletter_ssl_key_location: None,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
@@ -251,6 +275,15 @@ impl Config {
         if let Some(security_protocol) = &self.kafka_security_protocol {
             config.set("security.protocol", security_protocol);
         }
+        if let Some(ssl_ca_location) = &self.kafka_ssl_ca_location {
+            config.set("ssl.ca.location", ssl_ca_location);
+        }
+        if let Some(ssl_certificate_location) = &self.kafka_ssl_certificate_location {
+            config.set("ssl.certificate.location", ssl_certificate_location);
+        }
+        if let Some(ssl_private_key_location) = &self.kafka_ssl_key_location {
+            config.set("ssl.key.location", ssl_private_key_location);
+        }
 
         config.clone()
     }
@@ -278,6 +311,16 @@ impl Config {
         if let Some(security_protocol) = &self.kafka_deadletter_security_protocol {
             config.set("security.protocol", security_protocol);
         }
+        if let Some(ssl_ca_location) = &self.kafka_deadletter_ssl_ca_location {
+            config.set("ssl.ca.location", ssl_ca_location);
+        }
+        if let Some(ssl_certificate_location) = &self.kafka_deadletter_ssl_certificate_location {
+            config.set("ssl.certificate.location", ssl_certificate_location);
+        }
+        if let Some(ssl_private_key_location) = &self.kafka_deadletter_ssl_key_location {
+            config.set("ssl.key.location", ssl_private_key_location);
+        }
+
         config.clone()
     }
 }
@@ -456,6 +499,43 @@ mod tests {
     }
 
     #[test]
+    fn test_kafka_consumer_config_ssl() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TASKBROKER_KAFKA_SSL_CA_LOCATION",
+                "/etc/ssl/ca-certificate.pem",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_SSL_CERTIFICATE_LOCATION",
+                "/etc/ssl/taskbroker/public.crt",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_SSL_KEY_LOCATION",
+                "/etc/ssl/taskbroker/private.key",
+            );
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let consumer_config = config.kafka_consumer_config();
+
+            assert_eq!(
+                consumer_config.get("ssl.ca.location").unwrap(),
+                "/etc/ssl/ca-certificate.pem",
+            );
+            assert_eq!(
+                consumer_config.get("ssl.certificate.location").unwrap(),
+                "/etc/ssl/taskbroker/public.crt"
+            );
+            assert_eq!(
+                consumer_config.get("ssl.key.location").unwrap(),
+                "/etc/ssl/taskbroker/private.key"
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
     fn test_kafka_producer_config() {
         let args = Args { config: None };
         let config = Config::from_args(&args).unwrap();
@@ -497,6 +577,43 @@ mod tests {
             );
             assert_eq!(producer_config.get("sasl.username").unwrap(), "taskbroker");
             assert_eq!(producer_config.get("sasl.password").unwrap(), "secret-tech");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kafka_producer_config_ssl() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TASKBROKER_KAFKA_DEADLETTER_SSL_CA_LOCATION",
+                "/etc/ssl/ca-certificate.pem",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_DEADLETTER_SSL_CERTIFICATE_LOCATION",
+                "/etc/ssl/taskbroker/public.crt",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_DEADLETTER_SSL_KEY_LOCATION",
+                "/etc/ssl/taskbroker/private.key",
+            );
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let producer_config = config.kafka_producer_config();
+
+            assert_eq!(
+                producer_config.get("ssl.ca.location").unwrap(),
+                "/etc/ssl/ca-certificate.pem",
+            );
+            assert_eq!(
+                producer_config.get("ssl.certificate.location").unwrap(),
+                "/etc/ssl/taskbroker/public.crt"
+            );
+            assert_eq!(
+                producer_config.get("ssl.key.location").unwrap(),
+                "/etc/ssl/taskbroker/private.key"
+            );
 
             Ok(())
         });
