@@ -153,6 +153,10 @@ pub struct Config {
     /// The maximum size allowed for a message on the Kafka producer.
     /// If a message is bigger than this then the produce will fail.
     pub max_message_size: u64,
+
+    /// The number of pages to vacuum from sqlite when vacuum is run.
+    /// If None, all pages will be vacuumed.
+    pub vacuum_page_count: Option<usize>,
 }
 
 impl Default for Config {
@@ -201,6 +205,7 @@ impl Default for Config {
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 10485760,
+            vacuum_page_count: None,
         }
     }
 }
@@ -314,6 +319,7 @@ mod tests {
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 2048);
         assert_eq!(config.max_processing_count, 2048);
+        assert_eq!(config.vacuum_page_count, None);
     }
 
     #[test]
@@ -337,6 +343,7 @@ mod tests {
                 max_pending_count: 512
                 max_processing_count: 512
                 max_processing_attempts: 5
+                vacuum_page_count: 1000
             "#,
             )?;
             // Env vars always override config file
@@ -367,6 +374,7 @@ mod tests {
             assert_eq!(config.max_pending_count, 512);
             assert_eq!(config.max_processing_count, 512);
             assert_eq!(config.max_processing_attempts, 5);
+            assert_eq!(config.vacuum_page_count, Some(1000));
 
             Ok(())
         });
