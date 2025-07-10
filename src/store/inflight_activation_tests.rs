@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::config::Config;
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
     InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
@@ -1064,6 +1065,37 @@ async fn test_clear() {
     assert!(store.clear().await.is_ok());
     assert_eq!(store.count().await.unwrap(), 0);
     assert_counts(StatusCount::default(), &store).await;
+}
+
+#[tokio::test]
+async fn test_vacuum_db_full() {
+    let store = create_test_store().await;
+
+    let batch = make_activations(2);
+    assert!(store.store(batch).await.is_ok());
+
+    let result = store.vacuum_db().await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_vacuum_db_incremental() {
+    let config = Config {
+        vacuum_page_count: Some(10),
+        ..Config::default()
+    };
+    let store = InflightActivationStore::new(
+        &generate_temp_filename(),
+        InflightActivationStoreConfig::from_config(&config),
+    )
+    .await
+    .expect("could not create store");
+
+    let batch = make_activations(2);
+    assert!(store.store(batch).await.is_ok());
+
+    let result = store.vacuum_db().await;
+    assert!(result.is_ok());
 }
 
 struct TestFolders {
