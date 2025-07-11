@@ -424,7 +424,7 @@ mod tests {
             assert_eq!(config.max_processing_count, 512);
             assert_eq!(config.max_processing_attempts, 5);
             assert_eq!(config.vacuum_page_count, Some(1000));
-            assert_eq!(config.full_vacuum_on_start, true);
+            assert!(config.full_vacuum_on_start);
 
             Ok(())
         });
