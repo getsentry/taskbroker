@@ -77,6 +77,13 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
     }
+    if config.full_vacuum_on_start {
+        info!("Running full vacuum on database");
+        match store.full_vacuum_db().await {
+            Ok(_) => info!("Full vacuum completed."),
+            Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
+        }
+    }
 
     // Upkeep loop
     let upkeep_task = tokio::spawn({
