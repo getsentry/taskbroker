@@ -86,8 +86,10 @@ impl ConsumerService for TaskbrokerServer {
         let update_result = self.store.set_status(&id, status).await;
         if let Err(e) = update_result {
             error!(
-                "Unable to update status of {:?} to {:?}: {:?}",
-                id, status, e
+                ?id,
+                ?status,
+                "Unable to update status of activation: {:?}",
+                e,
             );
             return Err(Status::internal(format!(
                 "Unable to update status of {id:?} to {status:?}"
