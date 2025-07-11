@@ -78,9 +78,9 @@ async fn main() -> Result<(), Error> {
         .await?;
     }
     if config.full_vacuum_on_start {
-        println!("Running full vacuum on database");
+        info!("Running full vacuum on database");
         match store.full_vacuum_db().await {
-            Ok(_) => println!("Full vacuum completed."),
+            Ok(_) => info!("Full vacuum completed."),
             Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
         }
     }
