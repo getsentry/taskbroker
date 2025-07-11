@@ -175,6 +175,10 @@ pub struct Config {
     /// The number of pages to vacuum from sqlite when vacuum is run.
     /// If None, all pages will be vacuumed.
     pub vacuum_page_count: Option<usize>,
+
+    /// Enable to have the application perform `VACUUM` on the database
+    /// when it starts up, but before the GRPC server, consumer and upkeep begin.
+    pub full_vacuum_on_start: bool,
 }
 
 impl Default for Config {
@@ -230,6 +234,7 @@ impl Default for Config {
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 10485760,
             vacuum_page_count: None,
+            full_vacuum_on_start: false,
         }
     }
 }
@@ -387,6 +392,7 @@ mod tests {
                 max_processing_count: 512
                 max_processing_attempts: 5
                 vacuum_page_count: 1000
+                full_vacuum_on_start: true
             "#,
             )?;
             // Env vars always override config file
@@ -418,6 +424,7 @@ mod tests {
             assert_eq!(config.max_processing_count, 512);
             assert_eq!(config.max_processing_attempts, 5);
             assert_eq!(config.vacuum_page_count, Some(1000));
+            assert_eq!(config.full_vacuum_on_start, true);
 
             Ok(())
         });

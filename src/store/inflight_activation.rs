@@ -298,6 +298,12 @@ impl InflightActivationStore {
         Ok(())
     }
 
+    /// Perform a full vacuum on the database.
+    pub async fn full_vacuum_db(&self) -> Result<(), Error> {
+        sqlx::query("VACUUM").execute(&self.write_pool).await?;
+        Ok(())
+    }
+
     /// Get an activation by id. Primarily used for testing
     pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
         let row_result: Option<TableRow> = sqlx::query_as(

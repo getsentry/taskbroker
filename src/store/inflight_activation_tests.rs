@@ -1068,7 +1068,18 @@ async fn test_clear() {
 }
 
 #[tokio::test]
-async fn test_vacuum_db_full() {
+async fn test_full_vacuum() {
+    let store = create_test_store().await;
+
+    let batch = make_activations(2);
+    assert!(store.store(batch).await.is_ok());
+
+    let result = store.full_vacuum_db().await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_vacuum_db_no_limit() {
     let store = create_test_store().await;
 
     let batch = make_activations(2);
