@@ -304,6 +304,18 @@ impl InflightActivationStore {
         Ok(())
     }
 
+    /// Get the size of the database in bytes based on SQLite metadata queries.
+    pub async fn db_size(&self) -> Result<u64, Error> {
+        let result: u64 = sqlx::query(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+        )
+        .fetch_one(&self.read_pool)
+        .await?
+        .get(0);
+
+        Ok(result)
+    }
+
     /// Get an activation by id. Primarily used for testing
     pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
         let row_result: Option<TableRow> = sqlx::query_as(
