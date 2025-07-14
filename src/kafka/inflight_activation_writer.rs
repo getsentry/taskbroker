@@ -24,6 +24,7 @@ pub struct ActivationWriterConfig {
     pub max_pending_activations: usize,
     pub max_processing_activations: usize,
     pub max_delay_activations: usize,
+    pub db_max_size: Option<u64>,
     pub write_failure_backoff_ms: u64,
 }
 
@@ -31,6 +32,7 @@ impl ActivationWriterConfig {
     /// Convert from application configuration into InflightActivationWriter config.
     pub fn from_config(config: &Config) -> Self {
         Self {
+            db_max_size: config.db_max_size,
             max_buf_len: config.db_insert_batch_max_len,
             max_pending_activations: config.max_pending_count,
             max_processing_activations: config.max_processing_count,
@@ -94,6 +96,15 @@ impl Reducer for InflightActivationWriter {
             .await
             .expect("Error communicating with activation store")
             >= self.config.max_processing_activations;
+        let exceeded_db_size = if let Some(db_max_size) = self.config.db_max_size {
+            self.store
+                .db_size()
+                .await
+                .expect("Error getting database size")
+                >= db_max_size
+        } else {
+            false
+        };
 
         // Check if the entire batch is either pending or delay
         let has_delay = batch
@@ -110,9 +121,25 @@ impl Reducer for InflightActivationWriter {
         //    b. The pending limit is also exceeded
         // 3. The pending limit is exceeded AND there are pending activations
         if exceeded_processing_limit
+            || exceeded_db_size
             || exceeded_delay_limit && (has_delay || exceeded_pending_limit)
             || exceeded_pending_limit && has_pending
         {
+            let reason = if exceeded_processing_limit {
+                "processing_limit"
+            } else if exceeded_delay_limit {
+                "delay_limit"
+            } else if exceeded_db_size {
+                "db_size_limit"
+            } else {
+                "pending_limit"
+            };
+            metrics::counter!(
+                "consumer.inflight_activation_writer.backpressure",
+                "reason" => reason,
+            )
+            .increment(1);
+
             return Ok(None);
         }
 
@@ -182,11 +209,13 @@ mod tests {
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     };
+    use crate::test_utils::make_activations;
     use crate::test_utils::{create_integration_config, generate_temp_filename};
 
     #[tokio::test]
     async fn test_writer_flush_batch() {
         let writer_config = ActivationWriterConfig {
+            db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
@@ -293,6 +322,7 @@ mod tests {
     #[tokio::test]
     async fn test_writer_flush_only_pending() {
         let writer_config = ActivationWriterConfig {
+            db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
@@ -355,6 +385,7 @@ mod tests {
     #[tokio::test]
     async fn test_writer_flush_only_delay() {
         let writer_config = ActivationWriterConfig {
+            db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 0,
             max_processing_activations: 10,
@@ -422,6 +453,7 @@ mod tests {
     #[tokio::test]
     async fn test_writer_backpressure_pending_limit_reached() {
         let writer_config = ActivationWriterConfig {
+            db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 0,
             max_processing_activations: 10,
@@ -529,6 +561,7 @@ mod tests {
     #[tokio::test]
     async fn test_writer_backpressure_only_delay_limit_reached_and_entire_batch_is_pending() {
         let writer_config = ActivationWriterConfig {
+            db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
@@ -637,6 +670,7 @@ mod tests {
     #[tokio::test]
     async fn test_writer_backpressure_processing_limit_reached() {
         let writer_config = ActivationWriterConfig {
+            db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 1,
@@ -781,5 +815,40 @@ mod tests {
             .unwrap();
         // Only the existing processing activation should remain, new ones should be blocked
         assert_eq!(count_processing, 1);
+    }
+
+    #[tokio::test]
+    async fn test_writer_backpressure_db_size_limit_reached() {
+        let writer_config = ActivationWriterConfig {
+            // 200 rows is ~50KB
+            db_max_size: Some(50_000),
+            max_buf_len: 100,
+            max_pending_activations: 5000,
+            max_processing_activations: 5000,
+            max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
+        };
+        let store = Arc::new(
+            InflightActivationStore::new(
+                &generate_temp_filename(),
+                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            )
+            .await
+            .unwrap(),
+        );
+        let first_round = make_activations(200);
+        store.store(first_round).await.unwrap();
+        assert!(store.db_size().await.unwrap() > 50_000);
+
+        // Make more activations that won't be stored.
+        let second_round = make_activations(10);
+
+        let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
+        writer.reduce(second_round).await.unwrap();
+        let flush_result = writer.flush().await.unwrap();
+        assert!(flush_result.is_none());
+
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 200);
     }
 }
