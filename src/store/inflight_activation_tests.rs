@@ -1112,18 +1112,16 @@ async fn test_vacuum_db_incremental() {
 #[tokio::test]
 async fn test_db_size() {
     let store = create_test_store().await;
-
     assert!(store.db_size().await.is_ok());
+
     let first_size = store.db_size().await.unwrap();
     assert!(first_size > 0, "should have some bytes");
-    println!("Initial DB size: {first_size} bytes");
 
     // Generate a large enough batch that we use another page.
     let batch = make_activations(50);
     assert!(store.store(batch).await.is_ok());
 
     let second_size = store.db_size().await.unwrap();
-    println!("second DB size: {second_size} bytes");
     assert!(second_size > first_size, "should have more bytes now");
 }
 
