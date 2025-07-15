@@ -1,6 +1,6 @@
 #!/bin/bash
 
-/devinfra/scripts/checks/githubactions/checkruns.py \
+checks-githubactions-checkruns \
 	"getsentry/taskbroker" \
 	"${GO_REVISION_TASKBROKER_REPO}" \
     "Tests (ubuntu)"
