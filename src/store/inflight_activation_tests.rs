@@ -1109,6 +1109,22 @@ async fn test_vacuum_db_incremental() {
     assert!(result.is_ok());
 }
 
+#[tokio::test]
+async fn test_db_size() {
+    let store = create_test_store().await;
+    assert!(store.db_size().await.is_ok());
+
+    let first_size = store.db_size().await.unwrap();
+    assert!(first_size > 0, "should have some bytes");
+
+    // Generate a large enough batch that we use another page.
+    let batch = make_activations(50);
+    assert!(store.store(batch).await.is_ok());
+
+    let second_size = store.db_size().await.unwrap();
+    assert!(second_size > first_size, "should have more bytes now");
+}
+
 struct TestFolders {
     parent_folder: String,
     initial_folder: String,

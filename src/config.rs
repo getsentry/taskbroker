@@ -136,6 +136,11 @@ pub struct Config {
     /// before being written to InflightTaskStore (sqlite).
     pub db_insert_batch_max_time_ms: u64,
 
+    /// The maximum size of the sqlite database in bytes.
+    /// If the database reaches or exceeds this size, ingestion will
+    /// pause until the database size is reduced.
+    pub db_max_size: Option<u64>,
+
     /// The path to the runtime config file
     pub runtime_config_path: Option<String>,
 
@@ -224,6 +229,7 @@ impl Default for Config {
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
             db_insert_batch_max_time_ms: 1000,
+            db_max_size: None,
             runtime_config_path: None,
             max_pending_count: 2048,
             max_delay_count: 8192,
@@ -388,6 +394,7 @@ mod tests {
                 kafka_deadletter_topic: error-tasks-dlq
                 kafka_auto_offset_reset: earliest
                 db_path: ./taskbroker-error.sqlite
+                db_max_size: 3000000000
                 max_pending_count: 512
                 max_processing_count: 512
                 max_processing_attempts: 5
@@ -424,6 +431,7 @@ mod tests {
             assert_eq!(config.max_processing_count, 512);
             assert_eq!(config.max_processing_attempts, 5);
             assert_eq!(config.vacuum_page_count, Some(1000));
+            assert_eq!(config.db_max_size, Some(3_000_000_000));
             assert!(config.full_vacuum_on_start);
 
             Ok(())
