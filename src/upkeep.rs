@@ -247,6 +247,7 @@ pub async fn do_upkeep(
     if let Ok(delay_count) = store.count_by_status(InflightActivationStatus::Delay).await {
         result_context.delay = delay_count as u32;
     }
+    let max_lag = store.pending_activation_max_lag(&Utc::now()).await;
 
     if !result_context.empty() {
         debug!(
@@ -292,6 +293,7 @@ pub async fn do_upkeep(
     metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
     metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
     metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
+    metrics::gauge!("upkeep.pending_activation.max_lag").set(max_lag as f64);
 
     result_context
 }

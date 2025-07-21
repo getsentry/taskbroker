@@ -780,4 +780,36 @@ impl InflightActivationStore {
 
         Ok(query.rows_affected())
     }
+
+    /// Get the age of the oldest pending activation
+    /// Only activations with status=pending and processing_attempts=0 are considered
+    /// as we are interested in latency to the *first* attempt.
+    /// Tasks with delay_until set, will have their age adjusted based on their
+    /// delay time.
+    pub async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> i64 {
+        let result = sqlx::query(
+            "SELECT received_at, delay_until
+            FROM inflight_taskactivations
+            WHERE status = $1
+            AND processing_attempts = 0
+            ORDER BY received_at ASC
+            LIMIT 1
+            ",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .fetch_one(&self.read_pool)
+        .await;
+
+        if let Ok(row) = result {
+            let received_at: DateTime<Utc> = row.get("received_at");
+            let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
+            now.signed_duration_since(received_at).num_seconds()
+                - delay_until.map_or(0, |delay_time| {
+                    delay_time.signed_duration_since(received_at).num_seconds()
+                })
+        } else {
+            // If we couldn't find a row, there is no latency.
+            0
+        }
+    }
 }
