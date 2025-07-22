@@ -34,7 +34,7 @@ jobs:
             <{1}+{0}@users.noreply.github.com>', github.event.sender.login,
             github.event.sender.id) }}
           committer_name: sentry-taskbroker-fast-revert-bot
-          committer_email: 1330327+sentry-taskbroker-fast-revert-bot@users.noreply.github.com
+          committer_email: 1330327+sentry-taskbroker-fast-revert-bot[bot]@users.noreply.github.com
           token: ${{ steps.token.outputs.token }}
 
       - name: comment on failure
