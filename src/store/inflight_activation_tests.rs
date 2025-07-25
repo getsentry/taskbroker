@@ -130,7 +130,11 @@ async fn test_get_pending_activation() {
 
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
-    assert!(result.processing_deadline.unwrap() > Utc::now());
+    assert_eq!(result.processing_deadline_duration, 10);
+    assert!(
+        result.processing_deadline.unwrap().timestamp() >= Utc::now().timestamp() + 13,
+        "Should be at least processing_deadline_duration + grace period ahead"
+    );
     assert_counts(
         StatusCount {
             pending: 1,
