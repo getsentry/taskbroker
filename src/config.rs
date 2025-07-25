@@ -161,6 +161,11 @@ pub struct Config {
     /// the activation will be discarded/deadlettered.
     pub max_processing_attempts: usize,
 
+    /// The number of additional seconds that processing deadlines
+    /// are extended by. This helps reduce broker deadline resets when
+    /// brokers are under load, or there are small networking delays.
+    pub processing_deadline_grace_sec: i64,
+
     /// The frequency at which upkeep tasks
     /// (discarding, retrying activations, etc.) are executed.
     pub upkeep_task_interval_ms: u64,
@@ -235,6 +240,7 @@ impl Default for Config {
             max_delay_count: 8192,
             max_processing_count: 2048,
             max_processing_attempts: 5,
+            processing_deadline_grace_sec: 3,
             upkeep_task_interval_ms: 1000,
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
