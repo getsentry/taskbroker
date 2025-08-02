@@ -1,4 +1,4 @@
-use chrono::{Timelike, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use futures::{StreamExt, stream::FuturesUnordered};
 use prost::Message;
 use prost_types::Timestamp;
@@ -23,7 +23,11 @@ use crate::{
 
 /// The upkeep task that periodically performs upkeep
 /// on the inflight store
-pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
+pub async fn upkeep(
+    config: Arc<Config>,
+    store: Arc<InflightActivationStore>,
+    startup_time: DateTime<Utc>,
+) {
     let kafka_config = config.kafka_producer_config();
     let producer: Arc<FutureProducer> = Arc::new(
         kafka_config
@@ -37,7 +41,12 @@ pub async fn upkeep(config: Arc<Config>, store: Arc<InflightActivationStore>) {
     loop {
         select! {
             _ = timer.tick() => {
-                let _ = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
+                let _ = do_upkeep(
+                    config.clone(),
+                    store.clone(),
+                    producer.clone(),
+                    startup_time,
+                ).await;
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
@@ -85,7 +94,9 @@ pub async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<InflightActivationStore>,
     producer: Arc<FutureProducer>,
+    startup_time: DateTime<Utc>,
 ) -> UpkeepResults {
+    let current_time = Utc::now();
     let upkeep_start = Instant::now();
     let mut result_context = UpkeepResults {
         retried: 0,
@@ -151,12 +162,17 @@ pub async fn do_upkeep(
     metrics::histogram!("upkeep.handle_retries").record(handle_retries_start.elapsed());
 
     // 4. Handle processing deadlines
-    let handle_processing_deadline_start = Instant::now();
-    if let Ok(processing_deadline_reset) = store.handle_processing_deadline().await {
-        result_context.processing_deadline_reset = processing_deadline_reset;
+    let seconds_since_startup = (current_time - startup_time).num_seconds() as u64;
+    if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
+        let handle_processing_deadline_start = Instant::now();
+        if let Ok(processing_deadline_reset) = store.handle_processing_deadline().await {
+            result_context.processing_deadline_reset = processing_deadline_reset;
+        }
+        metrics::histogram!("upkeep.handle_processing_deadline")
+            .record(handle_processing_deadline_start.elapsed());
+    } else {
+        metrics::counter!("upkeep.handle_processing_deadline.skipped").increment(1);
     }
-    metrics::histogram!("upkeep.handle_processing_deadline")
-        .record(handle_processing_deadline_start.elapsed());
 
     // 5. Handle processing attempts exceeded
     let handle_processing_attempts_exceeded_start = Instant::now();
@@ -334,8 +350,9 @@ mod tests {
             InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
         },
         test_utils::{
-            consume_topic, create_config, create_integration_config, create_producer,
-            generate_temp_filename, make_activations, replace_retry_state, reset_topic,
+            StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
+            create_producer, generate_temp_filename, make_activations, replace_retry_state,
+            reset_topic,
         },
         upkeep::{create_retry_activation, do_upkeep},
     };
@@ -437,6 +454,7 @@ mod tests {
         let config = create_integration_config();
         reset_topic(config.clone()).await;
 
+        let start_time = Utc::now();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
@@ -471,7 +489,7 @@ mod tests {
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
-        let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
+        let result_context = do_upkeep(config.clone(), store.clone(), producer, start_time).await;
 
         // Only 1 record left as the retry task should be appended as a new task
         assert_eq!(store.count().await.unwrap(), 1);
@@ -507,14 +525,15 @@ mod tests {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
+        let start_time = Utc::now() - Duration::from_secs(90);
 
         let mut batch = make_activations(2);
-        // Make a task past with a future processing deadline
+        // Make a task with a future processing deadline
         batch[1].status = InflightActivationStatus::Processing;
         batch[1].processing_deadline = Some(Utc::now() + TimeDelta::minutes(5));
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let _ = do_upkeep(config, store.clone(), producer).await;
+        let _ = do_upkeep(config, store.clone(), producer, start_time).await;
 
         // Should retain the processing record
         assert_eq!(
@@ -527,7 +546,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_processing_deadline_updates_past_deadline() {
+    async fn test_processing_deadline_skip_past_deadline_after_startup() {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
@@ -548,24 +567,61 @@ mod tests {
             1
         );
 
-        let result_context = do_upkeep(config, store.clone(), producer).await;
+        // Simulate upkeep running in the first minute
+        let start_time = Utc::now() - Duration::from_secs(50);
+        assert_eq!(60, config.upkeep_deadline_reset_skip_after_startup_sec);
 
-        // 0 processing, 2 pending now
-        assert_eq!(result_context.processing_deadline_reset, 1);
+        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+
+        // No changes
+        assert_counts(
+            StatusCount {
+                pending: 1,
+                processing: 1,
+                ..StatusCount::default()
+            },
+            &store,
+        )
+        .await;
+        assert_eq!(result_context.processing_deadline_reset, 0);
+    }
+
+    #[tokio::test]
+    async fn test_processing_deadline_updates_past_deadline() {
+        let config = create_config();
+        let store = create_inflight_store().await;
+        let producer = create_producer(config.clone());
+        let start_time = Utc::now() - Duration::from_secs(90);
+
+        let mut batch = make_activations(2);
+        // Make a task past with a processing deadline in the past
+        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].processing_deadline =
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        assert!(store.store(batch.clone()).await.is_ok());
+
+        // Should start off with one in processing
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Processing)
                 .await
                 .unwrap(),
-            0
+            1
         );
-        assert_eq!(
-            store
-                .count_by_status(InflightActivationStatus::Pending)
-                .await
-                .unwrap(),
-            2
-        );
+
+        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+
+        // 0 processing, 2 pending now
+        assert_eq!(result_context.processing_deadline_reset, 1);
+        assert_counts(
+            StatusCount {
+                processing: 0,
+                pending: 2,
+                ..StatusCount::default()
+            },
+            &store,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -573,6 +629,7 @@ mod tests {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
+        let start_time = Utc::now() - Duration::from_secs(90);
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
@@ -592,24 +649,19 @@ mod tests {
         batch[1].at_most_once = true;
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result_context = do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
 
         // 0 processing, 1 pending, 1 discarded
         assert_eq!(result_context.discarded, 1);
-        assert_eq!(
-            store
-                .count_by_status(InflightActivationStatus::Processing)
-                .await
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            store
-                .count_by_status(InflightActivationStatus::Pending)
-                .await
-                .unwrap(),
-            1
-        );
+        assert_counts(
+            StatusCount {
+                processing: 0,
+                pending: 1,
+                ..StatusCount::default()
+            },
+            &store,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -617,6 +669,7 @@ mod tests {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
+        let start_time = Utc::now();
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
@@ -629,7 +682,7 @@ mod tests {
         batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
-        let result_context = do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
 
         assert_eq!(result_context.processing_attempts_exceeded, 2); // batch[0] and batch[2] are removed due to max processing_attempts exceeded
         assert_eq!(result_context.discarded, 2); // batch[0] and batch[2] are discarded
@@ -659,6 +712,7 @@ mod tests {
 
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
+        let start_time = Utc::now();
         let mut records = make_activations(2);
         replace_retry_state(
             &mut records[0],
@@ -674,7 +728,7 @@ mod tests {
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
-        let result_context = do_upkeep(config.clone(), store.clone(), producer).await;
+        let result_context = do_upkeep(config.clone(), store.clone(), producer, start_time).await;
 
         // Only 1 record left as the failure task should be appended to dlq
         assert_eq!(result_context.deadlettered, 1);
@@ -697,13 +751,14 @@ mod tests {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
+        let start_time = Utc::now();
 
         let mut batch = make_activations(2);
         batch[0].status = InflightActivationStatus::Failure;
         batch[1].added_at += Duration::from_secs(1);
         assert!(store.store(batch).await.is_ok());
 
-        let result_context = do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
 
         assert_eq!(result_context.discarded, 1);
         assert_eq!(result_context.completed, 1);
@@ -727,6 +782,7 @@ mod tests {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
+        let start_time = Utc::now();
 
         let mut batch = make_activations(4);
 
@@ -739,7 +795,7 @@ mod tests {
         batch[3].added_at += Duration::from_secs(1);
 
         assert!(store.store(batch.clone()).await.is_ok());
-        let result_context = do_upkeep(config, store.clone(), producer).await;
+        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
 
         assert_eq!(result_context.expired, 2); // 0/2 removed as expired
         assert_eq!(result_context.completed, 1); // 1 complete
@@ -783,6 +839,7 @@ mod tests {
         let config = create_config();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
+        let start_time = Utc::now();
 
         let mut batch = make_activations(2);
 
@@ -807,7 +864,8 @@ mod tests {
                 .unwrap(),
             0
         );
-        let result_context = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
+        let result_context =
+            do_upkeep(config.clone(), store.clone(), producer.clone(), start_time).await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
@@ -826,8 +884,10 @@ mod tests {
             "id_0",
         );
         assert!(store.get_pending_activation(None).await.unwrap().is_none());
+
         sleep(Duration::from_secs(2)).await;
-        let result_context = do_upkeep(config.clone(), store.clone(), producer.clone()).await;
+        let result_context =
+            do_upkeep(config.clone(), store.clone(), producer.clone(), start_time).await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
