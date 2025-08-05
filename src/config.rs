@@ -164,7 +164,7 @@ pub struct Config {
     /// The number of additional seconds that processing deadlines
     /// are extended by. This helps reduce broker deadline resets when
     /// brokers are under load, or there are small networking delays.
-    pub processing_deadline_grace_sec: i64,
+    pub processing_deadline_grace_sec: u64,
 
     /// The frequency at which upkeep tasks
     /// (discarding, retrying activations, etc.) are executed.
