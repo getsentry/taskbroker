@@ -1,4 +1,5 @@
 use anyhow::{Error, anyhow};
+use chrono::Utc;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
 use taskbroker::kafka::inflight_activation_batcher::{
@@ -84,13 +85,15 @@ async fn main() -> Result<(), Error> {
             Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
         }
     }
+    // Get startup time after migrations and vacuum
+    let startup_time = Utc::now();
 
     // Upkeep loop
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
         async move {
-            upkeep(upkeep_config, upkeep_store).await;
+            upkeep(upkeep_config, upkeep_store, startup_time).await;
             Ok(())
         }
     });
