@@ -241,6 +241,7 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
 
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
+    pub processing_deadline_grace_sec: u64,
     pub vacuum_page_count: Option<usize>,
 }
 
@@ -249,6 +250,7 @@ impl InflightActivationStoreConfig {
         Self {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
+            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
         }
     }
 }
@@ -430,15 +432,15 @@ impl InflightActivationStore {
     ) -> Result<Option<InflightActivation>, Error> {
         let now = Utc::now();
 
-        let mut query_builder = QueryBuilder::new(
-            "
-            UPDATE inflight_taskactivations
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let mut query_builder = QueryBuilder::new(format!(
+            "UPDATE inflight_taskactivations
             SET
                 processing_deadline = unixepoch(
-                    'now', '+' || processing_deadline_duration || ' seconds'
+                    'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
                 ),
-                status = ",
-        );
+                status = "
+        ));
         query_builder.push_bind(InflightActivationStatus::Processing);
         query_builder.push(
             "
