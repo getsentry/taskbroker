@@ -1125,6 +1125,69 @@ async fn test_db_size() {
     assert!(second_size > first_size, "should have more bytes now");
 }
 
+#[tokio::test]
+async fn test_pending_activation_max_lag_no_pending() {
+    let now = Utc::now();
+    let store = create_test_store().await;
+    // No activations, max lag is 0
+    assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
+
+    let mut processing = make_activations(1);
+    processing[0].status = InflightActivationStatus::Processing;
+    assert!(store.store(processing).await.is_ok());
+
+    // No pending activations, max lag is 0
+    assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
+}
+
+#[tokio::test]
+async fn test_pending_activation_max_lag_use_oldest() {
+    let now = Utc::now();
+    let store = create_test_store().await;
+
+    let mut pending = make_activations(2);
+    pending[0].received_at = now - Duration::from_secs(10);
+    pending[1].received_at = now - Duration::from_secs(500);
+    assert!(store.store(pending).await.is_ok());
+
+    let result = store.pending_activation_max_lag(&now).await;
+    assert!(11.0 < result, "Should not get the small record");
+    assert!(result < 501.0, "Should not get an inflated value");
+}
+
+#[tokio::test]
+async fn test_pending_activation_max_lag_ignore_processing_attempts() {
+    let now = Utc::now();
+    let store = create_test_store().await;
+
+    let mut pending = make_activations(2);
+    pending[0].received_at = now - Duration::from_secs(10);
+    pending[1].received_at = now - Duration::from_secs(500);
+    pending[1].processing_attempts = 1;
+    assert!(store.store(pending).await.is_ok());
+
+    let result = store.pending_activation_max_lag(&now).await;
+    assert!(10.00 < result);
+    assert!(result < 11.00);
+}
+
+#[tokio::test]
+async fn test_pending_activation_max_lag_account_for_delayed() {
+    let now = Utc::now();
+    let store = create_test_store().await;
+
+    let mut pending = make_activations(2);
+    // delayed tasks are received well before they become pending
+    // the lag of a delayed task should begin *after* the delay has passed.
+    pending[0].received_at = now - Duration::from_secs(520);
+    pending[0].delay_until = Some(now - Duration::from_millis(22020));
+    assert!(store.store(pending).await.is_ok());
+
+    let result = store.pending_activation_max_lag(&now).await;
+    assert!(22.00 < result, "result: {result}");
+    assert!(result < 23.00, "result: {result}");
+}
+
 struct TestFolders {
     parent_folder: String,
     initial_folder: String,
