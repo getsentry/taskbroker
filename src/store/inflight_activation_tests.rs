@@ -1151,7 +1151,6 @@ async fn test_pending_activation_max_lag_use_oldest() {
     assert!(store.store(pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
-    println!("{:?}", result);
     assert!(11.0 < result, "Should not get the small record");
     assert!(result < 501.0, "Should not get an inflated value");
 }
