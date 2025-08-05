@@ -1141,6 +1141,22 @@ async fn test_pending_activation_max_lag_no_pending() {
 }
 
 #[tokio::test]
+async fn test_pending_activation_max_lag_use_oldest() {
+    let now = Utc::now();
+    let store = create_test_store().await;
+
+    let mut pending = make_activations(2);
+    pending[0].received_at = now - Duration::from_secs(10);
+    pending[1].received_at = now - Duration::from_secs(500);
+    assert!(store.store(pending).await.is_ok());
+
+    let result = store.pending_activation_max_lag(&now).await;
+    println!("{:?}", result);
+    assert!(11.0 < result, "Should not get the small record");
+    assert!(result < 501.0, "Should not get an inflated value");
+}
+
+#[tokio::test]
 async fn test_pending_activation_max_lag_ignore_processing_attempts() {
     let now = Utc::now();
     let store = create_test_store().await;
