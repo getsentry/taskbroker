@@ -309,7 +309,7 @@ pub async fn do_upkeep(
     metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
     metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
     metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
-    metrics::gauge!("upkeep.pending_activation.max_lag.ms").set(max_lag);
+    metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
     result_context
 }
