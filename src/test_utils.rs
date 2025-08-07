@@ -181,12 +181,9 @@ pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<Retr
     let mut activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
     activation.retry_state = retry;
     inflight.activation = activation.encode_to_vec();
-    if retry.is_some() {
-        inflight.on_attempts_exceeded = retry
-            .unwrap()
-            .on_attempts_exceeded
-            .try_into()
-            .expect("invalid enum");
+    if let Some(retry) = retry {
+        inflight.on_attempts_exceeded =
+            retry.on_attempts_exceeded.try_into().expect("invalid enum");
     } else {
         inflight.on_attempts_exceeded = OnAttemptsExceeded::Discard;
     }
