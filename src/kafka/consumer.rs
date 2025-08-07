@@ -876,11 +876,11 @@ mod tests {
         type Output = ();
 
         async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
-            if let Some(idx) = self.error_on_idx {
-                if idx == self.pipe.read().unwrap().len() {
-                    self.error_on_idx.take();
-                    return Err(anyhow!("err"));
-                }
+            if let Some(idx) = self.error_on_idx
+                && idx == self.pipe.read().unwrap().len()
+            {
+                self.error_on_idx.take();
+                return Err(anyhow!("err"));
             }
             assert!(self.data.is_none());
             self.data = Some(t);
