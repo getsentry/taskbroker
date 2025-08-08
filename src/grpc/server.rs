@@ -97,41 +97,11 @@ impl ConsumerService for TaskbrokerServer {
         }
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
-        if let Ok(Some(inflight_activation)) = update_result {
-            let duration = Utc::now() - inflight_activation.added_at;
-            metrics::histogram!(
-                "task_execution.conclusion.duration",
-                "namespace" => inflight_activation.namespace.clone(),
-                "taskname" => inflight_activation.taskname.clone(),
-            )
-            .record(duration.num_milliseconds() as f64);
-
-            // Record the time taken from when the task started processing to when it finished
-            // Use the processing deadline to calculate the time taken
-            if let Some(processing_deadline) = inflight_activation.processing_deadline {
-                let execution_remaining =
-                    processing_deadline.timestamp_millis() - Utc::now().timestamp_millis();
-
-                // If the task has passed the processing deadline, then execution_remaining will be negative
-                // This then gets added to the processing deadline duration to get the execution time
-                let execution_time = (inflight_activation.processing_deadline_duration as i64
-                    * 1000)
-                    - execution_remaining;
-                metrics::histogram!(
-                    "task_execution.completion_time",
-                    "namespace" => inflight_activation.namespace,
-                    "taskname" => inflight_activation.taskname,
-                )
-                .record(execution_time as f64);
-            }
-        }
-
         let Some(FetchNextTask { ref namespace }) = request.get_ref().fetch_next_task else {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         };
 
         let start_time = Instant::now();
-
         let res = match self
             .store
             .get_pending_activation(namespace.as_deref())
