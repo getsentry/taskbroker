@@ -183,7 +183,7 @@ pub struct Config {
     /// Tasks delayed greater than this duration are capped.
     pub max_delayed_task_allowed_sec: u64,
 
-    /// The maximum size allowed for a message on the Kafka producer.
+    /// The maximum number of bytes allowed for a message on the Kafka producer.
     /// If a message is bigger than this then the produce will fail.
     pub max_message_size: u64,
 
@@ -239,7 +239,7 @@ impl Default for Config {
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
             db_insert_batch_max_time_ms: 1000,
-            db_max_size: None,
+            db_max_size: Some(3000000000),
             runtime_config_path: None,
             max_pending_count: 2048,
             max_delay_count: 8192,
@@ -250,9 +250,9 @@ impl Default for Config {
             upkeep_deadline_reset_skip_after_startup_sec: 60,
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
-            max_message_size: 10485760,
+            max_message_size: 5000000,
             vacuum_page_count: None,
-            full_vacuum_on_start: false,
+            full_vacuum_on_start: true,
         }
     }
 }
