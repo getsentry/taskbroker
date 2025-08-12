@@ -92,6 +92,7 @@ async fn main() -> Result<(), Error> {
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
+        let runtime_config_manager = runtime_config_manager.clone();
         async move {
             upkeep(
                 upkeep_config,
@@ -133,6 +134,7 @@ async fn main() -> Result<(), Error> {
     let consumer_task = tokio::spawn({
         let consumer_store = store.clone();
         let consumer_config = config.clone();
+        let runtime_config_manager = runtime_config_manager.clone();
         async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
