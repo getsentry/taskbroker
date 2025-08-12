@@ -61,7 +61,7 @@ pub async fn upkeep(
 
 // Debugging context
 #[derive(Debug)]
-struct UpkeepResults {
+pub struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
     processing_attempts_exceeded: u64,
