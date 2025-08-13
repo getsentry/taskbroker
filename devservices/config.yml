@@ -16,7 +16,7 @@ x-sentry-service-config:
     containerized: [kafka, taskbroker]
 
 x-programs:
-  taskbroker:
+  devserver:
     command: cargo run
 
 services:
