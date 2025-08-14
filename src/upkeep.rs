@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
+    runtime_config::RuntimeConfigManager,
     store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
 };
 
@@ -27,6 +28,7 @@ pub async fn upkeep(
     config: Arc<Config>,
     store: Arc<InflightActivationStore>,
     startup_time: DateTime<Utc>,
+    runtime_config_manager: Arc<RuntimeConfigManager>,
 ) {
     let kafka_config = config.kafka_producer_config();
     let producer: Arc<FutureProducer> = Arc::new(
@@ -46,6 +48,7 @@ pub async fn upkeep(
                     store.clone(),
                     producer.clone(),
                     startup_time,
+                    runtime_config_manager.clone(),
                 ).await;
             }
             _ = guard.wait() => {
@@ -58,7 +61,7 @@ pub async fn upkeep(
 
 // Debugging context
 #[derive(Debug)]
-struct UpkeepResults {
+pub struct UpkeepResults {
     retried: u64,
     processing_deadline_reset: u64,
     processing_attempts_exceeded: u64,
@@ -71,6 +74,7 @@ struct UpkeepResults {
     delay: u32,
     deadlettered: u64,
     discarded: u64,
+    killswitched: u64,
 }
 
 impl UpkeepResults {
@@ -86,15 +90,20 @@ impl UpkeepResults {
             && self.delay == 0
             && self.discarded == 0
             && self.deadlettered == 0
+            && self.killswitched == 0
     }
 }
 
-#[instrument(name = "upkeep::do_upkeep", skip(store, config, producer))]
+#[instrument(
+    name = "upkeep::do_upkeep",
+    skip(store, config, producer, runtime_config_manager)
+)]
 pub async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<InflightActivationStore>,
     producer: Arc<FutureProducer>,
     startup_time: DateTime<Utc>,
+    runtime_config_manager: Arc<RuntimeConfigManager>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -111,6 +120,7 @@ pub async fn do_upkeep(
         delay: 0,
         deadlettered: 0,
         discarded: 0,
+        killswitched: 0,
     };
 
     // 1. Handle retry tasks
@@ -248,6 +258,18 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
 
+    // 11. Remove killswitched tasks from store
+    let runtime_config = runtime_config_manager.read().await;
+    let killswitched_tasks = runtime_config.drop_task_killswitch.clone();
+    if !killswitched_tasks.is_empty() {
+        let remove_killswitched_start = Instant::now();
+        if let Ok(count) = store.remove_killswitched(killswitched_tasks).await {
+            result_context.killswitched = count;
+        }
+        metrics::histogram!("upkeep.remove_killswitched")
+            .record(remove_killswitched_start.elapsed());
+    }
+
     if let Ok(pending_count) = store
         .count_by_status(InflightActivationStatus::Pending)
         .await
@@ -345,9 +367,11 @@ mod tests {
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
     use std::sync::Arc;
     use std::time::Duration;
+    use tokio::fs;
     use tokio::time::sleep;
 
     use crate::{
+        runtime_config::RuntimeConfigManager,
         store::inflight_activation::{
             InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
         },
@@ -454,6 +478,7 @@ mod tests {
     #[tokio::test]
     async fn test_retry_activation_is_appended_to_kafka() {
         let config = create_integration_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
         let start_time = Utc::now();
@@ -491,7 +516,14 @@ mod tests {
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
-        let result_context = do_upkeep(config.clone(), store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config.clone(),
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         // Only 1 record left as the retry task should be appended as a new task
         assert_eq!(store.count().await.unwrap(), 1);
@@ -525,6 +557,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_deadline_retains_future_deadline() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
@@ -535,7 +568,14 @@ mod tests {
         batch[1].processing_deadline = Some(Utc::now() + TimeDelta::minutes(5));
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let _ = do_upkeep(config, store.clone(), producer, start_time).await;
+        let _ = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         // Should retain the processing record
         assert_eq!(
@@ -550,6 +590,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_deadline_skip_past_deadline_after_startup() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
 
@@ -573,7 +614,14 @@ mod tests {
         let start_time = Utc::now() - Duration::from_secs(50);
         assert_eq!(60, config.upkeep_deadline_reset_skip_after_startup_sec);
 
-        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         // No changes
         assert_counts(
@@ -591,6 +639,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_deadline_updates_past_deadline() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
@@ -611,7 +660,14 @@ mod tests {
             1
         );
 
-        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         // 0 processing, 2 pending now
         assert_eq!(result_context.processing_deadline_reset, 1);
@@ -629,6 +685,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_deadline_discard_at_most_once() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
@@ -651,7 +708,14 @@ mod tests {
         batch[1].at_most_once = true;
         assert!(store.store(batch.clone()).await.is_ok());
 
-        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         // 0 processing, 1 pending, 1 discarded
         assert_eq!(result_context.discarded, 1);
@@ -669,6 +733,7 @@ mod tests {
     #[tokio::test]
     async fn test_processing_attempts_exceeded_discard() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
@@ -684,7 +749,14 @@ mod tests {
         batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
-        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         assert_eq!(result_context.processing_attempts_exceeded, 2); // batch[0] and batch[2] are removed due to max processing_attempts exceeded
         assert_eq!(result_context.discarded, 2); // batch[0] and batch[2] are discarded
@@ -710,6 +782,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove_at_remove_failed_publish_to_kafka() {
         let config = create_integration_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
         let store = create_inflight_store().await;
@@ -730,7 +803,14 @@ mod tests {
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
-        let result_context = do_upkeep(config.clone(), store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config.clone(),
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         // Only 1 record left as the failure task should be appended to dlq
         assert_eq!(result_context.deadlettered, 1);
@@ -751,6 +831,7 @@ mod tests {
     #[tokio::test]
     async fn test_remove_failed_discard() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
@@ -760,7 +841,14 @@ mod tests {
         batch[1].added_at += Duration::from_secs(1);
         assert!(store.store(batch).await.is_ok());
 
-        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         assert_eq!(result_context.discarded, 1);
         assert_eq!(result_context.completed, 1);
@@ -782,6 +870,7 @@ mod tests {
     #[tokio::test]
     async fn test_expired_discard() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
@@ -797,7 +886,14 @@ mod tests {
         batch[3].added_at += Duration::from_secs(1);
 
         assert!(store.store(batch.clone()).await.is_ok());
-        let result_context = do_upkeep(config, store.clone(), producer, start_time).await;
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
 
         assert_eq!(result_context.expired, 2); // 0/2 removed as expired
         assert_eq!(result_context.completed, 1); // 1 complete
@@ -839,6 +935,7 @@ mod tests {
     #[tokio::test]
     async fn test_delay_elapsed() {
         let config = create_config();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
@@ -866,8 +963,14 @@ mod tests {
                 .unwrap(),
             0
         );
-        let result_context =
-            do_upkeep(config.clone(), store.clone(), producer.clone(), start_time).await;
+        let result_context = do_upkeep(
+            config.clone(),
+            store.clone(),
+            producer.clone(),
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
@@ -888,8 +991,14 @@ mod tests {
         assert!(store.get_pending_activation(None).await.unwrap().is_none());
 
         sleep(Duration::from_secs(2)).await;
-        let result_context =
-            do_upkeep(config.clone(), store.clone(), producer.clone(), start_time).await;
+        let result_context = do_upkeep(
+            config.clone(),
+            store.clone(),
+            producer.clone(),
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
@@ -906,6 +1015,48 @@ mod tests {
                 .unwrap()
                 .id,
             "id_1",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_remove_killswitched() {
+        let config = create_config();
+        let test_yaml = r#"
+drop_task_killswitch:
+  - task_to_be_killswitched"#;
+
+        let test_path = "test_drop_task_due_to_killswitch.yaml";
+        fs::write(test_path, test_yaml).await.unwrap();
+
+        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let producer = create_producer(config.clone());
+        let store = create_inflight_store().await;
+        let start_time = Utc::now();
+
+        let mut batch = make_activations(6);
+
+        batch[0].taskname = "task_to_be_killswitched".to_string();
+        batch[2].taskname = "task_to_be_killswitched".to_string();
+        batch[4].taskname = "task_to_be_killswitched".to_string();
+
+        assert!(store.store(batch).await.is_ok());
+
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+        )
+        .await;
+
+        assert_eq!(result_context.killswitched, 3);
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            3
         );
     }
 }

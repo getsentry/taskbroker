@@ -817,4 +817,19 @@ impl InflightActivationStore {
 
         Ok(query.rows_affected())
     }
+
+    /// Remove killswitched tasks.
+    #[instrument(skip_all)]
+    pub async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
+        let mut query_builder =
+            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE taskname IN (");
+        let mut separated = query_builder.separated(", ");
+        for taskname in killswitched_tasks.iter() {
+            separated.push_bind(taskname);
+        }
+        separated.push_unseparated(")");
+        let query = query_builder.build().execute(&self.write_pool).await?;
+
+        Ok(query.rows_affected())
+    }
 }

@@ -1016,6 +1016,44 @@ async fn test_handle_expires_at() {
 }
 
 #[tokio::test]
+async fn test_remove_killswitched() {
+    let store = create_test_store().await;
+    let mut batch = make_activations(6);
+
+    batch[0].taskname = "task_to_be_killswitched_one".to_string();
+    batch[2].taskname = "task_to_be_killswitched_two".to_string();
+    batch[4].taskname = "task_to_be_killswitched_three".to_string();
+
+    assert!(store.store(batch.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 6,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
+
+    let result = store
+        .remove_killswitched(vec![
+            "task_to_be_killswitched_one".to_string(),
+            "task_to_be_killswitched_two".to_string(),
+            "task_to_be_killswitched_three".to_string(),
+        ])
+        .await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 3);
+    assert_counts(
+        StatusCount {
+            pending: 3,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_clear() {
     let store = create_test_store().await;
 
