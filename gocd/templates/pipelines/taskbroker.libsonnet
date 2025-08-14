@@ -47,7 +47,7 @@ local deployPrimaryStage = {
     fetch_materials: true,
     jobs: {
       deploy: {
-        timeout: 30,
+        timeout: 40,
         elastic_profile_id: 'taskbroker',
         environment_variables: {
           LABEL_SELECTOR: 'service=taskbroker',
