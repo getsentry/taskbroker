@@ -63,11 +63,11 @@ impl Reducer for InflightActivationBatcher {
             return Ok(());
         }
 
-        if let Some(expires_at) = t.expires_at
-            && Utc::now() > expires_at
-        {
-            metrics::counter!("filter.expired_at_consumer").increment(1);
-            return Ok(());
+        if let Some(expires_at) = t.expires_at {
+            if Utc::now() > expires_at {
+                metrics::counter!("filter.expired_at_consumer").increment(1);
+                return Ok(());
+            }
         }
 
         self.batch_size += t.activation.len();
