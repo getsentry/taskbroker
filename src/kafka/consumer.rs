@@ -741,7 +741,7 @@ pub async fn reduce_err(
     Ok(())
 }
 
-trait CommitClient {
+pub trait CommitClient {
     fn store_offsets(&self, tpl: &TopicPartitionList) -> KafkaResult<()>;
 }
 
