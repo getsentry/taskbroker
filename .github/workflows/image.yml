@@ -25,8 +25,9 @@ jobs:
           platforms: linux/${{ matrix.platform }}
           dockerfile_path: './Dockerfile'
           build_args: TASKBROKER_GIT_REVISION=${{ github.sha }}
-          tags: ghcr.io/getsentry/taskbroker:${{ github.sha }}-${{ matrix.platform }}
-          ghcr: false
+          ghcr: true
+          tag_suffix: -${{ matrix.platform }}
+          publish_on_pr: true
           google_ar: false
           tag_nightly: false
           tag_latest: false
@@ -93,31 +94,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
-      - name: Download amd64 Image
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.2
-        with:
-          name: taskbroker-amd64
-          path: /tmp
-
-      - name: Load amd64 Image
-        run: docker load --input /tmp/taskbroker-amd64.tar
-
-      - name: Download arm64 Image
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.2
-        with:
-          name: taskbroker-arm64
-          path: /tmp
-
-      - name: Load arm64 Image
-        run: docker load --input /tmp/taskbroker-arm64.tar
-
       - name: Create multiplatform manifests
         run: |
-          docker manifest create \
-            ghcr.io/getsentry/taskbroker:${{ github.sha }} \
-            ghcr.io/getsentry/taskbroker:${{ github.sha }}-amd64 \
-            ghcr.io/getsentry/taskbroker:${{ github.sha }}-arm64
-          docker manifest push ghcr.io/getsentry/taskbroker:${{ github.sha }}
+          docker buildx imagetools create \
+            --tag ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }} \
+            ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}-amd64 \
+            ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}-arm64
 
   self-hosted-end-to-end:
     needs: [assemble-taskbroker-image]
