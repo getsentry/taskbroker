@@ -64,6 +64,7 @@ jobs:
   build-production:
     runs-on: ubuntu-24.04
     if: github.ref_name == github.event.repository.default_branch
+    name: Build and push production images
     permissions:
       contents: read
       id-token: write
