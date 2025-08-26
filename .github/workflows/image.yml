@@ -27,7 +27,7 @@ jobs:
           image_name: 'taskbroker'
           platforms: linux/${{ matrix.platform }}
           dockerfile_path: './Dockerfile'
-          tags: ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}-${{ matrix.platform }}
+          tags: ghcr.io/getsentry/taskbroker:${{ github.sha }}-${{ matrix.platform }}
           ghcr: false
           google_ar: false
           tag_nightly: false
