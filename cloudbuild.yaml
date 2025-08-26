@@ -8,7 +8,7 @@ steps:
         "--use-new-run",
         "--build-arg",
         "TASKBROKER_GIT_REVISION=$COMMIT_SHA",
-        "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA",
+        "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskbroker/image:$COMMIT_SHA-cloudbuild",
         "-f",
         "./Dockerfile",
       ]
@@ -21,7 +21,7 @@ steps:
       [
         "--cache=true",
         "--use-new-run",
-        "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskworker/image:$COMMIT_SHA",
+        "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskworker/image:$COMMIT_SHA-cloudbuild",
         "--context=dir://./python",
         "--dockerfile=./python/Dockerfile",
       ]
