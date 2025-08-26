@@ -107,7 +107,7 @@ jobs:
       with:
         image_name: 'taskworker'
         platforms: linux/amd64
-        context: './python'
+        build_context: './python'
         dockerfile_path: './python/Dockerfile'
         ghcr: true
         tag_nightly: false
