@@ -15,8 +15,8 @@ def main(context: dict[str, str]) -> int:
         cwd=reporoot,
     )
 
-    if not shutil.which("cargo"):
-        raise SystemExit("cargo not on PATH. Did you run `direnv allow`?")
+    if not shutil.which("rustup"):
+        raise SystemExit("rustup not on PATH. Did you run `direnv allow`?")
 
     uv.install(
         cfg["uv"]["version"],
