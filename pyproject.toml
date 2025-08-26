@@ -1,0 +1,32 @@
+[project]
+name = "taskbroker"
+# we only have this here to make uv happy
+# we use uv for dependency management, not packaging
+version = "0.0.0"
+
+[dependency-groups]
+dev = [
+    "black==24.10.0",
+    "devservices>=1.2.1",
+    "pre-commit>=4.2.0",
+    "pytest>=8.3.3",
+    "sentry-devenv>=1.22.2",
+    "confluent_kafka>=2.3.0",
+    "grpcio==1.66.1",
+    "orjson>=3.10.10",
+    "protobuf>=5.28.3",
+    "pyyaml>=6.0.2",
+    "sentry-protos>=0.2.0",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+url = "https://pypi.devinfra.sentry.io/simple"
+default = true
+
+[tool.pytest.ini_options]
+testpaths = ["integration_tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
