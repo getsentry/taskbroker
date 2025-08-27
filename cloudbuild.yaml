@@ -13,16 +13,3 @@ steps:
         "./Dockerfile",
       ]
     timeout: 1200s
-
-  - name: "gcr.io/kaniko-project/executor:v1.16.0"
-    id: runtime-worker-image
-    waitFor: ["-"]
-    args:
-      [
-        "--cache=true",
-        "--use-new-run",
-        "--destination=us-central1-docker.pkg.dev/$PROJECT_ID/taskworker/image:$COMMIT_SHA",
-        "--context=dir://./python",
-        "--dockerfile=./python/Dockerfile",
-      ]
-    timeout: 1200s
