@@ -86,21 +86,6 @@ jobs:
           google_workload_identity_provider: projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool
           google_service_account: gha-gcr-push@sac-prod-sa.iam.gserviceaccount.com
 
-      - name: Build and push taskworker image
-        uses: getsentry/action-build-and-push-images@a53f146fc1ea3cb404f2dcf7378f5b60dd98d3ca
-        with:
-          image_name: 'taskworker'
-          platforms: linux/amd64
-          dockerfile_path: './python/Dockerfile'
-          build_context: './python'
-          ghcr: false
-          google_ar: true
-          tag_nightly: false
-          tag_latest: true
-          google_ar_image_name: us-central1-docker.pkg.dev/sentryio/taskworker/image:${{ github.sha }}
-          google_workload_identity_provider: projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool
-          google_service_account: gha-gcr-push@sac-prod-sa.iam.gserviceaccount.com
-
   self-hosted-end-to-end:
     needs: [assemble-taskbroker-image]
     runs-on: ubuntu-latest
