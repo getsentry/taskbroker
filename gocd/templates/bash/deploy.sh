@@ -4,7 +4,7 @@ eval $(regions-project-env-vars --region="${SENTRY_REGION}")
 
 WAIT_TIMEOUT=""
 if [ "${SENTRY_REGION}" = "us" ]; then
-	WAIT_TIMEOUT="--wait-timeout-mins=40"
+	WAIT_TIMEOUT="--wait-timeout-mins=60"
 fi
 
 /devinfra/scripts/get-cluster-credentials && k8s-deploy \
