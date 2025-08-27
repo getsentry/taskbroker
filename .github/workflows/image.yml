@@ -100,28 +100,3 @@ jobs:
           project_name: taskbroker
           image_url: ghcr.io/getsentry/taskbroker:${{ github.sha }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
-  build-taskworker:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-
-    - run: docker login --username '${{ github.actor }}' --password-stdin ghcr.io <<< "$GHCR_TOKEN"
-      env:
-        GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      if: github.event_name != 'pull_request'
-
-    - name: Build and push taskworker image
-      uses: getsentry/action-build-and-push-images@a53f146fc1ea3cb404f2dcf7378f5b60dd98d3ca
-      with:
-        image_name: 'taskworker'
-        platforms: linux/amd64
-        build_context: './python'
-        dockerfile_path: './python/Dockerfile'
-        ghcr: true
-        tag_nightly: false
-        tags: ghcr.io/getsentry/taskworker:amd64-latest
-        tag_latest: true
