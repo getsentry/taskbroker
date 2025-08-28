@@ -116,6 +116,11 @@ fn validate_signature(
         return Ok(req_body);
     }
 
+    // No auth on healthchecks
+    if req_head.uri.path().starts_with("/grpc.health.v1.Health") {
+        return Ok(req_body);
+    }
+
     let signature = req_head
         .headers
         .get("sentry-signature")
@@ -188,6 +193,19 @@ mod tests {
 
         let res = validate_signature(&secret, &parts, body);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_validate_signature_health() {
+        let secret: Vec<String> = vec!["super secret".into()];
+        let request = Request::builder()
+            .uri("http://example.org/grpc.health.v1.Health/Watch")
+            .header("sentry-signature", "")
+            .body(Bytes::from("request data"))
+            .unwrap();
+        let (parts, body) = request.into_parts();
+        let res = validate_signature(&secret, &parts, body);
+        assert!(res.is_ok());
     }
 
     #[test]

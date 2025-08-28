@@ -14,6 +14,7 @@ use tracing::{debug, error, info, warn};
 
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
+use taskbroker::SERVICE_NAME;
 use taskbroker::config::Config;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
@@ -33,6 +34,7 @@ use taskbroker::store::inflight_activation::{
     InflightActivationStore, InflightActivationStoreConfig,
 };
 use taskbroker::{Args, get_version};
+use tonic_health::ServingStatus;
 
 async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -88,6 +90,13 @@ async fn main() -> Result<(), Error> {
     // Get startup time after migrations and vacuum
     let startup_time = Utc::now();
 
+    // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
+    // of the application.
+    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_service_status(SERVICE_NAME, ServingStatus::Serving)
+        .await;
+
     // Upkeep loop
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
@@ -99,8 +108,9 @@ async fn main() -> Result<(), Error> {
                 upkeep_store,
                 startup_time,
                 runtime_config_manager.clone(),
+                health_reporter.clone(),
             )
-            .await;
+            .await?;
             Ok(())
         }
     });
@@ -186,6 +196,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                 }))
+                .add_service(health_service.clone())
                 .serve(addr);
 
             let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();

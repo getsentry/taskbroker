@@ -11,6 +11,10 @@ pub mod store;
 pub mod test_utils;
 pub mod upkeep;
 
+/// Name of the grpc service.
+/// Using the service type to get a name wasn't working across modules.
+pub const SERVICE_NAME: &str = "sentry_protos.taskbroker.v1.ConsumerService";
+
 pub fn get_version() -> &'static str {
     let release_name = fs::read_to_string("./VERSION").expect("Unable to read version");
     Box::leak(release_name.into_boxed_str())
