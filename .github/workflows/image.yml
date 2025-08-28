@@ -82,7 +82,7 @@ jobs:
           google_ar: true
           tag_nightly: false
           tag_latest: true
-          google_ar_image_name: us-central1-docker.pkg.dev/sentryio/taskbroker/image:${{ github.sha }}
+          google_ar_image_name: us-central1-docker.pkg.dev/sentryio/taskbroker/image
           google_workload_identity_provider: projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool
           google_service_account: gha-gcr-push@sac-prod-sa.iam.gserviceaccount.com
 
