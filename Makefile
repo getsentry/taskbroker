@@ -1,12 +1,7 @@
 # Development
-setup: setup-git install-py-dev ## run setup tasks to create and configure a development environment
+setup:
+	devenv sync
 .PHONY: setup
-
-setup-git: .git/hooks/pre-commit ## Setup git-hooks
-.PHONY: setup-git
-
-.git/hooks/pre-commit: ## Symlink the precommit script
-	@cd .git/hooks && ln -sf ../../scripts/git-precommit-hook pre-commit
 
 # Builds
 
@@ -37,29 +32,13 @@ format: ## Run autofix mode for formatting and lint
 	cargo clippy --workspace --all-targets --all-features --no-deps --fix --allow-dirty --allow-staged -- -D warnings
 .PHONY: format
 
-style-py: ## Run black --check on python code
-	. python/.venv/bin/activate
-	black --check python/
-.PHONY: style-py
-
-format-py: ## Run autofix mode for formatting and lint
-	. python/.venv/bin/activate
-	black python/
-.PHONY: format-py
-
 # Tests
 
 unit-test: ## Run unit tests
 	cargo test
 .PHONY: unit-test
 
-install-py-dev: ## Install python dependencies
-	python -m venv python/.venv
-	. python/.venv/bin/activate
-	pip install -r python/requirements-dev.txt
-.PHONY: install-py-dev
-
-reset-kafka: install-py-dev ## Reset kafka
+reset-kafka: setup ## Reset kafka
 	devservices down
 	-docker container rm kafka-kafka-1
 	-docker volume rm kafka_kafka-data

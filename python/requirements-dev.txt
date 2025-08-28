@@ -1,9 +1,0 @@
-confluent_kafka>=2.3.0
-devservices==1.2.1
-grpcio==1.66.1
-orjson>=3.10.10
-protobuf>=5.28.3
-pytest>=8.3.3
-pyyaml>=6.0.2
-sentry-protos>=0.2.0
-black==24.10.0

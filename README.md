@@ -42,7 +42,7 @@ The resulting binary ends up in `target/release/` along with debug information f
 To build `taskbroker` we require the latest stable Rust and `protoc`. The root of the repository
 contains a `Makefile` with frequently run development commands:
 
-- `make setup` Run setup tasks to create and configure your development
+- `devenv sync` Run setup tasks to create and configure your development
   environment.
 - `make test` Run rust tests.
 - `make integration-test` Run end to end tests.

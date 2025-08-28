@@ -1,6 +1,8 @@
 [package]
 name = "taskbroker"
 version = "0.1.0"
+# keep edition in sync with .pre-commit-config.yaml
+# https://github.com/rust-lang/rustfmt/issues/4485
 edition = "2024"
 
 [profile.release]
@@ -32,7 +34,7 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "panic",
     "transport",
     # additional features
-    "tracing", 
+    "tracing",
     "logs"
 ] }
 tracing = "0.1.40"
