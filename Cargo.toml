@@ -36,7 +36,7 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "logs"
 ] }
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = [
+tracing-subscriber = { version = "0.3.20", features = [
     "std",
     "env-filter",
     "json",
