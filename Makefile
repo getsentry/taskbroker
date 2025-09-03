@@ -1,6 +1,6 @@
 # Development
 setup:
-	devenv sync
+	@test -n "$$CI" || devenv sync
 .PHONY: setup
 
 # Builds
