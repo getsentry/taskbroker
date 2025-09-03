@@ -177,6 +177,18 @@ jobs:
         with:
           key: ${{ github.job }}
 
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
+        with:
+          version: '0.8.2'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@3a832a9604b3e1a4202ae559248f26867b467cc7 # v2.1.1
+        with:
+          python-version: 3.12.11
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
+
       - name: Run rebalance integration test
         run: |
           make test-rebalance
@@ -200,6 +212,18 @@ jobs:
       - uses: swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # pin@v1
         with:
           key: ${{ github.job }}
+
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
+        with:
+          version: '0.8.2'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@3a832a9604b3e1a4202ae559248f26867b467cc7 # v2.1.1
+        with:
+          python-version: 3.12.11
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
 
       - name: Run worker processing integration test
         run: |
@@ -225,6 +249,18 @@ jobs:
         with:
           key: ${{ github.job }}
 
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
+        with:
+          version: '0.8.2'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@3a832a9604b3e1a4202ae559248f26867b467cc7 # v2.1.1
+        with:
+          python-version: 3.12.11
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
+
       - name: Run upkeep retry integration test
         run: |
           make test-upkeep-retry
@@ -248,6 +284,18 @@ jobs:
       - uses: swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # pin@v1
         with:
           key: ${{ github.job }}
+
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
+        with:
+          version: '0.8.2'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@3a832a9604b3e1a4202ae559248f26867b467cc7 # v2.1.1
+        with:
+          python-version: 3.12.11
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
 
       - name: Run upkeep expiry integration test
         run: |
@@ -273,6 +321,18 @@ jobs:
         with:
           key: ${{ github.job }}
 
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
+        with:
+          version: '0.8.2'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@3a832a9604b3e1a4202ae559248f26867b467cc7 # v2.1.1
+        with:
+          python-version: 3.12.11
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
+
       - name: Run upkeep delay integration test
         run: |
           make test-upkeep-delay
@@ -296,6 +356,18 @@ jobs:
       - uses: swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # pin@v1
         with:
           key: ${{ github.job }}
+
+      - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
+        with:
+          version: '0.8.2'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@3a832a9604b3e1a4202ae559248f26867b467cc7 # v2.1.1
+        with:
+          python-version: 3.12.11
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
 
       - name: Run failed tasks integration test
         run: |
