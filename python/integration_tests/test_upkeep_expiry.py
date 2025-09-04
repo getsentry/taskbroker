@@ -1,27 +1,26 @@
-import orjson
 import signal
 import subprocess
 import threading
 import time
-
-import yaml
 from uuid import uuid4
-from google.protobuf.timestamp_pb2 import Timestamp
-from python.integration_tests.helpers import (
-    TASKBROKER_BIN,
-    TESTS_OUTPUT_ROOT,
-    send_custom_messages_to_topic,
-    create_topic,
-    get_num_tasks_in_sqlite,
-    TaskbrokerConfig,
-)
 
+import orjson
+import yaml
+from google.protobuf.timestamp_pb2 import Timestamp
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     OnAttemptsExceeded,
     RetryState,
     TaskActivation,
 )
 
+from python.integration_tests.helpers import (
+    TASKBROKER_BIN,
+    TESTS_OUTPUT_ROOT,
+    TaskbrokerConfig,
+    create_topic,
+    get_num_tasks_in_sqlite,
+    send_custom_messages_to_topic,
+)
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_expiry"
 
@@ -56,10 +55,7 @@ def manage_taskbroker(
     num_messages: int,
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(
-            f"[taskbroker_0] Starting taskbroker, writing log file to "
-            f"{log_file_path}"
-        )
+        print(f"[taskbroker_0] Starting taskbroker, writing log file to " f"{log_file_path}")
         process = subprocess.Popen(
             [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
@@ -75,8 +71,7 @@ def manage_taskbroker(
             print(f"[taskbroker_0]: Written {written_tasks} tasks to sqlite.")
             if written_tasks == num_messages:
                 print(
-                    f"[taskbroker_0]: Finishing writting all {num_messages} "
-                    "task(s) to sqlite."
+                    f"[taskbroker_0]: Finishing writting all {num_messages} " "task(s) to sqlite."
                 )
                 finished_writing_tasks = True
             time.sleep(1)
@@ -227,8 +222,7 @@ Running test with the following configuration:
 
         # Create taskbroker thread
         results_log_path = str(
-            TEST_OUTPUT_PATH
-            / f"taskbroker_0_{curr_time}_test_upkeep_expiry_results.log"
+            TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_expiry_results.log"
         )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
@@ -236,10 +230,7 @@ Running test with the following configuration:
                 taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
-                str(
-                    TEST_OUTPUT_PATH
-                    / f"taskbroker_0_{curr_time}_test_upkeep_expiry.log"
-                ),
+                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_expiry.log"),
                 results_log_path,
                 taskbroker_timeout,
                 num_messages,

@@ -1,23 +1,21 @@
-import pytest
 import signal
 import subprocess
 import threading
 import time
+from collections import defaultdict
 
+import pytest
 import yaml
 
-from collections import defaultdict
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
-    send_generic_messages_to_topic,
+    TaskbrokerConfig,
     create_topic,
     get_num_tasks_in_sqlite,
-    TaskbrokerConfig,
+    send_generic_messages_to_topic,
 )
-
 from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
-
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
 processed_tasks = defaultdict(list)  # key: task_id, value: worker_id
@@ -32,9 +30,7 @@ def manage_taskworker(
     shutdown_event: threading.Event,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
-    worker = ConfigurableTaskWorker(
-        TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}")
-    )
+    worker = ConfigurableTaskWorker(TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"))
     fetched_tasks = 0
     completed_tasks = 0
 
@@ -92,10 +88,7 @@ def manage_taskbroker(
     shutdown_events: list[threading.Event],
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(
-            f"[taskbroker_0] Starting taskbroker, writing log file to "
-            f"{log_file_path}"
-        )
+        print(f"[taskbroker_0] Starting taskbroker, writing log file to " f"{log_file_path}")
         process = subprocess.Popen(
             [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
@@ -118,12 +111,8 @@ def manage_taskbroker(
 
         # Keep gRPC taskbroker alive until taskworker is done processing
         if tasks_written_event.is_set():
-            print(
-                "[taskbroker_0]: Waiting for taskworker(s) to finish " "processing..."
-            )
-            while not all(
-                shutdown_event.is_set() for shutdown_event in shutdown_events
-            ):
+            print("[taskbroker_0]: Waiting for taskworker(s) to finish " "processing...")
+            while not all(shutdown_event.is_set() for shutdown_event in shutdown_events):
                 time.sleep(1)
             print("[taskbroker_0]: Received shutdown signal from all " "taskworker(s)")
         else:
@@ -191,9 +180,7 @@ def test_task_worker_processing() -> None:
     num_partitions = 1
     num_workers = 20
     max_pending_count = 100_000
-    taskbroker_timeout = (
-        60  # the time in seconds to wait for all messages to be written to sqlite
-    )
+    taskbroker_timeout = 60  # the time in seconds to wait for all messages to be written to sqlite
     topic_name = "taskworker"
     kafka_deadletter_topic = "taskworker-dlq"
     curr_time = int(time.time())
@@ -240,10 +227,7 @@ Running test with the following configuration:
                 taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
-                str(
-                    TEST_OUTPUT_PATH
-                    / f"taskbroker_0_{curr_time}_test_task_worker_processing.log"
-                ),
+                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_task_worker_processing.log"),
                 taskbroker_timeout,
                 num_messages,
                 tasks_written_event,
@@ -290,10 +274,7 @@ Running test with the following configuration:
             total_fetched += int(line.split(",")[0].split(":")[1])
             total_completed += int(line.split(",")[1].split(":")[1])
 
-    print(
-        f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: "
-        f"{total_completed}"
-    )
+    print(f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: " f"{total_completed}")
     duplicate_tasks = [
         (task_id, worker_ids)
         for task_id, worker_ids in processed_tasks.items()

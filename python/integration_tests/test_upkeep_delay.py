@@ -1,26 +1,25 @@
-import orjson
+import random
 import signal
 import subprocess
 import threading
 import time
-import random
 from datetime import datetime
-
-import yaml
 from uuid import uuid4
+
+import orjson
+import yaml
 from google.protobuf.timestamp_pb2 import Timestamp
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
+
 from python.integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
-    send_custom_messages_to_topic,
-    create_topic,
-    get_num_tasks_in_sqlite,
-    get_num_tasks_group_by_status,
     TaskbrokerConfig,
+    create_topic,
+    get_num_tasks_group_by_status,
+    get_num_tasks_in_sqlite,
+    send_custom_messages_to_topic,
 )
-
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
-
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_delay"
 
@@ -50,10 +49,7 @@ def manage_taskbroker(
     end_of_delay: int,
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(
-            f"[taskbroker_0] Starting taskbroker, writing log file to "
-            f"{log_file_path}"
-        )
+        print(f"[taskbroker_0] Starting taskbroker, writing log file to " f"{log_file_path}")
         process = subprocess.Popen(
             [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
@@ -69,8 +65,7 @@ def manage_taskbroker(
             print(f"[taskbroker_0]: Written {written_tasks} tasks to sqlite.")
             if written_tasks == num_messages:
                 print(
-                    f"[taskbroker_0]: Finishing writting all {num_messages} "
-                    "task(s) to sqlite."
+                    f"[taskbroker_0]: Finishing writting all {num_messages} " "task(s) to sqlite."
                 )
                 finished_writing_tasks = True
             time.sleep(1)
@@ -84,10 +79,7 @@ def manage_taskbroker(
         # Keep running taskbroker until:
         # - timeout is reached
         # - all tasks have been moved to pending state
-        print(
-            "[taskbroker_0]: Waiting for upkeep to move delayed tasks to "
-            "pending state"
-        )
+        print("[taskbroker_0]: Waiting for upkeep to move delayed tasks to " "pending state")
         cur_time = time.time()
         while (cur_time < end) and finished_writing_tasks:
             task_count_in_sqlite = get_num_tasks_group_by_status(taskbroker_config)
@@ -243,9 +235,7 @@ Running test with the following configuration:
     try:
         custom_messages = []
         for _ in range(num_messages):
-            task_activation = generate_task_activation(
-                random.randint(min_delay, max_delay)
-            )
+            task_activation = generate_task_activation(random.randint(min_delay, max_delay))
             custom_messages.append(task_activation)
 
         send_custom_messages_to_topic(topic_name, custom_messages)
@@ -263,9 +253,7 @@ Running test with the following configuration:
                 taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
-                str(
-                    TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_delay.log"
-                ),
+                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_delay.log"),
                 results_log_path,
                 taskbroker_timeout,
                 num_messages,
@@ -284,7 +272,5 @@ Running test with the following configuration:
         delay_has_elapsed = int(line.split(",")[2].split(":")[1])
 
     assert total_delayed_tasks == 0  # there should no delayed tasks in sqlite
-    assert (
-        total_pending_tasks == num_messages
-    )  # all tasks should have been moved to pending state
+    assert total_pending_tasks == num_messages  # all tasks should have been moved to pending state
     assert delay_has_elapsed == 1  # delay should have elapsed

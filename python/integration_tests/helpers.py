@@ -1,18 +1,18 @@
-import orjson
-import subprocess
+import socket
 import sqlite3
+import subprocess
 import time
-
-from confluent_kafka import Consumer, Producer, KafkaException
 from pathlib import Path
 from uuid import uuid4
+
+import orjson
+from confluent_kafka import Consumer, KafkaException, Producer
+from google.protobuf.timestamp_pb2 import Timestamp
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     OnAttemptsExceeded,
     RetryState,
     TaskActivation,
 )
-from google.protobuf.timestamp_pb2 import Timestamp
-import socket
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
@@ -120,9 +120,7 @@ def send_generic_messages_to_topic(topic_name: str, num_messages: int) -> None:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
 
-def send_custom_messages_to_topic(
-    topic_name: str, custom_messages: list[TaskActivation]
-) -> None:
+def send_custom_messages_to_topic(topic_name: str, custom_messages: list[TaskActivation]) -> None:
     """
     Send num_messages to kafka topic using unique task names.
     """
@@ -134,9 +132,7 @@ def send_custom_messages_to_topic(
             producer.produce(topic_name, task_message)
 
         producer.flush()
-        print(
-            f"Sent {len(custom_messages)} custom messages to kafka topic {topic_name}"
-        )
+        print(f"Sent {len(custom_messages)} custom messages to kafka topic {topic_name}")
     except Exception as e:
         raise Exception(f"Failed to send messages to kafka: {e}")
 
@@ -165,12 +161,10 @@ def get_topic_size(topic_name: str) -> int:
 
 def get_num_tasks_in_sqlite(taskbroker_config: TaskbrokerConfig) -> int:
     attach_db_stmt = (
-        f"ATTACH DATABASE '{taskbroker_config.db_path}' "
-        f"AS {taskbroker_config.db_name};\n"
+        f"ATTACH DATABASE '{taskbroker_config.db_path}' " f"AS {taskbroker_config.db_name};\n"
     )
     query = (
-        f"SELECT count(*) as count FROM "
-        f"{taskbroker_config.db_name}.inflight_taskactivations;"
+        f"SELECT count(*) as count FROM " f"{taskbroker_config.db_name}.inflight_taskactivations;"
     )
     con = sqlite3.connect(taskbroker_config.db_path)
     cur = con.cursor()
@@ -180,12 +174,9 @@ def get_num_tasks_in_sqlite(taskbroker_config: TaskbrokerConfig) -> int:
     return count
 
 
-def get_num_tasks_in_sqlite_by_status(
-    taskbroker_config: TaskbrokerConfig, status: str
-) -> int:
+def get_num_tasks_in_sqlite_by_status(taskbroker_config: TaskbrokerConfig, status: str) -> int:
     attach_db_stmt = (
-        f"ATTACH DATABASE '{taskbroker_config.db_path}' "
-        f"AS {taskbroker_config.db_name};\n"
+        f"ATTACH DATABASE '{taskbroker_config.db_path}' " f"AS {taskbroker_config.db_name};\n"
     )
     query = (
         f"SELECT count(*) as count FROM {taskbroker_config.db_name}."
@@ -204,8 +195,7 @@ def get_num_tasks_group_by_status(
 ) -> dict[str, int]:
     task_count_in_sqlite = {}
     attach_db_stmt = (
-        f"ATTACH DATABASE '{taskbroker_config.db_path}' "
-        f"AS {taskbroker_config.db_name};\n"
+        f"ATTACH DATABASE '{taskbroker_config.db_path}' " f"AS {taskbroker_config.db_name};\n"
     )
     query = (
         f"SELECT status, count(id) as count FROM {taskbroker_config.db_name}."
