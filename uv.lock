@@ -163,6 +163,26 @@ wheels = [
 ]
 
 [[package]]
+name = "mypy"
+version = "1.17.1"
+source = { registry = "https://pypi.devinfra.sentry.io/simple" }
+dependencies = [
+    { name = "mypy-extensions", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "pathspec", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:69e83ea6553a3ba79c08c6e15dbd9bfa912ec1e493bf75489ef93beb65209aeb" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1b16708a66d38abb1e6b5702f5c2c87e133289da36f6a1d15f6a5221085c6403" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:89e972c0035e9e05823907ad5398c5a73b9f47a002b22359b177d40bdaee7056" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:03b6d0ed2b188e35ee6d5c36b5580cffd6da23319991c49ab5556c023ccf1341" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:93378d3203a5c0800c6b6d850ad2f19f7a3cdf1a3701d3416dbf128805c6a6a7" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:15d54056f7fe7a826d897789f53dd6377ec2ea8ba6f776dc83c2902b899fee81" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:209a58fed9987eccc20f2ca94afe7257a8f46eb5df1fb69958650973230f91e6" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/mypy-1.17.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:099b9a5da47de9e2cb5165e581f158e854d9e19d2e96b6698c0d64de911dd849" },
+]
+
+[[package]]
 name = "mypy-extensions"
 version = "1.1.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
@@ -361,6 +381,7 @@ dev = [
     { name = "flake8", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "grpcio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "isort", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "mypy", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "orjson", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pre-commit", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -368,6 +389,8 @@ dev = [
     { name = "pyyaml", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-devenv", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-protos", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "types-protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "types-pyyaml", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -380,6 +403,7 @@ dev = [
     { name = "flake8", specifier = ">=7.3.0" },
     { name = "grpcio", specifier = "==1.66.1" },
     { name = "isort", specifier = ">=5.13.2" },
+    { name = "mypy", specifier = ">=1.17.1" },
     { name = "orjson", specifier = ">=3.10.10" },
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "protobuf", specifier = ">=5.28.3" },
@@ -387,6 +411,24 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "sentry-devenv", specifier = ">=1.22.2" },
     { name = "sentry-protos", specifier = ">=0.2.0" },
+    { name = "types-protobuf", specifier = ">=6.30.2.20250703" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20241230" },
+]
+
+[[package]]
+name = "types-protobuf"
+version = "6.30.2.20250703"
+source = { registry = "https://pypi.devinfra.sentry.io/simple" }
+wheels = [
+    { url = "https://pypi.devinfra.sentry.io/wheels/types_protobuf-6.30.2.20250703-py3-none-any.whl", hash = "sha256:fa5aff9036e9ef432d703abbdd801b436a249b6802e4df5ef74513e272434e57" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20241230"
+source = { registry = "https://pypi.devinfra.sentry.io/simple" }
+wheels = [
+    { url = "https://pypi.devinfra.sentry.io/wheels/types_PyYAML-6.0.12.20241230-py3-none-any.whl", hash = "sha256:fa4d32565219b68e6dee5f67534c722e53c00d1cfc09c435ef04d7353e1e96e6" },
 ]
 
 [[package]]

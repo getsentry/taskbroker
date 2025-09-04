@@ -8,13 +8,7 @@ import orjson
 import pytest
 import yaml
 from google.protobuf.timestamp_pb2 import Timestamp
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
-    OnAttemptsExceeded,
-    RetryState,
-    TaskActivation,
-)
-
-from python.integration_tests.helpers import (
+from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
     TaskbrokerConfig,
@@ -23,13 +17,18 @@ from python.integration_tests.helpers import (
     get_topic_size,
     send_custom_messages_to_topic,
 )
-from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
+from integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    OnAttemptsExceeded,
+    RetryState,
+    TaskActivation,
+)
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_failed_tasks"
 
 
 def generate_task_activation(
-    on_attempts_exceeded: OnAttemptsExceeded,
+    on_attempts_exceeded: OnAttemptsExceeded.ValueType,
 ) -> TaskActivation:
     """Generate a task activation with the specified retry behavior."""
     retry_state = RetryState(
@@ -41,7 +40,7 @@ def generate_task_activation(
         id=uuid4().hex,
         namespace="integration_tests",
         taskname="integration_tests.say_hello",
-        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}),
+        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}).decode("utf-8"),
         retry_state=retry_state,
         processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),

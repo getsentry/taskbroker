@@ -6,8 +6,7 @@ from collections import defaultdict
 
 import pytest
 import yaml
-
-from python.integration_tests.helpers import (
+from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
     TaskbrokerConfig,
@@ -15,10 +14,10 @@ from python.integration_tests.helpers import (
     get_num_tasks_in_sqlite,
     send_generic_messages_to_topic,
 )
-from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
+from integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
-processed_tasks = defaultdict(list)  # key: task_id, value: worker_id
+processed_tasks: defaultdict[str, list[int]] = defaultdict(list)  # key: task_id, value: worker_id
 mutex = threading.Lock()
 
 
@@ -269,8 +268,8 @@ Running test with the following configuration:
     total_fetched = 0
     total_completed = 0
     for log_file in worker_log_files:
-        with open(log_file, "r") as log_file:
-            line = log_file.readline()
+        with open(log_file, "r") as f:
+            line = f.readline()
             total_fetched += int(line.split(",")[0].split(":")[1])
             total_completed += int(line.split(",")[1].split(":")[1])
 

@@ -3,6 +3,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import orjson
@@ -49,7 +50,7 @@ class TaskbrokerConfig:
         self.kafka_auto_offset_reset = kafka_auto_offset_reset
         self.grpc_port = grpc_port
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, str | int]:
         return {
             "db_name": self.db_name,
             "db_path": self.db_path,
@@ -84,7 +85,7 @@ def create_topic(topic_name: str, num_partitions: int) -> None:
         print(f"Stderr: {res.stderr}")
 
 
-def serialize_task_activation(i, args: list, kwargs: dict) -> bytes:
+def serialize_task_activation(i: int, args: list[Any], kwargs: dict[Any, Any]) -> bytes:
     retry_state = RetryState(
         attempts=0,
         max_attempts=1,
@@ -94,7 +95,7 @@ def serialize_task_activation(i, args: list, kwargs: dict) -> bytes:
         id=uuid4().hex,
         namespace="integration_tests",
         taskname=f"integration_tests.say_hello_{i}",
-        parameters=orjson.dumps({"args": args, "kwargs": kwargs}),
+        parameters=orjson.dumps({"args": args, "kwargs": kwargs}).decode("utf-8"),
         retry_state=retry_state,
         processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),

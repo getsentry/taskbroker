@@ -19,6 +19,9 @@ dev = [
     "sentry-protos>=0.2.0",
     "flake8>=7.3.0",
     "isort>=5.13.2",
+    "mypy>=1.17.1",
+    "types-pyyaml>=6.0.12.20241230",
+    "types-protobuf>=6.30.2.20250703",
 ]
 
 [tool.uv]
@@ -35,6 +38,7 @@ python_functions = ["test_*"]
 
 [tool.mypy]
 mypy_path = "python"
+explicit_package_bases = true
 # minimal strictness settings
 check_untyped_defs = true
 no_implicit_reexport = true
@@ -46,6 +50,14 @@ enable_error_code = ["ignore-without-code", "redundant-self"]
 local_partial_types = true  # compat with dmypy
 disallow_any_generics = true
 disallow_untyped_defs = true
+
+# begin: missing 3rd party stubs
+[[tool.mypy.overrides]]
+module = [
+    "confluent_kafka.*",
+]
+ignore_missing_imports = true
+# end: missing 3rd party stubs
 
 [tool.black]
 # File filtering is taken care of in pre-commit.

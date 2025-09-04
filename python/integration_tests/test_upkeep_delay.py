@@ -9,9 +9,7 @@ from uuid import uuid4
 import orjson
 import yaml
 from google.protobuf.timestamp_pb2 import Timestamp
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
-
-from python.integration_tests.helpers import (
+from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
     TaskbrokerConfig,
@@ -20,6 +18,7 @@ from python.integration_tests.helpers import (
     get_num_tasks_in_sqlite,
     send_custom_messages_to_topic,
 )
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_delay"
 
@@ -29,7 +28,7 @@ def generate_task_activation(delay: int) -> TaskActivation:
         id=uuid4().hex,
         namespace="integration_tests",
         taskname="integration_tests.say_hello",
-        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}),
+        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}).decode("utf-8"),
         retry_state=None,
         processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),

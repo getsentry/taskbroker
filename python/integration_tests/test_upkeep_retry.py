@@ -6,8 +6,7 @@ from collections import defaultdict
 
 import pytest
 import yaml
-
-from python.integration_tests.helpers import (
+from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
     TaskbrokerConfig,
@@ -15,7 +14,7 @@ from python.integration_tests.helpers import (
     get_num_tasks_in_sqlite,
     send_generic_messages_to_topic,
 )
-from python.integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
+from integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
 
@@ -26,22 +25,24 @@ class TasksRetriedCounter:
     been retried.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.total_retried = 0
-        self.tasks_retried = defaultdict(int)  # key: task_name, value: number of retries
+        self.tasks_retried: defaultdict[str, int] = defaultdict(
+            int
+        )  # key: task_name, value: number of retries
         self._lock = threading.Lock()
 
-    def increment(self, task_name: str):
+    def increment(self, task_name: str) -> int:
         with self._lock:
             self.total_retried += 1
             self.tasks_retried[task_name] += 1
             return self.total_retried
 
-    def get_total_retried(self):
+    def get_total_retried(self) -> int:
         with self._lock:
             return self.total_retried
 
-    def get_tasks_retried(self):
+    def get_tasks_retried(self) -> defaultdict[str, int]:
         with self._lock:
             return self.tasks_retried
 
@@ -126,8 +127,8 @@ def manage_taskworker(
         print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
         return
 
-    with open(log_file_path, "a") as log_file:
-        log_file.write(f"Retried:{retried_tasks}")
+    with open(log_file_path, "a") as f:
+        f.write(f"Retried:{retried_tasks}")
 
 
 def manage_taskbroker(
@@ -140,12 +141,12 @@ def manage_taskbroker(
     tasks_written_event: threading.Event,
     shutdown_events: list[threading.Event],
 ) -> None:
-    with open(log_file_path, "a") as log_file:
+    with open(log_file_path, "a") as f:
         print(f"[taskbroker_0] Starting taskbroker, writing log file to " f"{log_file_path}")
         process = subprocess.Popen(
             [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
-            stdout=log_file,
+            stdout=f,
         )
         time.sleep(3)  # give the taskbroker some time to start
 
@@ -333,8 +334,8 @@ Running test with the following configuration:
     total_retried = 0
 
     for log_file in worker_log_files:
-        with open(log_file, "r") as log_file:
-            line = log_file.readline()
+        with open(log_file, "r") as f:
+            line = f.readline()
             total_retried += int(line.split(",")[0].split(":")[1])
 
     print(f"\nTotal tasks retried: {total_retried}")
