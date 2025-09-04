@@ -17,6 +17,8 @@ dev = [
     "protobuf>=5.28.3",
     "pyyaml>=6.0.2",
     "sentry-protos>=0.2.0",
+    "flake8>=7.3.0",
+    "isort>=5.13.2",
 ]
 
 [tool.uv]
@@ -30,3 +32,27 @@ default = true
 testpaths = ["integration_tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+
+[tool.mypy]
+mypy_path = "python"
+# minimal strictness settings
+check_untyped_defs = true
+no_implicit_reexport = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+enable_error_code = ["ignore-without-code", "redundant-self"]
+local_partial_types = true  # compat with dmypy
+disallow_any_generics = true
+disallow_untyped_defs = true
+
+[tool.black]
+# File filtering is taken care of in pre-commit.
+line-length = 100
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+lines_between_sections = 1
