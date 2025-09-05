@@ -174,6 +174,9 @@ pub struct Config {
     /// performance that should trigger a restart.
     pub upkeep_unhealthy_interval_ms: u64,
 
+    /// Whether to skip the health check if the pods are in a bad state.
+    pub health_check_killswitched: bool,
+
     /// The number of seconds that deadline resets
     /// are skipped after startup. This delay allows workers
     /// time to publish results after a broker restart.
@@ -252,6 +255,7 @@ impl Default for Config {
             processing_deadline_grace_sec: 3,
             upkeep_task_interval_ms: 1000,
             upkeep_unhealthy_interval_ms: 3000,
+            health_check_killswitched: false,
             upkeep_deadline_reset_skip_after_startup_sec: 60,
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,

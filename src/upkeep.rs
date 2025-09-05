@@ -379,6 +379,9 @@ pub async fn check_health(
     mut health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
+    if config.health_check_killswitched {
+        return now;
+    }
     if now - last_run > Duration::from_millis(config.upkeep_unhealthy_interval_ms) {
         metrics::counter!("upkeep.health", "status" => "unhealthy").increment(1);
         health_reporter
