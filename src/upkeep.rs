@@ -380,6 +380,10 @@ pub async fn check_health(
 ) -> Instant {
     let now = Instant::now();
     if config.health_check_killswitched {
+        metrics::counter!("upkeep.health", "status" => "killswitched").increment(1);
+        health_reporter
+            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
+            .await;
         return now;
     }
     if now - last_run > Duration::from_millis(config.upkeep_unhealthy_interval_ms) {
