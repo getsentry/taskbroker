@@ -194,6 +194,9 @@ pub async fn do_upkeep(
         metrics::counter!("upkeep.handle_processing_deadline.skipped").increment(1);
     }
 
+    // Don't run processing attempts with metadata store as it is a no-op and
+    // handled in store.get_pending_activation now.
+    /*
     // 5. Handle processing attempts exceeded
     let handle_processing_attempts_exceeded_start = Instant::now();
     if let Ok(processing_attempts_exceeded) = store.handle_processing_attempts().await {
@@ -201,13 +204,18 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.handle_processing_attempts_exceeded")
         .record(handle_processing_attempts_exceeded_start.elapsed());
+    */
 
+    // Don't run expires_at checks with metadata store as it is a no-op.
+    // Like processing attempts, expires_at are handled in store.get_pending_activation now.
+    /*
     // 6. Remove tasks that are past their expires_at deadline
     let handle_expires_at_start = Instant::now();
     if let Ok(expired_count) = store.handle_expires_at().await {
         result_context.expired = expired_count;
     }
     metrics::histogram!("upkeep.handle_expires_at").record(handle_expires_at_start.elapsed());
+    */
 
     // 7. Handle tasks that are past their delay_until deadline
     let handle_delay_until_start = Instant::now();
@@ -267,6 +275,11 @@ pub async fn do_upkeep(
         result_context.completed = count;
     }
     metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
+
+    // 11. Flush changes to metadata store?
+    let flush_dirty_start = Instant::now();
+    store.flush_dirty().await;
+    metrics::histogram!("upkeep.flush_dirty").record(flush_dirty_start.elapsed());
 
     // 11. Remove killswitched tasks from store
     let runtime_config = runtime_config_manager.read().await;
