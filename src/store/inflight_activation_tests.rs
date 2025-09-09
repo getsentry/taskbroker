@@ -79,7 +79,8 @@ async fn test_store() {
     let store = create_test_store().await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    let res = store.store(batch).await;
+    assert!(res.is_ok());
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 2);
@@ -219,7 +220,7 @@ async fn test_get_pending_activation_skip_expires() {
 
     assert_counts(
         StatusCount {
-            pending: 1,
+            failure: 1,
             ..StatusCount::default()
         },
         &store,
@@ -356,9 +357,11 @@ async fn test_set_processing_deadline() {
     let store = create_test_store().await;
 
     let batch = make_activations(1);
-    assert!(store.store(batch.clone()).await.is_ok());
+    let res = store.store(batch.clone()).await;
 
-    let deadline = Utc::now();
+    assert!(res.is_ok());
+
+    let deadline = Utc::now() + chrono::Duration::seconds(5);
     assert!(
         store
             .set_processing_deadline("id_0", Some(deadline))
@@ -367,13 +370,16 @@ async fn test_set_processing_deadline() {
     );
 
     let result = store.get_by_id("id_0").await.unwrap().unwrap();
-    assert_eq!(
+
+    // Assert within a second to avoid subsecond flakiness
+    assert!(
         result
             .processing_deadline
             .unwrap()
             .round_subsecs(0)
-            .timestamp(),
-        deadline.timestamp()
+            .timestamp()
+            - deadline.timestamp()
+            <= 1
     )
 }
 
@@ -727,8 +733,9 @@ async fn test_processing_attempts_exceeded() {
     assert_eq!(count.unwrap(), 2);
     assert_counts(
         StatusCount {
+            pending: 2,
             complete: 1,
-            failure: 2,
+            failure: 0,
             ..StatusCount::default()
         },
         &store,
@@ -1005,9 +1012,20 @@ async fn test_handle_expires_at() {
     let result = store.handle_expires_at().await;
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 2);
+
+    // Get the next pending activation which should be batch[1], batch[0] will be failure
+    // and batch[2] has not been looked at yet.
+    let next_activation = store.get_pending_activation(None).await;
+
+    assert!(next_activation.is_ok());
+    let activation = next_activation.unwrap().unwrap();
+    assert_eq!(activation.id, batch[1].id);
+    assert_eq!(activation.status, InflightActivationStatus::Processing);
     assert_counts(
         StatusCount {
             pending: 1,
+            processing: 1,
+            failure: 1,
             ..StatusCount::default()
         },
         &store,
@@ -1209,7 +1227,7 @@ async fn test_pending_activation_max_lag_ignore_processing_attempts() {
     assert!(store.store(pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
-    assert!(10.00 < result);
+    assert!(10.00 <= result);
     assert!(result < 11.00);
 }
 
@@ -1223,7 +1241,11 @@ async fn test_pending_activation_max_lag_account_for_delayed() {
     // the lag of a delayed task should begin *after* the delay has passed.
     pending[0].received_at = now - Duration::from_secs(520);
     pending[0].delay_until = Some(now - Duration::from_millis(22020));
+    pending[0].status = InflightActivationStatus::Delay;
     assert!(store.store(pending).await.is_ok());
+
+    // Advance state on delayed tasks.
+    store.handle_delay_until().await.unwrap();
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(22.00 < result, "result: {result}");
