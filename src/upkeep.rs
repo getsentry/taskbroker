@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{select, time};
+use tokio::{fs, join, select, time};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 use tracing::{debug, error, info, instrument};
@@ -339,6 +339,18 @@ pub async fn do_upkeep(
     metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
     metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
+
+    let (db_file_meta, wal_file_meta) = join!(
+        fs::metadata(config.db_path.clone()),
+        fs::metadata(config.db_path.clone() + "-wal")
+    );
+
+    if let Ok(db_file_meta) = db_file_meta {
+        metrics::gauge!("upkeep.db_file_size.bytes").set(db_file_meta.len() as f64);
+    }
+    if let Ok(wal_file_meta) = wal_file_meta {
+        metrics::gauge!("upkeep.wal_file_size.bytes").set(wal_file_meta.len() as f64);
+    }
 
     result_context
 }
