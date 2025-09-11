@@ -414,9 +414,11 @@ impl InflightActivationStore {
         let meta_result = Ok(query.execute(&self.write_pool).await?.into());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
+        let checkpoint_timer = Instant::now();
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
             .fetch_one(&self.write_pool)
             .await?;
+        metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
 
         metrics::gauge!("store.pages_written_to_wal").set(checkpoint_result.get::<i32, _>("log"));
         metrics::gauge!("store.pages_committed_to_db")
