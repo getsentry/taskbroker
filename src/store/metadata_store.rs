@@ -671,4 +671,20 @@ impl MetadataStore {
         }
         None
     }
+
+    /// Remove activations with a name matching `task_names`.
+    /// Returns a vec of activation ids that were removed.
+    pub fn remove_killswitched(&mut self, task_names: Vec<String>) -> Vec<String> {
+        let mut updated: Vec<String> = vec![];
+        for (id, metadata) in self.records.iter() {
+            if task_names.contains(&metadata.taskname) {
+                updated.push(id.clone());
+            }
+        }
+        for id in updated.iter() {
+            self.delete(id);
+        }
+
+        updated
+    }
 }
