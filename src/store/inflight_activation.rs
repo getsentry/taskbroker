@@ -829,17 +829,34 @@ impl InflightActivationStore {
     /// Remove killswitched tasks.
     #[instrument(skip_all)]
     pub async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
-        // TODO update this for the metadata store
+        let ids = self
+            .metadata_store
+            .lock()
+            .await
+            .remove_killswitched(killswitched_tasks);
+
+        // Remove blobs and metadata
+        let mut atomic = self.write_pool.begin().await?;
         let mut query_builder =
-            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE taskname IN (");
+            QueryBuilder::<Sqlite>::new("DELETE FROM activation_blobs WHERE id IN (");
         let mut separated = query_builder.separated(", ");
-        for taskname in killswitched_tasks.iter() {
-            separated.push_bind(taskname);
+        for id in ids.iter() {
+            separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        let query = query_builder.build().execute(&self.write_pool).await?;
+        query_builder.build().execute(&mut *atomic).await?;
 
-        Ok(query.rows_affected())
+        let mut query_builder =
+            QueryBuilder::<Sqlite>::new("DELETE FROM activation_metadata WHERE id IN (");
+        let mut separated = query_builder.separated(", ");
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        let query_res = query_builder.build().execute(&mut *atomic).await?;
+        atomic.commit().await?;
+
+        Ok(query_res.rows_affected())
     }
 
     /// Flush any dirty metadata records to sqlite.
