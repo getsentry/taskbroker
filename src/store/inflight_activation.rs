@@ -417,12 +417,20 @@ impl InflightActivationStore {
         let checkpoint_timer = Instant::now();
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
             .fetch_one(&self.write_pool)
-            .await?;
+            .await;
+        match checkpoint_result {
+            Ok(row) => {
+                metrics::gauge!("store.passive_checkpoint_busy").set(row.get::<i32, _>("busy"));
+                metrics::gauge!("store.pages_written_to_wal").set(row.get::<i32, _>("log"));
+                metrics::gauge!("store.pages_committed_to_db")
+                    .set(row.get::<i32, _>("checkpointed"));
+                metrics::gauge!("store.checkpoint.failed").set(0);
+            }
+            Err(_e) => {
+                metrics::gauge!("store.checkpoint.failed").set(1);
+            }
+        }
         metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
-
-        metrics::gauge!("store.pages_written_to_wal").set(checkpoint_result.get::<i32, _>("log"));
-        metrics::gauge!("store.pages_committed_to_db")
-            .set(checkpoint_result.get::<i32, _>("checkpointed"));
 
         meta_result
     }
