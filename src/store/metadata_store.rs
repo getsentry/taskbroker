@@ -6,7 +6,7 @@ use std::{
 use chrono::{DateTime, Duration, Utc};
 use sentry::capture_message;
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
-use sqlx::{QueryBuilder, Sqlite, Transaction, sqlite::SqliteQueryResult};
+use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction, sqlite::SqliteQueryResult};
 
 use crate::store::inflight_activation::InflightActivationStatus;
 use crate::store::records::{ActivationMetadata, TimestampEntry};
@@ -76,6 +76,20 @@ impl MetadataStore {
             failed: BTreeSet::new(),
             dirty_ids: BTreeSet::new(),
         }
+    }
+
+    /// Load metadata state from sqlite into memory.
+    pub async fn load_from_sqlite(&mut self, connection: &SqlitePool) -> anyhow::Result<()> {
+        let load_query: Vec<ActivationMetadata> =
+            sqlx::query_as("SELECT * FROM activation_metadata")
+                .fetch_all(connection)
+                .await?
+                .into_iter()
+                .collect();
+        for row in load_query.into_iter() {
+            self.upsert(row)?;
+        }
+        Ok(())
     }
 
     /// Insert or update an activation metadata record
@@ -377,7 +391,6 @@ impl MetadataStore {
                 self.add_to_failed(entry.id.clone());
                 continue;
             }
-            // TODO: Check if the entry is killed
 
             // Filter by namespace if provided.
             if let Some(namespace) = namespace {

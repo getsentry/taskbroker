@@ -372,6 +372,28 @@ impl InflightActivationStore {
         )))
     }
 
+    /// Load state into the metadata_store from sqlite.
+    /// Used during application startup to rebuild in-memory state.
+    #[instrument(skip_all)]
+    pub async fn load_metadata(&self) -> Result<(), Error> {
+        self.metadata_store
+            .lock()
+            .await
+            .load_from_sqlite(&self.read_pool)
+            .await
+    }
+
+    /// Flush any pending state in metadata_store into sqlite
+    pub async fn flush_metadata(&self) -> Result<(), Error> {
+        let atomic = self.write_pool.begin().await?;
+        let res = self.metadata_store.lock().await.commit(atomic).await;
+
+        match res {
+            Ok(_) => Ok(()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     #[instrument(skip_all)]
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         if batch.is_empty() {
@@ -383,66 +405,9 @@ impl InflightActivationStore {
             .map(ActivationMetadata::try_from)
             .collect::<Result<Vec<ActivationMetadata>, _>>()?;
 
-        let rows = batch
-            .clone()
-            .into_iter()
-            .map(TableRow::try_from)
-            .collect::<Result<Vec<TableRow>, _>>()?;
-
-        let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "
-            INSERT INTO inflight_taskactivations
-                (
-                    id,
-                    activation,
-                    partition,
-                    offset,
-                    added_at,
-                    received_at,
-                    processing_attempts,
-                    expires_at,
-                    delay_until,
-                    processing_deadline_duration,
-                    processing_deadline,
-                    status,
-                    at_most_once,
-                    namespace,
-                    taskname,
-                    on_attempts_exceeded
-                )
-            ",
-        );
-        let query = query_builder
-            .push_values(rows, |mut b, row| {
-                b.push_bind(row.id);
-                b.push_bind(row.activation);
-                b.push_bind(row.partition);
-                b.push_bind(row.offset);
-                b.push_bind(row.added_at.timestamp());
-                b.push_bind(row.received_at.timestamp());
-                b.push_bind(row.processing_attempts);
-                b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
-                b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
-                b.push_bind(row.processing_deadline_duration);
-                if let Some(deadline) = row.processing_deadline {
-                    b.push_bind(deadline.timestamp());
-                } else {
-                    // Add a literal null
-                    b.push("null");
-                }
-                b.push_bind(row.status);
-                b.push_bind(row.at_most_once);
-                b.push_bind(row.namespace);
-                b.push_bind(row.taskname);
-                b.push_bind(row.on_attempts_exceeded as i32);
-            })
-            .push(" ON CONFLICT(id) DO NOTHING")
-            .build();
         let mut atomic = self.write_pool.begin().await?;
-        let meta_result = Ok(query.execute(&mut *atomic).await?.into());
 
-        // insert into the separate stores.
-        // TODO these queries should use one loop.
+        // Insert into the blob store and metadata
         let mut query_builder =
             QueryBuilder::<Sqlite>::new("INSERT INTO activation_blobs (id, activation) ");
         let query = query_builder
@@ -452,7 +417,7 @@ impl InflightActivationStore {
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
-        query.execute(&mut *atomic).await?;
+        let blob_result = query.execute(&mut *atomic).await?;
 
         {
             // append metadata to memory store and flush to sqlite.
@@ -480,7 +445,7 @@ impl InflightActivationStore {
         }
         metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
 
-        meta_result
+        Ok(blob_result.into())
     }
 
     #[instrument(skip_all)]
@@ -603,10 +568,6 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         self.metadata_store.lock().await.delete(id);
-        sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
-            .bind(id)
-            .execute(&self.write_pool)
-            .await?;
         sqlx::query("DELETE FROM activation_blobs WHERE id = $1")
             .bind(id)
             .execute(&self.write_pool)
@@ -652,9 +613,6 @@ impl InflightActivationStore {
 
     pub async fn clear(&self) -> Result<(), Error> {
         let mut atomic = self.write_pool.begin().await?;
-        sqlx::query("DELETE FROM inflight_taskactivations")
-            .execute(&mut *atomic)
-            .await?;
         sqlx::query("DELETE FROM activation_blobs")
             .execute(&mut *atomic)
             .await?;
@@ -689,24 +647,8 @@ impl InflightActivationStore {
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
     #[instrument(skip_all)]
     pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
-        // TODO remove this method? It is a no-op with metadata_store
-        // as processing attempts are handled in get_pending_activation
-        let processing_attempts_result = sqlx::query(
-            "UPDATE inflight_taskactivations
-            SET status = $1
-            WHERE processing_attempts >= $2 AND status = $3",
-        )
-        .bind(InflightActivationStatus::Failure)
-        .bind(self.config.max_processing_attempts as i32)
-        .bind(InflightActivationStatus::Pending)
-        .execute(&self.write_pool)
-        .await;
-
-        if let Ok(query_res) = processing_attempts_result {
-            return Ok(query_res.rows_affected());
-        }
-
-        Err(anyhow!("Could not update tasks past processing_deadline"))
+        // TODO This is a no-op with metadata_store
+        Ok(0)
     }
 
     /// Perform upkeep work for tasks that are past expires_at deadlines
@@ -717,17 +659,8 @@ impl InflightActivationStore {
     /// The number of impacted records is returned in a Result.
     #[instrument(skip_all)]
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
-        // TODO: Remove this? This is a no-op with the metadata store.
-        let now = Utc::now();
-        let query = sqlx::query(
-            "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
-        )
-        .bind(InflightActivationStatus::Pending)
-        .bind(now.timestamp())
-        .execute(&self.write_pool)
-        .await?;
-
-        Ok(query.rows_affected())
+        // TODO: This is a no-op with the metadata store.
+        Ok(0)
     }
 
     /// Perform upkeep work for tasks that are past delay_until deadlines

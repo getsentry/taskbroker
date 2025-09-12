@@ -87,6 +87,10 @@ async fn main() -> Result<(), Error> {
             Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
         }
     }
+    info!("Loading metadata state from sqlite");
+    store.load_metadata().await?;
+    info!("Loading metadata complete");
+
     // Get startup time after migrations and vacuum
     let startup_time = Utc::now();
 
@@ -235,6 +239,10 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task))
         .await;
+
+    info!("Flushing metadata to sqlite");
+    store.flush_metadata().await?;
+    info!("Shutdown complete");
 
     Ok(())
 }
