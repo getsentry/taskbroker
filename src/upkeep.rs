@@ -284,7 +284,7 @@ pub async fn do_upkeep(
     if config.full_vacuum_on_upkeep
         && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
     {
-        match store.vacuum_db().await {
+        match store.full_vacuum_db().await {
             Ok(_) => {
                 *last_vacuum = Instant::now();
             }
