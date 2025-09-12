@@ -675,8 +675,8 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
         let processing_attempts_result = sqlx::query(
-            "UPDATE inflight_taskactivations 
-            SET status = $1 
+            "UPDATE inflight_taskactivations
+            SET status = $1
             WHERE processing_attempts >= $2 AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
