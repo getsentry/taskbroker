@@ -294,22 +294,25 @@ pub async fn do_upkeep(
         }
     }
 
-    if let Ok(pending_count) = store
-        .count_by_status(InflightActivationStatus::Pending)
-        .await
-    {
+    let now = Utc::now();
+    let (pending_count, processing_count, delay_count, max_lag, db_file_meta, wal_file_meta) = join!(
+        store.count_by_status(InflightActivationStatus::Pending),
+        store.count_by_status(InflightActivationStatus::Processing),
+        store.count_by_status(InflightActivationStatus::Delay),
+        store.pending_activation_max_lag(&now),
+        fs::metadata(config.db_path.clone()),
+        fs::metadata(config.db_path.clone() + "-wal")
+    );
+
+    if let Ok(pending_count) = pending_count {
         result_context.pending = pending_count as u32;
     }
-    if let Ok(processing_count) = store
-        .count_by_status(InflightActivationStatus::Processing)
-        .await
-    {
+    if let Ok(processing_count) = processing_count {
         result_context.processing = processing_count as u32;
     }
-    if let Ok(delay_count) = store.count_by_status(InflightActivationStatus::Delay).await {
+    if let Ok(delay_count) = delay_count {
         result_context.delay = delay_count as u32;
     }
-    let max_lag = store.pending_activation_max_lag(&Utc::now()).await;
 
     if !result_context.empty() {
         debug!(
@@ -356,11 +359,6 @@ pub async fn do_upkeep(
     metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
     metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
-
-    let (db_file_meta, wal_file_meta) = join!(
-        fs::metadata(config.db_path.clone()),
-        fs::metadata(config.db_path.clone() + "-wal")
-    );
 
     if let Ok(db_file_meta) = db_file_meta {
         metrics::gauge!("upkeep.db_file_size.bytes").set(db_file_meta.len() as f64);
