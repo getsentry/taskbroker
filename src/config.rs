@@ -201,6 +201,13 @@ pub struct Config {
     /// Enable to have the application perform `VACUUM` on the database
     /// when it starts up, but before the GRPC server, consumer and upkeep begin.
     pub full_vacuum_on_start: bool,
+
+    /// Enable the upkeep thread to perforam a full `VACUUM` on the database
+    /// periodically.
+    pub full_vacuum_on_upkeep: bool,
+
+    /// The interval in milliseconds between full `VACUUM`s on the database by the upkeep thread.
+    pub vacuum_interval_ms: u64,
 }
 
 impl Default for Config {
@@ -262,6 +269,8 @@ impl Default for Config {
             max_message_size: 5000000,
             vacuum_page_count: None,
             full_vacuum_on_start: true,
+            full_vacuum_on_upkeep: false,
+            vacuum_interval_ms: 30000,
         }
     }
 }
