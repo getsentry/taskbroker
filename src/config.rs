@@ -208,6 +208,9 @@ pub struct Config {
 
     /// The interval in milliseconds between full `VACUUM`s on the database by the upkeep thread.
     pub vacuum_interval_ms: u64,
+
+    /// Enable additional metrics for the sqlite.
+    pub enable_sqlite_status_metrics: bool,
 }
 
 impl Default for Config {
@@ -271,6 +274,7 @@ impl Default for Config {
             full_vacuum_on_start: true,
             full_vacuum_on_upkeep: false,
             vacuum_interval_ms: 30000,
+            enable_sqlite_status_metrics: false,
         }
     }
 }

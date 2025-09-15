@@ -251,6 +251,7 @@ pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
     pub vacuum_page_count: Option<usize>,
+    pub enable_sqlite_status_metrics: bool,
 }
 
 impl InflightActivationStoreConfig {
@@ -259,6 +260,7 @@ impl InflightActivationStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
     }
 }
@@ -316,6 +318,10 @@ impl InflightActivationStore {
     }
 
     async fn emit_db_status_metrics(&self) {
+        if !self.config.enable_sqlite_status_metrics {
+            return;
+        }
+
         if let Ok(mut conn) = self.read_pool.acquire().await {
             if let Ok(mut raw) = conn.lock_handle().await {
                 let mut cur: i32 = 0;
