@@ -2,11 +2,19 @@ use std::{str::FromStr, time::Instant};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
+use libsqlite3_sys::{
+    SQLITE_DBSTATUS_CACHE_HIT, SQLITE_DBSTATUS_CACHE_MISS, SQLITE_DBSTATUS_CACHE_SPILL,
+    SQLITE_DBSTATUS_CACHE_USED, SQLITE_DBSTATUS_CACHE_USED_SHARED, SQLITE_DBSTATUS_CACHE_WRITE,
+    SQLITE_DBSTATUS_DEFERRED_FKS, SQLITE_DBSTATUS_LOOKASIDE_HIT,
+    SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL, SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE,
+    SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
+    SQLITE_OK, sqlite3_db_status,
+};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
-    pool::PoolOptions,
+    pool::{PoolConnection, PoolOptions},
     sqlite::{
         SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
         SqliteRow, SqliteSynchronous,
@@ -303,7 +311,149 @@ impl InflightActivationStore {
     /// Perform a full vacuum on the database.
     pub async fn full_vacuum_db(&self) -> Result<(), Error> {
         sqlx::query("VACUUM").execute(&self.write_pool).await?;
+        self.emit_db_status_metrics().await;
         Ok(())
+    }
+
+    async fn emit_db_status_metrics(&self) {
+        if let Ok(mut conn) = self.read_pool.acquire().await {
+            if let Ok(mut raw) = conn.lock_handle().await {
+                let mut cur: i32 = 0;
+                let mut hi: i32 = 0;
+                unsafe {
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_CACHE_USED,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.cache_used_bytes").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_CACHE_USED_SHARED,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.cache_used_shared_bytes").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_CACHE_HIT,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.cache_hit_total").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_CACHE_MISS,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.cache_miss_total").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_CACHE_WRITE,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.cache_write_total").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_CACHE_SPILL,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.cache_spill_total").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_SCHEMA_USED,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.schema_used_bytes").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_STMT_USED,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.stmt_used_bytes").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_LOOKASIDE_USED,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.lookaside_used").set(cur);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_LOOKASIDE_HIT,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.lookaside_hit_highwater").set(hi);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.lookaside_miss_size_highwater").set(hi);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.lookaside_miss_full_highwater").set(hi);
+                    }
+                    if sqlite3_db_status(
+                        raw.as_raw_handle().as_mut(),
+                        SQLITE_DBSTATUS_DEFERRED_FKS,
+                        &mut cur,
+                        &mut hi,
+                        0,
+                    ) == SQLITE_OK
+                    {
+                        metrics::gauge!("sqlite.db.deferred_fks_unresolved").set(cur);
+                    }
+                }
+            }
+        }
     }
 
     /// Get the size of the database in bytes based on SQLite metadata queries.
@@ -843,3 +993,5 @@ impl InflightActivationStore {
         Ok(query.rows_affected())
     }
 }
+
+// test moved to inflight_activation_tests.rs

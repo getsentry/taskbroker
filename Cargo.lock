@@ -2918,6 +2918,7 @@ dependencies = [
  "hmac",
  "http",
  "http-body-util",
+ "libsqlite3-sys",
  "metrics",
  "metrics-exporter-statsd",
  "prost",
