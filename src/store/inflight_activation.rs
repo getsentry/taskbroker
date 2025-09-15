@@ -322,141 +322,141 @@ impl InflightActivationStore {
             return;
         }
 
-        if let Ok(mut conn) = self.read_pool.acquire().await {
-            if let Ok(mut raw) = conn.lock_handle().await {
-                let mut cur: i32 = 0;
-                let mut hi: i32 = 0;
-                unsafe {
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_CACHE_USED,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.cache_used_bytes").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_CACHE_USED_SHARED,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.cache_used_shared_bytes").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_CACHE_HIT,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.cache_hit_total").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_CACHE_MISS,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.cache_miss_total").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_CACHE_WRITE,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.cache_write_total").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_CACHE_SPILL,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.cache_spill_total").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_SCHEMA_USED,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.schema_used_bytes").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_STMT_USED,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.stmt_used_bytes").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_LOOKASIDE_USED,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.lookaside_used").set(cur);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_LOOKASIDE_HIT,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.lookaside_hit_highwater").set(hi);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.lookaside_miss_size_highwater").set(hi);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.lookaside_miss_full_highwater").set(hi);
-                    }
-                    if sqlite3_db_status(
-                        raw.as_raw_handle().as_mut(),
-                        SQLITE_DBSTATUS_DEFERRED_FKS,
-                        &mut cur,
-                        &mut hi,
-                        0,
-                    ) == SQLITE_OK
-                    {
-                        metrics::gauge!("sqlite.db.deferred_fks_unresolved").set(cur);
-                    }
+        if let Ok(mut conn) = self.read_pool.acquire().await
+            && let Ok(mut raw) = conn.lock_handle().await
+        {
+            let mut cur: i32 = 0;
+            let mut hi: i32 = 0;
+            unsafe {
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_CACHE_USED,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.cache_used_bytes").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_CACHE_USED_SHARED,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.cache_used_shared_bytes").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_CACHE_HIT,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.cache_hit_total").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_CACHE_MISS,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.cache_miss_total").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_CACHE_WRITE,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.cache_write_total").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_CACHE_SPILL,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.cache_spill_total").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_SCHEMA_USED,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.schema_used_bytes").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_STMT_USED,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.stmt_used_bytes").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_LOOKASIDE_USED,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.lookaside_used").set(cur);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_LOOKASIDE_HIT,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.lookaside_hit_highwater").set(hi);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.lookaside_miss_size_highwater").set(hi);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.lookaside_miss_full_highwater").set(hi);
+                }
+                if sqlite3_db_status(
+                    raw.as_raw_handle().as_mut(),
+                    SQLITE_DBSTATUS_DEFERRED_FKS,
+                    &mut cur,
+                    &mut hi,
+                    0,
+                ) == SQLITE_OK
+                {
+                    metrics::gauge!("sqlite.db.deferred_fks_unresolved").set(cur);
                 }
             }
         }
