@@ -284,12 +284,16 @@ pub async fn do_upkeep(
     if config.full_vacuum_on_upkeep
         && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
     {
+        let vacuum_start = Instant::now();
         match store.full_vacuum_db().await {
             Ok(_) => {
                 *last_vacuum = Instant::now();
+                metrics::histogram!("upkeep.full_vacuum").record(vacuum_start.elapsed());
             }
             Err(err) => {
                 error!("failed to vacuum the database: {:?}", err);
+                metrics::counter!("upkeep.full_vacuu.failure", "error" => err.to_string())
+                    .increment(1);
             }
         }
     }
