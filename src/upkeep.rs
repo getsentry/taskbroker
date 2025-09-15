@@ -292,7 +292,7 @@ pub async fn do_upkeep(
             }
             Err(err) => {
                 error!("failed to vacuum the database: {:?}", err);
-                metrics::counter!("upkeep.full_vacuu.failure", "error" => err.to_string())
+                metrics::counter!("upkeep.full_vacuum.failure", "error" => err.to_string())
                     .increment(1);
             }
         }
