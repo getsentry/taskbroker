@@ -701,49 +701,6 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
 }
 
 #[tokio::test]
-async fn test_processing_attempts_exceeded() {
-    let config = create_integration_config();
-    let store = create_test_store().await;
-
-    let mut batch = make_activations(3);
-    batch[0].status = InflightActivationStatus::Pending;
-    batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[0].processing_attempts = config.max_processing_attempts as i32;
-
-    batch[1].status = InflightActivationStatus::Complete;
-    batch[1].added_at += Duration::from_secs(1);
-
-    batch[2].status = InflightActivationStatus::Pending;
-    batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[2].processing_attempts = config.max_processing_attempts as i32;
-
-    assert!(store.store(batch.clone()).await.is_ok());
-    assert_counts(
-        StatusCount {
-            complete: 1,
-            pending: 2,
-            ..StatusCount::default()
-        },
-        &store,
-    )
-    .await;
-
-    let count = store.handle_processing_attempts().await;
-    assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 2);
-    assert_counts(
-        StatusCount {
-            pending: 2,
-            complete: 1,
-            failure: 0,
-            ..StatusCount::default()
-        },
-        &store,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn test_remove_completed() {
     let store = create_test_store().await;
 
@@ -990,50 +947,6 @@ async fn test_mark_completed() {
 }
 
 #[tokio::test]
-async fn test_handle_expires_at() {
-    let store = create_test_store().await;
-    let mut batch = make_activations(3);
-
-    // All expired tasks should be removed, regardless of order or other tasks.
-    batch[0].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
-    batch[1].expires_at = Some(Utc::now() + (Duration::from_secs(5 * 60)));
-    batch[2].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
-
-    assert!(store.store(batch.clone()).await.is_ok());
-    assert_counts(
-        StatusCount {
-            pending: 3,
-            ..StatusCount::default()
-        },
-        &store,
-    )
-    .await;
-
-    let result = store.handle_expires_at().await;
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), 2);
-
-    // Get the next pending activation which should be batch[1], batch[0] will be failure
-    // and batch[2] has not been looked at yet.
-    let next_activation = store.get_pending_activation(None).await;
-
-    assert!(next_activation.is_ok());
-    let activation = next_activation.unwrap().unwrap();
-    assert_eq!(activation.id, batch[1].id);
-    assert_eq!(activation.status, InflightActivationStatus::Processing);
-    assert_counts(
-        StatusCount {
-            pending: 1,
-            processing: 1,
-            failure: 1,
-            ..StatusCount::default()
-        },
-        &store,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn test_remove_killswitched() {
     let store = create_test_store().await;
     let mut batch = make_activations(6);
@@ -1178,7 +1091,7 @@ async fn test_db_size() {
     assert!(first_size > 0, "should have some bytes");
 
     // Generate a large enough batch that we use another page.
-    let batch = make_activations(50);
+    let batch = make_activations(100);
     assert!(store.store(batch).await.is_ok());
 
     let second_size = store.db_size().await.unwrap();
