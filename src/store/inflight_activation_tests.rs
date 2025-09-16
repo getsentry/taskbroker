@@ -1230,6 +1230,66 @@ async fn test_pending_activation_max_lag_account_for_delayed() {
     assert!(result < 23.00, "result: {result}");
 }
 
+#[tokio::test]
+async fn test_db_status_calls_ok() {
+    use libsqlite3_sys::{
+        SQLITE_DBSTATUS_CACHE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_OK, sqlite3_db_status,
+    };
+    use std::time::SystemTime;
+
+    // Create a unique on-disk database URL
+    let nanos = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let db_path = format!("/tmp/taskbroker-dbstatus-{nanos}.sqlite");
+    let url = format!("sqlite:{db_path}");
+
+    // Initialize a store to create the database and run migrations
+    InflightActivationStore::new(
+        &url,
+        InflightActivationStoreConfig {
+            max_processing_attempts: 3,
+            processing_deadline_grace_sec: 0,
+            vacuum_page_count: None,
+            enable_sqlite_status_metrics: false,
+        },
+    )
+    .await
+    .expect("store init");
+
+    // Acquire a fresh read connection from a temporary pool, since store.read_pool is private
+    let (read_pool, _write_pool) = create_sqlite_pool(&url).await.expect("pool");
+    let mut conn = read_pool.acquire().await.expect("acquire read conn");
+    let mut raw = conn.lock_handle().await.expect("lock_handle");
+
+    let mut cur: i32 = 0;
+    let mut hi: i32 = 0;
+
+    unsafe {
+        // Should succeed and write some non-negative values
+        let rc = sqlite3_db_status(
+            raw.as_raw_handle().as_mut(),
+            SQLITE_DBSTATUS_CACHE_USED,
+            &mut cur,
+            &mut hi,
+            0,
+        );
+        assert_eq!(rc, SQLITE_OK);
+        assert!(cur >= 0);
+
+        let rc2 = sqlite3_db_status(
+            raw.as_raw_handle().as_mut(),
+            SQLITE_DBSTATUS_SCHEMA_USED,
+            &mut cur,
+            &mut hi,
+            0,
+        );
+        assert_eq!(rc2, SQLITE_OK);
+        assert!(cur >= 0);
+    }
+}
+
 struct TestFolders {
     parent_folder: String,
     initial_folder: String,
