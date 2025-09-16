@@ -393,11 +393,11 @@ impl MetadataStore {
             }
 
             // Filter by namespace if provided.
-            if let Some(namespace) = namespace {
-                if metadata.namespace != namespace {
-                    namespace_skipped.push(entry);
-                    continue;
-                }
+            if let Some(namespace) = namespace
+                && metadata.namespace != namespace
+            {
+                namespace_skipped.push(entry);
+                continue;
             }
 
             // Found a valid entry.
