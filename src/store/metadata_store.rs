@@ -28,7 +28,7 @@ pub struct FailedState {
 /// added to a 'dirty' set. When the [`Self::flush()`] is called, all
 /// records in the dirty list are flushed to sqlite.
 ///
-/// This structure is typically wrapped in a Mutex or RwLock
+/// This structure is typically wrapped in a Mutex
 /// to enable safe concurrent access.
 #[derive(Clone, Debug)]
 pub struct MetadataStore {
@@ -143,7 +143,7 @@ impl MetadataStore {
         }
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "INSERT INTO activation_metadata (
-                id, 
+                id,
                 namespace,
                 taskname,
                 status,
