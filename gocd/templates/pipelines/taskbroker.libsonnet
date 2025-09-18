@@ -12,7 +12,6 @@ local checks_stage = {
         },
         tasks: [
           gocdtasks.script(importstr '../bash/check-github-runs.sh'),
-          gocdtasks.script(importstr '../bash/check-cloudbuild.sh'),
         ],
       },
     },
