@@ -69,7 +69,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
 }
 
 async fn set_status(num_activations: u32, num_workers: u32) {
-    assert!(num_activations % num_workers == 0);
+    assert!(num_activations.is_multiple_of(num_workers));
 
     let url = if cfg!(feature = "bench-with-mnt-disk") {
         let mut rng = rand::thread_rng();
