@@ -274,7 +274,7 @@ impl Default for Config {
             full_vacuum_on_start: true,
             full_vacuum_on_upkeep: false,
             vacuum_interval_ms: 30000,
-            enable_sqlite_status_metrics: false,
+            enable_sqlite_status_metrics: true,
         }
     }
 }
