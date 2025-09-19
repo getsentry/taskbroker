@@ -272,7 +272,7 @@ impl Default for Config {
             max_message_size: 5000000,
             vacuum_page_count: None,
             full_vacuum_on_start: true,
-            full_vacuum_on_upkeep: false,
+            full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
         }
