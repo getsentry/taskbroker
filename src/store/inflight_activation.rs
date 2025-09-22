@@ -14,7 +14,7 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
-    pool::PoolOptions,
+    pool::{PoolConnection, PoolOptions},
     sqlite::{
         SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
         SqliteRow, SqliteSynchronous,
@@ -272,6 +272,15 @@ pub struct InflightActivationStore {
 }
 
 impl InflightActivationStore {
+    async fn acquire_write_conn_metric(
+        &self,
+        caller: &'static str,
+    ) -> Result<PoolConnection<Sqlite>, Error> {
+        let start = Instant::now();
+        let conn = self.write_pool.acquire().await?;
+        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller).record(start.elapsed());
+        Ok(conn)
+    }
     pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
         let (read_pool, write_pool) = create_sqlite_pool(url).await?;
 
@@ -292,12 +301,14 @@ impl InflightActivationStore {
         let timer = Instant::now();
 
         if let Some(page_count) = self.config.vacuum_page_count {
+            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
             sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
-                .execute(&self.write_pool)
+                .execute(&mut *conn)
                 .await?;
         } else {
+            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
             sqlx::query("PRAGMA incremental_vacuum")
-                .execute(&self.write_pool)
+                .execute(&mut *conn)
                 .await?;
         }
         let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
@@ -312,7 +323,8 @@ impl InflightActivationStore {
 
     /// Perform a full vacuum on the database.
     pub async fn full_vacuum_db(&self) -> Result<(), Error> {
-        sqlx::query("VACUUM").execute(&self.write_pool).await?;
+        let mut conn = self.acquire_write_conn_metric("full_vacuum_db").await?;
+        sqlx::query("VACUUM").execute(&mut *conn).await?;
         self.emit_db_status_metrics().await;
         Ok(())
     }
@@ -567,12 +579,13 @@ impl InflightActivationStore {
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
-        let meta_result = Ok(query.execute(&self.write_pool).await?.into());
+        let mut conn = self.acquire_write_conn_metric("store").await?;
+        let meta_result = Ok(query.execute(&mut *conn).await?.into());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
         let checkpoint_timer = Instant::now();
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-            .fetch_one(&self.write_pool)
+            .fetch_one(&mut *conn)
             .await;
         match checkpoint_result {
             Ok(row) => {
@@ -626,9 +639,12 @@ impl InflightActivationStore {
         }
         query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
 
+        let mut conn = self
+            .acquire_write_conn_metric("get_pending_activation")
+            .await?;
         let result: Option<TableRow> = query_builder
             .build_query_as::<TableRow>()
-            .fetch_optional(&self.write_pool)
+            .fetch_optional(&mut *conn)
             .await?;
         let Some(row) = result else { return Ok(None) };
 
@@ -700,12 +716,13 @@ impl InflightActivationStore {
         id: &str,
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error> {
+        let mut conn = self.acquire_write_conn_metric("set_status").await?;
         let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
         )
         .bind(status)
         .bind(id)
-        .fetch_optional(&self.write_pool)
+        .fetch_optional(&mut *conn)
         .await?;
 
         let Some(row) = result else {
@@ -721,19 +738,23 @@ impl InflightActivationStore {
         id: &str,
         deadline: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("set_processing_deadline")
+            .await?;
         sqlx::query("UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2")
             .bind(deadline.unwrap().timestamp())
             .bind(id)
-            .execute(&self.write_pool)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }
 
     #[instrument(skip_all)]
     pub async fn delete_activation(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
         sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
             .bind(id)
-            .execute(&self.write_pool)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }
@@ -771,8 +792,9 @@ impl InflightActivationStore {
     }
 
     pub async fn clear(&self) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("clear").await?;
         sqlx::query("DELETE FROM inflight_taskactivations")
-            .execute(&self.write_pool)
+            .execute(&mut *conn)
             .await?;
         Ok(())
     }
@@ -830,6 +852,9 @@ impl InflightActivationStore {
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
     #[instrument(skip_all)]
     pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("handle_processing_attempts")
+            .await?;
         let processing_attempts_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET status = $1
@@ -838,7 +863,7 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(self.config.max_processing_attempts as i32)
         .bind(InflightActivationStatus::Pending)
-        .execute(&self.write_pool)
+        .execute(&mut *conn)
         .await;
 
         if let Ok(query_res) = processing_attempts_result {
@@ -857,12 +882,13 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
         let now = Utc::now();
+        let mut conn = self.acquire_write_conn_metric("handle_expires_at").await?;
         let query = sqlx::query(
             "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
-        .execute(&self.write_pool)
+        .execute(&mut *conn)
         .await?;
 
         Ok(query.rows_affected())
@@ -877,6 +903,7 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn handle_delay_until(&self) -> Result<u64, Error> {
         let now = Utc::now();
+        let mut conn = self.acquire_write_conn_metric("handle_delay_until").await?;
         let update_result = sqlx::query(
             r#"UPDATE inflight_taskactivations
             SET status = $1
@@ -886,7 +913,7 @@ impl InflightActivationStore {
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Delay)
-        .execute(&self.write_pool)
+        .execute(&mut *conn)
         .await?;
 
         Ok(update_result.rows_affected())
@@ -967,7 +994,8 @@ impl InflightActivationStore {
             separated.push_bind(id);
         }
         separated.push_unseparated(")");
-        let result = query_builder.build().execute(&self.write_pool).await?;
+        let mut conn = self.acquire_write_conn_metric("mark_completed").await?;
+        let result = query_builder.build().execute(&mut *conn).await?;
 
         Ok(result.rows_affected())
     }
@@ -976,9 +1004,10 @@ impl InflightActivationStore {
     /// This method is a garbage collector for the inflight task store.
     #[instrument(skip_all)]
     pub async fn remove_completed(&self) -> Result<u64, Error> {
+        let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
         let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
             .bind(InflightActivationStatus::Complete)
-            .execute(&self.write_pool)
+            .execute(&mut *conn)
             .await?;
 
         Ok(query.rows_affected())
@@ -994,7 +1023,10 @@ impl InflightActivationStore {
             separated.push_bind(taskname);
         }
         separated.push_unseparated(")");
-        let query = query_builder.build().execute(&self.write_pool).await?;
+        let mut conn = self
+            .acquire_write_conn_metric("remove_killswitched")
+            .await?;
+        let query = query_builder.build().execute(&mut *conn).await?;
 
         Ok(query.rows_affected())
     }
