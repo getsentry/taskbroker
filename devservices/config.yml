@@ -24,6 +24,7 @@ services:
     image: ghcr.io/getsentry/taskbroker:latest
     environment:
       TASKBROKER_KAFKA_CLUSTER: "kafka-kafka-1:9093"
+      TASKBROKER_CREATE_MISSING_TOPICS: "true"
     ports:
       - 127.0.0.1:50051:50051
     networks:
