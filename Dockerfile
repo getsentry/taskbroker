@@ -3,7 +3,7 @@
 # recent enough version of protobuf-compiler
 FROM rust:1-bookworm AS build
 
-RUN apt-get update && apt-get upgrade -y 
+RUN apt-get update && apt-get upgrade -y
 RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
 
 RUN USER=root cargo new --bin taskbroker
@@ -41,6 +41,7 @@ RUN groupadd taskbroker --gid 1000 && useradd --gid taskbroker --uid 1000 taskbr
 RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev libsqlite3-dev libsqlite3-0 openssl ca-certificates
 
 EXPOSE 50051
+EXPOSE 50055
 
 # For the sqlite to be mounted too
 RUN mkdir /opt/sqlite
@@ -54,4 +55,4 @@ WORKDIR /opt
 CMD ["/opt/taskbroker"]
 
 # To build and run locally:
-# docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50051:50051 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry  taskbroker
+# docker build -t taskbroker --no-cache . && docker rm taskbroker && docker run --name taskbroker -p 127.0.0.1:50055:50055 -e TASKBROKER_KAFKA_CLUSTER=sentry_kafka:9093 --network sentry  taskbroker
