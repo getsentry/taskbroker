@@ -4,18 +4,16 @@ import sqlite3
 import subprocess
 import threading
 import time
-
 from threading import Thread
 
 import yaml
-
-from python.integration_tests.helpers import (
+from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
+    TaskbrokerConfig,
     create_topic,
     get_available_ports,
     send_generic_messages_to_topic,
-    TaskbrokerConfig,
 )
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_consumer_rebalancing"
@@ -31,10 +29,7 @@ def manage_taskbroker(
     log_file_path: str,
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(
-            f"Starting taskbroker {taskbroker_index}, writing log file to "
-            f"{log_file_path}"
-        )
+        print(f"Starting taskbroker {taskbroker_index}, writing log file to " f"{log_file_path}")
         for i in range(iterations):
             process = subprocess.Popen(
                 [taskbroker_path, "-c", config_file_path],
@@ -184,8 +179,7 @@ Running test with the following configuration:
     print(query)
     print("Result:")
     print(
-        f"{'Partition'.rjust(16)}{'Expected'.rjust(16)}"
-        f"{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
+        f"{'Partition'.rjust(16)}{'Expected'.rjust(16)}" f"{'Actual'.rjust(16)}{'Diff'.rjust(16)}"
     )
     for partition, expected_row_count, actual_row_count, diff in row_count:
         print(
@@ -206,19 +200,13 @@ Running test with the following configuration:
     print("Result:")
     print(f"{'Partition'.rjust(16)}{'Offset'.rjust(16)}{'count'.rjust(16)}")
     for partition, offset, count in res:
-        print(
-            f"{str(partition).rjust(16)}{str(offset).rjust(16)}"
-            f"{str(count).rjust(16)}"
-        )
+        print(f"{str(partition).rjust(16)}{str(offset).rjust(16)}" f"{str(count).rjust(16)}")
 
     total_row_count = 0
     over_capacity = []
     print("\n======== Number of rows in each taskbroker ========")
     for i, config in enumerate(taskbroker_configs.values()):
-        query = (
-            f"SELECT count(*) as count from "
-            f"{config.db_name}.inflight_taskactivations"
-        )
+        query = f"SELECT count(*) as count from " f"{config.db_name}.inflight_taskactivations"
         res = cur.execute(query).fetchall()[0][0]
         print(
             f"Consumer {i}: {res}, "

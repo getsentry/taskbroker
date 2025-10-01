@@ -1,40 +1,34 @@
-import orjson
-import pytest
 import signal
 import subprocess
 import threading
 import time
-
-import yaml
-
 from uuid import uuid4
+
+import orjson
+import pytest
+import yaml
 from google.protobuf.timestamp_pb2 import Timestamp
-from python.integration_tests.helpers import (
+from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
+    TaskbrokerConfig,
     create_topic,
     get_num_tasks_in_sqlite,
-    TaskbrokerConfig,
-    send_custom_messages_to_topic,
     get_topic_size,
+    send_custom_messages_to_topic,
 )
-
-from python.integration_tests.worker import (
-    ConfigurableTaskWorker,
-    TaskWorkerClient,
-)
+from integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     OnAttemptsExceeded,
     RetryState,
     TaskActivation,
 )
 
-
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_failed_tasks"
 
 
 def generate_task_activation(
-    on_attempts_exceeded: OnAttemptsExceeded,
+    on_attempts_exceeded: OnAttemptsExceeded.ValueType,
 ) -> TaskActivation:
     """Generate a task activation with the specified retry behavior."""
     retry_state = RetryState(
@@ -46,7 +40,7 @@ def generate_task_activation(
         id=uuid4().hex,
         namespace="integration_tests",
         taskname="integration_tests.say_hello",
-        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}),
+        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}).decode("utf-8"),
         retry_state=retry_state,
         processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),
@@ -79,10 +73,7 @@ def manage_taskworker(
     task = None
 
     # Wait for taskbroker to initialize sqlite and write tasks to it
-    print(
-        "[taskworker_0]: Waiting for taskbroker to initialize sqlite "
-        "and write tasks to it..."
-    )
+    print("[taskworker_0]: Waiting for taskbroker to initialize sqlite " "and write tasks to it...")
     while not tasks_written_event.is_set() and not shutdown_event.is_set():
         time.sleep(1)
 
@@ -172,10 +163,7 @@ def manage_taskbroker(
     4. Gracefully shuts down the taskbroker
     """
     with open(log_file_path, "a") as log_file:
-        print(
-            f"[taskbroker_0] Starting taskbroker, writing log file to "
-            f"{log_file_path}"
-        )
+        print(f"[taskbroker_0] Starting taskbroker, writing log file to " f"{log_file_path}")
         process = subprocess.Popen(
             [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
@@ -194,9 +182,7 @@ def manage_taskbroker(
             shutdown_event.set()
         else:
             # Wait for tasks to be processed
-            print(
-                "[taskbroker_0]: Waiting for taskworker(s) to finish " "processing..."
-            )
+            print("[taskbroker_0]: Waiting for taskworker(s) to finish " "processing...")
             wait_for_upkeep_to_handle_tasks(taskbroker_config, timeout)
 
         # Stop the taskbroker
@@ -205,9 +191,7 @@ def manage_taskbroker(
         try:
             return_code = process.wait(timeout=10)
             if return_code != 0:
-                raise RuntimeError(
-                    f"Taskbroker exited with non-zero code: {return_code}"
-                )
+                raise RuntimeError(f"Taskbroker exited with non-zero code: {return_code}")
         except subprocess.TimeoutExpired:
             print("[taskbroker_0]: Force killing taskbroker after timeout")
             process.kill()

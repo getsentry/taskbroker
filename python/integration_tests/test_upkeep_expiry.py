@@ -1,33 +1,31 @@
-import orjson
 import signal
 import subprocess
 import threading
 import time
-
-import yaml
 from uuid import uuid4
+
+import orjson
+import yaml
 from google.protobuf.timestamp_pb2 import Timestamp
-from python.integration_tests.helpers import (
+from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
-    send_custom_messages_to_topic,
+    TaskbrokerConfig,
     create_topic,
     get_num_tasks_in_sqlite,
-    TaskbrokerConfig,
+    send_custom_messages_to_topic,
 )
-
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     OnAttemptsExceeded,
     RetryState,
     TaskActivation,
 )
 
-
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_expiry"
 
 
 def generate_task_activation(
-    on_attempts_exceeded: OnAttemptsExceeded, expires: int
+    on_attempts_exceeded: OnAttemptsExceeded.ValueType, expires: int
 ) -> TaskActivation:
     retry_state = RetryState(
         attempts=0,
@@ -38,7 +36,7 @@ def generate_task_activation(
         id=uuid4().hex,
         namespace="integration_tests",
         taskname="integration_tests.say_hello",
-        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}),
+        parameters=orjson.dumps({"args": ["foobar"], "kwargs": {}}).decode("utf-8"),
         retry_state=retry_state,
         processing_deadline_duration=3000,
         received_at=Timestamp(seconds=int(time.time())),
@@ -56,10 +54,7 @@ def manage_taskbroker(
     num_messages: int,
 ) -> None:
     with open(log_file_path, "a") as log_file:
-        print(
-            f"[taskbroker_0] Starting taskbroker, writing log file to "
-            f"{log_file_path}"
-        )
+        print(f"[taskbroker_0] Starting taskbroker, writing log file to " f"{log_file_path}")
         process = subprocess.Popen(
             [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
@@ -75,8 +70,7 @@ def manage_taskbroker(
             print(f"[taskbroker_0]: Written {written_tasks} tasks to sqlite.")
             if written_tasks == num_messages:
                 print(
-                    f"[taskbroker_0]: Finishing writting all {num_messages} "
-                    "task(s) to sqlite."
+                    f"[taskbroker_0]: Finishing writting all {num_messages} " "task(s) to sqlite."
                 )
                 finished_writing_tasks = True
             time.sleep(1)
@@ -227,8 +221,7 @@ Running test with the following configuration:
 
         # Create taskbroker thread
         results_log_path = str(
-            TEST_OUTPUT_PATH
-            / f"taskbroker_0_{curr_time}_test_upkeep_expiry_results.log"
+            TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_expiry_results.log"
         )
         taskbroker_thread = threading.Thread(
             target=manage_taskbroker,
@@ -236,10 +229,7 @@ Running test with the following configuration:
                 taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
-                str(
-                    TEST_OUTPUT_PATH
-                    / f"taskbroker_0_{curr_time}_test_upkeep_expiry.log"
-                ),
+                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_expiry.log"),
                 results_log_path,
                 taskbroker_timeout,
                 num_messages,
