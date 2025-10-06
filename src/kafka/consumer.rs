@@ -162,7 +162,7 @@ impl ConsumerContext for KafkaContext {
                     Event::Revoke(tpl.to_topic_map().keys().cloned().collect()),
                     rendezvous_sender,
                 ));
-                info!("Partition assignment event sent, waiting for rendezvous...");
+                info!("Partition revocation event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
             }
