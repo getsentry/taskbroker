@@ -148,6 +148,9 @@ impl ConsumerContext for KafkaContext {
                 info!("Partition assignment event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
+                metrics::counter!("arroyo.consumer.partitions_assigned.count")
+                    .increment(tpl.count() as u64);
+                metrics::gauge!("arroyo.consumer.current_partitions").increment(tpl.count() as f64);
             }
             Rebalance::Revoke(tpl) => {
                 debug!("Got pre-rebalance callback, kind: Revoke");
@@ -165,6 +168,9 @@ impl ConsumerContext for KafkaContext {
                 info!("Partition revocation event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
+                metrics::counter!("arroyo.consumer.partitions_revoked.count")
+                    .increment(tpl.count() as u64);
+                metrics::gauge!("arroyo.consumer.current_partitions").decrement(tpl.count() as f64);
             }
             Rebalance::Error(err) => {
                 debug!("Got pre-rebalance callback, kind: Error");
