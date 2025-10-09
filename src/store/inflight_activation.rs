@@ -334,7 +334,7 @@ impl InflightActivationStore {
             return;
         }
 
-        if let Ok(mut conn) = self.write_pool.acquire().await
+        if let Ok(mut conn) = self.read_pool.acquire().await
             && let Ok(mut raw) = conn.lock_handle().await
         {
             let mut cur: i32 = 0;
