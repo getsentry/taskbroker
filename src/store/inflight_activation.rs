@@ -312,7 +312,7 @@ impl InflightActivationStore {
                 .await?;
         }
         let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
-            .fetch_one(&self.read_pool)
+            .fetch_one(&self.write_pool)
             .await?
             .get("freelist_count");
 
@@ -334,7 +334,7 @@ impl InflightActivationStore {
             return;
         }
 
-        if let Ok(mut conn) = self.read_pool.acquire().await
+        if let Ok(mut conn) = self.write_pool.acquire().await
             && let Ok(mut raw) = conn.lock_handle().await
         {
             let mut cur: i32 = 0;
@@ -479,7 +479,7 @@ impl InflightActivationStore {
         let result: u64 = sqlx::query(
             "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
         )
-        .fetch_one(&self.read_pool)
+        .fetch_one(&self.write_pool)
         .await?
         .get(0);
 
@@ -511,7 +511,7 @@ impl InflightActivationStore {
             ",
         )
         .bind(id)
-        .fetch_optional(&self.read_pool)
+        .fetch_optional(&self.write_pool)
         .await?;
 
         let Some(row) = row_result else {
@@ -667,7 +667,7 @@ impl InflightActivationStore {
             ",
         )
         .bind(InflightActivationStatus::Pending)
-        .fetch_one(&self.read_pool)
+        .fetch_one(&self.write_pool)
         .await;
 
         if let Ok(row) = result {
@@ -697,14 +697,14 @@ impl InflightActivationStore {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
                 .bind(status)
-                .fetch_one(&self.read_pool)
+                .fetch_one(&self.write_pool)
                 .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
 
     pub async fn count(&self) -> Result<usize, Error> {
         let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
-            .fetch_one(&self.read_pool)
+            .fetch_one(&self.write_pool)
             .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
@@ -784,7 +784,7 @@ impl InflightActivationStore {
             ",
         )
         .bind(InflightActivationStatus::Retry)
-        .fetch_all(&self.read_pool)
+        .fetch_all(&self.write_pool)
         .await?
         .into_iter()
         .map(|row: TableRow| row.into())

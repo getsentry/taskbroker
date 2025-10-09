@@ -86,6 +86,30 @@ async fn test_store() {
 }
 
 #[tokio::test]
+async fn test_inmemory_store() {
+    let config = Config {
+        kafka_topic: "taskbroker-test".into(),
+        kafka_auto_offset_reset: "earliest".into(),
+        db_path: ":memory:".into(),
+        ..Config::default()
+    };
+    let store = Arc::new(
+        InflightActivationStore::new(
+            ":memory:",
+            InflightActivationStoreConfig::from_config(&config),
+        )
+        .await
+        .unwrap(),
+    );
+
+    let batch = make_activations(2);
+    assert!(store.store(batch).await.is_ok());
+
+    let result = store.count().await;
+    assert_eq!(result.unwrap(), 2);
+}
+
+#[tokio::test]
 async fn test_store_duplicate_id_in_batch() {
     let store = create_test_store().await;
 
