@@ -64,6 +64,7 @@ pub async fn start_consumer(
 
     handle_shutdown_signals(event_sender.clone());
     poll_consumer_client(consumer.clone(), client_shutdown_receiver);
+    metrics::gauge!("arroyo.consumer.current_partitions").set(0);
     handle_events(
         consumer,
         event_receiver,
@@ -148,6 +149,8 @@ impl ConsumerContext for KafkaContext {
                 info!("Partition assignment event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
+                metrics::counter!("arroyo.consumer.partitions_assigned.count")
+                    .increment(tpl.count() as u64);
             }
             Rebalance::Revoke(tpl) => {
                 debug!("Got pre-rebalance callback, kind: Revoke");
@@ -165,6 +168,8 @@ impl ConsumerContext for KafkaContext {
                 info!("Partition revocation event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
+                metrics::counter!("arroyo.consumer.partitions_revoked.count")
+                    .increment(tpl.count() as u64);
             }
             Rebalance::Error(err) => {
                 debug!("Got pre-rebalance callback, kind: Error");
@@ -366,6 +371,7 @@ pub async fn handle_events(
                 info!("Received event: {:?}", event);
                 state = match (state, event) {
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
+                        metrics::gauge!("arroyo.consumer.current_partitions").set(tpl.len() as f64);
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
@@ -381,12 +387,14 @@ pub async fn handle_events(
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
                         handles.shutdown(CALLBACK_DURATION).await;
+                        metrics::gauge!("arroyo.consumer.current_partitions").set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
+                        metrics::gauge!("arroyo.consumer.current_partitions").set(0);
                         ConsumerState::Stopped
                     }
                     (ConsumerState::Stopped, _) => {
