@@ -264,7 +264,7 @@ impl Default for Config {
             max_processing_attempts: 5,
             processing_deadline_grace_sec: 3,
             upkeep_task_interval_ms: 1000,
-            upkeep_unhealthy_interval_ms: 3000,
+            upkeep_unhealthy_interval_ms: 5000,
             health_check_killswitched: false,
             upkeep_deadline_reset_skip_after_startup_sec: 60,
             maintenance_task_interval_ms: 6000,
