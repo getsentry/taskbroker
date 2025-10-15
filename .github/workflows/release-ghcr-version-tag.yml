@@ -20,3 +20,9 @@ jobs:
           docker buildx imagetools create --tag \
            ghcr.io/getsentry/taskbroker:${{ github.ref_name }} \
            ghcr.io/getsentry/taskbroker:${{ github.sha }}
+
+      - name: Tag latest version
+        run: |
+          docker buildx imagetools create --tag \
+           ghcr.io/getsentry/taskbroker:latest \
+           ghcr.io/getsentry/taskbroker:${{ github.sha }}
