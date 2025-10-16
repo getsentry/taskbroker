@@ -53,9 +53,10 @@ impl Reducer for InflightActivationBatcher {
 
     type Output = Vec<InflightActivation>;
 
-    async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
+    async fn reduce(&mut self, mut t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
         let task_name = &t.taskname;
+        let namespace = &t.namespace;
 
         if runtime_config.drop_task_killswitch.contains(task_name) {
             metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
@@ -68,6 +69,26 @@ impl Reducer for InflightActivationBatcher {
         {
             metrics::counter!("filter.expired_at_consumer").increment(1);
             return Ok(());
+        }
+
+        if runtime_config.demoted_namespaces.contains(namespace) {
+            metrics::counter!(
+                "filter.forward_task_demoted_namespace",
+                "namespace" => namespace.clone(),
+                "taskname" => task_name.clone(),
+            )
+            .increment(1);
+
+            t.namespace = "long".to_string();
+
+            // update the namespace in protobuf
+            if let Ok(mut activation) = prost::Message::decode(&t.activation as &[u8]) {
+                use prost::Message;
+                use sentry_protos::taskbroker::v1::TaskActivation;
+                let activation: &mut TaskActivation = &mut activation;
+                activation.namespace = "long".to_string();
+                t.activation = activation.encode_to_vec();
+            }
         }
 
         self.batch_size += t.activation.len();
@@ -132,7 +153,9 @@ mod tests {
     async fn test_drop_task_due_to_killswitch() {
         let test_yaml = r#"
 drop_task_killswitch:
-  - task_to_be_filtered"#;
+  - task_to_be_filtered
+demoted_namespaces:
+  -"#;
 
         let test_path = "test_drop_task_due_to_killswitch.yaml";
         fs::write(test_path, test_yaml).await.unwrap();

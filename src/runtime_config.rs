@@ -10,6 +10,10 @@ use tracing::{error, info};
 pub struct RuntimeConfig {
     /// A list of tasks to drop before inserting into sqlite.
     pub drop_task_killswitch: Vec<String>,
+    /// A list of namespaces that should be demoted to the "long" namespace.
+    /// Tasks from these namespaces will be automatically forwarded to the "long" namespace
+    /// to prevent them from blocking other tasks in shared namespaces.
+    pub demoted_namespaces: Vec<String>,
 }
 
 pub struct RuntimeConfigManager {
@@ -88,7 +92,9 @@ mod tests {
     async fn test_runtime_config_manager() {
         let test_yaml = r#"
 drop_task_killswitch:
-  - test:do_nothing"#;
+  - test:do_nothing
+demoted_namespaces:
+  -"#;
 
         let test_path = "test_runtime_config_manager.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
@@ -114,14 +120,15 @@ drop_task_killswitch:
     async fn test_invalid_runtime_config_file() {
         let test_yaml = r#"
 droop_task_killswitch:
-  - test:do_nothing"#;
+  - test:do_nothing
+demoted_namespaces:
+  -"#;
 
         let test_path = "test_invalid_runtime_config_file.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
 
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
         let config = runtime_config.read().await;
-        println!("config: {config:?}");
         assert_eq!(config.drop_task_killswitch.len(), 0);
 
         fs::remove_file(test_path).await.unwrap();
@@ -131,7 +138,9 @@ droop_task_killswitch:
     async fn test_preserve_runtime_config_file() {
         let test_yaml = r#"
 drop_task_killswitch:
-  - test:do_nothing"#;
+  - test:do_nothing
+demoted_namespaces:
+  -"#;
 
         let test_path = "test_preserve_runtime_config_file.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
@@ -143,7 +152,9 @@ drop_task_killswitch:
 
         let invalid_yaml = r#"
 droop_task_killswitch:
-  - test:do_nothing"#;
+  - test:do_nothing
+demoted_namespaces:
+  -"#;
 
         fs::write(test_path, invalid_yaml).await.unwrap();
         RuntimeConfigManager::reload_config(&Some(test_path.to_string()), &runtime_config.config)
@@ -152,6 +163,45 @@ droop_task_killswitch:
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
 
+        fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_demoted_namespaces() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  -
+demoted_namespaces:
+  - bad_namespace"#;
+
+        let test_path = "test_demoted_namespaces.yaml";
+        fs::write(test_path, test_yaml).await.unwrap();
+
+        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.demoted_namespaces.len(), 1);
+        assert_eq!(config.demoted_namespaces[0], "bad_namespace");
+
+        fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_killswitch_and_demoted_namespaces() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  - test:do_nothing
+demoted_namespaces:
+  - bad_namespace"#;
+
+        let test_path = "test_killswitch_and_demoted_namespaces.yaml";
+        fs::write(test_path, test_yaml).await.unwrap();
+
+        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 1);
+        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+        assert_eq!(config.demoted_namespaces.len(), 1);
+        assert_eq!(config.demoted_namespaces[0], "bad_namespace");
         fs::remove_file(test_path).await.unwrap();
     }
 }

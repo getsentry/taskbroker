@@ -1054,6 +1054,72 @@ async fn test_remove_killswitched() {
 }
 
 #[tokio::test]
+async fn test_inflight_forward_demoted_namespaces() {
+    use prost::Message;
+
+    let store = create_test_store().await;
+    let mut batch = make_activations(6);
+
+    // tasks 3 and 5 are in demoted namespaces
+    for idx in [3, 5] {
+        batch[idx].namespace = "bad_namespace".to_string();
+        let mut activation = TaskActivation::decode(&batch[idx].activation as &[u8]).unwrap();
+        activation.namespace = "bad_namespace".to_string();
+        batch[idx].activation = activation.encode_to_vec();
+    }
+
+    assert!(store.store(batch.clone()).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 6,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
+
+    let result = store
+        .forward_demoted_namespaces(vec!["bad_namespace".to_string()])
+        .await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), 2);
+    assert_eq!(store.count_by_namespace("long").await.unwrap(), 2);
+    assert_eq!(store.count_by_namespace("namespace").await.unwrap(), 4);
+    assert_eq!(store.count_by_namespace("bad_namespace").await.unwrap(), 0);
+    assert_counts(
+        StatusCount {
+            pending: 6,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
+
+    // Verify that the embedded protobuf was also updated
+    let forwarded_task_1 = store.get_by_id(&batch[3].id).await.unwrap().unwrap();
+    let activation_1 = TaskActivation::decode(&forwarded_task_1.activation as &[u8]).unwrap();
+    assert_eq!(
+        activation_1.namespace, "long",
+        "Protobuf namespace should be updated to 'long'"
+    );
+
+    let forwarded_task_2 = store.get_by_id(&batch[5].id).await.unwrap().unwrap();
+    let activation_2 = TaskActivation::decode(&forwarded_task_2.activation as &[u8]).unwrap();
+    assert_eq!(
+        activation_2.namespace, "long",
+        "Protobuf namespace should be updated to 'long'"
+    );
+
+    // Verify that non-forwarded tasks still have their original namespace in protobuf
+    let normal_task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    let activation_normal = TaskActivation::decode(&normal_task.activation as &[u8]).unwrap();
+    assert_eq!(
+        activation_normal.namespace, "namespace",
+        "Non-forwarded task should keep original namespace"
+    );
+}
+
+#[tokio::test]
 async fn test_clear() {
     let store = create_test_store().await;
 

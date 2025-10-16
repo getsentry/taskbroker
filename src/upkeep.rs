@@ -84,6 +84,7 @@ pub struct UpkeepResults {
     deadlettered: u64,
     discarded: u64,
     killswitched: u64,
+    forwarded: u64,
 }
 
 impl UpkeepResults {
@@ -131,6 +132,7 @@ pub async fn do_upkeep(
         deadlettered: 0,
         discarded: 0,
         killswitched: 0,
+        forwarded: 0,
     };
 
     // 1. Handle retry tasks
@@ -280,7 +282,18 @@ pub async fn do_upkeep(
             .record(remove_killswitched_start.elapsed());
     }
 
-    // 12. Vacuum the database
+    // 12. Forward tasks from demoted namespaces to "long" namespace
+    let demoted_namespaces = runtime_config.demoted_namespaces.clone();
+    if !demoted_namespaces.is_empty() {
+        let forward_demoted_start = Instant::now();
+        if let Ok(count) = store.forward_demoted_namespaces(demoted_namespaces).await {
+            result_context.forwarded = count;
+        }
+        metrics::histogram!("upkeep.forward_demoted_namespaces")
+            .record(forward_demoted_start.elapsed());
+    }
+
+    // 13. Vacuum the database
     if config.full_vacuum_on_upkeep
         && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
     {
@@ -357,6 +370,9 @@ pub async fn do_upkeep(
         .increment(result_context.processing_deadline_reset);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
         .increment(result_context.delay_elapsed);
+
+    // Forwarded tasks
+    metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
     // State of inflight tasks
     metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
@@ -1114,11 +1130,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_forward_demoted_namespaces() {
+        use prost::Message;
+        use sentry_protos::taskbroker::v1::TaskActivation;
+
+        // Create runtime config with demoted namespaces
+        let config = create_config();
+        let test_yaml = r#"
+drop_task_killswitch:
+  -
+demoted_namespaces:
+  - bad_namespace"#;
+
+        let test_path = "test_forward_demoted_namespaces.yaml";
+        fs::write(test_path, test_yaml).await.unwrap();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let producer = create_producer(config.clone());
+        let store = create_inflight_store().await;
+        let start_time = Utc::now();
+        let mut last_vacuum = Instant::now();
+
+        let mut batch = make_activations(6);
+
+        for idx in [1, 4] {
+            batch[idx].namespace = "bad_namespace".to_string();
+            let mut activation = TaskActivation::decode(&batch[idx].activation as &[u8]).unwrap();
+            activation.namespace = "bad_namespace".to_string();
+            batch[idx].activation = activation.encode_to_vec();
+        }
+
+        assert!(store.store(batch).await.is_ok());
+
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+            &mut last_vacuum,
+        )
+        .await;
+
+        assert_eq!(result_context.forwarded, 2);
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            6,
+            "all tasks should be forwarded"
+        );
+        assert_eq!(
+            store.count_by_namespace("long").await.unwrap(),
+            2,
+            "two tasks should be forwarded to long namespace"
+        );
+
+        let forwarded_task_1 = store.get_by_id("id_1").await.unwrap().unwrap();
+        let activation_1 = TaskActivation::decode(&forwarded_task_1.activation as &[u8]).unwrap();
+        assert_eq!(
+            activation_1.namespace, "long",
+            "Protobuf namespace should be updated to 'long'"
+        );
+
+        let forwarded_task_2 = store.get_by_id("id_4").await.unwrap().unwrap();
+        let activation_2 = TaskActivation::decode(&forwarded_task_2.activation as &[u8]).unwrap();
+        assert_eq!(
+            activation_2.namespace, "long",
+            "Protobuf namespace should be updated to 'long'"
+        );
+
+        let normal_task = store.get_by_id("id_0").await.unwrap().unwrap();
+        let activation_normal = TaskActivation::decode(&normal_task.activation as &[u8]).unwrap();
+        assert_eq!(
+            activation_normal.namespace, "namespace",
+            "Non-forwarded task should keep original namespace"
+        );
+
+        fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_remove_killswitched() {
         let config = create_config();
         let test_yaml = r#"
 drop_task_killswitch:
-  - task_to_be_killswitched"#;
+  - task_to_be_killswitched
+demoted_namespaces:
+  -"#;
 
         let test_path = "test_drop_task_due_to_killswitch.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
@@ -1155,6 +1254,8 @@ drop_task_killswitch:
                 .unwrap(),
             3
         );
+
+        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]
