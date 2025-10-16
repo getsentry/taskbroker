@@ -57,7 +57,6 @@ jobs:
           docker buildx imagetools create \
             --tag ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }} \
             --tag ghcr.io/getsentry/taskbroker:nightly \
-            --tag ghcr.io/getsentry/taskbroker:latest \
             ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}-amd64 \
             ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}-arm64
 

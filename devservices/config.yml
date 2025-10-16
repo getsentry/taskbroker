@@ -21,7 +21,7 @@ x-programs:
 
 services:
   taskbroker:
-    image: ghcr.io/getsentry/taskbroker:latest
+    image: ghcr.io/getsentry/taskbroker:nightly
     environment:
       TASKBROKER_KAFKA_CLUSTER: "kafka-kafka-1:9093"
       TASKBROKER_CREATE_MISSING_TOPICS: "true"
