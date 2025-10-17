@@ -655,15 +655,15 @@ impl InflightActivationStore {
         query_builder.push(")");
 
         // Handle namespace filtering
-        if let Some(namespaces) = namespaces {
-            if !namespaces.is_empty() {
-                query_builder.push(" AND namespace IN (");
-                let mut separated = query_builder.separated(", ");
-                for namespace in namespaces.iter() {
-                    separated.push_bind(namespace);
-                }
-                query_builder.push(")");
+        if let Some(namespaces) = namespaces
+            && !namespaces.is_empty()
+        {
+            query_builder.push(" AND namespace IN (");
+            let mut separated = query_builder.separated(", ");
+            for namespace in namespaces.iter() {
+                separated.push_bind(namespace);
             }
+            query_builder.push(")");
         }
         query_builder.push(" ORDER BY added_at");
         if let Some(limit) = limit {
