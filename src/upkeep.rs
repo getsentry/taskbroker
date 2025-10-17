@@ -286,8 +286,50 @@ pub async fn do_upkeep(
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
     if !demoted_namespaces.is_empty() {
         let forward_demoted_start = Instant::now();
-        if let Ok(count) = store.forward_demoted_namespaces(demoted_namespaces).await {
-            result_context.forwarded = count;
+        if let Ok(tasks) = store
+            .get_pending_activations_from_namespaces(Some(&demoted_namespaces), None)
+            .await
+        {
+            // Produce tasks to Kafka with updated namespace
+            let deliveries = tasks
+                .into_iter()
+                .map(|inflight| {
+                    let producer = producer.clone();
+                    let config = config.clone();
+
+                    async move {
+                        if inflight.status == InflightActivationStatus::Complete {
+                            return Ok(inflight.id);
+                        }
+                        metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace, "taskname" => inflight.taskname).increment(1);
+                        let delivery = producer
+                            .send(
+                                FutureRecord::<(), Vec<u8>>::to(&config.kafka_long_topic)
+                                    .payload(&inflight.activation),
+                                Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                            )
+                            .await;
+                        match delivery {
+                            Ok(_) => Ok(inflight.id),
+                            Err((err, _msg)) => {
+                                error!("forward_demoted_namespace.publish.failure: {}", err);
+                                Err(err)
+                            }
+                        }
+                    }
+                })
+                .collect::<FuturesUnordered<_>>();
+
+            let ids = deliveries
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+
+            if let Ok(forwarded_count) = store.mark_completed(ids).await {
+                result_context.forwarded = forwarded_count;
+            }
         }
         metrics::histogram!("upkeep.forward_demoted_namespaces")
             .record(forward_demoted_start.elapsed());
@@ -1131,16 +1173,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_forward_demoted_namespaces() {
-        use prost::Message;
-        use sentry_protos::taskbroker::v1::TaskActivation;
-
         // Create runtime config with demoted namespaces
         let config = create_config();
         let test_yaml = r#"
 drop_task_killswitch:
   -
 demoted_namespaces:
-  - bad_namespace"#;
+  - bad_namespace1
+  - bad_namespace2"#;
 
         let test_path = "test_forward_demoted_namespaces.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
@@ -1152,13 +1192,8 @@ demoted_namespaces:
 
         let mut batch = make_activations(6);
 
-        for idx in [1, 4] {
-            batch[idx].namespace = "bad_namespace".to_string();
-            let mut activation = TaskActivation::decode(&batch[idx].activation as &[u8]).unwrap();
-            activation.namespace = "bad_namespace".to_string();
-            batch[idx].activation = activation.encode_to_vec();
-        }
-
+        batch[1].namespace = "bad_namespace2".to_string();
+        batch[4].namespace = "bad_namespace1".to_string();
         assert!(store.store(batch).await.is_ok());
 
         let result_context = do_upkeep(
@@ -1177,36 +1212,17 @@ demoted_namespaces:
                 .count_by_status(InflightActivationStatus::Pending)
                 .await
                 .unwrap(),
-            6,
-            "all tasks should be forwarded"
+            4,
+            "four tasks should be pending"
         );
         assert_eq!(
-            store.count_by_namespace("long").await.unwrap(),
+            store
+                .count_by_status(InflightActivationStatus::Complete)
+                .await
+                .unwrap(),
             2,
-            "two tasks should be forwarded to long namespace"
+            "two tasks should be marked as complete"
         );
-
-        let forwarded_task_1 = store.get_by_id("id_1").await.unwrap().unwrap();
-        let activation_1 = TaskActivation::decode(&forwarded_task_1.activation as &[u8]).unwrap();
-        assert_eq!(
-            activation_1.namespace, "long",
-            "Protobuf namespace should be updated to 'long'"
-        );
-
-        let forwarded_task_2 = store.get_by_id("id_4").await.unwrap().unwrap();
-        let activation_2 = TaskActivation::decode(&forwarded_task_2.activation as &[u8]).unwrap();
-        assert_eq!(
-            activation_2.namespace, "long",
-            "Protobuf namespace should be updated to 'long'"
-        );
-
-        let normal_task = store.get_by_id("id_0").await.unwrap().unwrap();
-        let activation_normal = TaskActivation::decode(&normal_task.activation as &[u8]).unwrap();
-        assert_eq!(
-            activation_normal.namespace, "namespace",
-            "Non-forwarded task should keep original namespace"
-        );
-
         fs::remove_file(test_path).await.unwrap();
     }
 

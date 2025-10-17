@@ -12,7 +12,7 @@ use libsqlite3_sys::{
 };
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
-    Acquire, ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
+    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::{PoolConnection, PoolOptions},
     sqlite::{
@@ -609,6 +609,27 @@ impl InflightActivationStore {
         &self,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
+        // Convert single namespace to vector for internal use
+        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+        let result = self
+            .get_pending_activations_from_namespaces(namespaces.as_deref(), Some(1))
+            .await
+            .unwrap();
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result[0].clone()))
+    }
+
+    /// Get a pending activation from specified namespaces
+    /// If namespaces is None, gets from any namespace
+    /// If namespaces is Some(&[...]), gets from those namespaces
+    #[instrument(skip_all)]
+    pub async fn get_pending_activations_from_namespaces(
+        &self,
+        namespaces: Option<&[String]>,
+        limit: Option<i32>,
+    ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
@@ -623,7 +644,7 @@ impl InflightActivationStore {
         query_builder.push_bind(InflightActivationStatus::Processing);
         query_builder.push(
             "
-            WHERE id = (
+            WHERE id IN (
                 SELECT id
                 FROM inflight_taskactivations
                 WHERE status = ",
@@ -633,22 +654,33 @@ impl InflightActivationStore {
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        if let Some(namespace) = namespace {
-            query_builder.push(" AND namespace = ");
-            query_builder.push_bind(namespace);
+        // Handle namespace filtering
+        if let Some(namespaces) = namespaces {
+            if !namespaces.is_empty() {
+                query_builder.push(" AND namespace IN (");
+                let mut separated = query_builder.separated(", ");
+                for namespace in namespaces.iter() {
+                    separated.push_bind(namespace);
+                }
+                query_builder.push(")");
+            }
         }
-        query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
+        query_builder.push(" ORDER BY added_at");
+        if let Some(limit) = limit {
+            query_builder.push(" LIMIT ");
+            query_builder.push_bind(limit);
+        }
+        query_builder.push(") RETURNING *");
 
         let mut conn = self
             .acquire_write_conn_metric("get_pending_activation")
             .await?;
-        let result: Option<TableRow> = query_builder
+        let rows: Vec<TableRow> = query_builder
             .build_query_as::<TableRow>()
-            .fetch_optional(&mut *conn)
+            .fetch_all(&mut *conn)
             .await?;
-        let Some(row) = result else { return Ok(None) };
 
-        Ok(Some(row.into()))
+        Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
     /// Get the age of the oldest pending activation in seconds.
@@ -699,17 +731,6 @@ impl InflightActivationStore {
                 .bind(status)
                 .fetch_one(&self.read_pool)
                 .await?;
-        Ok(result.get::<u64, _>("count") as usize)
-    }
-
-    #[instrument(skip_all)]
-    pub async fn count_by_namespace(&self, namespace: &str) -> Result<usize, Error> {
-        let result = sqlx::query(
-            "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE namespace = $1",
-        )
-        .bind(namespace)
-        .fetch_one(&self.read_pool)
-        .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
 
@@ -1041,83 +1062,4 @@ impl InflightActivationStore {
 
         Ok(query.rows_affected())
     }
-
-    /// Forward tasks from demoted namespaces to "long" namespace
-    #[instrument(skip_all)]
-    pub async fn forward_demoted_namespaces(
-        &self,
-        demoted_namespaces: Vec<String>,
-    ) -> Result<u64, Error> {
-        use prost::Message;
-        use sentry_protos::taskbroker::v1::TaskActivation;
-
-        if demoted_namespaces.is_empty() {
-            return Ok(0);
-        }
-
-        let mut conn = self
-            .acquire_write_conn_metric("forward_demoted_namespaces")
-            .await?;
-        let mut atomic = conn.begin().await?;
-
-        let mut query_builder = QueryBuilder::new(
-            "SELECT id, activation FROM inflight_taskactivations WHERE namespace IN (",
-        );
-        let mut separated = query_builder.separated(", ");
-        for namespace in demoted_namespaces.iter() {
-            separated.push_bind(namespace);
-        }
-        separated.push_unseparated(")");
-
-        let tasks: Vec<SqliteRow> = query_builder.build().fetch_all(&mut *atomic).await?;
-
-        if tasks.is_empty() {
-            return Ok(0);
-        }
-
-        let mut update_builder = QueryBuilder::new(
-            "UPDATE inflight_taskactivations SET namespace = 'long', activation = CASE id ",
-        );
-
-        let mut updated_count = 0;
-        let mut valid_ids = Vec::new();
-
-        // update namespace in database and protobuf
-        for task in tasks {
-            let id: String = task.get("id");
-            let activation_data: Vec<u8> = task.get("activation");
-
-            if let Ok(mut activation) = TaskActivation::decode(&activation_data as &[u8]) {
-                activation.namespace = "long".to_string();
-                let updated_activation = activation.encode_to_vec();
-
-                update_builder.push("WHEN ");
-                update_builder.push_bind(id.clone());
-                update_builder.push(" THEN ");
-                update_builder.push_bind(updated_activation);
-                update_builder.push(" ");
-
-                valid_ids.push(id);
-                updated_count += 1;
-            }
-        }
-
-        if valid_ids.is_empty() {
-            return Ok(0);
-        }
-
-        update_builder.push("END WHERE id IN (");
-        let mut separated = update_builder.separated(", ");
-        for id in valid_ids.iter() {
-            separated.push_bind(id);
-        }
-        separated.push_unseparated(")");
-
-        update_builder.build().execute(&mut *atomic).await?;
-        atomic.commit().await?;
-
-        Ok(updated_count)
-    }
 }
-
-// test moved to inflight_activation_tests.rs
