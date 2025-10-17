@@ -51,6 +51,9 @@ pub struct Config {
     /// The topic to fetch task messages from.
     pub kafka_topic: String,
 
+    /// The topic to produce demoted "long" namespace tasks to.
+    pub kafka_long_topic: String,
+
     /// The security method used for authentication eg. sasl_plaintext
     pub kafka_security_protocol: Option<String>,
 
@@ -236,6 +239,7 @@ impl Default for Config {
             kafka_ssl_key_location: None,
             kafka_security_protocol: None,
             kafka_topic: "taskworker".to_owned(),
+            kafka_long_topic: "taskworker-long".to_owned(),
             create_missing_topics: false,
             kafka_deadletter_cluster: None,
             kafka_deadletter_topic: "taskworker-dlq".to_owned(),

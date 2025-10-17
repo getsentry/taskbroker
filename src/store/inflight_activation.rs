@@ -609,6 +609,27 @@ impl InflightActivationStore {
         &self,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
+        // Convert single namespace to vector for internal use
+        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+        let result = self
+            .get_pending_activations_from_namespaces(namespaces.as_deref(), Some(1))
+            .await
+            .unwrap();
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result[0].clone()))
+    }
+
+    /// Get a pending activation from specified namespaces
+    /// If namespaces is None, gets from any namespace
+    /// If namespaces is Some(&[...]), gets from those namespaces
+    #[instrument(skip_all)]
+    pub async fn get_pending_activations_from_namespaces(
+        &self,
+        namespaces: Option<&[String]>,
+        limit: Option<i32>,
+    ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
@@ -623,7 +644,7 @@ impl InflightActivationStore {
         query_builder.push_bind(InflightActivationStatus::Processing);
         query_builder.push(
             "
-            WHERE id = (
+            WHERE id IN (
                 SELECT id
                 FROM inflight_taskactivations
                 WHERE status = ",
@@ -633,22 +654,33 @@ impl InflightActivationStore {
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        if let Some(namespace) = namespace {
-            query_builder.push(" AND namespace = ");
-            query_builder.push_bind(namespace);
+        // Handle namespace filtering
+        if let Some(namespaces) = namespaces
+            && !namespaces.is_empty()
+        {
+            query_builder.push(" AND namespace IN (");
+            let mut separated = query_builder.separated(", ");
+            for namespace in namespaces.iter() {
+                separated.push_bind(namespace);
+            }
+            query_builder.push(")");
         }
-        query_builder.push(" ORDER BY added_at LIMIT 1) RETURNING *");
+        query_builder.push(" ORDER BY added_at");
+        if let Some(limit) = limit {
+            query_builder.push(" LIMIT ");
+            query_builder.push_bind(limit);
+        }
+        query_builder.push(") RETURNING *");
 
         let mut conn = self
             .acquire_write_conn_metric("get_pending_activation")
             .await?;
-        let result: Option<TableRow> = query_builder
+        let rows: Vec<TableRow> = query_builder
             .build_query_as::<TableRow>()
-            .fetch_optional(&mut *conn)
+            .fetch_all(&mut *conn)
             .await?;
-        let Some(row) = result else { return Ok(None) };
 
-        Ok(Some(row.into()))
+        Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
     /// Get the age of the oldest pending activation in seconds.
@@ -1031,5 +1063,3 @@ impl InflightActivationStore {
         Ok(query.rows_affected())
     }
 }
-
-// test moved to inflight_activation_tests.rs
