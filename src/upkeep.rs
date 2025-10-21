@@ -296,6 +296,8 @@ pub async fn do_upkeep(
                 .map(|inflight| {
                     let producer = producer.clone();
                     let config = config.clone();
+                    // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
+                    let topic = runtime_config.demoted_topic.clone().unwrap_or(config.kafka_long_topic.clone());
 
                     async move {
                         if inflight.status == InflightActivationStatus::Complete {
@@ -304,7 +306,7 @@ pub async fn do_upkeep(
                         metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace, "taskname" => inflight.taskname).increment(1);
                         let delivery = producer
                             .send(
-                                FutureRecord::<(), Vec<u8>>::to(&config.kafka_long_topic)
+                                FutureRecord::<(), Vec<u8>>::to(&topic)
                                     .payload(&inflight.activation),
                                 Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                             )

@@ -14,6 +14,9 @@ pub struct RuntimeConfig {
     /// Tasks from these namespaces will be automatically forwarded to the "long" namespace
     /// to prevent them from blocking other tasks in shared namespaces.
     pub demoted_namespaces: Vec<String>,
+    /// The topic to forward tasks from demoted namespaces to.
+    /// If not set, the taskworker-long topic will be used
+    pub demoted_topic: Option<String>,
 }
 
 pub struct RuntimeConfigManager {
@@ -172,7 +175,8 @@ demoted_namespaces:
 drop_task_killswitch:
   -
 demoted_namespaces:
-  - bad_namespace"#;
+  - bad_namespace
+demoted_topic: taskworker-demoted-topic"#;
 
         let test_path = "test_demoted_namespaces.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
@@ -181,6 +185,14 @@ demoted_namespaces:
         let config = runtime_config.read().await;
         assert_eq!(config.demoted_namespaces.len(), 1);
         assert_eq!(config.demoted_namespaces[0], "bad_namespace");
+        assert_eq!(
+            config.demoted_topic.as_deref().unwrap(),
+            "taskworker-demoted-topic"
+        );
+        assert_eq!(
+            config.demoted_topic.as_deref().unwrap_or("taskworker-long"),
+            "taskworker-demoted-topic"
+        );
 
         fs::remove_file(test_path).await.unwrap();
     }

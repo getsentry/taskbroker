@@ -14,7 +14,6 @@ use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
-use tracing::error;
 
 pub struct ActivationBatcherConfig {
     pub kafka_config: ClientConfig,
@@ -99,22 +98,25 @@ impl Reducer for InflightActivationBatcher {
             )
             .increment(1);
 
+            // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
+            let topic = runtime_config
+                .demoted_topic
+                .clone()
+                .unwrap_or(self.config.kafka_long_topic.clone());
             let delivery = self
                 .producer
                 .send(
-                    FutureRecord::<(), Vec<u8>>::to(&self.config.kafka_long_topic)
-                        .payload(&t.activation),
+                    FutureRecord::<(), Vec<u8>>::to(&topic).payload(&t.activation),
                     Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
                 )
                 .await;
-            match delivery {
-                Ok(_) => return Ok(()),
-                Err((err, _msg)) => {
-                    error!("inflight_activation_batcher.publish.failure: {}", err);
-                    self.batch_size += t.activation.len();
-                    self.batch.push(t);
-                    return Ok(());
-                }
+            if delivery.is_ok() {
+                metrics::counter!("filter.forward_task_demoted_namespace_success",
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+                return Ok(());
             }
         }
 
