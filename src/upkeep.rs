@@ -84,6 +84,7 @@ pub struct UpkeepResults {
     deadlettered: u64,
     discarded: u64,
     killswitched: u64,
+    forwarded: u64,
 }
 
 impl UpkeepResults {
@@ -131,6 +132,7 @@ pub async fn do_upkeep(
         deadlettered: 0,
         discarded: 0,
         killswitched: 0,
+        forwarded: 0,
     };
 
     // 1. Handle retry tasks
@@ -280,7 +282,62 @@ pub async fn do_upkeep(
             .record(remove_killswitched_start.elapsed());
     }
 
-    // 12. Vacuum the database
+    // 12. Forward tasks from demoted namespaces to "long" namespace
+    let demoted_namespaces = runtime_config.demoted_namespaces.clone();
+    if !demoted_namespaces.is_empty() {
+        let forward_demoted_start = Instant::now();
+        if let Ok(tasks) = store
+            .get_pending_activations_from_namespaces(Some(&demoted_namespaces), None)
+            .await
+        {
+            // Produce tasks to Kafka with updated namespace
+            let deliveries = tasks
+                .into_iter()
+                .map(|inflight| {
+                    let producer = producer.clone();
+                    let config = config.clone();
+                    // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
+                    let topic = runtime_config.demoted_topic.clone().unwrap_or(config.kafka_long_topic.clone());
+
+                    async move {
+                        if inflight.status == InflightActivationStatus::Complete {
+                            return Ok(inflight.id);
+                        }
+                        metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace, "taskname" => inflight.taskname).increment(1);
+                        let delivery = producer
+                            .send(
+                                FutureRecord::<(), Vec<u8>>::to(&topic)
+                                    .payload(&inflight.activation),
+                                Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                            )
+                            .await;
+                        match delivery {
+                            Ok(_) => Ok(inflight.id),
+                            Err((err, _msg)) => {
+                                error!("forward_demoted_namespace.publish.failure: {}", err);
+                                Err(err)
+                            }
+                        }
+                    }
+                })
+                .collect::<FuturesUnordered<_>>();
+
+            let ids = deliveries
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>();
+
+            if let Ok(forwarded_count) = store.mark_completed(ids).await {
+                result_context.forwarded = forwarded_count;
+            }
+        }
+        metrics::histogram!("upkeep.forward_demoted_namespaces")
+            .record(forward_demoted_start.elapsed());
+    }
+
+    // 13. Vacuum the database
     if config.full_vacuum_on_upkeep
         && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
     {
@@ -357,6 +414,9 @@ pub async fn do_upkeep(
         .increment(result_context.processing_deadline_reset);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
         .increment(result_context.delay_elapsed);
+
+    // Forwarded tasks
+    metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
     // State of inflight tasks
     metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
@@ -1114,11 +1174,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_forward_demoted_namespaces() {
+        // Create runtime config with demoted namespaces
+        let config = create_config();
+        let test_yaml = r#"
+drop_task_killswitch:
+  -
+demoted_namespaces:
+  - bad_namespace1
+  - bad_namespace2"#;
+
+        let test_path = "test_forward_demoted_namespaces.yaml";
+        fs::write(test_path, test_yaml).await.unwrap();
+        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let producer = create_producer(config.clone());
+        let store = create_inflight_store().await;
+        let start_time = Utc::now();
+        let mut last_vacuum = Instant::now();
+
+        let mut batch = make_activations(6);
+
+        batch[1].namespace = "bad_namespace2".to_string();
+        batch[4].namespace = "bad_namespace1".to_string();
+        assert!(store.store(batch).await.is_ok());
+
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+            &mut last_vacuum,
+        )
+        .await;
+
+        assert_eq!(result_context.forwarded, 2);
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
+                .await
+                .unwrap(),
+            4,
+            "four tasks should be pending"
+        );
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Complete)
+                .await
+                .unwrap(),
+            2,
+            "two tasks should be marked as complete"
+        );
+        fs::remove_file(test_path).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_remove_killswitched() {
         let config = create_config();
         let test_yaml = r#"
 drop_task_killswitch:
-  - task_to_be_killswitched"#;
+  - task_to_be_killswitched
+demoted_namespaces:
+  -"#;
 
         let test_path = "test_drop_task_due_to_killswitch.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
@@ -1155,6 +1272,8 @@ drop_task_killswitch:
                 .unwrap(),
             3
         );
+
+        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]

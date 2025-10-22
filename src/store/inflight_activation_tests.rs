@@ -205,6 +205,33 @@ async fn test_get_pending_activation_with_namespace() {
 }
 
 #[tokio::test]
+async fn test_get_pending_activation_from_multiple_namespaces() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(4);
+    batch[0].namespace = "ns1".into();
+    batch[1].namespace = "ns2".into();
+    batch[2].namespace = "ns3".into();
+    batch[3].namespace = "ns4".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // Get activation from multiple namespaces (should get oldest)
+    let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
+    let result = store
+        .get_pending_activations_from_namespaces(Some(&namespaces), None)
+        .await
+        .unwrap();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].id, "id_1");
+    assert_eq!(result[0].namespace, "ns2");
+    assert_eq!(result[0].status, InflightActivationStatus::Processing);
+    assert_eq!(result[1].id, "id_2");
+    assert_eq!(result[1].namespace, "ns3");
+    assert_eq!(result[1].status, InflightActivationStatus::Processing);
+}
+
+#[tokio::test]
 async fn test_get_pending_activation_skip_expires() {
     let store = create_test_store().await;
 
