@@ -35,6 +35,7 @@ jobs:
           tag_nightly: false
           tag_latest: false
           tags: ${{ github.event_name == 'pull_request' && 'ghcr.io/getsentry/taskbroker:nightly' || ''}}
+          outputs: ${{ github.event_name == 'pull_request' && 'type=docker' || ''}}
 
       - name: Save Docker image to artifact
         if: ${{ github.event_name == 'pull_request' }}
