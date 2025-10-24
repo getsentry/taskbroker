@@ -106,7 +106,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         with:
           name: taskbroker-amd64
-          path: /tmp/taskbroker.tar
+          path: /tmp/
 
       - name: Load Docker image from tar file
         if: ${{ github.event_name == 'pull_request' }}
