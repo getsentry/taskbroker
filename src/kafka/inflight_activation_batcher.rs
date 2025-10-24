@@ -43,6 +43,7 @@ impl ActivationBatcherConfig {
 pub struct InflightActivationBatcher {
     batch: Vec<InflightActivation>,
     batch_size: usize,
+    forwarded_count: usize,
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     producer: Arc<FutureProducer>,
@@ -62,6 +63,7 @@ impl InflightActivationBatcher {
         Self {
             batch: Vec::with_capacity(config.max_batch_len),
             batch_size: 0,
+            forwarded_count: 0,
             config,
             runtime_config_manager,
             producer,
@@ -123,6 +125,7 @@ impl Reducer for InflightActivationBatcher {
                         "taskname" => task_name.clone(),
                     )
                     .increment(1);
+                    self.forwarded_count += 1;
                     return Ok(());
                 }
             }
@@ -135,14 +138,19 @@ impl Reducer for InflightActivationBatcher {
     }
 
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
-        if self.batch.is_empty() {
+        if self.batch.is_empty() && self.forwarded_count == 0 {
             return Ok(None);
         }
 
-        metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
-        metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
+        if self.batch.is_empty() {
+            metrics::histogram!("consumer.forwarded_rows").record(self.forwarded_count as f64);
+        } else {
+            metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
+            metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
+        }
 
         self.batch_size = 0;
+        self.forwarded_count = 0;
 
         Ok(Some(replace(
             &mut self.batch,
@@ -152,6 +160,7 @@ impl Reducer for InflightActivationBatcher {
 
     fn reset(&mut self) {
         self.batch_size = 0;
+        self.forwarded_count = 0;
         self.batch.clear();
     }
 
