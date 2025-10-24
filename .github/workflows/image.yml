@@ -39,9 +39,7 @@ jobs:
 
       - name: Save Docker image to artifact
         if: ${{ github.event_name == 'pull_request' }}
-        run: |
-          docker image ls --all
-          docker save -o /tmp/taskbroker.tar ghcr.io/getsentry/taskbroker:nightly
+        run: docker save -o /tmp/taskbroker.tar ghcr.io/getsentry/taskbroker:nightly
 
       - name: Upload artifact for self-hosted e2e
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -119,7 +117,6 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           docker image load --input /tmp/taskbroker.tar
-          docker image ls --all --no-trunc
           docker image tag ghcr.io/getsentry/taskbroker:nightly ghcr.io/getsentry/taskbroker:${{ github.sha }}
 
       - name: Run Sentry self-hosted e2e CI
