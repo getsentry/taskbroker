@@ -112,6 +112,7 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         run: |
           docker image load --input /tmp/taskbroker.tar
+          docker image ls --all --no-trunc
           docker image tag ghcr.io/getsentry/taskbroker:${{ github.sha }}-amd64 ghcr.io/getsentry/taskbroker:${{ github.sha }}
 
       - name: Run Sentry self-hosted e2e CI
