@@ -41,7 +41,7 @@ jobs:
           docker image save --output /tmp/taskbroker-${{ matrix.platform }}.tar ghcr.io/getsentry/taskbroker:${{ github.sha }}-${{ matrix.platform }}
 
       - name: Upload artifact for self-hosted e2e
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2 
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ github.event_name == 'pull_request' }}
         with:
           name: taskbroker-${{ matrix.platform }}
@@ -112,7 +112,7 @@ jobs:
         with:
           name: taskbroker-amd64
           path: /tmp/taskbroker-amd64.tar
-      
+
       - name: Load Docker image from tar file
         if: ${{ github.event_name == 'pull_request' }}
         run: |
