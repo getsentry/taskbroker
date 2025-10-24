@@ -300,14 +300,23 @@ pub async fn do_upkeep(
                     let topic = runtime_config.demoted_topic.clone().unwrap_or(config.kafka_long_topic.clone());
 
                     async move {
-                        if inflight.status == InflightActivationStatus::Complete {
-                            return Ok(inflight.id);
-                        }
                         metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace, "taskname" => inflight.taskname).increment(1);
+
+                        let modified_activation = match TaskActivation::decode(&inflight.activation as &[u8]) {
+                            Ok(mut activation) => {
+                                activation.namespace = "long".to_string();
+                                activation.encode_to_vec()
+                            }
+                            Err(err) => {
+                                error!("forward_demoted_namespace.decode.failure: {}", err);
+                                return Err(anyhow::anyhow!("failed to decode activation: {}", err));
+                            }
+                        };
+
                         let delivery = producer
                             .send(
                                 FutureRecord::<(), Vec<u8>>::to(&topic)
-                                    .payload(&inflight.activation),
+                                    .payload(&modified_activation),
                                 Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                             )
                             .await;
@@ -315,7 +324,7 @@ pub async fn do_upkeep(
                             Ok(_) => Ok(inflight.id),
                             Err((err, _msg)) => {
                                 error!("forward_demoted_namespace.publish.failure: {}", err);
-                                Err(err)
+                                Err(anyhow::anyhow!("failed to publish activation: {}", err))
                             }
                         }
                     }

@@ -3,11 +3,13 @@ use crate::{
     store::inflight_activation::InflightActivation,
 };
 use chrono::Utc;
+use prost::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
 };
+use sentry_protos::taskbroker::v1::TaskActivation;
 use std::{mem::replace, sync::Arc, time::Duration};
 
 use super::consumer::{
@@ -103,20 +105,27 @@ impl Reducer for InflightActivationBatcher {
                 .demoted_topic
                 .clone()
                 .unwrap_or(self.config.kafka_long_topic.clone());
-            let delivery = self
-                .producer
-                .send(
-                    FutureRecord::<(), Vec<u8>>::to(&topic).payload(&t.activation),
-                    Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
-                )
-                .await;
-            if delivery.is_ok() {
-                metrics::counter!("filter.forward_task_demoted_namespace_success",
-                    "namespace" => namespace.clone(),
-                    "taskname" => task_name.clone(),
-                )
-                .increment(1);
-                return Ok(());
+
+            // Decode, modify namespace to "long", and re-encode to prevent infinite forwarding
+            if let Ok(mut activation) = TaskActivation::decode(&t.activation as &[u8]) {
+                activation.namespace = "long".to_string();
+                let modified_activation = activation.encode_to_vec();
+
+                let delivery = self
+                    .producer
+                    .send(
+                        FutureRecord::<(), Vec<u8>>::to(&topic).payload(&modified_activation),
+                        Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
+                    )
+                    .await;
+                if delivery.is_ok() {
+                    metrics::counter!("filter.forward_task_demoted_namespace_success",
+                        "namespace" => namespace.clone(),
+                        "taskname" => task_name.clone(),
+                    )
+                    .increment(1);
+                    return Ok(());
+                }
             }
         }
 
