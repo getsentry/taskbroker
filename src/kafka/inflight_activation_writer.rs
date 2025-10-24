@@ -75,6 +75,12 @@ impl Reducer for InflightActivationWriter {
             return Ok(None);
         };
 
+        // If batch is empty (all tasks were forwarded), just mark as complete
+        if batch.is_empty() {
+            self.batch.take();
+            return Ok(Some(()));
+        }
+
         // Check if writing the batch would exceed the limits
         let exceeded_pending_limit = self
             .store
