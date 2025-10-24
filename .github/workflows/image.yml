@@ -34,6 +34,7 @@ jobs:
           google_ar: false
           tag_nightly: false
           tag_latest: false
+          outputs: ${{ github.event_name == 'pull_request' && 'type=docker,dest=/tmp/taskbroker-${{ matrix.platform }}.tar' || '' }}
 
       - name: Save Docker image to tar file
         if: ${{ github.event_name == 'pull_request' }}
