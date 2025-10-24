@@ -28,7 +28,7 @@ jobs:
           platforms: linux/${{ matrix.platform }}
           dockerfile_path: './Dockerfile'
           build_args: TASKBROKER_GIT_REVISION=${{ github.sha }}
-          ghcr: ${{ (github.event_name == 'pull_request') && false || true }}
+          ghcr: ${{ github.event_name != 'pull_request' }}
           tag_suffix: -${{ matrix.platform }}
           publish_on_pr: true
           google_ar: false
