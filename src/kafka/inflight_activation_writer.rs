@@ -857,4 +857,28 @@ mod tests {
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 200);
     }
+
+    #[tokio::test]
+    async fn test_writer_flush_empty_batch() {
+        let writer_config = ActivationWriterConfig {
+            db_max_size: None,
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_processing_activations: 10,
+            max_delay_activations: 10,
+            write_failure_backoff_ms: 4000,
+        };
+        let store = Arc::new(
+            InflightActivationStore::new(
+                &generate_temp_filename(),
+                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            )
+            .await
+            .unwrap(),
+        );
+        let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
+        writer.reduce(vec![]).await.unwrap();
+        let flush_result = writer.flush().await.unwrap();
+        assert!(flush_result.is_some());
+    }
 }

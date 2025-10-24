@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::{
     SERVICE_NAME,
     config::Config,
+    kafka::utils::modify_activation_namespace,
     runtime_config::RuntimeConfigManager,
     store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
 };
@@ -302,14 +303,11 @@ pub async fn do_upkeep(
                     async move {
                         metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace, "taskname" => inflight.taskname).increment(1);
 
-                        let modified_activation = match TaskActivation::decode(&inflight.activation as &[u8]) {
-                            Ok(mut activation) => {
-                                activation.namespace = "long".to_string();
-                                activation.encode_to_vec()
-                            }
+                        let modified_activation = match modify_activation_namespace(&inflight.activation) {
+                            Ok(modified_activation) => modified_activation,
                             Err(err) => {
-                                error!("forward_demoted_namespace.decode.failure: {}", err);
-                                return Err(anyhow::anyhow!("failed to decode activation: {}", err));
+                                error!("forward_demoted_namespace.modify_namespace.failure: {}", err);
+                                return Err(anyhow::anyhow!("failed to modify namespace: {}", err));
                             }
                         };
 

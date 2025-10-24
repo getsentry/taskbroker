@@ -3,19 +3,18 @@ use crate::{
     store::inflight_activation::InflightActivation,
 };
 use chrono::Utc;
-use prost::Message;
 use rdkafka::config::ClientConfig;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
 };
-use sentry_protos::taskbroker::v1::TaskActivation;
 use std::{mem::replace, sync::Arc, time::Duration};
 
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
+use super::utils::modify_activation_namespace;
 
 pub struct ActivationBatcherConfig {
     pub kafka_config: ClientConfig,
@@ -108,10 +107,7 @@ impl Reducer for InflightActivationBatcher {
                 .clone()
                 .unwrap_or(self.config.kafka_long_topic.clone());
 
-            if let Ok(mut activation) = TaskActivation::decode(&t.activation as &[u8]) {
-                activation.namespace = "long".to_string();
-                let modified_activation = activation.encode_to_vec();
-
+            if let Ok(modified_activation) = modify_activation_namespace(&t.activation) {
                 let delivery = self
                     .producer
                     .send(
@@ -185,6 +181,7 @@ mod tests {
         ActivationBatcherConfig, Config, InflightActivation, InflightActivationBatcher, Reducer,
         RuntimeConfigManager,
     };
+    use crate::kafka::utils::modify_activation_namespace;
     use chrono::Utc;
     use std::collections::HashMap;
     use tokio::fs;
@@ -194,6 +191,50 @@ mod tests {
     use std::sync::Arc;
 
     use crate::store::inflight_activation::InflightActivationStatus;
+
+    #[test]
+    fn test_modify_namespace_for_forwarding() {
+        let original = TaskActivation {
+            id: "test-id".to_string(),
+            namespace: "bad_namespace".to_string(),
+            taskname: "test_task".to_string(),
+            parameters: r#"{"key":"value"}"#.to_string(),
+            headers: HashMap::new(),
+            received_at: None,
+            retry_state: None,
+            processing_deadline_duration: 60,
+            expires: Some(300),
+            delay: Some(10),
+        };
+
+        let encoded = original.encode_to_vec();
+        let modified = modify_activation_namespace(&encoded).unwrap();
+        let decoded = TaskActivation::decode(&modified as &[u8]).unwrap();
+
+        // Namespace should be changed to "long"
+        assert_eq!(decoded.namespace, "bad_namespace_long");
+
+        // All other fields should be preserved
+        assert_eq!(decoded.id, original.id);
+        assert_eq!(decoded.taskname, original.taskname);
+        assert_eq!(decoded.parameters, original.parameters);
+        assert_eq!(decoded.headers, original.headers);
+        assert_eq!(decoded.received_at, original.received_at);
+        assert_eq!(decoded.retry_state, original.retry_state);
+        assert_eq!(
+            decoded.processing_deadline_duration,
+            original.processing_deadline_duration
+        );
+        assert_eq!(decoded.expires, original.expires);
+        assert_eq!(decoded.delay, original.delay);
+    }
+
+    #[test]
+    fn test_modify_namespace_for_forwarding_decode_error() {
+        let invalid_bytes = vec![0xFF, 0xFF, 0xFF]; // Invalid protobuf
+        let result = modify_activation_namespace(&invalid_bytes);
+        assert!(result.is_err());
+    }
 
     #[tokio::test]
     async fn test_drop_task_due_to_killswitch() {
