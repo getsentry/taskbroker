@@ -106,7 +106,6 @@ impl Reducer for InflightActivationBatcher {
                 .clone()
                 .unwrap_or(self.config.kafka_long_topic.clone());
 
-            // Decode, modify namespace to "long", and re-encode to prevent infinite forwarding
             if let Ok(mut activation) = TaskActivation::decode(&t.activation as &[u8]) {
                 activation.namespace = "long".to_string();
                 let modified_activation = activation.encode_to_vec();
