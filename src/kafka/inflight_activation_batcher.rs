@@ -570,8 +570,53 @@ demoted_namespaces:
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
 
+        let inflight_activation_1 = InflightActivation {
+            id: "1".to_string(),
+            activation: TaskActivation {
+                id: "1".to_string(),
+                namespace: "good_namespace".to_string(),
+                taskname: "good_task".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: Some(0),
+                delay: None,
+            }
+            .encode_to_vec(),
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            received_at: Utc::now(),
+            processing_attempts: 0,
+            processing_deadline_duration: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "good_namespace".to_string(),
+            taskname: "good_task".to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
+        };
+
         batcher.reduce(inflight_activation_0).await.unwrap();
+        batcher.reduce(inflight_activation_1).await.unwrap();
+
+        assert_eq!(batcher.batch.len(), 1);
+        assert_eq!(batcher.forward_batch.len(), 1);
+
+        let flush_result = batcher.flush().await.unwrap();
+        assert!(flush_result.is_some());
+        assert_eq!(flush_result.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            flush_result.as_ref().unwrap()[0].namespace,
+            "good_namespace"
+        );
+        assert_eq!(flush_result.as_ref().unwrap()[0].taskname, "good_task");
         assert_eq!(batcher.batch.len(), 0);
+        assert_eq!(batcher.forward_batch.len(), 0);
 
         fs::remove_file(test_path).await.unwrap();
     }
