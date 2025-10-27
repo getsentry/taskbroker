@@ -1,8 +1,3 @@
-use super::consumer::{
-    ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
-    ReducerWhenFullBehaviour,
-};
-use super::utils::tag_for_forwarding;
 use crate::{
     config::Config, runtime_config::RuntimeConfigManager,
     store::inflight_activation::InflightActivation,
@@ -15,6 +10,12 @@ use rdkafka::{
     util::Timeout,
 };
 use std::{mem::replace, sync::Arc, time::Duration};
+
+use super::consumer::{
+    ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
+    ReducerWhenFullBehaviour,
+};
+use super::utils::tag_for_forwarding;
 
 pub struct ActivationBatcherConfig {
     pub kafka_config: ClientConfig,
