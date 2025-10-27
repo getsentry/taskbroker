@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::{
     SERVICE_NAME,
     config::Config,
-    kafka::utils::modify_activation_namespace,
+    kafka::utils::tag_for_forwarding,
     runtime_config::RuntimeConfigManager,
     store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
 };
@@ -301,20 +301,28 @@ pub async fn do_upkeep(
                     let topic = runtime_config.demoted_topic.clone().unwrap_or(config.kafka_long_topic.clone());
 
                     async move {
-                        metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace, "taskname" => inflight.taskname).increment(1);
+                        metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
 
-                        let modified_activation = match modify_activation_namespace(&inflight.activation) {
-                            Ok(modified_activation) => modified_activation,
+                        let tagged_activation = match tag_for_forwarding(&inflight.activation) {
+                            Ok(Some(tagged)) => tagged,
+                            Ok(None) => {
+                                // Already forwarded, skip
+                                metrics::counter!("upkeep.forward_demoted_namespace.already_forwarded_skip",
+                                    "namespace" => inflight.namespace,
+                                    "taskname" => inflight.taskname
+                                ).increment(1);
+                                return Ok(inflight.id);
+                            }
                             Err(err) => {
-                                error!("forward_demoted_namespace.modify_namespace.failure: {}", err);
-                                return Err(anyhow::anyhow!("failed to modify namespace: {}", err));
+                                error!("forward_demoted_namespace.tag_failure: {}", err);
+                                return Err(anyhow::anyhow!("failed to tag for forwarding: {}", err));
                             }
                         };
 
                         let delivery = producer
                             .send(
                                 FutureRecord::<(), Vec<u8>>::to(&topic)
-                                    .payload(&modified_activation),
+                                    .payload(&tagged_activation),
                                 Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                             )
                             .await;

@@ -2,7 +2,7 @@ use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
-use super::utils::modify_activation_namespace;
+use super::utils::tag_for_forwarding;
 use crate::{
     config::Config, runtime_config::RuntimeConfigManager,
     store::inflight_activation::InflightActivation,
@@ -28,14 +28,8 @@ pub struct ActivationBatcherConfig {
 impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
-        let mut kafka_config = config.kafka_producer_config();
-        kafka_config
-            .set("linger.ms", "10")
-            .set("batch.size", "1048576")
-            .set("queue.buffering.max.messages", "100000")
-            .set("queue.buffering.max.kbytes", "10485760");
         Self {
-            kafka_config,
+            kafka_config: config.kafka_producer_config(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
             max_batch_time_ms: config.db_insert_batch_max_time_ms,
@@ -100,16 +94,24 @@ impl Reducer for InflightActivationBatcher {
         }
 
         if runtime_config.demoted_namespaces.contains(namespace) {
-            metrics::counter!(
-                "filter.forward_task_demoted_namespace",
-                "namespace" => namespace.clone(),
-                "taskname" => task_name.clone(),
-            )
-            .increment(1);
-
-            if let Ok(modified_activation) = modify_activation_namespace(&t.activation) {
-                self.forward_batch.push(modified_activation);
-                return Ok(());
+            match tag_for_forwarding(&t.activation) {
+                Ok(Some(tagged_activation)) => {
+                    // Forward it
+                    metrics::counter!(
+                        "filter.forward_task_demoted_namespace",
+                        "namespace" => namespace.clone(),
+                        "taskname" => task_name.clone(),
+                    )
+                    .increment(1);
+                    self.forward_batch.push(tagged_activation);
+                    return Ok(());
+                }
+                Ok(None) => {
+                    // Already forwarded, fall through to add to batch
+                }
+                Err(_) => {
+                    // Decode error, fall through to add to batch to handle in upkeep
+                }
             }
         }
 
@@ -190,7 +192,7 @@ mod tests {
         ActivationBatcherConfig, Config, InflightActivation, InflightActivationBatcher, Reducer,
         RuntimeConfigManager,
     };
-    use crate::kafka::utils::modify_activation_namespace;
+    use crate::kafka::utils::tag_for_forwarding;
     use chrono::Utc;
     use std::collections::HashMap;
     use tokio::fs;
@@ -202,7 +204,7 @@ mod tests {
     use crate::store::inflight_activation::InflightActivationStatus;
 
     #[test]
-    fn test_modify_namespace_for_forwarding() {
+    fn test_tag_for_forwarding() {
         let original = TaskActivation {
             id: "test-id".to_string(),
             namespace: "bad_namespace".to_string(),
@@ -217,17 +219,28 @@ mod tests {
         };
 
         let encoded = original.encode_to_vec();
-        let modified = modify_activation_namespace(&encoded).unwrap();
-        let decoded = TaskActivation::decode(&modified as &[u8]).unwrap();
+        let tagged = tag_for_forwarding(&encoded).unwrap();
 
-        // Namespace should be changed to "long"
-        assert_eq!(decoded.namespace, "bad_namespace_long");
+        assert!(
+            tagged.is_some(),
+            "Should return Some for untagged activation"
+        );
+        let decoded = TaskActivation::decode(&tagged.unwrap() as &[u8]).unwrap();
+
+        // Namespace should be preserved (not modified)
+        assert_eq!(decoded.namespace, "bad_namespace");
+
+        // Should have forwarded header added
+        assert_eq!(
+            decoded.headers.get("forwarded"),
+            Some(&"true".to_string()),
+            "Should have forwarded header set to true"
+        );
 
         // All other fields should be preserved
         assert_eq!(decoded.id, original.id);
         assert_eq!(decoded.taskname, original.taskname);
         assert_eq!(decoded.parameters, original.parameters);
-        assert_eq!(decoded.headers, original.headers);
         assert_eq!(decoded.received_at, original.received_at);
         assert_eq!(decoded.retry_state, original.retry_state);
         assert_eq!(
@@ -239,9 +252,38 @@ mod tests {
     }
 
     #[test]
-    fn test_modify_namespace_for_forwarding_decode_error() {
+    fn test_tag_for_forwarding_already_tagged() {
+        let mut original = TaskActivation {
+            id: "test-id".to_string(),
+            namespace: "bad_namespace".to_string(),
+            taskname: "test_task".to_string(),
+            parameters: r#"{"key":"value"}"#.to_string(),
+            headers: HashMap::new(),
+            received_at: None,
+            retry_state: None,
+            processing_deadline_duration: 60,
+            expires: Some(300),
+            delay: Some(10),
+        };
+
+        // Pre-tag it
+        original
+            .headers
+            .insert("forwarded".to_string(), "true".to_string());
+
+        let encoded = original.encode_to_vec();
+        let result = tag_for_forwarding(&encoded).unwrap();
+
+        assert!(
+            result.is_none(),
+            "Should return None for already tagged activation"
+        );
+    }
+
+    #[test]
+    fn test_tag_for_forwarding_decode_error() {
         let invalid_bytes = vec![0xFF, 0xFF, 0xFF]; // Invalid protobuf
-        let result = modify_activation_namespace(&invalid_bytes);
+        let result = tag_for_forwarding(&invalid_bytes);
         assert!(result.is_err());
     }
 
