@@ -1,20 +1,20 @@
+use super::consumer::{
+    ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
+    ReducerWhenFullBehaviour,
+};
+use super::utils::modify_activation_namespace;
 use crate::{
     config::Config, runtime_config::RuntimeConfigManager,
     store::inflight_activation::InflightActivation,
 };
 use chrono::Utc;
+use futures::future::join_all;
 use rdkafka::config::ClientConfig;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
     util::Timeout,
 };
 use std::{mem::replace, sync::Arc, time::Duration};
-
-use super::consumer::{
-    ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
-    ReducerWhenFullBehaviour,
-};
-use super::utils::modify_activation_namespace;
 
 pub struct ActivationBatcherConfig {
     pub kafka_config: ClientConfig,
@@ -28,8 +28,14 @@ pub struct ActivationBatcherConfig {
 impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
+        let mut kafka_config = config.kafka_producer_config();
+        kafka_config
+            .set("linger.ms", "10")
+            .set("batch.size", "1048576")
+            .set("queue.buffering.max.messages", "100000")
+            .set("queue.buffering.max.kbytes", "10485760");
         Self {
-            kafka_config: config.kafka_producer_config(),
+            kafka_config,
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
             max_batch_time_ms: config.db_insert_batch_max_time_ms,
@@ -42,7 +48,7 @@ impl ActivationBatcherConfig {
 pub struct InflightActivationBatcher {
     batch: Vec<InflightActivation>,
     batch_size: usize,
-    forwarded_count: usize,
+    forward_batch: Vec<Vec<u8>>, // payload
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     producer: Arc<FutureProducer>,
@@ -62,7 +68,7 @@ impl InflightActivationBatcher {
         Self {
             batch: Vec::with_capacity(config.max_batch_len),
             batch_size: 0,
-            forwarded_count: 0,
+            forward_batch: Vec::with_capacity(config.max_batch_len),
             config,
             runtime_config_manager,
             producer,
@@ -101,29 +107,9 @@ impl Reducer for InflightActivationBatcher {
             )
             .increment(1);
 
-            // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
-            let topic = runtime_config
-                .demoted_topic
-                .clone()
-                .unwrap_or(self.config.kafka_long_topic.clone());
-
             if let Ok(modified_activation) = modify_activation_namespace(&t.activation) {
-                let delivery = self
-                    .producer
-                    .send(
-                        FutureRecord::<(), Vec<u8>>::to(&topic).payload(&modified_activation),
-                        Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
-                    )
-                    .await;
-                if delivery.is_ok() {
-                    metrics::counter!("filter.forward_task_demoted_namespace_success",
-                        "namespace" => namespace.clone(),
-                        "taskname" => task_name.clone(),
-                    )
-                    .increment(1);
-                    self.forwarded_count += 1;
-                    return Ok(());
-                }
+                self.forward_batch.push(modified_activation);
+                return Ok(());
             }
         }
 
@@ -134,19 +120,42 @@ impl Reducer for InflightActivationBatcher {
     }
 
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
-        if self.batch.is_empty() && self.forwarded_count == 0 {
+        if self.batch.is_empty() && self.forward_batch.is_empty() {
             return Ok(None);
         }
 
-        if self.batch.is_empty() {
-            metrics::histogram!("consumer.forwarded_rows").record(self.forwarded_count as f64);
-        } else {
+        let runtime_config = self.runtime_config_manager.read().await;
+
+        if !self.batch.is_empty() {
             metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
             metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
         }
 
+        // Send all forward batch in parallel
+        if !self.forward_batch.is_empty() {
+            // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
+            let topic = runtime_config
+                .demoted_topic
+                .clone()
+                .unwrap_or(self.config.kafka_long_topic.clone());
+            let sends = self.forward_batch.iter().map(|payload| {
+                self.producer.send(
+                    FutureRecord::<(), Vec<u8>>::to(&topic).payload(payload),
+                    Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
+                )
+            });
+
+            let results = join_all(sends).await;
+            let success_count = results.iter().filter(|r| r.is_ok()).count();
+
+            metrics::histogram!("consumer.forwarded_rows").record(success_count as f64);
+            metrics::counter!("filter.forward_task_demoted_namespace_success")
+                .increment(success_count as u64);
+
+            self.forward_batch.clear();
+        }
+
         self.batch_size = 0;
-        self.forwarded_count = 0;
 
         Ok(Some(replace(
             &mut self.batch,
@@ -156,7 +165,7 @@ impl Reducer for InflightActivationBatcher {
 
     fn reset(&mut self) {
         self.batch_size = 0;
-        self.forwarded_count = 0;
+        self.forward_batch.clear();
         self.batch.clear();
     }
 
