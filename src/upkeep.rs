@@ -306,11 +306,6 @@ pub async fn do_upkeep(
                         let tagged_activation = match tag_for_forwarding(&inflight.activation) {
                             Ok(Some(tagged)) => tagged,
                             Ok(None) => {
-                                // Already forwarded, skip
-                                metrics::counter!("upkeep.forward_demoted_namespace.already_forwarded_skip",
-                                    "namespace" => inflight.namespace,
-                                    "taskname" => inflight.taskname
-                                ).increment(1);
                                 return Ok(inflight.id);
                             }
                             Err(err) => {
