@@ -18,6 +18,7 @@ use super::consumer::{
 
 pub struct ActivationBatcherConfig {
     pub kafka_config: ClientConfig,
+    pub kafka_topic: String,
     pub kafka_long_topic: String,
     pub send_timeout_ms: u64,
     pub max_batch_time_ms: u64,
@@ -30,6 +31,7 @@ impl ActivationBatcherConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             kafka_config: config.kafka_producer_config(),
+            kafka_topic: config.kafka_topic.clone(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
             max_batch_time_ms: config.db_insert_batch_max_time_ms,
@@ -98,7 +100,7 @@ impl Reducer for InflightActivationBatcher {
         }
 
         if runtime_config.demoted_namespaces.contains(namespace) {
-            if forward_topic == self.config.kafka_long_topic {
+            if forward_topic == self.config.kafka_topic {
                 metrics::counter!(
                     "filter.forward_task_demoted_namespace.skipped",
                     "namespace" => namespace.clone(),
@@ -137,14 +139,13 @@ impl Reducer for InflightActivationBatcher {
 
         // Send all forward batch in parallel
         if !self.forward_batch.is_empty() {
-            // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
-            let topic = runtime_config
+            let forward_topic = runtime_config
                 .demoted_topic
                 .clone()
                 .unwrap_or(self.config.kafka_long_topic.clone());
             let sends = self.forward_batch.iter().map(|payload| {
                 self.producer.send(
-                    FutureRecord::<(), Vec<u8>>::to(&topic).payload(payload),
+                    FutureRecord::<(), Vec<u8>>::to(&forward_topic).payload(payload),
                     Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
                 )
             });
@@ -455,6 +456,8 @@ demoted_namespaces:
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
+        println!("kafka_topic: {:?}", config.kafka_topic);
+        println!("kafka_long_topic: {:?}", config.kafka_long_topic);
 
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),
