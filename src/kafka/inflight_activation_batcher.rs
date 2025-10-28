@@ -15,7 +15,6 @@ use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
-use super::utils::tag_for_forwarding;
 
 pub struct ActivationBatcherConfig {
     pub kafka_config: ClientConfig,
@@ -78,6 +77,10 @@ impl Reducer for InflightActivationBatcher {
 
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
+        let forward_topic = runtime_config
+            .demoted_topic
+            .clone()
+            .unwrap_or(self.config.kafka_long_topic.clone());
         let task_name = &t.taskname;
         let namespace = &t.namespace;
 
@@ -95,36 +98,22 @@ impl Reducer for InflightActivationBatcher {
         }
 
         if runtime_config.demoted_namespaces.contains(namespace) {
-            match tag_for_forwarding(&t.activation) {
-                Ok(Some(tagged_activation)) => {
-                    // Forward it
-                    metrics::counter!(
-                        "filter.forward_task_demoted_namespace",
-                        "namespace" => namespace.clone(),
-                        "taskname" => task_name.clone(),
-                    )
-                    .increment(1);
-                    self.forward_batch.push(tagged_activation);
-                    return Ok(());
-                }
-                Ok(None) => {
-                    // Already forwarded, fall through to add to batch
-                    metrics::counter!(
-                        "filter.forward_task_demoted_namespace.skipped",
-                        "namespace" => namespace.clone(),
-                        "taskname" => task_name.clone(),
-                    )
-                    .increment(1);
-                }
-                Err(_) => {
-                    // Decode error, fall through to add to batch to handle in upkeep
-                    metrics::counter!(
-                        "filter.forward_task_demoted_namespace.decode_error",
-                        "namespace" => namespace.clone(),
-                        "taskname" => task_name.clone(),
-                    )
-                    .increment(1);
-                }
+            if forward_topic == self.config.kafka_long_topic {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace.skipped",
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+            } else {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace",
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+                self.forward_batch.push(t.activation.clone());
+                return Ok(());
             }
         }
 
@@ -206,7 +195,6 @@ mod tests {
         ActivationBatcherConfig, Config, InflightActivation, InflightActivationBatcher, Reducer,
         RuntimeConfigManager,
     };
-    use crate::kafka::utils::tag_for_forwarding;
     use chrono::Utc;
     use std::collections::HashMap;
     use tokio::fs;
@@ -216,90 +204,6 @@ mod tests {
     use std::sync::Arc;
 
     use crate::store::inflight_activation::InflightActivationStatus;
-
-    #[test]
-    fn test_tag_for_forwarding() {
-        let original = TaskActivation {
-            id: "test-id".to_string(),
-            namespace: "bad_namespace".to_string(),
-            taskname: "test_task".to_string(),
-            parameters: r#"{"key":"value"}"#.to_string(),
-            headers: HashMap::new(),
-            received_at: None,
-            retry_state: None,
-            processing_deadline_duration: 60,
-            expires: Some(300),
-            delay: Some(10),
-        };
-
-        let encoded = original.encode_to_vec();
-        let tagged = tag_for_forwarding(&encoded).unwrap();
-
-        assert!(
-            tagged.is_some(),
-            "Should return Some for untagged activation"
-        );
-        let decoded = TaskActivation::decode(&tagged.unwrap() as &[u8]).unwrap();
-
-        // Namespace should be preserved (not modified)
-        assert_eq!(decoded.namespace, "bad_namespace");
-
-        // Should have forwarded header added
-        assert_eq!(
-            decoded.headers.get("forwarded"),
-            Some(&"true".to_string()),
-            "Should have forwarded header set to true"
-        );
-
-        // All other fields should be preserved
-        assert_eq!(decoded.id, original.id);
-        assert_eq!(decoded.taskname, original.taskname);
-        assert_eq!(decoded.parameters, original.parameters);
-        assert_eq!(decoded.received_at, original.received_at);
-        assert_eq!(decoded.retry_state, original.retry_state);
-        assert_eq!(
-            decoded.processing_deadline_duration,
-            original.processing_deadline_duration
-        );
-        assert_eq!(decoded.expires, original.expires);
-        assert_eq!(decoded.delay, original.delay);
-    }
-
-    #[test]
-    fn test_tag_for_forwarding_already_tagged() {
-        let mut original = TaskActivation {
-            id: "test-id".to_string(),
-            namespace: "bad_namespace".to_string(),
-            taskname: "test_task".to_string(),
-            parameters: r#"{"key":"value"}"#.to_string(),
-            headers: HashMap::new(),
-            received_at: None,
-            retry_state: None,
-            processing_deadline_duration: 60,
-            expires: Some(300),
-            delay: Some(10),
-        };
-
-        // Pre-tag it
-        original
-            .headers
-            .insert("forwarded".to_string(), "true".to_string());
-
-        let encoded = original.encode_to_vec();
-        let result = tag_for_forwarding(&encoded).unwrap();
-
-        assert!(
-            result.is_none(),
-            "Should return None for already tagged activation"
-        );
-    }
-
-    #[test]
-    fn test_tag_for_forwarding_decode_error() {
-        let invalid_bytes = vec![0xFF, 0xFF, 0xFF]; // Invalid protobuf
-        let result = tag_for_forwarding(&invalid_bytes);
-        assert!(result.is_err());
-    }
 
     #[tokio::test]
     async fn test_drop_task_due_to_killswitch() {

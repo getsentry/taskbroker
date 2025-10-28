@@ -21,7 +21,6 @@ use uuid::Uuid;
 use crate::{
     SERVICE_NAME,
     config::Config,
-    kafka::utils::tag_for_forwarding,
     runtime_config::RuntimeConfigManager,
     store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
 };
@@ -301,25 +300,16 @@ pub async fn do_upkeep(
                     let topic = runtime_config.demoted_topic.clone().unwrap_or(config.kafka_long_topic.clone());
 
                     async move {
-                        metrics::counter!("upkeep.forward_task_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
+                        if topic == config.kafka_long_topic {
+                            return Ok(inflight.id);
+                        }
 
-                        let tagged_activation = match tag_for_forwarding(&inflight.activation) {
-                            Ok(Some(tagged)) => tagged,
-                            Ok(None) => {
-                                metrics::counter!("upkeep.forward_task_demoted_namespace.skipped", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
-                                return Ok(inflight.id);
-                            }
-                            Err(err) => {
-                                metrics::counter!("upkeep.forward_task_demoted_namespace.decode_error", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
-                                error!("forward_task_demoted_namespace.tag_failure: {}", err);
-                                return Err(anyhow::anyhow!("failed to tag for forwarding: {}", err));
-                            }
-                        };
+                        metrics::counter!("upkeep.forward_task_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
 
                         let delivery = producer
                             .send(
                                 FutureRecord::<(), Vec<u8>>::to(&topic)
-                                    .payload(&tagged_activation),
+                                    .payload(&inflight.activation),
                                 Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                             )
                             .await;
