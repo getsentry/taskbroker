@@ -130,15 +130,12 @@ impl Reducer for InflightActivationBatcher {
             return Ok(None);
         }
 
-        let runtime_config = self.runtime_config_manager.read().await;
-
-        if !self.batch.is_empty() {
-            metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
-            metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
-        }
+        metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
+        metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
 
         // Send all forward batch in parallel
         if !self.forward_batch.is_empty() {
+            let runtime_config = self.runtime_config_manager.read().await;
             let forward_topic = runtime_config
                 .demoted_topic
                 .clone()
