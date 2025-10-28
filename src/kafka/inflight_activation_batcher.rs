@@ -109,9 +109,21 @@ impl Reducer for InflightActivationBatcher {
                 }
                 Ok(None) => {
                     // Already forwarded, fall through to add to batch
+                    metrics::counter!(
+                        "filter.forward_task_demoted_namespace.skipped",
+                        "namespace" => namespace.clone(),
+                        "taskname" => task_name.clone(),
+                    )
+                    .increment(1);
                 }
                 Err(_) => {
                     // Decode error, fall through to add to batch to handle in upkeep
+                    metrics::counter!(
+                        "filter.forward_task_demoted_namespace.decode_error",
+                        "namespace" => namespace.clone(),
+                        "taskname" => task_name.clone(),
+                    )
+                    .increment(1);
                 }
             }
         }
@@ -151,9 +163,10 @@ impl Reducer for InflightActivationBatcher {
             let results = join_all(sends).await;
             let success_count = results.iter().filter(|r| r.is_ok()).count();
 
-            metrics::histogram!("consumer.forwarded_rows").record(success_count as f64);
-            metrics::counter!("filter.forward_task_demoted_namespace_success")
-                .increment(success_count as u64);
+            metrics::histogram!("consumer.forward_attempts").record(results.len() as f64);
+            metrics::histogram!("consumer.forward_successes").record(success_count as f64);
+            metrics::histogram!("consumer.forward_failures")
+                .record((results.len() - success_count) as f64);
 
             self.forward_batch.clear();
         }

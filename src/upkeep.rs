@@ -301,15 +301,17 @@ pub async fn do_upkeep(
                     let topic = runtime_config.demoted_topic.clone().unwrap_or(config.kafka_long_topic.clone());
 
                     async move {
-                        metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
+                        metrics::counter!("upkeep.forward_task_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
 
                         let tagged_activation = match tag_for_forwarding(&inflight.activation) {
                             Ok(Some(tagged)) => tagged,
                             Ok(None) => {
+                                metrics::counter!("upkeep.forward_task_demoted_namespace.skipped", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
                                 return Ok(inflight.id);
                             }
                             Err(err) => {
-                                error!("forward_demoted_namespace.tag_failure: {}", err);
+                                metrics::counter!("upkeep.forward_task_demoted_namespace.decode_error", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
+                                error!("forward_task_demoted_namespace.tag_failure: {}", err);
                                 return Err(anyhow::anyhow!("failed to tag for forwarding: {}", err));
                             }
                         };
@@ -324,7 +326,8 @@ pub async fn do_upkeep(
                         match delivery {
                             Ok(_) => Ok(inflight.id),
                             Err((err, _msg)) => {
-                                error!("forward_demoted_namespace.publish.failure: {}", err);
+                                metrics::counter!("upkeep.forward_task_demoted_namespace.publish_failure", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
+                                error!("forward_task_demoted_namespace.publish.failure: {}", err);
                                 Err(anyhow::anyhow!("failed to publish activation: {}", err))
                             }
                         }
@@ -343,7 +346,7 @@ pub async fn do_upkeep(
                 result_context.forwarded = forwarded_count;
             }
         }
-        metrics::histogram!("upkeep.forward_demoted_namespaces")
+        metrics::histogram!("upkeep.forward_task_demoted_namespaces")
             .record(forward_demoted_start.elapsed());
     }
 
