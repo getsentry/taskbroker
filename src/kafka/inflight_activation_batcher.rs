@@ -3,6 +3,7 @@ use crate::{
     store::inflight_activation::InflightActivation,
 };
 use chrono::Utc;
+use futures::future::join_all;
 use rdkafka::config::ClientConfig;
 use rdkafka::{
     producer::{FutureProducer, FutureRecord},
@@ -17,6 +18,7 @@ use super::consumer::{
 
 pub struct ActivationBatcherConfig {
     pub kafka_config: ClientConfig,
+    pub kafka_topic: String,
     pub kafka_long_topic: String,
     pub send_timeout_ms: u64,
     pub max_batch_time_ms: u64,
@@ -29,6 +31,7 @@ impl ActivationBatcherConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             kafka_config: config.kafka_producer_config(),
+            kafka_topic: config.kafka_topic.clone(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
             max_batch_time_ms: config.db_insert_batch_max_time_ms,
@@ -41,6 +44,7 @@ impl ActivationBatcherConfig {
 pub struct InflightActivationBatcher {
     batch: Vec<InflightActivation>,
     batch_size: usize,
+    forward_batch: Vec<Vec<u8>>, // payload
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     producer: Arc<FutureProducer>,
@@ -60,6 +64,7 @@ impl InflightActivationBatcher {
         Self {
             batch: Vec::with_capacity(config.max_batch_len),
             batch_size: 0,
+            forward_batch: Vec::with_capacity(config.max_batch_len),
             config,
             runtime_config_manager,
             producer,
@@ -74,6 +79,10 @@ impl Reducer for InflightActivationBatcher {
 
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
+        let forward_topic = runtime_config
+            .demoted_topic
+            .clone()
+            .unwrap_or(self.config.kafka_long_topic.clone());
         let task_name = &t.taskname;
         let namespace = &t.namespace;
 
@@ -91,31 +100,21 @@ impl Reducer for InflightActivationBatcher {
         }
 
         if runtime_config.demoted_namespaces.contains(namespace) {
-            metrics::counter!(
-                "filter.forward_task_demoted_namespace",
-                "namespace" => namespace.clone(),
-                "taskname" => task_name.clone(),
-            )
-            .increment(1);
-
-            // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
-            let topic = runtime_config
-                .demoted_topic
-                .clone()
-                .unwrap_or(self.config.kafka_long_topic.clone());
-            let delivery = self
-                .producer
-                .send(
-                    FutureRecord::<(), Vec<u8>>::to(&topic).payload(&t.activation),
-                    Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
-                )
-                .await;
-            if delivery.is_ok() {
-                metrics::counter!("filter.forward_task_demoted_namespace_success",
+            if forward_topic == self.config.kafka_topic {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace.skipped",
                     "namespace" => namespace.clone(),
                     "taskname" => task_name.clone(),
                 )
                 .increment(1);
+            } else {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace",
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+                self.forward_batch.push(t.activation.clone());
                 return Ok(());
             }
         }
@@ -127,12 +126,37 @@ impl Reducer for InflightActivationBatcher {
     }
 
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
-        if self.batch.is_empty() {
+        if self.batch.is_empty() && self.forward_batch.is_empty() {
             return Ok(None);
         }
 
         metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
         metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
+
+        // Send all forward batch in parallel
+        if !self.forward_batch.is_empty() {
+            let runtime_config = self.runtime_config_manager.read().await;
+            let forward_topic = runtime_config
+                .demoted_topic
+                .clone()
+                .unwrap_or(self.config.kafka_long_topic.clone());
+            let sends = self.forward_batch.iter().map(|payload| {
+                self.producer.send(
+                    FutureRecord::<(), Vec<u8>>::to(&forward_topic).payload(payload),
+                    Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
+                )
+            });
+
+            let results = join_all(sends).await;
+            let success_count = results.iter().filter(|r| r.is_ok()).count();
+
+            metrics::histogram!("consumer.forward_attempts").record(results.len() as f64);
+            metrics::histogram!("consumer.forward_successes").record(success_count as f64);
+            metrics::histogram!("consumer.forward_failures")
+                .record((results.len() - success_count) as f64);
+
+            self.forward_batch.clear();
+        }
 
         self.batch_size = 0;
 
@@ -144,6 +168,7 @@ impl Reducer for InflightActivationBatcher {
 
     fn reset(&mut self) {
         self.batch_size = 0;
+        self.forward_batch.clear();
         self.batch.clear();
     }
 
@@ -428,6 +453,8 @@ demoted_namespaces:
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
+        println!("kafka_topic: {:?}", config.kafka_topic);
+        println!("kafka_long_topic: {:?}", config.kafka_long_topic);
 
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),
@@ -460,8 +487,53 @@ demoted_namespaces:
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
 
+        let inflight_activation_1 = InflightActivation {
+            id: "1".to_string(),
+            activation: TaskActivation {
+                id: "1".to_string(),
+                namespace: "good_namespace".to_string(),
+                taskname: "good_task".to_string(),
+                parameters: "{}".to_string(),
+                headers: HashMap::new(),
+                received_at: None,
+                retry_state: None,
+                processing_deadline_duration: 0,
+                expires: Some(0),
+                delay: None,
+            }
+            .encode_to_vec(),
+            status: InflightActivationStatus::Pending,
+            partition: 0,
+            offset: 0,
+            added_at: Utc::now(),
+            received_at: Utc::now(),
+            processing_attempts: 0,
+            processing_deadline_duration: 0,
+            expires_at: None,
+            delay_until: None,
+            processing_deadline: None,
+            at_most_once: false,
+            namespace: "good_namespace".to_string(),
+            taskname: "good_task".to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::Discard,
+        };
+
         batcher.reduce(inflight_activation_0).await.unwrap();
+        batcher.reduce(inflight_activation_1).await.unwrap();
+
+        assert_eq!(batcher.batch.len(), 1);
+        assert_eq!(batcher.forward_batch.len(), 1);
+
+        let flush_result = batcher.flush().await.unwrap();
+        assert!(flush_result.is_some());
+        assert_eq!(flush_result.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            flush_result.as_ref().unwrap()[0].namespace,
+            "good_namespace"
+        );
+        assert_eq!(flush_result.as_ref().unwrap()[0].taskname, "good_task");
         assert_eq!(batcher.batch.len(), 0);
+        assert_eq!(batcher.forward_batch.len(), 0);
 
         fs::remove_file(test_path).await.unwrap();
     }

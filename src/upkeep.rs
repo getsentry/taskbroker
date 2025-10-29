@@ -284,7 +284,11 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to "long" namespace
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
-    if !demoted_namespaces.is_empty() {
+    let forward_topic = runtime_config
+        .demoted_topic
+        .clone()
+        .unwrap_or(config.kafka_long_topic.clone());
+    if !demoted_namespaces.is_empty() && forward_topic != config.kafka_topic {
         let forward_demoted_start = Instant::now();
         if let Ok(tasks) = store
             .get_pending_activations_from_namespaces(Some(&demoted_namespaces), None)
@@ -296,14 +300,10 @@ pub async fn do_upkeep(
                 .map(|inflight| {
                     let producer = producer.clone();
                     let config = config.clone();
-                    // The default demoted topic to forward tasks to is config.kafka_long_topic if not set in runtime config.
-                    let topic = runtime_config.demoted_topic.clone().unwrap_or(config.kafka_long_topic.clone());
-
+                    let topic = forward_topic.clone();
                     async move {
-                        if inflight.status == InflightActivationStatus::Complete {
-                            return Ok(inflight.id);
-                        }
-                        metrics::counter!("upkeep.forward_demoted_namespace", "namespace" => inflight.namespace, "taskname" => inflight.taskname).increment(1);
+                        metrics::counter!("upkeep.forward_task_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
+
                         let delivery = producer
                             .send(
                                 FutureRecord::<(), Vec<u8>>::to(&topic)
@@ -314,8 +314,9 @@ pub async fn do_upkeep(
                         match delivery {
                             Ok(_) => Ok(inflight.id),
                             Err((err, _msg)) => {
-                                error!("forward_demoted_namespace.publish.failure: {}", err);
-                                Err(err)
+                                metrics::counter!("upkeep.forward_task_demoted_namespace.publish_failure", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
+                                error!("forward_task_demoted_namespace.publish.failure: {}", err);
+                                Err(anyhow::anyhow!("failed to publish activation: {}", err))
                             }
                         }
                     }
@@ -333,7 +334,7 @@ pub async fn do_upkeep(
                 result_context.forwarded = forwarded_count;
             }
         }
-        metrics::histogram!("upkeep.forward_demoted_namespaces")
+        metrics::histogram!("upkeep.forward_task_demoted_namespaces")
             .record(forward_demoted_start.elapsed());
     }
 
