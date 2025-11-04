@@ -33,6 +33,9 @@ use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::inflight_activation::{
     InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
 };
+use taskbroker::store::postgres_activation_store::{
+    PostgresActivationStore, PostgresActivationStoreConfig,
+};
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
 
@@ -62,13 +65,21 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
-    let store: Arc<dyn InflightActivationStore> = Arc::new(
-        SqliteActivationStore::new(
-            &config.db_path,
-            InflightActivationStoreConfig::from_config(&config),
-        )
-        .await?,
-    );
+
+    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
+        "sqlite" => Arc::new(
+            SqliteActivationStore::new(
+                &config.db_path,
+                InflightActivationStoreConfig::from_config(&config),
+            )
+            .await?,
+        ),
+        "postgres" => Arc::new(
+            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
+                .await?,
+        ),
+        _ => panic!("Invalid database adapter: {}", config.database_adapter),
+    };
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
@@ -80,6 +91,7 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
     }
+
     if config.full_vacuum_on_start {
         info!("Running full vacuum on database");
         match store.full_vacuum_db().await {

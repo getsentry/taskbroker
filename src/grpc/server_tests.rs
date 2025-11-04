@@ -1,6 +1,6 @@
 use crate::grpc::server::TaskbrokerServer;
-use crate::store::inflight_activation::InflightActivationStore;
 use prost::Message;
+use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivation,
@@ -10,8 +10,11 @@ use tonic::{Code, Request};
 use crate::test_utils::{create_test_store, make_activations};
 
 #[tokio::test]
-async fn test_get_task() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_task(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let service = TaskbrokerServer { store };
     let request = GetTaskRequest {
         namespace: None,
@@ -25,9 +28,12 @@ async fn test_get_task() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_set_task_status() {
-    let store = create_test_store().await;
+async fn test_set_task_status(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let service = TaskbrokerServer { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -41,9 +47,12 @@ async fn test_set_task_status() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_set_task_status_invalid() {
-    let store = create_test_store().await;
+async fn test_set_task_status_invalid(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let service = TaskbrokerServer { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -61,9 +70,12 @@ async fn test_set_task_status_invalid() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_get_task_success() {
-    let store = create_test_store().await;
+async fn test_get_task_success(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let activations = make_activations(1);
     store.store(activations).await.unwrap();
 
@@ -81,9 +93,12 @@ async fn test_get_task_success() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_get_task_with_application_success() {
-    let store = create_test_store().await;
+async fn test_get_task_with_application_success(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let mut activations = make_activations(2);
 
     let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
@@ -108,9 +123,12 @@ async fn test_get_task_with_application_success() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_get_task_with_namespace_requires_application() {
-    let store = create_test_store().await;
+async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 
@@ -129,9 +147,12 @@ async fn test_get_task_with_namespace_requires_application() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_set_task_status_success() {
-    let store = create_test_store().await;
+async fn test_set_task_status_success(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 
@@ -157,6 +178,7 @@ async fn test_set_task_status_success() {
         }),
     };
     let response = service.set_task_status(Request::new(request)).await;
+    println!("response: {:?}", response);
     assert!(response.is_ok());
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_some());
@@ -165,9 +187,12 @@ async fn test_set_task_status_success() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_set_task_status_with_application() {
-    let store = create_test_store().await;
+async fn test_set_task_status_with_application(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let mut activations = make_activations(2);
 
     let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
@@ -199,9 +224,12 @@ async fn test_set_task_status_with_application() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_set_task_status_with_application_no_match() {
-    let store = create_test_store().await;
+async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let mut activations = make_activations(2);
 
     let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
@@ -228,9 +256,12 @@ async fn test_set_task_status_with_application_no_match() {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_set_task_status_with_namespace_requires_application() {
-    let store = create_test_store().await;
+async fn test_set_task_status_with_namespace_requires_application(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 

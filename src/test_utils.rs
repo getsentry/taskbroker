@@ -1,13 +1,12 @@
 use futures::StreamExt;
 use prost::Message as ProstMessage;
-use rand::Rng;
 use rdkafka::{
     Message,
     admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-    consumer::{Consumer, StreamConsumer},
+    consumer::{CommitMode, Consumer, StreamConsumer},
     producer::FutureProducer,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, env::var, sync::Arc};
 use uuid::Uuid;
 
 use crate::{
@@ -16,14 +15,25 @@ use crate::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig, SqliteActivationStore,
     },
+    store::postgres_activation_store::{PostgresActivationStore, PostgresActivationStoreConfig},
 };
 use chrono::{Timelike, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
 
-/// Generate a unique filename for isolated SQLite databases.
+pub fn get_pg_url() -> String {
+    var("TASKBROKER_PG_URL").unwrap_or("postgres://postgres:password@localhost:5432/".to_string())
+}
+
+pub fn get_pg_database_name() -> String {
+    let random_name = format!("a{}", Uuid::new_v4().to_string().replace("-", ""));
+    var("TASKBROKER_PG_DATABASE_NAME").unwrap_or(random_name)
+}
+
 pub fn generate_temp_filename() -> String {
-    let mut rng = rand::thread_rng();
-    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+    format!(
+        "/tmp/taskbroker-test-{}",
+        Uuid::new_v4().to_string().replace("-", "")
+    )
 }
 
 /// Generate a unique alphanumeric string for namespaces (and possibly other purposes).
@@ -90,15 +100,25 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create an InflightActivationStore instance
-pub async fn create_test_store() -> Arc<SqliteActivationStore> {
-    Arc::new(
-        SqliteActivationStore::new(
-            &generate_temp_filename(),
-            InflightActivationStoreConfig::from_config(&create_integration_config()),
-        )
-        .await
-        .unwrap(),
-    )
+pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore> {
+    match adapter {
+        "sqlite" => Arc::new(
+            SqliteActivationStore::new(
+                &generate_temp_filename(),
+                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            )
+            .await
+            .unwrap(),
+        ) as Arc<dyn InflightActivationStore>,
+        "postgres" => Arc::new(
+            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
+                &create_integration_config(),
+            ))
+            .await
+            .unwrap(),
+        ) as Arc<dyn InflightActivationStore>,
+        _ => panic!("Invalid adapter: {}", adapter),
+    }
 }
 
 /// Create a Config instance that uses a testing topic
@@ -106,7 +126,21 @@ pub async fn create_test_store() -> Arc<SqliteActivationStore> {
 /// with [`reset_topic`]
 pub fn create_integration_config() -> Arc<Config> {
     let config = Config {
+        pg_url: get_pg_url(),
+        pg_database_name: get_pg_database_name(),
         kafka_topic: "taskbroker-test".into(),
+        kafka_auto_offset_reset: "earliest".into(),
+        ..Config::default()
+    };
+
+    Arc::new(config)
+}
+
+pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
+    let config = Config {
+        pg_url: get_pg_url(),
+        pg_database_name: get_pg_database_name(),
+        kafka_topic: topic,
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
     };
@@ -166,6 +200,7 @@ pub async fn consume_topic(
 
     let mut stream = consumer.stream();
     let mut results: Vec<TaskActivation> = vec![];
+    let mut last_message = None;
     let start = Utc::now();
     loop {
         let current = Utc::now();
@@ -187,8 +222,12 @@ pub async fn consume_topic(
         let payload = message.payload().expect("Could not fetch message payload");
         let activation = TaskActivation::decode(payload).unwrap();
         results.push(activation);
+        last_message = Some(message);
     }
-
+    // Commit the last message's offset so subsequent calls start from the next message
+    if let Some(msg) = last_message {
+        consumer.commit_message(&msg, CommitMode::Sync).unwrap();
+    }
     results
 }
 

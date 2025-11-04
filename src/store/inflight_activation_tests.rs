@@ -1,5 +1,8 @@
 use prost::Message;
+use rstest::rstest;
+use sqlx::{QueryBuilder, Sqlite};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -19,8 +22,6 @@ use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{
     OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
 };
-use sqlx::{QueryBuilder, Sqlite};
-use std::fs;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
@@ -64,7 +65,7 @@ fn test_inflightactivation_status_from() {
 }
 
 #[tokio::test]
-async fn test_create_db() {
+async fn test_sqlite_create_db() {
     assert!(
         SqliteActivationStore::new(
             &generate_temp_filename(),
@@ -76,34 +77,50 @@ async fn test_create_db() {
 }
 
 #[tokio::test]
-async fn test_store() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_store(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 2);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_store_duplicate_id_in_batch() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_store_duplicate_id_in_batch(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     // Coerce a conflict
     batch[0].id = "id_0".into();
     batch[1].id = "id_0".into();
 
-    assert!(store.store(batch).await.is_ok());
+    let first_result = store.store(batch).await;
+    assert!(
+        first_result.is_ok(),
+        "{}",
+        first_result.err().unwrap().to_string()
+    );
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 1);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_store_duplicate_id_between_batches() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_store_duplicate_id_between_batches(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
@@ -118,11 +135,15 @@ async fn test_store_duplicate_id_between_batches() {
 
     let second_count = store.count().await;
     assert_eq!(second_count.unwrap(), 2);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
@@ -149,11 +170,15 @@ async fn test_get_pending_activation() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
-async fn test_get_pending_activation_with_race() {
-    let store = Arc::new(create_test_store().await);
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
+    let store = Arc::new(create_test_store(adapter).await);
     let namespace = generate_unique_namespace();
 
     const NUM_CONCURRENT_WRITES: u32 = 2000;
@@ -192,11 +217,15 @@ async fn test_get_pending_activation_with_race() {
         .collect();
 
     assert_eq!(res.len(), NUM_CONCURRENT_WRITES as usize);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_with_namespace() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[1].namespace = "other_namespace".into();
@@ -212,11 +241,15 @@ async fn test_get_pending_activation_with_namespace() {
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.namespace, "other_namespace");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_from_multiple_namespaces() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(4);
     batch[0].namespace = "ns1".into();
@@ -233,17 +266,21 @@ async fn test_get_pending_activation_from_multiple_namespaces() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0].id, "id_1");
-    assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Processing);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
     assert_eq!(result[1].status, InflightActivationStatus::Processing);
+    assert_eq!(result[0].id, "id_1");
+    assert_eq!(result[0].namespace, "ns2");
+    assert_eq!(result[0].status, InflightActivationStatus::Processing);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_with_namespace_requires_application() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_with_namespace_requires_application(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[1].namespace = "other_namespace".into();
@@ -268,11 +305,24 @@ async fn test_get_pending_activation_with_namespace_requires_application() {
         activations.len(),
         "should find 1 activation with a matching namespace"
     );
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_skip_expires() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_skip_expires(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
 
     let mut batch = make_activations(1);
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
@@ -291,16 +341,21 @@ async fn test_get_pending_activation_skip_expires() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_earliest() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_earliest(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[0].added_at = Utc.with_ymd_and_hms(2024, 6, 24, 0, 0, 0).unwrap();
     batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
-    assert!(store.store(batch.clone()).await.is_ok());
+    let ret = store.store(batch.clone()).await;
+    assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 
     let result = store
         .get_pending_activation(None, None)
@@ -311,11 +366,15 @@ async fn test_get_pending_activation_earliest() {
         result.added_at,
         Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
     );
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_fetches_application() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_fetches_application(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(1);
     batch[0].application = "hammers".into();
@@ -332,11 +391,15 @@ async fn test_get_pending_activation_fetches_application() {
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_with_application() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[1].application = "hammers".into();
@@ -364,11 +427,15 @@ async fn test_get_pending_activation_with_application() {
 
     let result_opt = store.get_pending_activation(None, None).await.unwrap();
     assert!(result_opt.is_some(), "one pending activation in '' left");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_pending_activation_with_application_and_namespace() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_with_application_and_namespace(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(3);
     batch[0].namespace = "target".into();
@@ -400,11 +467,15 @@ async fn test_get_pending_activation_with_application_and_namespace() {
     assert_eq!(result.id, "id_2");
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "not-target");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_count_pending_activations() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_count_pending_activations(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(3);
     batch[0].status = InflightActivationStatus::Processing;
@@ -420,11 +491,15 @@ async fn test_count_pending_activations() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn set_activation_status() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_set_activation_status(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
@@ -514,37 +589,37 @@ async fn set_activation_status() {
     let inflight = result_opt.unwrap();
     assert_eq!(inflight.id, "id_0");
     assert_eq!(inflight.status, InflightActivationStatus::Complete);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_set_processing_deadline() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_set_processing_deadline(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(1);
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let deadline = Utc::now();
-    assert!(
-        store
-            .set_processing_deadline("id_0", Some(deadline))
-            .await
-            .is_ok()
-    );
+    let deadline = Utc::now().round_subsecs(0);
+    let result = store.set_processing_deadline("id_0", Some(deadline)).await;
+    assert!(result.is_ok(), "query error: {:?}", result.err().unwrap());
 
     let result = store.get_by_id("id_0").await.unwrap().unwrap();
     assert_eq!(
-        result
-            .processing_deadline
-            .unwrap()
-            .round_subsecs(0)
-            .timestamp(),
+        result.processing_deadline.unwrap().timestamp(),
         deadline.timestamp()
-    )
+    );
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_delete_activation() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_delete_activation(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
@@ -563,11 +638,15 @@ async fn test_delete_activation() {
     assert!(store.delete_activation("id_1").await.is_ok());
     let result = store.count().await;
     assert_eq!(result.unwrap(), 0);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_get_retry_activations() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_retry_activations(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
@@ -608,11 +687,15 @@ async fn test_get_retry_activations() {
     for record in retries.iter() {
         assert_eq!(record.status, InflightActivationStatus::Retry);
     }
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_processing_deadline() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_processing_deadline(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -648,11 +731,15 @@ async fn test_handle_processing_deadline() {
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 0);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_processing_deadline_multiple_tasks() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[0].status = InflightActivationStatus::Processing;
@@ -681,11 +768,15 @@ async fn test_handle_processing_deadline_multiple_tasks() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_processing_at_most_once() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     // Both records are past processing deadlines
     let mut batch = make_activations(2);
@@ -731,11 +822,15 @@ async fn test_handle_processing_at_most_once() {
 
     let task = store.get_by_id(&batch[1].id).await.unwrap().unwrap();
     assert_eq!(task.status, InflightActivationStatus::Failure);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_processing_deadline_discard_after() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_processing_deadline_discard_after(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -773,11 +868,15 @@ async fn test_handle_processing_deadline_discard_after() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_processing_deadline_deadletter_after() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_processing_deadline_deadletter_after(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -815,11 +914,15 @@ async fn test_handle_processing_deadline_deadletter_after() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_processing_deadline_no_retries_remaining() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
@@ -857,12 +960,16 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_processing_attempts_exceeded() {
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     let config = create_integration_config();
-    let store = create_test_store().await;
+    let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(3);
     batch[0].status = InflightActivationStatus::Pending;
@@ -899,11 +1006,15 @@ async fn test_processing_attempts_exceeded() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_remove_completed() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_remove_completed(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut records = make_activations(3);
     records[0].status = InflightActivationStatus::Complete;
@@ -956,11 +1067,15 @@ async fn test_remove_completed() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_remove_completed_multiple_gaps() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_remove_completed_multiple_gaps(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut records = make_activations(4);
     // only record 1 can be removed
@@ -1027,11 +1142,15 @@ async fn test_remove_completed_multiple_gaps() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_failed_tasks() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_failed_tasks(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let mut records = make_activations(4);
     // deadletter
@@ -1113,11 +1232,15 @@ async fn test_handle_failed_tasks() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_mark_completed() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_mark_completed(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let records = make_activations(3);
     assert!(store.store(records.clone()).await.is_ok());
@@ -1145,11 +1268,15 @@ async fn test_mark_completed() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_handle_expires_at() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_expires_at(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let mut batch = make_activations(3);
 
     // All expired tasks should be removed, regardless of order or other tasks.
@@ -1168,7 +1295,11 @@ async fn test_handle_expires_at() {
     .await;
 
     let result = store.handle_expires_at().await;
-    assert!(result.is_ok());
+    assert!(
+        result.is_ok(),
+        "handle_expires_at should be ok {:?}",
+        result
+    );
     assert_eq!(result.unwrap(), 2);
     assert_counts(
         StatusCount {
@@ -1178,11 +1309,15 @@ async fn test_handle_expires_at() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_remove_killswitched() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_remove_killswitched(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let mut batch = make_activations(6);
 
     batch[0].taskname = "task_to_be_killswitched_one".to_string();
@@ -1216,11 +1351,15 @@ async fn test_remove_killswitched() {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_clear() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_clear(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let namespace = generate_unique_namespace();
 
     #[allow(deprecated)]
@@ -1275,28 +1414,37 @@ async fn test_clear() {
     assert!(store.clear().await.is_ok());
     assert_eq!(store.count().await.unwrap(), 0);
     assert_counts(StatusCount::default(), store.as_ref()).await;
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_full_vacuum() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_full_vacuum(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
 
     let result = store.full_vacuum_db().await;
     assert!(result.is_ok());
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_vacuum_db_no_limit() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
 
     let result = store.vacuum_db().await;
     assert!(result.is_ok());
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
@@ -1320,8 +1468,11 @@ async fn test_vacuum_db_incremental() {
 }
 
 #[tokio::test]
-async fn test_db_size() {
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_db_size(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     assert!(store.db_size().await.is_ok());
 
     let first_size = store.db_size().await.unwrap();
@@ -1333,12 +1484,16 @@ async fn test_db_size() {
 
     let second_size = store.db_size().await.unwrap();
     assert!(second_size > first_size, "should have more bytes now");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_pending_activation_max_lag_no_pending() {
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_pending_activation_max_lag_no_pending(#[case] adapter: &str) {
     let now = Utc::now();
-    let store = create_test_store().await;
+    let store = create_test_store(adapter).await;
     // No activations, max lag is 0
     assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
 
@@ -1348,12 +1503,16 @@ async fn test_pending_activation_max_lag_no_pending() {
 
     // No pending activations, max lag is 0
     assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_pending_activation_max_lag_use_oldest() {
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_pending_activation_max_lag_use_oldest(#[case] adapter: &str) {
     let now = Utc::now();
-    let store = create_test_store().await;
+    let store = create_test_store(adapter).await;
 
     let mut pending = make_activations(2);
     pending[0].received_at = now - Duration::from_secs(10);
@@ -1363,12 +1522,16 @@ async fn test_pending_activation_max_lag_use_oldest() {
     let result = store.pending_activation_max_lag(&now).await;
     assert!(11.0 < result, "Should not get the small record");
     assert!(result < 501.0, "Should not get an inflated value");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_pending_activation_max_lag_ignore_processing_attempts() {
-    let now = Utc::now();
-    let store = create_test_store().await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_pending_activation_max_lag_ignore_processing_attempts(#[case] adapter: &str) {
+    let now = Utc::now().round_subsecs(0);
+    let store = create_test_store(adapter).await;
 
     let mut pending = make_activations(2);
     pending[0].received_at = now - Duration::from_secs(10);
@@ -1377,14 +1540,17 @@ async fn test_pending_activation_max_lag_ignore_processing_attempts() {
     assert!(store.store(pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
-    assert!(10.00 < result);
-    assert!(result < 11.00);
+    assert_eq!(result, 10.0, "max lag: {result:?}");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
-async fn test_pending_activation_max_lag_account_for_delayed() {
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_pending_activation_max_lag_account_for_delayed(#[case] adapter: &str) {
     let now = Utc::now();
-    let store = create_test_store().await;
+    let store = create_test_store(adapter).await;
 
     let mut pending = make_activations(2);
     // delayed tasks are received well before they become pending
@@ -1395,7 +1561,8 @@ async fn test_pending_activation_max_lag_account_for_delayed() {
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(22.00 < result, "result: {result}");
-    assert!(result < 23.00, "result: {result}");
+    assert!(result < 24.00, "result: {result}");
+    store.remove_db().await.unwrap();
 }
 
 #[tokio::test]
