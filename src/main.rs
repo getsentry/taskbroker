@@ -63,11 +63,7 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
     let store = Arc::new(
-        InflightActivationStore::new(
-            &config.db_path,
-            InflightActivationStoreConfig::from_config(&config),
-        )
-        .await?,
+        InflightActivationStore::new(InflightActivationStoreConfig::from_config(&config)).await?,
     );
 
     // If this is an environment where the topics might not exist, check and create them.
@@ -80,13 +76,13 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
     }
-    if config.full_vacuum_on_start {
-        info!("Running full vacuum on database");
-        match store.full_vacuum_db().await {
-            Ok(_) => info!("Full vacuum completed."),
-            Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
-        }
-    }
+    // if config.full_vacuum_on_start {
+    //     info!("Running full vacuum on database");
+    //     match store.full_vacuum_db().await {
+    //         Ok(_) => info!("Full vacuum completed."),
+    //         Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
+    //     }
+    // }
     // Get startup time after migrations and vacuum
     let startup_time = Utc::now();
 
@@ -126,10 +122,10 @@ async fn main() -> Result<(), Error> {
             loop {
                 select! {
                     _ = timer.tick() => {
-                        match maintenance_store.vacuum_db().await {
-                            Ok(_) => debug!("ran maintenance vacuum"),
-                            Err(err) => warn!("failed to run maintenance vacuum {:?}", err),
-                        }
+                        // match maintenance_store.vacuum_db().await {
+                        //     Ok(_) => debug!("ran maintenance vacuum"),
+                        //     Err(err) => warn!("failed to run maintenance vacuum {:?}", err),
+                        // }
                     },
                     _ = guard.wait() => {
                         break;

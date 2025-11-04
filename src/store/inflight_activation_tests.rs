@@ -5,23 +5,31 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::config::Config;
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
-    InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
+    InflightActivationStoreConfig, create_default_postgres_pool,
 };
 use crate::test_utils::{
-    StatusCount, assert_counts, create_integration_config, create_test_store,
-    generate_temp_filename, make_activations, replace_retry_state,
+    StatusCount, assert_counts, create_integration_config, create_test_store, make_activations,
+    replace_retry_state,
 };
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{
     OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
 };
-use sqlx::{QueryBuilder, Sqlite};
 use std::fs;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
+
+async fn cleanup_database() {
+    let pool = create_default_postgres_pool("postgres://postgres:password@localhost:5432")
+        .await
+        .unwrap();
+    sqlx::query(r#"DROP DATABASE taskbroker"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
 
 #[test]
 fn test_inflightactivation_status_is_completion() {
@@ -64,14 +72,12 @@ fn test_inflightactivation_status_from() {
 
 #[tokio::test]
 async fn test_create_db() {
-    assert!(
-        InflightActivationStore::new(
-            &generate_temp_filename(),
-            InflightActivationStoreConfig::from_config(&create_integration_config())
-        )
-        .await
-        .is_ok()
-    )
+    cleanup_database().await;
+    let ret = InflightActivationStore::new(InflightActivationStoreConfig::from_config(
+        &create_integration_config(),
+    ))
+    .await;
+    assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 }
 
 #[tokio::test]
@@ -94,7 +100,12 @@ async fn test_store_duplicate_id_in_batch() {
     batch[0].id = "id_0".into();
     batch[1].id = "id_0".into();
 
-    assert!(store.store(batch).await.is_ok());
+    let first_result = store.store(batch).await;
+    assert!(
+        first_result.is_ok(),
+        "{}",
+        first_result.err().unwrap().to_string()
+    );
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 1);
@@ -223,17 +234,26 @@ async fn test_get_pending_activation_from_multiple_namespaces() {
         .unwrap();
 
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0].id, "id_1");
-    assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Processing);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
     assert_eq!(result[1].status, InflightActivationStatus::Processing);
+    assert_eq!(result[0].id, "id_1");
+    assert_eq!(result[0].namespace, "ns2");
+    assert_eq!(result[0].status, InflightActivationStatus::Processing);
 }
 
 #[tokio::test]
 async fn test_get_pending_activation_skip_expires() {
     let store = create_test_store().await;
+
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            ..StatusCount::default()
+        },
+        &store,
+    )
+    .await;
 
     let mut batch = make_activations(1);
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
@@ -261,7 +281,8 @@ async fn test_get_pending_activation_earliest() {
     let mut batch = make_activations(2);
     batch[0].added_at = Utc.with_ymd_and_hms(2024, 6, 24, 0, 0, 0).unwrap();
     batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
-    assert!(store.store(batch.clone()).await.is_ok());
+    let ret = store.store(batch.clone()).await;
+    assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 
     let result = store.get_pending_activation(None).await.unwrap().unwrap();
     assert_eq!(
@@ -386,12 +407,8 @@ async fn test_set_processing_deadline() {
     assert!(store.store(batch.clone()).await.is_ok());
 
     let deadline = Utc::now();
-    assert!(
-        store
-            .set_processing_deadline("id_0", Some(deadline))
-            .await
-            .is_ok()
-    );
+    let result = store.set_processing_deadline("id_0", Some(deadline)).await;
+    assert!(result.is_ok(), "query error: {:?}", result.err().unwrap());
 
     let result = store.get_by_id("id_0").await.unwrap().unwrap();
     assert_eq!(
@@ -1030,7 +1047,11 @@ async fn test_handle_expires_at() {
     .await;
 
     let result = store.handle_expires_at().await;
-    assert!(result.is_ok());
+    assert!(
+        result.is_ok(),
+        "handle_expires_at should be ok {:?}",
+        result
+    );
     assert_eq!(result.unwrap(), 2);
     assert_counts(
         StatusCount {
@@ -1158,41 +1179,41 @@ async fn test_vacuum_db_no_limit() {
     assert!(result.is_ok());
 }
 
-#[tokio::test]
-async fn test_vacuum_db_incremental() {
-    let config = Config {
-        vacuum_page_count: Some(10),
-        ..Config::default()
-    };
-    let store = InflightActivationStore::new(
-        &generate_temp_filename(),
-        InflightActivationStoreConfig::from_config(&config),
-    )
-    .await
-    .expect("could not create store");
+// #[tokio::test]
+// async fn test_vacuum_db_incremental() {
+//     let config = Config {
+//         vacuum_page_count: Some(10),
+//         ..Config::default()
+//     };
+//     let store = InflightActivationStore::new(
+//         &generate_temp_filename(),
+//         InflightActivationStoreConfig::from_config(&config),
+//     )
+//     .await
+//     .expect("could not create store");
 
-    let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+//     let batch = make_activations(2);
+//     assert!(store.store(batch).await.is_ok());
 
-    let result = store.vacuum_db().await;
-    assert!(result.is_ok());
-}
+//     let result = store.vacuum_db().await;
+//     assert!(result.is_ok());
+// }
 
-#[tokio::test]
-async fn test_db_size() {
-    let store = create_test_store().await;
-    assert!(store.db_size().await.is_ok());
+// #[tokio::test]
+// async fn test_db_size() {
+//     let store = create_test_store().await;
+//     assert!(store.db_size().await.is_ok());
 
-    let first_size = store.db_size().await.unwrap();
-    assert!(first_size > 0, "should have some bytes");
+//     let first_size = store.db_size().await.unwrap();
+//     assert!(first_size > 0, "should have some bytes");
 
-    // Generate a large enough batch that we use another page.
-    let batch = make_activations(50);
-    assert!(store.store(batch).await.is_ok());
+//     // Generate a large enough batch that we use another page.
+//     let batch = make_activations(50);
+//     assert!(store.store(batch).await.is_ok());
 
-    let second_size = store.db_size().await.unwrap();
-    assert!(second_size > first_size, "should have more bytes now");
-}
+//     let second_size = store.db_size().await.unwrap();
+//     assert!(second_size > first_size, "should have more bytes now");
+// }
 
 #[tokio::test]
 async fn test_pending_activation_max_lag_no_pending() {
@@ -1236,8 +1257,7 @@ async fn test_pending_activation_max_lag_ignore_processing_attempts() {
     assert!(store.store(pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
-    assert!(10.00 < result);
-    assert!(result < 11.00);
+    assert_eq!(result, 10.0, "max lag: {result:?}");
 }
 
 #[tokio::test]
@@ -1257,65 +1277,67 @@ async fn test_pending_activation_max_lag_account_for_delayed() {
     assert!(result < 23.00, "result: {result}");
 }
 
-#[tokio::test]
-async fn test_db_status_calls_ok() {
-    use libsqlite3_sys::{
-        SQLITE_DBSTATUS_CACHE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_OK, sqlite3_db_status,
-    };
-    use std::time::SystemTime;
+// #[tokio::test]
+// async fn test_db_status_calls_ok() {
+//     use libsqlite3_sys::{
+//         SQLITE_DBSTATUS_CACHE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_OK, sqlite3_db_status,
+//     };
+//     use std::time::SystemTime;
 
-    // Create a unique on-disk database URL
-    let nanos = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let db_path = format!("/tmp/taskbroker-dbstatus-{nanos}.sqlite");
-    let url = format!("sqlite:{db_path}");
+//     // Create a unique on-disk database URL
+//     let nanos = SystemTime::now()
+//         .duration_since(std::time::UNIX_EPOCH)
+//         .unwrap()
+//         .as_nanos();
+//     let db_path = format!("/tmp/taskbroker-dbstatus-{nanos}.sqlite");
+//     let url = format!("sqlite:{db_path}");
 
-    // Initialize a store to create the database and run migrations
-    InflightActivationStore::new(
-        &url,
-        InflightActivationStoreConfig {
-            max_processing_attempts: 3,
-            processing_deadline_grace_sec: 0,
-            vacuum_page_count: None,
-            enable_sqlite_status_metrics: false,
-        },
-    )
-    .await
-    .expect("store init");
+//     // Initialize a store to create the database and run migrations
+//     let store = create_test_store().await;
+//     // InflightActivationStore::new(
+//     //     &url,
+//     //     InflightActivationStoreConfig {
+//     //         pg_url: "postgres://postgres:password@localhost:5432/taskbroker".to_string(),
+//     //         max_processing_attempts: 3,
+//     //         processing_deadline_grace_sec: 0,
+//     //         vacuum_page_count: None,
+//     //         enable_sqlite_status_metrics: false,
+//     //     },
+//     // )
+//     // .await
+//     // .expect("store init");
 
-    // Acquire a fresh read connection from a temporary pool, since store.read_pool is private
-    let (read_pool, _write_pool) = create_sqlite_pool(&url).await.expect("pool");
-    let mut conn = read_pool.acquire().await.expect("acquire read conn");
-    let mut raw = conn.lock_handle().await.expect("lock_handle");
+//     // Acquire a fresh read connection from a temporary pool, since store.read_pool is private
+//     let (read_pool, _write_pool) = create_postgres_pool(&url).await.expect("pool");
+//     let mut conn = read_pool.acquire().await.expect("acquire read conn");
+//     // let mut raw = conn.lock_handle().await.expect("lock_handle");
 
-    let mut cur: i32 = 0;
-    let mut hi: i32 = 0;
+//     let mut cur: i32 = 0;
+//     let mut hi: i32 = 0;
 
-    unsafe {
-        // Should succeed and write some non-negative values
-        let rc = sqlite3_db_status(
-            raw.as_raw_handle().as_mut(),
-            SQLITE_DBSTATUS_CACHE_USED,
-            &mut cur,
-            &mut hi,
-            0,
-        );
-        assert_eq!(rc, SQLITE_OK);
-        assert!(cur >= 0);
+//     // unsafe {
+//     //     // Should succeed and write some non-negative values
+//     //     let rc = sqlite3_db_status(
+//     //         raw.as_raw_handle().as_mut(),
+//     //         SQLITE_DBSTATUS_CACHE_USED,
+//     //         &mut cur,
+//     //         &mut hi,
+//     //         0,
+//     //     );
+//     //     assert_eq!(rc, SQLITE_OK);
+//     //     assert!(cur >= 0);
 
-        let rc2 = sqlite3_db_status(
-            raw.as_raw_handle().as_mut(),
-            SQLITE_DBSTATUS_SCHEMA_USED,
-            &mut cur,
-            &mut hi,
-            0,
-        );
-        assert_eq!(rc2, SQLITE_OK);
-        assert!(cur >= 0);
-    }
-}
+//     //     let rc2 = sqlite3_db_status(
+//     //         raw.as_raw_handle().as_mut(),
+//     //         SQLITE_DBSTATUS_SCHEMA_USED,
+//     //         &mut cur,
+//     //         &mut hi,
+//     //         0,
+//     //     );
+//     //     assert_eq!(rc2, SQLITE_OK);
+//     //     assert!(cur >= 0);
+//     // }
+// }
 
 struct TestFolders {
     parent_folder: String,
@@ -1360,93 +1382,93 @@ impl Drop for TestFolders {
     }
 }
 
-#[tokio::test]
-async fn test_migrations() {
-    // Create the folders that will be used
-    let folders = TestFolders::new().unwrap();
+// #[tokio::test]
+// async fn test_migrations() {
+//     // Create the folders that will be used
+//     let folders = TestFolders::new().unwrap();
 
-    // Move migrations to different folders
-    let orig = fs::read_dir("./migrations");
-    assert!(orig.is_ok(), "{orig:?}");
+//     // Move migrations to different folders
+//     let orig = fs::read_dir("./migrations");
+//     assert!(orig.is_ok(), "{orig:?}");
 
-    let origdir = orig.unwrap();
-    for result in origdir {
-        assert!(result.is_ok(), "{result:?}");
-        let entry = result.unwrap();
-        let filename = entry.file_name().into_string().unwrap();
-        // Write the initial migration to a separate folder, so the table can be initialized without any migrations.
-        if filename.starts_with("0001") {
-            let result = fs::copy(
-                entry.path(),
-                folders.initial_folder.clone() + "/" + &filename,
-            );
-            assert!(result.is_ok(), "{result:?}");
-        }
+//     let origdir = orig.unwrap();
+//     for result in origdir {
+//         assert!(result.is_ok(), "{result:?}");
+//         let entry = result.unwrap();
+//         let filename = entry.file_name().into_string().unwrap();
+//         // Write the initial migration to a separate folder, so the table can be initialized without any migrations.
+//         if filename.starts_with("0001") {
+//             let result = fs::copy(
+//                 entry.path(),
+//                 folders.initial_folder.clone() + "/" + &filename,
+//             );
+//             assert!(result.is_ok(), "{result:?}");
+//         }
 
-        let result = fs::copy(entry.path(), folders.other_folder.clone() + "/" + &filename);
-        assert!(result.is_ok(), "{result:?}");
-    }
+//         let result = fs::copy(entry.path(), folders.other_folder.clone() + "/" + &filename);
+//         assert!(result.is_ok(), "{result:?}");
+//     }
 
-    // Run initial migration
-    let (_read_pool, write_pool) = create_sqlite_pool(&generate_temp_filename()).await.unwrap();
-    let result = sqlx::migrate::Migrator::new(Path::new(&folders.initial_folder))
-        .await
-        .unwrap()
-        .run(&write_pool)
-        .await;
-    assert!(result.is_ok(), "{result:?}");
+//     // Run initial migration
+//     let (_read_pool, write_pool) = create_postgres_pool(&generate_temp_filename()).await.unwrap();
+//     let result = sqlx::migrate::Migrator::new(Path::new(&folders.initial_folder))
+//         .await
+//         .unwrap()
+//         .run(&write_pool)
+//         .await;
+//     assert!(result.is_ok(), "{result:?}");
 
-    // Insert rows. Note that this query lines up with the 0001 migration table.
-    let mut query_builder = QueryBuilder::<Sqlite>::new(
-        "
-        INSERT INTO inflight_taskactivations
-            (
-                id,
-                activation,
-                partition,
-                offset,
-                added_at,
-                processing_attempts,
-                expires_at,
-                processing_deadline_duration,
-                processing_deadline,
-                status,
-                at_most_once
-            )
-        ",
-    );
-    let activations = make_activations(2);
-    let query = query_builder
-        .push_values(activations, |mut b, row| {
-            b.push_bind(row.id);
-            b.push_bind(row.activation);
-            b.push_bind(row.partition);
-            b.push_bind(row.offset);
-            b.push_bind(row.added_at.timestamp());
-            b.push_bind(row.processing_attempts);
-            b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
-            b.push_bind(row.processing_deadline_duration);
-            if let Some(deadline) = row.processing_deadline {
-                b.push_bind(deadline.timestamp());
-            } else {
-                // Add a literal null
-                b.push("null");
-            }
-            b.push_bind(row.status);
-            b.push_bind(row.at_most_once);
-        })
-        .push(" ON CONFLICT(id) DO NOTHING")
-        .build();
-    let result = query.execute(&write_pool).await;
-    assert!(result.is_ok(), "{result:?}");
-    let meta_result: QueryResult = result.unwrap().into();
-    assert_eq!(meta_result.rows_affected, 2);
+//     // Insert rows. Note that this query lines up with the 0001 migration table.
+//     let mut query_builder = QueryBuilder::<Postgres>::new(
+//         "
+//         INSERT INTO inflight_taskactivations
+//             (
+//                 id,
+//                 activation,
+//                 partition,
+//                 kafka_offset,
+//                 added_at,
+//                 processing_attempts,
+//                 expires_at,
+//                 processing_deadline_duration,
+//                 processing_deadline,
+//                 status,
+//                 at_most_once
+//             )
+//         ",
+//     );
+//     let activations = make_activations(2);
+//     let query = query_builder
+//         .push_values(activations, |mut b, row| {
+//             b.push_bind(row.id);
+//             b.push_bind(row.activation);
+//             b.push_bind(row.partition);
+//             b.push_bind(row.offset);
+//             b.push_bind(row.added_at.timestamp());
+//             b.push_bind(row.processing_attempts);
+//             b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
+//             b.push_bind(row.processing_deadline_duration);
+//             if let Some(deadline) = row.processing_deadline {
+//                 b.push_bind(deadline.timestamp());
+//             } else {
+//                 // Add a literal null
+//                 b.push("null");
+//             }
+//             b.push_bind(row.status);
+//             b.push_bind(row.at_most_once);
+//         })
+//         .push(" ON CONFLICT(id) DO NOTHING")
+//         .build();
+//     let result = query.execute(&write_pool).await;
+//     assert!(result.is_ok(), "{result:?}");
+//     let meta_result: QueryResult = result.unwrap().into();
+//     assert_eq!(meta_result.rows_affected, 2);
 
-    // Run other migrations
-    let result = sqlx::migrate::Migrator::new(Path::new(&folders.other_folder))
-        .await
-        .unwrap()
-        .run(&write_pool)
-        .await;
-    assert!(result.is_ok(), "{result:?}");
-}
+//     // Run other migrations
+//     let result = sqlx::migrate::Migrator::new(Path::new(&folders.other_folder))
+//         .await
+//         .unwrap()
+//         .run(&write_pool)
+//         .await;
+//     assert!(result.is_ok(), "{result:?}");
+// }

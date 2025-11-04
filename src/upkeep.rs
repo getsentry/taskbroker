@@ -339,22 +339,22 @@ pub async fn do_upkeep(
     }
 
     // 13. Vacuum the database
-    if config.full_vacuum_on_upkeep
-        && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
-    {
-        let vacuum_start = Instant::now();
-        match store.full_vacuum_db().await {
-            Ok(_) => {
-                *last_vacuum = Instant::now();
-                metrics::histogram!("upkeep.full_vacuum").record(vacuum_start.elapsed());
-            }
-            Err(err) => {
-                error!("failed to vacuum the database: {:?}", err);
-                metrics::counter!("upkeep.full_vacuum.failure", "error" => err.to_string())
-                    .increment(1);
-            }
-        }
-    }
+    // if config.full_vacuum_on_upkeep
+    //     && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
+    // {
+    //     let vacuum_start = Instant::now();
+    //     match store.full_vacuum_db().await {
+    //         Ok(_) => {
+    //             *last_vacuum = Instant::now();
+    //             metrics::histogram!("upkeep.full_vacuum").record(vacuum_start.elapsed());
+    //         }
+    //         Err(err) => {
+    //             error!("failed to vacuum the database: {:?}", err);
+    //             metrics::counter!("upkeep.full_vacuum.failure", "error" => err.to_string())
+    //                 .increment(1);
+    //         }
+    //     }
+    // }
 
     let now = Utc::now();
     let (pending_count, processing_count, delay_count, max_lag, db_file_meta, wal_file_meta) = join!(
@@ -507,27 +507,13 @@ mod tests {
     use crate::{
         config::Config,
         runtime_config::RuntimeConfigManager,
-        store::inflight_activation::{
-            InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        },
+        store::inflight_activation::InflightActivationStatus,
         test_utils::{
             StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
-            create_producer, generate_temp_filename, make_activations, replace_retry_state,
-            reset_topic,
+            create_producer, create_test_store, make_activations, replace_retry_state, reset_topic,
         },
         upkeep::{create_retry_activation, do_upkeep},
     };
-
-    async fn create_inflight_store() -> Arc<InflightActivationStore> {
-        let url = generate_temp_filename();
-        let config = create_integration_config();
-
-        Arc::new(
-            InflightActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
-                .await
-                .unwrap(),
-        )
-    }
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
@@ -618,7 +604,7 @@ mod tests {
 
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
 
@@ -695,7 +681,7 @@ mod tests {
     async fn test_processing_deadline_retains_future_deadline() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now();
@@ -730,7 +716,7 @@ mod tests {
     async fn test_processing_deadline_skip_past_deadline_after_startup() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
@@ -781,7 +767,7 @@ mod tests {
     async fn test_processing_deadline_updates_past_deadline() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now();
@@ -829,7 +815,7 @@ mod tests {
     async fn test_processing_deadline_discard_at_most_once() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now();
@@ -879,7 +865,7 @@ mod tests {
     async fn test_processing_attempts_exceeded_discard() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -932,7 +918,7 @@ mod tests {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -981,7 +967,7 @@ mod tests {
     async fn test_remove_failed_discard() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -1022,7 +1008,7 @@ mod tests {
     async fn test_expired_discard() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -1089,7 +1075,7 @@ mod tests {
     async fn test_delay_elapsed() {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -1189,7 +1175,7 @@ demoted_namespaces:
         fs::write(test_path, test_yaml).await.unwrap();
         let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
         let producer = create_producer(config.clone());
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
 
@@ -1243,7 +1229,7 @@ demoted_namespaces:
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
         let producer = create_producer(config.clone());
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
 
@@ -1286,7 +1272,7 @@ demoted_namespaces:
         let config = Arc::new(raw_config);
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now() - Duration::from_secs(60);

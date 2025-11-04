@@ -1,25 +1,14 @@
-use std::{str::FromStr, time::Instant};
-
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
-use libsqlite3_sys::{
-    SQLITE_DBSTATUS_CACHE_HIT, SQLITE_DBSTATUS_CACHE_MISS, SQLITE_DBSTATUS_CACHE_SPILL,
-    SQLITE_DBSTATUS_CACHE_USED, SQLITE_DBSTATUS_CACHE_USED_SHARED, SQLITE_DBSTATUS_CACHE_WRITE,
-    SQLITE_DBSTATUS_DEFERRED_FKS, SQLITE_DBSTATUS_LOOKASIDE_HIT,
-    SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL, SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE,
-    SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
-    SQLITE_OK, sqlite3_db_status,
-};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
-    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
-    migrate::MigrateDatabase,
-    pool::{PoolConnection, PoolOptions},
-    sqlite::{
-        SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
-        SqliteRow, SqliteSynchronous,
-    },
+    FromRow, Pool, Postgres, QueryBuilder, Row, Type,
+    pool::PoolConnection,
+    postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgQueryResult, PgRow},
 };
+use std::fmt::Result as FmtResult;
+use std::fmt::{Display, Formatter};
+use std::{str::FromStr, time::Instant};
 use tracing::instrument;
 
 use crate::config::Config;
@@ -36,6 +25,36 @@ pub enum InflightActivationStatus {
     Retry,
     Complete,
     Delay,
+}
+
+impl Display for InflightActivationStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for InflightActivationStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "Unspecified" {
+            Ok(InflightActivationStatus::Unspecified)
+        } else if s == "Pending" {
+            Ok(InflightActivationStatus::Pending)
+        } else if s == "Processing" {
+            Ok(InflightActivationStatus::Processing)
+        } else if s == "Failure" {
+            Ok(InflightActivationStatus::Failure)
+        } else if s == "Retry" {
+            Ok(InflightActivationStatus::Retry)
+        } else if s == "Complete" {
+            Ok(InflightActivationStatus::Complete)
+        } else if s == "Delay" {
+            Ok(InflightActivationStatus::Delay)
+        } else {
+            Err(format!("Unknown inflight activation status string: {}", s))
+        }
+    }
 }
 
 impl InflightActivationStatus {
@@ -92,7 +111,7 @@ pub struct InflightActivation {
     /// The duration in seconds that a worker has to complete task execution.
     /// When an activation is moved from pending -> processing a result is expected
     /// in this many seconds.
-    pub processing_deadline_duration: u32,
+    pub processing_deadline_duration: i32,
 
     /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
     pub expires_at: Option<DateTime<Utc>>,
@@ -135,8 +154,8 @@ pub struct QueryResult {
     pub rows_affected: u64,
 }
 
-impl From<SqliteQueryResult> for QueryResult {
-    fn from(value: SqliteQueryResult) -> Self {
+impl From<PgQueryResult> for QueryResult {
+    fn from(value: PgQueryResult) -> Self {
         Self {
             rows_affected: value.rows_affected(),
         }
@@ -153,15 +172,15 @@ struct TableRow {
     id: String,
     activation: Vec<u8>,
     partition: i32,
-    offset: i64,
+    kafka_offset: i64,
     added_at: DateTime<Utc>,
     received_at: DateTime<Utc>,
     processing_attempts: i32,
     expires_at: Option<DateTime<Utc>>,
     delay_until: Option<DateTime<Utc>>,
-    processing_deadline_duration: u32,
+    processing_deadline_duration: i32,
     processing_deadline: Option<DateTime<Utc>>,
-    status: InflightActivationStatus,
+    status: String,
     at_most_once: bool,
     namespace: String,
     taskname: String,
@@ -177,7 +196,7 @@ impl TryFrom<InflightActivation> for TableRow {
             id: value.id,
             activation: value.activation,
             partition: value.partition,
-            offset: value.offset,
+            kafka_offset: value.offset,
             added_at: value.added_at,
             received_at: value.received_at,
             processing_attempts: value.processing_attempts,
@@ -185,7 +204,7 @@ impl TryFrom<InflightActivation> for TableRow {
             delay_until: value.delay_until,
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
-            status: value.status,
+            status: value.status.to_string(),
             at_most_once: value.at_most_once,
             namespace: value.namespace,
             taskname: value.taskname,
@@ -199,9 +218,9 @@ impl From<TableRow> for InflightActivation {
         Self {
             id: value.id,
             activation: value.activation,
-            status: value.status,
+            status: InflightActivationStatus::from_str(&value.status).unwrap(),
             partition: value.partition,
-            offset: value.offset,
+            offset: value.kafka_offset,
             added_at: value.added_at,
             received_at: value.received_at,
             processing_attempts: value.processing_attempts,
@@ -217,37 +236,35 @@ impl From<TableRow> for InflightActivation {
     }
 }
 
-pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>), Error> {
-    if !Sqlite::database_exists(url).await? {
-        Sqlite::create_database(url).await?
-    }
-
-    let read_pool = PoolOptions::<Sqlite>::new()
+pub async fn create_postgres_pool(
+    url: &str,
+    database_name: &str,
+) -> Result<(Pool<Postgres>, Pool<Postgres>), Error> {
+    let conn_str = url.to_owned() + "/" + database_name;
+    let read_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(
-            SqliteConnectOptions::from_str(url)?
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(SqliteSynchronous::Normal)
-                .read_only(true)
-                .disable_statement_logging(),
-        )
+        .connect_with(PgConnectOptions::from_str(&conn_str)?)
         .await?;
 
-    let write_pool = PoolOptions::<Sqlite>::new()
-        .max_connections(1)
-        .connect_with(
-            SqliteConnectOptions::from_str(url)?
-                .journal_mode(SqliteJournalMode::Wal)
-                .synchronous(SqliteSynchronous::Normal)
-                .auto_vacuum(SqliteAutoVacuum::Incremental)
-                .disable_statement_logging(),
-        )
+    let write_pool = PgPoolOptions::new()
+        .max_connections(64)
+        .connect_with(PgConnectOptions::from_str(&conn_str)?)
         .await?;
-
     Ok((read_pool, write_pool))
 }
 
+pub async fn create_default_postgres_pool(url: &str) -> Result<Pool<Postgres>, Error> {
+    let conn_str = url.to_owned() + "/postgres";
+    let read_pool = PgPoolOptions::new()
+        .max_connections(64)
+        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .await?;
+    Ok(read_pool)
+}
+
 pub struct InflightActivationStoreConfig {
+    pub pg_url: String,
+    pub pg_database_name: String,
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
     pub vacuum_page_count: Option<usize>,
@@ -257,6 +274,8 @@ pub struct InflightActivationStoreConfig {
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            pg_url: config.pg_url.clone(),
+            pg_database_name: config.pg_database_name.clone(),
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
@@ -266,8 +285,8 @@ impl InflightActivationStoreConfig {
 }
 
 pub struct InflightActivationStore {
-    read_pool: SqlitePool,
-    write_pool: SqlitePool,
+    read_pool: PgPool,
+    write_pool: PgPool,
     config: InflightActivationStoreConfig,
 }
 
@@ -275,16 +294,36 @@ impl InflightActivationStore {
     async fn acquire_write_conn_metric(
         &self,
         caller: &'static str,
-    ) -> Result<PoolConnection<Sqlite>, Error> {
+    ) -> Result<PoolConnection<Postgres>, Error> {
         let start = Instant::now();
         let conn = self.write_pool.acquire().await?;
-        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller).record(start.elapsed());
+        metrics::histogram!("postgres.write.acquire_conn", "fn" => caller).record(start.elapsed());
         Ok(conn)
     }
-    pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
-        let (read_pool, write_pool) = create_sqlite_pool(url).await?;
+    pub async fn new(config: InflightActivationStoreConfig) -> Result<Self, Error> {
+        let default_pool = create_default_postgres_pool(&config.pg_url).await?;
 
-        sqlx::migrate!("./migrations").run(&write_pool).await?;
+        // Create the database if it doesn't exist
+        let row: (bool,) = sqlx::query_as(
+            "SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )",
+        )
+        .bind(&config.pg_database_name)
+        .fetch_one(&default_pool)
+        .await?;
+
+        if !row.0 {
+            println!("Creating database {}", &config.pg_database_name);
+            sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
+                .bind(&config.pg_database_name)
+                .execute(&default_pool)
+                .await?;
+        }
+        // Close the default pool
+        default_pool.close().await;
+
+        let (read_pool, write_pool) =
+            create_postgres_pool(&config.pg_url, &config.pg_database_name).await?;
+        sqlx::migrate!("./pg_migrations").run(&write_pool).await?;
 
         Ok(Self {
             read_pool,
@@ -298,192 +337,20 @@ impl InflightActivationStore {
     /// pages or attempt to reclaim all free pages.
     #[instrument(skip_all)]
     pub async fn vacuum_db(&self) -> Result<(), Error> {
-        let timer = Instant::now();
-
-        if let Some(page_count) = self.config.vacuum_page_count {
-            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
-            sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
-                .execute(&mut *conn)
-                .await?;
-        } else {
-            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
-            sqlx::query("PRAGMA incremental_vacuum")
-                .execute(&mut *conn)
-                .await?;
-        }
-        let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
-            .fetch_one(&self.read_pool)
-            .await?
-            .get("freelist_count");
-
-        metrics::histogram!("store.vacuum", "database" => "meta").record(timer.elapsed());
-        metrics::gauge!("store.vacuum.freelist", "database" => "meta").set(freelist_count);
+        // TODO: Remove
         Ok(())
     }
 
     /// Perform a full vacuum on the database.
     pub async fn full_vacuum_db(&self) -> Result<(), Error> {
-        let mut conn = self.acquire_write_conn_metric("full_vacuum_db").await?;
-        sqlx::query("VACUUM").execute(&mut *conn).await?;
-        self.emit_db_status_metrics().await;
+        // TODO: Remove
         Ok(())
     }
 
-    async fn emit_db_status_metrics(&self) {
-        if !self.config.enable_sqlite_status_metrics {
-            return;
-        }
-
-        if let Ok(mut conn) = self.read_pool.acquire().await
-            && let Ok(mut raw) = conn.lock_handle().await
-        {
-            let mut cur: i32 = 0;
-            let mut hi: i32 = 0;
-            unsafe {
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_CACHE_USED,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.cache_used_bytes").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_CACHE_USED_SHARED,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.cache_used_shared_bytes").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_CACHE_HIT,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.cache_hit_total").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_CACHE_MISS,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.cache_miss_total").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_CACHE_WRITE,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.cache_write_total").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_CACHE_SPILL,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.cache_spill_total").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_SCHEMA_USED,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.schema_used_bytes").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_STMT_USED,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.stmt_used_bytes").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_LOOKASIDE_USED,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.lookaside_used").set(cur);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_LOOKASIDE_HIT,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.lookaside_hit_highwater").set(hi);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.lookaside_miss_size_highwater").set(hi);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.lookaside_miss_full_highwater").set(hi);
-                }
-                if sqlite3_db_status(
-                    raw.as_raw_handle().as_mut(),
-                    SQLITE_DBSTATUS_DEFERRED_FKS,
-                    &mut cur,
-                    &mut hi,
-                    0,
-                ) == SQLITE_OK
-                {
-                    metrics::gauge!("sqlite.db.deferred_fks_unresolved").set(cur);
-                }
-            }
-        }
-    }
-
     /// Get the size of the database in bytes based on SQLite metadata queries.
-    pub async fn db_size(&self) -> Result<u64, Error> {
-        let result: u64 = sqlx::query(
-            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-        )
-        .fetch_one(&self.read_pool)
-        .await?
-        .get(0);
-
-        Ok(result)
+    pub async fn db_size(&self) -> Result<i64, Error> {
+        // TODO: Implement this
+        Ok(0)
     }
 
     /// Get an activation by id. Primarily used for testing
@@ -493,7 +360,7 @@ impl InflightActivationStore {
             SELECT id,
                 activation,
                 partition,
-                offset,
+                kafka_offset,
                 added_at,
                 received_at,
                 processing_attempts,
@@ -526,14 +393,14 @@ impl InflightActivationStore {
         if batch.is_empty() {
             return Ok(QueryResult { rows_affected: 0 });
         }
-        let mut query_builder = QueryBuilder::<Sqlite>::new(
+        let mut query_builder = QueryBuilder::<Postgres>::new(
             "
             INSERT INTO inflight_taskactivations
                 (
                     id,
                     activation,
                     partition,
-                    offset,
+                    kafka_offset,
                     added_at,
                     received_at,
                     processing_attempts,
@@ -558,15 +425,15 @@ impl InflightActivationStore {
                 b.push_bind(row.id);
                 b.push_bind(row.activation);
                 b.push_bind(row.partition);
-                b.push_bind(row.offset);
-                b.push_bind(row.added_at.timestamp());
-                b.push_bind(row.received_at.timestamp());
+                b.push_bind(row.kafka_offset);
+                b.push_bind(row.added_at);
+                b.push_bind(row.received_at);
                 b.push_bind(row.processing_attempts);
-                b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
-                b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
+                b.push_bind(Some(row.expires_at));
+                b.push_bind(Some(row.delay_until));
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
-                    b.push_bind(deadline.timestamp());
+                    b.push_bind(deadline);
                 } else {
                     // Add a literal null
                     b.push("null");
@@ -633,25 +500,61 @@ impl InflightActivationStore {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
-        let mut query_builder = QueryBuilder::new(format!(
-            "UPDATE inflight_taskactivations
-            SET
-                processing_deadline = unixepoch(
-                    'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
-                ),
-                status = "
-        ));
-        query_builder.push_bind(InflightActivationStatus::Processing);
-        query_builder.push(
-            "
-            WHERE id IN (
+        // let mut query_builder = QueryBuilder::new(format!(
+        //     "UPDATE inflight_taskactivations
+        //     SET
+        //         processing_deadline = unixepoch(
+        //             'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
+        //         ),
+        //         status = "
+        // ));
+
+        // let mut query_builder = QueryBuilder::new(format!(
+        //     "UPDATE inflight_taskactivations
+        //     SET
+        //         processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+        //         status = "
+        // ));
+        // query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+        // query_builder.push(
+        //     "
+        //     WHERE id IN (
+        //         SELECT id
+        //         FROM inflight_taskactivations
+        //         WHERE status = ",
+        // );
+        // query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        // query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
+        // query_builder.push_bind(now);
+        // query_builder.push(")");
+
+        // // Handle namespace filtering
+        // if let Some(namespaces) = namespaces
+        //     && !namespaces.is_empty()
+        // {
+        //     query_builder.push(" AND namespace IN (");
+        //     let mut separated = query_builder.separated(", ");
+        //     for namespace in namespaces.iter() {
+        //         separated.push_bind(namespace);
+        //     }
+        //     query_builder.push(")");
+        // }
+        // query_builder.push(" ORDER BY added_at");
+        // if let Some(limit) = limit {
+        //     query_builder.push(" LIMIT ");
+        //     query_builder.push_bind(limit);
+        // }
+        // query_builder.push(") RETURNING *");
+
+        let mut query_builder = QueryBuilder::new(
+            "WITH selected_activations AS (
                 SELECT id
                 FROM inflight_taskactivations
                 WHERE status = ",
         );
-        query_builder.push_bind(InflightActivationStatus::Pending);
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
-        query_builder.push_bind(now.timestamp());
+        query_builder.push_bind(now);
         query_builder.push(")");
 
         // Handle namespace filtering
@@ -670,7 +573,17 @@ impl InflightActivationStore {
             query_builder.push(" LIMIT ");
             query_builder.push_bind(limit);
         }
-        query_builder.push(") RETURNING *");
+        query_builder.push(" FOR UPDATE SKIP LOCKED)");
+        query_builder.push(format!(
+            "UPDATE inflight_taskactivations
+            SET
+                processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                status = "
+        ));
+        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+        query_builder.push(" FROM selected_activations ");
+        query_builder.push(" WHERE inflight_taskactivations.id = selected_activations.id");
+        query_builder.push(" RETURNING *");
 
         let mut conn = self
             .acquire_write_conn_metric("get_pending_activation")
@@ -698,10 +611,9 @@ impl InflightActivationStore {
             LIMIT 1
             ",
         )
-        .bind(InflightActivationStatus::Pending)
+        .bind(InflightActivationStatus::Pending.to_string())
         .fetch_one(&self.read_pool)
         .await;
-
         if let Ok(row) = result {
             let received_at: DateTime<Utc> = row.get("received_at");
             let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
@@ -728,17 +640,17 @@ impl InflightActivationStore {
     pub async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
-                .bind(status)
+                .bind(status.to_string())
                 .fetch_one(&self.read_pool)
                 .await?;
-        Ok(result.get::<u64, _>("count") as usize)
+        Ok(result.get::<i64, _>("count") as usize)
     }
 
     pub async fn count(&self) -> Result<usize, Error> {
         let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
             .fetch_one(&self.read_pool)
             .await?;
-        Ok(result.get::<u64, _>("count") as usize)
+        Ok(result.get::<i64, _>("count") as usize)
     }
 
     /// Update the status of a specific activation
@@ -752,7 +664,7 @@ impl InflightActivationStore {
         let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
         )
-        .bind(status)
+        .bind(status.to_string())
         .bind(id)
         .fetch_optional(&mut *conn)
         .await?;
@@ -774,7 +686,7 @@ impl InflightActivationStore {
             .acquire_write_conn_metric("set_processing_deadline")
             .await?;
         sqlx::query("UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2")
-            .bind(deadline.unwrap().timestamp())
+            .bind(deadline.unwrap())
             .bind(id)
             .execute(&mut *conn)
             .await?;
@@ -798,7 +710,7 @@ impl InflightActivationStore {
             SELECT id,
                 activation,
                 partition,
-                offset,
+                kafka_offset,
                 added_at,
                 received_at,
                 processing_attempts,
@@ -815,7 +727,7 @@ impl InflightActivationStore {
             WHERE status = $1
             ",
         )
-        .bind(InflightActivationStatus::Retry)
+        .bind(InflightActivationStatus::Retry.to_string())
         .fetch_all(&self.read_pool)
         .await?
         .into_iter()
@@ -825,9 +737,10 @@ impl InflightActivationStore {
 
     pub async fn clear(&self) -> Result<(), Error> {
         let mut conn = self.acquire_write_conn_metric("clear").await?;
-        sqlx::query("DELETE FROM inflight_taskactivations")
+        sqlx::query("TRUNCATE TABLE inflight_taskactivations")
             .execute(&mut *conn)
             .await?;
+
         Ok(())
     }
 
@@ -846,9 +759,9 @@ impl InflightActivationStore {
             SET processing_deadline = null, status = $1
             WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
         )
-        .bind(InflightActivationStatus::Failure)
-        .bind(now.timestamp())
-        .bind(InflightActivationStatus::Processing)
+        .bind(InflightActivationStatus::Failure.to_string())
+        .bind(now)
+        .bind(InflightActivationStatus::Processing.to_string())
         .execute(&mut *atomic)
         .await;
 
@@ -864,9 +777,9 @@ impl InflightActivationStore {
             SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
             WHERE processing_deadline < $2 AND status = $3",
         )
-        .bind(InflightActivationStatus::Pending)
-        .bind(now.timestamp())
-        .bind(InflightActivationStatus::Processing)
+        .bind(InflightActivationStatus::Pending.to_string())
+        .bind(now)
+        .bind(InflightActivationStatus::Processing.to_string())
         .execute(&mut *atomic)
         .await;
 
@@ -892,9 +805,9 @@ impl InflightActivationStore {
             SET status = $1
             WHERE processing_attempts >= $2 AND status = $3",
         )
-        .bind(InflightActivationStatus::Failure)
+        .bind(InflightActivationStatus::Failure.to_string())
         .bind(self.config.max_processing_attempts as i32)
-        .bind(InflightActivationStatus::Pending)
+        .bind(InflightActivationStatus::Pending.to_string())
         .execute(&mut *conn)
         .await;
 
@@ -918,8 +831,8 @@ impl InflightActivationStore {
         let query = sqlx::query(
             "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
         )
-        .bind(InflightActivationStatus::Pending)
-        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Pending.to_string())
+        .bind(now)
         .execute(&mut *conn)
         .await?;
 
@@ -942,9 +855,9 @@ impl InflightActivationStore {
             WHERE delay_until IS NOT NULL AND delay_until < $2 AND status = $3
             "#,
         )
-        .bind(InflightActivationStatus::Pending)
-        .bind(now.timestamp())
-        .bind(InflightActivationStatus::Delay)
+        .bind(InflightActivationStatus::Pending.to_string())
+        .bind(now)
+        .bind(InflightActivationStatus::Delay.to_string())
         .execute(&mut *conn)
         .await?;
 
@@ -961,9 +874,9 @@ impl InflightActivationStore {
     pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
         let mut atomic = self.write_pool.begin().await?;
 
-        let failed_tasks: Vec<SqliteRow> =
+        let failed_tasks: Vec<PgRow> =
             sqlx::query("SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1")
-                .bind(InflightActivationStatus::Failure)
+                .bind(InflightActivationStatus::Failure.to_string())
                 .fetch_all(&mut *atomic)
                 .await?
                 .into_iter()
@@ -995,7 +908,7 @@ impl InflightActivationStore {
             let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
             query_builder
                 .push("SET status = ")
-                .push_bind(InflightActivationStatus::Complete)
+                .push_bind(InflightActivationStatus::Complete.to_string())
                 .push(" WHERE id IN (");
 
             let mut separated = query_builder.separated(", ");
@@ -1018,7 +931,7 @@ impl InflightActivationStore {
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
         query_builder
             .push("SET status = ")
-            .push_bind(InflightActivationStatus::Complete)
+            .push_bind(InflightActivationStatus::Complete.to_string())
             .push(" WHERE id IN (");
 
         let mut separated = query_builder.separated(", ");
@@ -1038,7 +951,7 @@ impl InflightActivationStore {
     pub async fn remove_completed(&self) -> Result<u64, Error> {
         let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
         let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
-            .bind(InflightActivationStatus::Complete)
+            .bind(InflightActivationStatus::Complete.to_string())
             .execute(&mut *conn)
             .await?;
 

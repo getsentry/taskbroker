@@ -1,6 +1,5 @@
 use futures::StreamExt;
 use prost::Message as ProstMessage;
-use rand::Rng;
 use rdkafka::{
     Message,
     admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
@@ -21,8 +20,9 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivati
 
 /// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
-    let mut rng = rand::thread_rng();
-    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+    // let mut rng = rand::thread_rng();
+    // format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+    "postgres://postgres:password@localhost:5432/taskbroker".to_string()
 }
 
 /// Create a collection of pending unsaved activations.
@@ -76,14 +76,15 @@ pub fn create_config() -> Arc<Config> {
 
 /// Create an InflightActivationStore instance
 pub async fn create_test_store() -> Arc<InflightActivationStore> {
-    Arc::new(
-        InflightActivationStore::new(
-            &generate_temp_filename(),
-            InflightActivationStoreConfig::from_config(&create_integration_config()),
-        )
+    let store = Arc::new(
+        InflightActivationStore::new(InflightActivationStoreConfig::from_config(
+            &create_integration_config(),
+        ))
         .await
         .unwrap(),
-    )
+    );
+    store.clear().await.unwrap();
+    store
 }
 
 /// Create a Config instance that uses a testing topic
@@ -91,6 +92,8 @@ pub async fn create_test_store() -> Arc<InflightActivationStore> {
 /// with [`reset_topic`]
 pub fn create_integration_config() -> Arc<Config> {
     let config = Config {
+        pg_url: "postgres://postgres:password@localhost:5432".into(),
+        pg_database_name: "taskbroker".into(),
         kafka_topic: "taskbroker-test".into(),
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()

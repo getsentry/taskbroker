@@ -23,15 +23,14 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
         generate_temp_filename()
     };
     let store = Arc::new(
-        InflightActivationStore::new(
-            &url,
-            InflightActivationStoreConfig {
-                max_processing_attempts: 1,
-                vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                enable_sqlite_status_metrics: false,
-            },
-        )
+        InflightActivationStore::new(InflightActivationStoreConfig {
+            pg_url: "postgres://postgres:password@localhost:5432".to_string(),
+            pg_database_name: "taskbroker".to_string(),
+            max_processing_attempts: 1,
+            vacuum_page_count: None,
+            processing_deadline_grace_sec: 3,
+            enable_sqlite_status_metrics: false,
+        })
         .await
         .unwrap(),
     );
@@ -82,15 +81,14 @@ async fn set_status(num_activations: u32, num_workers: u32) {
         generate_temp_filename()
     };
     let store = Arc::new(
-        InflightActivationStore::new(
-            &url,
-            InflightActivationStoreConfig {
-                max_processing_attempts: 1,
-                vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                enable_sqlite_status_metrics: false,
-            },
-        )
+        InflightActivationStore::new(InflightActivationStoreConfig {
+            pg_url: "postgres://postgres:password@localhost:5432".to_string(),
+            pg_database_name: "taskbroker".to_string(),
+            max_processing_attempts: 1,
+            vacuum_page_count: None,
+            processing_deadline_grace_sec: 3,
+            enable_sqlite_status_metrics: false,
+        })
         .await
         .unwrap(),
     );

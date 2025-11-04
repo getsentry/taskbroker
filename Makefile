@@ -35,7 +35,7 @@ format: ## Run autofix mode for formatting and lint
 # Tests
 
 unit-test: ## Run unit tests
-	cargo test
+	cargo test -- --test-threads=1
 .PHONY: unit-test
 
 reset-kafka: setup ## Reset kafka

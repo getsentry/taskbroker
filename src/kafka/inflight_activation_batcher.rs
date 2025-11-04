@@ -453,8 +453,6 @@ demoted_namespaces:
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
-        println!("kafka_topic: {:?}", config.kafka_topic);
-        println!("kafka_long_topic: {:?}", config.kafka_long_topic);
 
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),

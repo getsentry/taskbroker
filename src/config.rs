@@ -121,6 +121,12 @@ pub struct Config {
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
+    /// The url of the postgres database to use for the inflight activation store.
+    pub pg_url: String,
+
+    /// The name of the postgres database to use for the inflight activation store.
+    pub pg_database_name: String,
+
     /// The path to the sqlite database
     pub db_path: String,
 
@@ -256,6 +262,8 @@ impl Default for Config {
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
+            pg_url: "postgres://postgres:password@sentry-postgres-1:5432/".to_owned(),
+            pg_database_name: "taskbroker".to_owned(),
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,

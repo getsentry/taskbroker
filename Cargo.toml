@@ -12,7 +12,7 @@ debug = 1
 sentry_protos = "0.2.0"
 anyhow = "1.0.92"
 chrono = { version = "0.4.26" }
-sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
+sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono", "postgres"] }
 tonic = "0.12"
 tonic-health = "0.12.3"
 prost = "0.13"
