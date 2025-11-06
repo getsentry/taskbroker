@@ -2,7 +2,7 @@ use std::{str::FromStr, time::Instant};
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
-use redis::{AsyncCommands, cluster::ClusterClient};
+use redis::{AsyncCommands, Client, aio::MultiplexedConnection};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use tracing::instrument;
 
@@ -260,30 +260,24 @@ impl InflightActivationStoreConfig {
 }
 
 pub struct InflightActivationStore {
-    client: ClusterClient,
+    client: Client,
     config: InflightActivationStoreConfig,
 }
 
 impl InflightActivationStore {
     pub async fn new(config: InflightActivationStoreConfig) -> Result<Self, Error> {
-        // Try to connect as cluster first, fall back to single node
-        let client = match ClusterClient::new(vec![config.redis_url.clone()]) {
-            Ok(c) => c,
-            Err(_) => {
-                // Fall back to single node client wrapped in cluster client
-                return Err(anyhow!("Failed to create Redis cluster client"));
-            }
-        };
+        // Connect to standalone Redis (not cluster)
+        let client = Client::open(config.redis_url.as_str())?;
 
         // Test connection
-        let mut conn = client.get_async_connection().await?;
+        let mut conn = client.get_multiplexed_async_connection().await?;
         let _: String = redis::cmd("PING").query_async(&mut conn).await?;
 
         Ok(Self { client, config })
     }
 
-    async fn get_connection(&self) -> Result<redis::cluster_async::ClusterConnection, Error> {
-        Ok(self.client.get_async_connection().await?)
+    async fn get_connection(&self) -> Result<MultiplexedConnection, Error> {
+        Ok(self.client.get_multiplexed_async_connection().await?)
     }
 
     #[instrument(skip_all)]
@@ -397,7 +391,7 @@ impl InflightActivationStore {
 
     async fn get_task_from_hash(
         &self,
-        conn: &mut redis::cluster_async::ClusterConnection,
+        conn: &mut MultiplexedConnection,
         id: &str,
     ) -> Result<InflightActivation, Error> {
         let task_key = format!("task:{}", id);
@@ -504,7 +498,7 @@ impl InflightActivationStore {
 
     async fn get_pending_from_sorted_set(
         &self,
-        conn: &mut redis::cluster_async::ClusterConnection,
+        conn: &mut MultiplexedConnection,
         sorted_set_key: &str,
         now: &DateTime<Utc>,
     ) -> Result<Option<InflightActivation>, Error> {
