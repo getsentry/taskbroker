@@ -12,7 +12,7 @@ debug = 1
 sentry_protos = "0.2.0"
 anyhow = "1.0.92"
 chrono = { version = "0.4.26" }
-sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
+redis = { version = "0.27", features = ["cluster-async", "tokio-comp", "connection-manager"] }
 tonic = "0.12"
 tonic-health = "0.12.3"
 prost = "0.13"
@@ -56,7 +56,6 @@ bytes = "1.10.0"
 futures-util = "0.3.31"
 http-body-util = "0.1.2"
 rand = "0.8.5"
-libsqlite3-sys = "0.30.1"
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio"] }

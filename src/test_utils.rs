@@ -1,6 +1,5 @@
 use futures::StreamExt;
 use prost::Message as ProstMessage;
-use rand::Rng;
 use rdkafka::{
     Message,
     admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
@@ -19,10 +18,9 @@ use crate::{
 use chrono::{Timelike, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
 
-/// Generate a unique filename for isolated SQLite databases.
-pub fn generate_temp_filename() -> String {
-    let mut rng = rand::thread_rng();
-    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+/// Get Redis URL from environment or use default
+pub fn get_redis_url() -> String {
+    std::env::var("TASKBROKER_REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
 }
 
 /// Create a collection of pending unsaved activations.
@@ -76,14 +74,16 @@ pub fn create_config() -> Arc<Config> {
 
 /// Create an InflightActivationStore instance
 pub async fn create_test_store() -> Arc<InflightActivationStore> {
-    Arc::new(
-        InflightActivationStore::new(
-            &generate_temp_filename(),
-            InflightActivationStoreConfig::from_config(&create_integration_config()),
-        )
+    let store = Arc::new(
+        InflightActivationStore::new(InflightActivationStoreConfig::from_config(
+            &create_integration_config(),
+        ))
         .await
         .unwrap(),
-    )
+    );
+    // Clear any existing data for test isolation
+    store.clear().await.unwrap();
+    store
 }
 
 /// Create a Config instance that uses a testing topic
@@ -93,6 +93,7 @@ pub fn create_integration_config() -> Arc<Config> {
     let config = Config {
         kafka_topic: "taskbroker-test".into(),
         kafka_auto_offset_reset: "earliest".into(),
+        redis_url: get_redis_url(),
         ..Config::default()
     };
 

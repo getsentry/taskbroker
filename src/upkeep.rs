@@ -12,7 +12,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{fs, join, select, time};
+use tokio::{join, select, time};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 use tracing::{debug, error, info, instrument};
@@ -45,7 +45,6 @@ pub async fn upkeep(
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     let mut last_run = Instant::now();
-    let mut last_vacuum = Instant::now();
     loop {
         select! {
             _ = timer.tick() => {
@@ -55,7 +54,6 @@ pub async fn upkeep(
                     producer.clone(),
                     startup_time,
                     runtime_config_manager.clone(),
-                    &mut last_vacuum,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
             }
@@ -114,7 +112,6 @@ pub async fn do_upkeep(
     producer: Arc<FutureProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    last_vacuum: &mut Instant,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -338,32 +335,12 @@ pub async fn do_upkeep(
             .record(forward_demoted_start.elapsed());
     }
 
-    // 13. Vacuum the database
-    if config.full_vacuum_on_upkeep
-        && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
-    {
-        let vacuum_start = Instant::now();
-        match store.full_vacuum_db().await {
-            Ok(_) => {
-                *last_vacuum = Instant::now();
-                metrics::histogram!("upkeep.full_vacuum").record(vacuum_start.elapsed());
-            }
-            Err(err) => {
-                error!("failed to vacuum the database: {:?}", err);
-                metrics::counter!("upkeep.full_vacuum.failure", "error" => err.to_string())
-                    .increment(1);
-            }
-        }
-    }
-
     let now = Utc::now();
-    let (pending_count, processing_count, delay_count, max_lag, db_file_meta, wal_file_meta) = join!(
+    let (pending_count, processing_count, delay_count, max_lag) = join!(
         store.count_by_status(InflightActivationStatus::Pending),
         store.count_by_status(InflightActivationStatus::Processing),
         store.count_by_status(InflightActivationStatus::Delay),
         store.pending_activation_max_lag(&now),
-        fs::metadata(config.db_path.clone()),
-        fs::metadata(config.db_path.clone() + "-wal")
     );
 
     if let Ok(pending_count) = pending_count {
@@ -425,13 +402,6 @@ pub async fn do_upkeep(
     metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
-    if let Ok(db_file_meta) = db_file_meta {
-        metrics::gauge!("upkeep.db_file_size.bytes").set(db_file_meta.len() as f64);
-    }
-    if let Ok(wal_file_meta) = wal_file_meta {
-        metrics::gauge!("upkeep.wal_file_size.bytes").set(wal_file_meta.len() as f64);
-    }
-
     result_context
 }
 
@@ -460,11 +430,9 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 
 /// Update health based on upkeep intervals
 ///
-/// Because SQLite is a shared component for upkeep, grpc, and consumer loops, when one gets slow
-/// they all do. We see taskbroker getting slow in production when the underlying cloud disk
-/// degrades. Restarting the application typically solves this problem.
-/// Track metrics and update status so that we can measure health failures, and apply probes
-/// incrementally.
+/// Because Redis is a shared component for upkeep, grpc, and consumer loops, when one gets slow
+/// they all do. Track metrics and update status so that we can measure health failures, and apply
+/// probes incrementally.
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
@@ -617,7 +585,6 @@ mod tests {
         reset_topic(config.clone()).await;
 
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
@@ -658,7 +625,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -698,7 +664,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(2);
         // Make a task with a future processing deadline
@@ -712,7 +677,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -751,7 +715,6 @@ mod tests {
 
         // Simulate upkeep running in the first minute
         let start_time = Utc::now() - Duration::from_secs(50);
-        let mut last_vacuum = Instant::now();
         assert_eq!(60, config.upkeep_deadline_reset_skip_after_startup_sec);
 
         let result_context = do_upkeep(
@@ -760,7 +723,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -784,7 +746,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
@@ -808,7 +769,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -832,7 +792,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
@@ -858,7 +817,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -882,7 +840,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
@@ -901,7 +858,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -935,7 +891,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
         let mut records = make_activations(2);
         replace_retry_state(
             &mut records[0],
@@ -957,7 +912,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -984,7 +938,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(2);
         batch[0].status = InflightActivationStatus::Failure;
@@ -997,7 +950,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -1025,7 +977,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(4);
 
@@ -1044,7 +995,6 @@ mod tests {
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -1092,7 +1042,6 @@ mod tests {
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(2);
 
@@ -1123,7 +1072,6 @@ mod tests {
             producer.clone(),
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1152,7 +1100,6 @@ mod tests {
             producer.clone(),
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1191,7 +1138,6 @@ demoted_namespaces:
         let producer = create_producer(config.clone());
         let store = create_inflight_store().await;
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(6);
 
@@ -1205,7 +1151,6 @@ demoted_namespaces:
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -1245,7 +1190,6 @@ demoted_namespaces:
         let producer = create_producer(config.clone());
         let store = create_inflight_store().await;
         let start_time = Utc::now();
-        let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(6);
 
@@ -1261,7 +1205,6 @@ demoted_namespaces:
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
@@ -1289,7 +1232,6 @@ demoted_namespaces:
         let store = create_inflight_store().await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
-        let mut last_vacuum = Instant::now() - Duration::from_secs(60);
 
         let batch = make_activations(2);
         assert!(store.store(batch.clone()).await.is_ok());
@@ -1300,7 +1242,6 @@ demoted_namespaces:
             producer,
             start_time,
             runtime_config.clone(),
-            &mut last_vacuum,
         )
         .await;
 
