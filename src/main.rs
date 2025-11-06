@@ -6,11 +6,11 @@ use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
 use taskbroker::upkeep::upkeep;
+use tokio::select;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
-use tokio::{select, time};
 use tonic::transport::Server;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
@@ -111,31 +111,6 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Maintenance task loop
-    let maintenance_task = tokio::spawn({
-        let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-        let maintenance_store = store.clone();
-        let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
-        timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
-        async move {
-            loop {
-                select! {
-                    _ = timer.tick() => {
-                        // match maintenance_store.vacuum_db().await {
-                        //     Ok(_) => debug!("ran maintenance vacuum"),
-                        //     Err(err) => warn!("failed to run maintenance vacuum {:?}", err),
-                        // }
-                    },
-                    _ = guard.wait() => {
-                        break;
-                    }
-                }
-            }
-            Ok(())
-        }
-    });
-
     // Consumer from kafka
     let consumer_task = tokio::spawn({
         let consumer_store = store.clone();
@@ -229,7 +204,6 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task))
         .await;
 
     Ok(())

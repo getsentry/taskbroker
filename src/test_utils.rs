@@ -6,7 +6,7 @@ use rdkafka::{
     consumer::{Consumer, StreamConsumer},
     producer::FutureProducer,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, env::var, sync::Arc};
 
 use crate::{
     config::Config,
@@ -18,11 +18,12 @@ use crate::{
 use chrono::{Timelike, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
 
-/// Generate a unique filename for isolated SQLite databases.
-pub fn generate_temp_filename() -> String {
-    // let mut rng = rand::thread_rng();
-    // format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
-    "postgres://postgres:password@localhost:5432/taskbroker".to_string()
+pub fn get_pg_url() -> String {
+    var("TASKBROKER_PG_URL").unwrap_or("postgres://postgres:password@localhost:5432/".to_string())
+}
+
+pub fn get_pg_database_name() -> String {
+    var("TASKBROKER_PG_DATABASE_NAME").unwrap_or("taskbroker".to_string())
 }
 
 /// Create a collection of pending unsaved activations.
@@ -92,8 +93,8 @@ pub async fn create_test_store() -> Arc<InflightActivationStore> {
 /// with [`reset_topic`]
 pub fn create_integration_config() -> Arc<Config> {
     let config = Config {
-        pg_url: "postgres://postgres:password@localhost:5432".into(),
-        pg_database_name: "taskbroker".into(),
+        pg_url: get_pg_url(),
+        pg_database_name: get_pg_database_name(),
         kafka_topic: "taskbroker-test".into(),
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
