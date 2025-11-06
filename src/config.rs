@@ -121,6 +121,8 @@ pub struct Config {
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
+    pub db_path: String,
+
     /// The Redis cluster URL for the inflight activation store
     pub redis_url: String,
 
@@ -255,11 +257,13 @@ impl Default for Config {
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
+            db_path: "./taskbroker-inflight.sqlite".to_owned(),
             redis_url: "redis://redis-cluster:6379".to_owned(),
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
             db_insert_batch_max_time_ms: 1000,
+            db_max_size: Some(3000000000),
             runtime_config_path: None,
             max_pending_count: 2048,
             max_delay_count: 8192,
@@ -270,8 +274,14 @@ impl Default for Config {
             upkeep_unhealthy_interval_ms: 5000,
             health_check_killswitched: false,
             upkeep_deadline_reset_skip_after_startup_sec: 60,
+            maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
+            vacuum_page_count: None,
+            full_vacuum_on_start: true,
+            full_vacuum_on_upkeep: true,
+            vacuum_interval_ms: 30000,
+            enable_sqlite_status_metrics: true,
         }
     }
 }
