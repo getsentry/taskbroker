@@ -14,6 +14,9 @@ pub struct RuntimeConfig {
     /// Tasks from these namespaces will be automatically forwarded to the "long" namespace
     /// to prevent them from blocking other tasks in shared namespaces.
     pub demoted_namespaces: Vec<String>,
+    /// The cluster to forward tasks from demoted namespaces to.
+    /// If not set, the current cluster taskbroker is consuming from will be used.
+    pub demoted_topic_cluster: Option<String>,
     /// The topic to forward tasks from demoted namespaces to.
     /// If not set, the taskworker-long topic will be used
     pub demoted_topic: Option<String>,
@@ -176,6 +179,7 @@ drop_task_killswitch:
   -
 demoted_namespaces:
   - bad_namespace
+demoted_topic_cluster: kafka-cluster
 demoted_topic: taskworker-demoted-topic"#;
 
         let test_path = "test_demoted_namespaces.yaml";
@@ -183,6 +187,10 @@ demoted_topic: taskworker-demoted-topic"#;
 
         let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
         let config = runtime_config.read().await;
+        assert_eq!(
+            config.demoted_topic_cluster.as_deref().unwrap(),
+            "kafka-cluster"
+        );
         assert_eq!(config.demoted_namespaces.len(), 1);
         assert_eq!(config.demoted_namespaces[0], "bad_namespace");
         assert_eq!(

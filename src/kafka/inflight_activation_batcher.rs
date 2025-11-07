@@ -17,7 +17,8 @@ use super::consumer::{
 };
 
 pub struct ActivationBatcherConfig {
-    pub kafka_config: ClientConfig,
+    pub producer_config: ClientConfig,
+    pub kafka_cluster: String,
     pub kafka_topic: String,
     pub kafka_long_topic: String,
     pub send_timeout_ms: u64,
@@ -30,7 +31,8 @@ impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            kafka_config: config.kafka_producer_config(),
+            producer_config: config.kafka_producer_config(),
+            kafka_cluster: config.kafka_cluster.clone(),
             kafka_topic: config.kafka_topic.clone(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
@@ -48,6 +50,7 @@ pub struct InflightActivationBatcher {
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     producer: Arc<FutureProducer>,
+    producer_cluster: String,
 }
 
 impl InflightActivationBatcher {
@@ -57,10 +60,15 @@ impl InflightActivationBatcher {
     ) -> Self {
         let producer: Arc<FutureProducer> = Arc::new(
             config
-                .kafka_config
+                .producer_config
                 .create()
                 .expect("Could not create kafka producer in inflight activation batcher"),
         );
+        let producer_cluster = config
+            .producer_config
+            .get("bootstrap.servers")
+            .unwrap()
+            .to_owned();
         Self {
             batch: Vec::with_capacity(config.max_batch_len),
             batch_size: 0,
@@ -68,6 +76,7 @@ impl InflightActivationBatcher {
             config,
             runtime_config_manager,
             producer,
+            producer_cluster,
         }
     }
 }
@@ -136,6 +145,20 @@ impl Reducer for InflightActivationBatcher {
         // Send all forward batch in parallel
         if !self.forward_batch.is_empty() {
             let runtime_config = self.runtime_config_manager.read().await;
+            let forward_cluster = runtime_config
+                .demoted_topic_cluster
+                .clone()
+                .unwrap_or(self.config.kafka_cluster.clone());
+            if self.producer_cluster != forward_cluster {
+                let mut new_config = self.config.producer_config.clone();
+                new_config.set("bootstrap.servers", &forward_cluster);
+                self.producer = Arc::new(
+                    new_config
+                        .create()
+                        .expect("Could not create kafka producer in inflight activation batcher"),
+                );
+                self.producer_cluster = forward_cluster;
+            }
             let forward_topic = runtime_config
                 .demoted_topic
                 .clone()
