@@ -179,7 +179,7 @@ drop_task_killswitch:
   -
 demoted_namespaces:
   - bad_namespace
-demoted_topic_cluster: kafka-cluster
+demoted_topic_cluster: kafka:9092
 demoted_topic: taskworker-demoted-topic"#;
 
         let test_path = "test_demoted_namespaces.yaml";
@@ -189,7 +189,7 @@ demoted_topic: taskworker-demoted-topic"#;
         let config = runtime_config.read().await;
         assert_eq!(
             config.demoted_topic_cluster.as_deref().unwrap(),
-            "kafka-cluster"
+            "kafka:9092"
         );
         assert_eq!(config.demoted_namespaces.len(), 1);
         assert_eq!(config.demoted_namespaces[0], "bad_namespace");

@@ -465,7 +465,9 @@ demoted_namespaces:
 drop_task_killswitch:
   -
 demoted_namespaces:
-  - bad_namespace"#;
+  - bad_namespace
+demoted_topic_cluster: 0.0.0.0:9092
+demoted_topic: taskworker-demoted"#;
 
         let test_path = "test_forward_task_due_to_demoted_namespace.yaml";
         fs::write(test_path, test_yaml).await.unwrap();
@@ -476,8 +478,8 @@ demoted_namespaces:
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
-        println!("kafka_topic: {:?}", config.kafka_topic);
-        println!("kafka_long_topic: {:?}", config.kafka_long_topic);
+
+        assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
 
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),
@@ -557,6 +559,7 @@ demoted_namespaces:
         assert_eq!(flush_result.as_ref().unwrap()[0].taskname, "good_task");
         assert_eq!(batcher.batch.len(), 0);
         assert_eq!(batcher.forward_batch.len(), 0);
+        assert_eq!(batcher.producer_cluster, "0.0.0.0:9092");
 
         fs::remove_file(test_path).await.unwrap();
     }
