@@ -294,7 +294,7 @@ pub async fn do_upkeep(
         .unwrap_or(config.kafka_long_topic.clone());
     let same_cluster = forward_cluster == config.kafka_cluster;
     let same_topic = forward_topic == config.kafka_topic;
-    if !demoted_namespaces.is_empty() && !(same_cluster && same_topic) {
+    if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
         let forward_demoted_start = Instant::now();
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
