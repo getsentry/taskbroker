@@ -284,12 +284,25 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to "long" namespace
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
+    let forward_cluster = runtime_config
+        .demoted_topic_cluster
+        .clone()
+        .unwrap_or(config.kafka_cluster.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
         .unwrap_or(config.kafka_long_topic.clone());
-    if !demoted_namespaces.is_empty() && forward_topic != config.kafka_topic {
+    let same_cluster = forward_cluster == config.kafka_cluster;
+    let same_topic = forward_topic == config.kafka_topic;
+    if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
         let forward_demoted_start = Instant::now();
+        let mut forward_producer_config = config.kafka_producer_config();
+        forward_producer_config.set("bootstrap.servers", &forward_cluster);
+        let forward_producer: Arc<FutureProducer> = Arc::new(
+            forward_producer_config
+                .create()
+                .expect("Could not create kafka producer in upkeep"),
+        );
         if let Ok(tasks) = store
             .get_pending_activations_from_namespaces(Some(&demoted_namespaces), None)
             .await
@@ -298,13 +311,13 @@ pub async fn do_upkeep(
             let deliveries = tasks
                 .into_iter()
                 .map(|inflight| {
-                    let producer = producer.clone();
+                    let forward_producer = forward_producer.clone();
                     let config = config.clone();
                     let topic = forward_topic.clone();
                     async move {
                         metrics::counter!("upkeep.forward_task_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
 
-                        let delivery = producer
+                        let delivery = forward_producer
                             .send(
                                 FutureRecord::<(), Vec<u8>>::to(&topic)
                                     .payload(&inflight.activation),
