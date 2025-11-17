@@ -51,7 +51,7 @@ tonic = "0.12"
 tonic-health = "0.12.3"
 tower = "0.5.1"
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = [
+tracing-subscriber = { version = "0.3.20", features = [
     "std",
     "env-filter",
     "json",
