@@ -3,11 +3,12 @@ use tracing::instrument;
 use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivation, QueryResult};
 use anyhow::Error;
-use deadpool_redis::cluster::{Config as RedisConfig, Pool, Runtime};
+// use deadpool_redis::cluster::{Config as RedisConfig, Pool, Runtime};
+use deadpool_redis::{Config as RedisConfig, Pool, Runtime};
 use redis::AsyncTypedCommands;
 use uuid::Uuid;
 
-enum KeyPrefix {
+pub enum KeyPrefix {
     Payload,
     Pending,
     Processing,
@@ -38,8 +39,10 @@ impl RedisActivationStoreConfig {
 }
 
 pub async fn create_redis_pool(urls: Vec<String>) -> Result<Pool, Error> {
-    let cfg = RedisConfig::from_urls(urls);
+    let cfg = RedisConfig::from_url(urls[0].clone());
     let pool = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();
+    // let cfg = RedisConfig::from_urls(urls);
+    // let pool = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();
     Ok(pool)
 }
 
