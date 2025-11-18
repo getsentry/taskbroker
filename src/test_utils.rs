@@ -25,6 +25,10 @@ pub fn generate_temp_filename() -> String {
     format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
 }
 
+pub fn generate_temp_redis_urls() -> Vec<String> {
+    vec![format!("redis://127.0.0.1:{}", 6379)]
+}
+
 /// Create a collection of pending unsaved activations.
 pub fn make_activations(count: u32) -> Vec<InflightActivation> {
     let mut records: Vec<InflightActivation> = vec![];

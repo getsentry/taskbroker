@@ -33,6 +33,9 @@ use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::inflight_activation::{
     InflightActivationStore, InflightActivationStoreConfig,
 };
+use taskbroker::store::inflight_redis_activation::{
+    RedisActivationStore, RedisActivationStoreConfig,
+};
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
 
@@ -69,7 +72,13 @@ async fn main() -> Result<(), Error> {
         )
         .await?,
     );
-
+    let redis_store = Arc::new(
+        RedisActivationStore::new(
+            config.redis_cluster_urls.clone(),
+            RedisActivationStoreConfig::from_config(&config),
+        )
+        .await?,
+    );
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
         let kafka_client_config = config.kafka_consumer_config();
@@ -143,6 +152,7 @@ async fn main() -> Result<(), Error> {
     // Consumer from kafka
     let consumer_task = tokio::spawn({
         let consumer_store = store.clone();
+        let redis_consumer_store = redis_store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
         async move {
@@ -167,7 +177,7 @@ async fn main() -> Result<(), Error> {
                             runtime_config_manager.clone()
                         ),
                         InflightActivationWriter::new(
-                            consumer_store.clone(),
+                            redis_consumer_store.clone(),
                             ActivationWriterConfig::from_config(&consumer_config)
                         ),
 

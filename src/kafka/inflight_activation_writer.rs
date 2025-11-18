@@ -12,6 +12,7 @@ use crate::{
     store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
     },
+    store::inflight_redis_activation::RedisActivationStore,
 };
 
 use super::consumer::{
@@ -44,12 +45,13 @@ impl ActivationWriterConfig {
 
 pub struct InflightActivationWriter {
     config: ActivationWriterConfig,
-    store: Arc<InflightActivationStore>,
+    // store: Arc<InflightActivationStore>,
+    store: Arc<RedisActivationStore>,
     batch: Option<Vec<InflightActivation>>,
 }
 
 impl InflightActivationWriter {
-    pub fn new(store: Arc<InflightActivationStore>, config: ActivationWriterConfig) -> Self {
+    pub fn new(store: Arc<RedisActivationStore>, config: ActivationWriterConfig) -> Self {
         Self {
             config,
             store,
@@ -91,14 +93,14 @@ impl Reducer for InflightActivationWriter {
             > self.config.max_pending_activations;
         let exceeded_delay_limit = self
             .store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_delayed_activations()
             .await
             .expect("Error communicating with activation store")
             + batch.len()
             > self.config.max_delay_activations;
         let exceeded_processing_limit = self
             .store
-            .count_by_status(InflightActivationStatus::Processing)
+            .count_processing_activations()
             .await
             .expect("Error communicating with activation store")
             >= self.config.max_processing_activations;
@@ -215,6 +217,9 @@ mod tests {
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     };
+    use crate::store::inflight_redis_activation::RedisActivationStore;
+    use crate::store::inflight_redis_activation::RedisActivationStoreConfig;
+    use crate::test_utils::generate_temp_redis_urls;
     use crate::test_utils::make_activations;
     use crate::test_utils::{create_integration_config, generate_temp_filename};
 
@@ -230,9 +235,9 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                RedisActivationStore::new(
+                    generate_temp_redis_urls(),
+                    RedisActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
                 .unwrap(),
@@ -317,11 +322,7 @@ mod tests {
         writer.reduce(batch).await.unwrap();
         writer.flush().await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
-        let count_delay = writer
-            .store
-            .count_by_status(InflightActivationStatus::Delay)
-            .await
-            .unwrap();
+        let count_delay = writer.store.count_delayed_activations().await.unwrap();
         assert_eq!(count_pending + count_delay, 2);
     }
 
@@ -337,9 +338,9 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                RedisActivationStore::new(
+                    generate_temp_redis_urls(),
+                    RedisActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
                 .unwrap(),
@@ -400,9 +401,9 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                RedisActivationStore::new(
+                    generate_temp_redis_urls(),
+                    RedisActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
                 .unwrap(),
@@ -448,11 +449,7 @@ mod tests {
 
         writer.reduce(batch).await.unwrap();
         writer.flush().await.unwrap();
-        let count_delay = writer
-            .store
-            .count_by_status(InflightActivationStatus::Delay)
-            .await
-            .unwrap();
+        let count_delay = writer.store.count_delayed_activations().await.unwrap();
         assert_eq!(count_delay, 1);
     }
 
@@ -468,9 +465,9 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                RedisActivationStore::new(
+                    generate_temp_redis_urls(),
+                    RedisActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
                 .unwrap(),
@@ -556,11 +553,7 @@ mod tests {
         writer.flush().await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 0);
-        let count_delay = writer
-            .store
-            .count_by_status(InflightActivationStatus::Delay)
-            .await
-            .unwrap();
+        let count_delay = writer.store.count_delayed_activations().await.unwrap();
         assert_eq!(count_delay, 0);
     }
 
@@ -576,9 +569,9 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
+                RedisActivationStore::new(
+                    generate_temp_redis_urls(),
+                    RedisActivationStoreConfig::from_config(&create_integration_config()),
                 )
                 .await
                 .unwrap(),
@@ -665,11 +658,7 @@ mod tests {
         writer.flush().await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 2);
-        let count_delay = writer
-            .store
-            .count_by_status(InflightActivationStatus::Delay)
-            .await
-            .unwrap();
+        let count_delay = writer.store.count_delayed_activations().await.unwrap();
         assert_eq!(count_delay, 0);
     }
 
@@ -684,9 +673,9 @@ mod tests {
             write_failure_backoff_ms: 4000,
         };
         let store = Arc::new(
-            InflightActivationStore::new(
-                &generate_temp_filename(),
-                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            RedisActivationStore::new(
+                generate_temp_redis_urls(),
+                RedisActivationStoreConfig::from_config(&create_integration_config()),
             )
             .await
             .unwrap(),
@@ -808,17 +797,9 @@ mod tests {
 
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 0);
-        let count_delay = writer
-            .store
-            .count_by_status(InflightActivationStatus::Delay)
-            .await
-            .unwrap();
+        let count_delay = writer.store.count_delayed_activations().await.unwrap();
         assert_eq!(count_delay, 0);
-        let count_processing = writer
-            .store
-            .count_by_status(InflightActivationStatus::Processing)
-            .await
-            .unwrap();
+        let count_processing = writer.store.count_processing_activations().await.unwrap();
         // Only the existing processing activation should remain, new ones should be blocked
         assert_eq!(count_processing, 1);
     }
@@ -835,9 +816,9 @@ mod tests {
             write_failure_backoff_ms: 4000,
         };
         let store = Arc::new(
-            InflightActivationStore::new(
-                &generate_temp_filename(),
-                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            RedisActivationStore::new(
+                generate_temp_redis_urls(),
+                RedisActivationStoreConfig::from_config(&create_integration_config()),
             )
             .await
             .unwrap(),
@@ -869,9 +850,9 @@ mod tests {
             write_failure_backoff_ms: 4000,
         };
         let store = Arc::new(
-            InflightActivationStore::new(
-                &generate_temp_filename(),
-                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            RedisActivationStore::new(
+                generate_temp_redis_urls(),
+                RedisActivationStoreConfig::from_config(&create_integration_config()),
             )
             .await
             .unwrap(),

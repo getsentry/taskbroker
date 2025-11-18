@@ -214,6 +214,15 @@ pub struct Config {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
+
+    /// Redis cluster information
+    pub redis_cluster_urls: Vec<String>,
+
+    pub namespaces: Vec<String>,
+
+    pub num_redis_buckets: usize,
+
+    pub payload_ttl_seconds: u64,
 }
 
 impl Default for Config {
@@ -279,6 +288,11 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            // Redis information
+            redis_cluster_urls: vec!["127.0.0.1:6379".to_owned()],
+            namespaces: vec!["default".to_owned()],
+            num_redis_buckets: 256,
+            payload_ttl_seconds: 60 * 60 * 24,
         }
     }
 }
