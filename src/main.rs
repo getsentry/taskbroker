@@ -7,6 +7,7 @@ use taskbroker::kafka::inflight_activation_batcher::{
 };
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
@@ -151,8 +152,7 @@ async fn main() -> Result<(), Error> {
 
     // Consumer from kafka
     let consumer_task = tokio::spawn({
-        let consumer_store = store.clone();
-        let redis_consumer_store = redis_store.clone();
+        let consumer_store = redis_store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
         async move {
@@ -161,6 +161,7 @@ async fn main() -> Result<(), Error> {
             start_consumer(
                 &[&consumer_config.kafka_topic],
                 &consumer_config.kafka_consumer_config(),
+                consumer_store.clone(),
                 processing_strategy!({
                     err:
                         OsStreamWriter::new(
@@ -177,7 +178,7 @@ async fn main() -> Result<(), Error> {
                             runtime_config_manager.clone()
                         ),
                         InflightActivationWriter::new(
-                            redis_consumer_store.clone(),
+                            consumer_store.clone(),
                             ActivationWriterConfig::from_config(&consumer_config)
                         ),
 
@@ -189,6 +190,7 @@ async fn main() -> Result<(), Error> {
 
     // GRPC server
     let grpc_server_task = tokio::spawn({
+        // let grpc_store = redis_store.clone();
         let grpc_store = store.clone();
         let grpc_config = config.clone();
         async move {

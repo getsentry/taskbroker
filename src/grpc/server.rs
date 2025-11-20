@@ -10,6 +10,7 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
+use crate::store::inflight_redis_activation::RedisActivationStore;
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {

@@ -1,12 +1,17 @@
-use tracing::{error, instrument};
+use tracing::{error, info, instrument};
 // use deadpool_redis::Pool;
 use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivation, QueryResult};
 use anyhow::Error;
-// use deadpool_redis::cluster::{Config as RedisConfig, Pool, Runtime};
 use cityhasher;
+use deadpool_redis::cluster::{
+    Config as RedisClusterConfig, Pool as RedisClusterPool, Runtime as RedisClusterRuntime,
+};
 use deadpool_redis::{Config as RedisConfig, Pool, Runtime};
 use redis::AsyncTypedCommands;
+use std::collections::HashMap;
+// use std::sync::RwLock;
+use tokio::sync::RwLock;
 
 pub enum KeyPrefix {
     Payload,
@@ -19,8 +24,7 @@ pub enum KeyPrefix {
 }
 
 pub struct RedisActivationStoreConfig {
-    pub topics: Vec<String>,
-    pub partitions: Vec<i32>,
+    pub topics: HashMap<String, Vec<i32>>,
     pub namespaces: Vec<String>,
     pub num_buckets: usize,
     pub payload_ttl_seconds: u64,
@@ -29,8 +33,7 @@ pub struct RedisActivationStoreConfig {
 impl RedisActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            topics: vec![config.kafka_topic.clone()],
-            partitions: vec![0],
+            topics: HashMap::from([(config.kafka_topic.clone(), vec![0])]),
             namespaces: config.namespaces.clone(),
             num_buckets: config.num_redis_buckets,
             payload_ttl_seconds: config.payload_ttl_seconds,
@@ -39,25 +42,78 @@ impl RedisActivationStoreConfig {
 }
 
 pub async fn create_redis_pool(urls: Vec<String>) -> Result<Pool, Error> {
+    // if urls.len() == 1 {
+    //     let cfg = RedisConfig::from_url(urls[0].clone());
+    //     let pool = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();
+    //     return Ok(pool);
+    // }
+    // let cfg = RedisClusterConfig::from_urls(urls);
+    // let pool = cfg.create_pool(Some(RedisClusterRuntime::Tokio1)).unwrap();
     let cfg = RedisConfig::from_url(urls[0].clone());
     let pool = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();
-    // let cfg = RedisConfig::from_urls(urls);
-    // let pool = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();
     Ok(pool)
 }
 
+// This exists to allow the RedisActivationStore to mutate its partitions without needing
+// to have every caller of the store have to explicitly acquire a lock.
+#[derive(Debug)]
 pub struct RedisActivationStore {
+    inner: RwLock<InnerRedisActivationStore>,
+}
+
+impl RedisActivationStore {
+    pub async fn new(urls: Vec<String>, config: RedisActivationStoreConfig) -> Result<Self, Error> {
+        let inner = InnerRedisActivationStore::new(urls, config).await.unwrap();
+        Ok(Self {
+            inner: RwLock::new(inner),
+        })
+    }
+
+    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+        self.inner.read().await.store(batch).await
+    }
+
+    // Called when rebalancing partitions
+    pub async fn rebalance_partitions(&self, topic: String, partitions: Vec<i32>) {
+        self.inner
+            .write()
+            .await
+            .rebalance_partitions(topic, partitions);
+    }
+
+    pub async fn count_processing_activations(&self) -> Result<usize, Error> {
+        self.inner.read().await.count_processing_activations().await
+    }
+
+    pub async fn count_delayed_activations(&self) -> Result<usize, Error> {
+        self.inner.read().await.count_delayed_activations().await
+    }
+
+    pub async fn count_pending_activations(&self) -> Result<usize, Error> {
+        self.inner.read().await.count_pending_activations().await
+    }
+
+    pub async fn db_size(&self) -> Result<u64, Error> {
+        self.inner.read().await.db_size().await
+    }
+
+    pub async fn delete_all_keys(&self) -> Result<(), Error> {
+        self.inner.read().await.delete_all_keys().await
+    }
+}
+
+#[derive(Debug)]
+struct InnerRedisActivationStore {
     pool: Pool,
     replicas: usize,
-    topics: Vec<String>,
-    partitions: Vec<i32>,
+    topics: HashMap<String, Vec<i32>>,
     namespaces: Vec<String>,
     num_buckets: usize,
     bucket_hashes: Vec<String>,
     payload_ttl_seconds: u64,
 }
 
-impl RedisActivationStore {
+impl InnerRedisActivationStore {
     pub async fn new(urls: Vec<String>, config: RedisActivationStoreConfig) -> Result<Self, Error> {
         let replicas = urls.len();
         let pool = create_redis_pool(urls).await?;
@@ -68,7 +124,6 @@ impl RedisActivationStore {
             pool,
             replicas,
             topics: config.topics.clone(),
-            partitions: config.partitions,
             namespaces: config.namespaces.clone(),
             num_buckets: config.num_buckets,
             bucket_hashes,
@@ -76,12 +131,12 @@ impl RedisActivationStore {
         })
     }
 
-    pub fn compute_bucket(&self, activation_id: String) -> String {
+    fn compute_bucket(&self, activation_id: String) -> String {
         let hashint: u64 = cityhasher::hash(activation_id);
         format!("{:04x}", hashint % self.num_buckets as u64)
     }
 
-    pub fn build_key_with_activation(
+    fn build_key_with_activation(
         &self,
         prefix: KeyPrefix,
         namespace: String,
@@ -98,7 +153,7 @@ impl RedisActivationStore {
         )
     }
 
-    pub fn build_key_with_bucket(
+    fn build_key_with_bucket(
         &self,
         prefix: KeyPrefix,
         namespace: String,
@@ -109,7 +164,7 @@ impl RedisActivationStore {
         self.build_key(prefix, namespace, topic, partition, bucket_hash)
     }
 
-    pub fn build_key(
+    fn build_key(
         &self,
         prefix: KeyPrefix,
         namespace: String,
@@ -140,7 +195,7 @@ impl RedisActivationStore {
         }
     }
 
-    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+    async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         let mut conn = self.pool.get().await?;
         let mut rows_affected: u64 = 0;
         for activation in batch {
@@ -149,7 +204,7 @@ impl RedisActivationStore {
                 self.build_key_with_activation(
                     KeyPrefix::Payload,
                     activation.namespace.clone(),
-                    self.topics[0].clone(),
+                    activation.topic.clone(),
                     activation.partition,
                     activation.id.clone()
                 ),
@@ -207,7 +262,7 @@ impl RedisActivationStore {
                 let delay_key = self.build_key_with_activation(
                     KeyPrefix::Delay,
                     activation.namespace.clone(),
-                    self.topics[0].clone(),
+                    activation.topic.clone(),
                     activation.partition,
                     activation.id.clone(),
                 );
@@ -221,7 +276,7 @@ impl RedisActivationStore {
                 let pending_key = self.build_key_with_activation(
                     KeyPrefix::Pending,
                     activation.namespace.clone(),
-                    self.topics[0].clone(),
+                    activation.topic.clone(),
                     activation.partition,
                     activation.id.clone(),
                 );
@@ -234,7 +289,7 @@ impl RedisActivationStore {
                 expired_key = self.build_key_with_activation(
                     KeyPrefix::Expired,
                     activation.namespace.clone(),
-                    self.topics[0].clone(),
+                    activation.topic.clone(),
                     activation.partition,
                     activation.id.clone(),
                 );
@@ -320,9 +375,12 @@ impl RedisActivationStore {
     }
 
     // Called when rebalancing partitions
-    pub async fn rebalance_partitions(&mut self, partitions: Vec<i32>) -> Result<(), Error> {
-        self.partitions = partitions;
-        Ok(())
+    fn rebalance_partitions(&mut self, topic: String, partitions: Vec<i32>) {
+        self.topics.insert(topic.clone(), partitions.clone());
+        info!(
+            "Rebalanced partitions for topic {}: {:?}: {:?}",
+            topic, partitions, self.topics
+        );
     }
 
     pub async fn add_to_pending(&self, activation: InflightActivation) -> Result<(), Error> {
@@ -330,7 +388,7 @@ impl RedisActivationStore {
         let pending_key = self.build_key_with_activation(
             KeyPrefix::Pending,
             activation.namespace.clone(),
-            self.topics[0].clone(),
+            activation.topic.clone(),
             activation.partition,
             activation.id.clone(),
         );
@@ -351,7 +409,7 @@ impl RedisActivationStore {
         let processing_key = self.build_key_with_activation(
             KeyPrefix::Processing,
             activation.namespace.clone(),
-            self.topics[0].clone(),
+            activation.topic.clone(),
             activation.partition,
             activation.id.clone(),
         );
@@ -376,7 +434,7 @@ impl RedisActivationStore {
         let delay_key = self.build_key_with_activation(
             KeyPrefix::Delay,
             activation.namespace.clone(),
-            self.topics[0].clone(),
+            activation.topic.clone(),
             activation.partition,
             activation.id.clone(),
         );
@@ -401,7 +459,7 @@ impl RedisActivationStore {
         let retry_key = self.build_key_with_activation(
             KeyPrefix::Retry,
             activation.namespace.clone(),
-            self.topics[0].clone(),
+            activation.topic.clone(),
             activation.partition,
             activation.id.clone(),
         );
@@ -420,7 +478,7 @@ impl RedisActivationStore {
         let deadletter_key = self.build_key_with_activation(
             KeyPrefix::Deadletter,
             activation.namespace.clone(),
-            self.topics[0].clone(),
+            activation.topic.clone(),
             activation.partition,
             activation.id.clone(),
         );
@@ -443,7 +501,7 @@ impl RedisActivationStore {
             self.build_key_with_activation(
                 KeyPrefix::Payload,
                 activation.namespace.clone(),
-                self.topics[0].clone(),
+                activation.topic.clone(),
                 activation.partition,
                 activation.id.clone()
             ),
@@ -544,9 +602,9 @@ impl RedisActivationStore {
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
         let mut conn = self.pool.get().await?;
         let mut total_count = 0;
-        for topic in self.topics.iter() {
-            for namespace in self.namespaces.iter() {
-                for partition in self.partitions.iter() {
+        for (topic, partitions) in self.topics.iter() {
+            for partition in partitions.iter() {
+                for namespace in self.namespaces.iter() {
                     for bucket_hash in self.bucket_hashes.iter() {
                         let pending_key = self.build_key(
                             KeyPrefix::Pending,
@@ -568,9 +626,9 @@ impl RedisActivationStore {
     pub async fn count_delayed_activations(&self) -> Result<usize, Error> {
         let mut conn = self.pool.get().await?;
         let mut total_count = 0;
-        for topic in self.topics.iter() {
-            for namespace in self.namespaces.iter() {
-                for partition in self.partitions.iter() {
+        for (topic, partitions) in self.topics.iter() {
+            for partition in partitions.iter() {
+                for namespace in self.namespaces.iter() {
                     for bucket_hash in self.bucket_hashes.iter() {
                         let delay_key = self.build_key(
                             KeyPrefix::Delay,
@@ -592,9 +650,9 @@ impl RedisActivationStore {
     pub async fn count_processing_activations(&self) -> Result<usize, Error> {
         let mut conn = self.pool.get().await?;
         let mut total_count = 0;
-        for topic in self.topics.iter() {
-            for namespace in self.namespaces.iter() {
-                for partition in self.partitions.iter() {
+        for (topic, partitions) in self.topics.iter() {
+            for partition in partitions.iter() {
+                for namespace in self.namespaces.iter() {
                     for bucket_hash in self.bucket_hashes.iter() {
                         let processing_key = self.build_key(
                             KeyPrefix::Processing,
@@ -612,7 +670,7 @@ impl RedisActivationStore {
         return Ok(total_count);
     }
 
-    pub async fn db_size(&self) -> Result<u64, Error> {
+    async fn db_size(&self) -> Result<u64, Error> {
         return Ok(0);
     }
 }

@@ -3,10 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use chrono::Utc;
-use tokio::time::sleep;
-use tracing::{debug, error, instrument};
-
 use crate::{
     config::Config,
     store::inflight_activation::{
@@ -14,6 +10,10 @@ use crate::{
     },
     store::inflight_redis_activation::RedisActivationStore,
 };
+use chrono::Utc;
+use std::sync::RwLock;
+use tokio::time::sleep;
+use tracing::{debug, error, instrument};
 
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
@@ -269,6 +269,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -303,6 +304,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Delay,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -372,6 +374,7 @@ mod tests {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Pending,
+            topic: "test_topic".to_string(),
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
@@ -438,6 +441,7 @@ mod tests {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Delay,
+            topic: "test_topic".to_string(),
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
@@ -504,6 +508,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -538,6 +543,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Delay,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -611,6 +617,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -645,6 +652,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -716,6 +724,7 @@ mod tests {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Processing,
+            topic: "test_topic".to_string(),
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
@@ -751,6 +760,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -785,6 +795,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
+                topic: "test_topic".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),

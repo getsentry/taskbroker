@@ -289,7 +289,7 @@ impl Default for Config {
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
             // Redis information
-            redis_cluster_urls: vec!["127.0.0.1:6379".to_owned()],
+            redis_cluster_urls: vec!["redis://127.0.0.1:6379".to_owned()],
             namespaces: vec!["default".to_owned()],
             num_redis_buckets: 256,
             payload_ttl_seconds: 60 * 60 * 24,

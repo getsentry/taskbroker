@@ -72,6 +72,9 @@ pub struct InflightActivation {
     /// The current status of the activation
     pub status: InflightActivationStatus,
 
+    /// The topic the activation was received from
+    pub topic: String,
+
     /// The partition the activation was received from
     pub partition: i32,
 
@@ -200,6 +203,7 @@ impl From<TableRow> for InflightActivation {
             id: value.id,
             activation: value.activation,
             status: value.status,
+            topic: "topic".to_string(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,

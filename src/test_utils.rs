@@ -54,6 +54,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Pending,
+            topic: "test_topic".to_string(),
             partition: 0,
             offset: i as i64,
             added_at: now,
