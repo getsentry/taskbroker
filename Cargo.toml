@@ -15,6 +15,7 @@ chrono = { version = "0.4.26" }
 clap = { version = "4.5.20", features = ["derive"] }
 deadpool-redis = { version = "0.22.0", features = ["cluster"] }
 elegant-departure = { version = "0.3.1", features = ["tokio"] }
+cityhasher = "0.1.0"
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 futures = "0.3.31"
 futures-util = "0.3.31"

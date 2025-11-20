@@ -1,12 +1,12 @@
-use tracing::instrument;
+use tracing::{error, instrument};
 // use deadpool_redis::Pool;
 use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivation, QueryResult};
 use anyhow::Error;
 // use deadpool_redis::cluster::{Config as RedisConfig, Pool, Runtime};
+use cityhasher;
 use deadpool_redis::{Config as RedisConfig, Pool, Runtime};
 use redis::AsyncTypedCommands;
-use uuid::Uuid;
 
 pub enum KeyPrefix {
     Payload,
@@ -48,24 +48,37 @@ pub async fn create_redis_pool(urls: Vec<String>) -> Result<Pool, Error> {
 
 pub struct RedisActivationStore {
     pool: Pool,
+    replicas: usize,
     topics: Vec<String>,
     partitions: Vec<i32>,
     namespaces: Vec<String>,
     num_buckets: usize,
+    bucket_hashes: Vec<String>,
     payload_ttl_seconds: u64,
 }
 
 impl RedisActivationStore {
     pub async fn new(urls: Vec<String>, config: RedisActivationStoreConfig) -> Result<Self, Error> {
+        let replicas = urls.len();
         let pool = create_redis_pool(urls).await?;
+        let bucket_hashes = (0..config.num_buckets)
+            .map(|i| format!("{:04x}", i))
+            .collect();
         Ok(Self {
             pool,
+            replicas,
             topics: config.topics.clone(),
             partitions: config.partitions,
             namespaces: config.namespaces.clone(),
             num_buckets: config.num_buckets,
+            bucket_hashes,
             payload_ttl_seconds: config.payload_ttl_seconds,
         })
+    }
+
+    pub fn compute_bucket(&self, activation_id: String) -> String {
+        let hashint: u64 = cityhasher::hash(activation_id);
+        format!("{:04x}", hashint % self.num_buckets as u64)
     }
 
     pub fn build_key_with_activation(
@@ -76,14 +89,12 @@ impl RedisActivationStore {
         partition: i32,
         activation_id: String,
     ) -> String {
-        let uuid = Uuid::parse_str(&activation_id).unwrap();
-        let as_u128: u128 = uuid.as_u128();
         self.build_key(
             prefix,
             namespace,
             topic,
             partition,
-            format!("{:04x}", as_u128 % self.num_buckets as u128),
+            self.compute_bucket(activation_id),
         )
     }
 
@@ -93,15 +104,9 @@ impl RedisActivationStore {
         namespace: String,
         topic: String,
         partition: i32,
-        bucket: usize,
+        bucket_hash: String,
     ) -> String {
-        self.build_key(
-            prefix,
-            namespace,
-            topic,
-            partition,
-            format!("{:04x}", bucket),
-        )
+        self.build_key(prefix, namespace, topic, partition, bucket_hash)
     }
 
     pub fn build_key(
@@ -137,6 +142,7 @@ impl RedisActivationStore {
 
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         let mut conn = self.pool.get().await?;
+        let mut rows_affected: u64 = 0;
         for activation in batch {
             let payload_key = format!(
                 "{}:{}",
@@ -150,7 +156,6 @@ impl RedisActivationStore {
                 activation.id.clone()
             );
 
-            let mut expected_commands = 3;
             let mut pipe = redis::pipe();
             pipe.atomic()
                 .hset(payload_key.clone(), "id", activation.id.clone())
@@ -166,14 +171,8 @@ impl RedisActivationStore {
                 .arg(activation.received_at.timestamp())
                 .arg("processing_attempts")
                 .arg(activation.processing_attempts)
-                .arg("expires_at")
-                .arg(activation.expires_at.map(|dt| dt.timestamp()))
-                .arg("delay_until")
-                .arg(activation.delay_until.map(|dt| dt.timestamp()))
                 .arg("processing_deadline_duration")
                 .arg(activation.processing_deadline_duration)
-                .arg("processing_deadline")
-                .arg(activation.processing_deadline.map(|dt| dt.timestamp()))
                 .arg("status")
                 .arg(format!("{:?}", activation.status))
                 .arg("at_most_once")
@@ -184,8 +183,26 @@ impl RedisActivationStore {
                 .arg(activation.taskname)
                 .arg("on_attempts_exceeded")
                 .arg(activation.on_attempts_exceeded as i32);
+
+            let mut expected_args = 13;
+            if activation.expires_at.is_some() {
+                pipe.arg("expires_at")
+                    .arg(activation.expires_at.unwrap().timestamp());
+                expected_args += 1;
+            }
+            if activation.delay_until.is_some() {
+                pipe.arg("delay_until")
+                    .arg(activation.delay_until.unwrap().timestamp());
+                expected_args += 1;
+            }
+            if activation.processing_deadline.is_some() {
+                pipe.arg("processing_deadline")
+                    .arg(activation.processing_deadline.unwrap().timestamp());
+                expected_args += 1;
+            }
             pipe.expire(payload_key.clone(), self.payload_ttl_seconds as i64);
 
+            let mut queue_key_used = String::new();
             if activation.delay_until.is_some() {
                 let delay_key = self.build_key_with_activation(
                     KeyPrefix::Delay,
@@ -195,10 +212,11 @@ impl RedisActivationStore {
                     activation.id.clone(),
                 );
                 pipe.zadd(
-                    delay_key,
-                    activation.delay_until.unwrap().timestamp(),
+                    delay_key.clone(),
                     activation.id.clone(),
+                    activation.delay_until.unwrap().timestamp(),
                 );
+                queue_key_used = delay_key;
             } else {
                 let pending_key = self.build_key_with_activation(
                     KeyPrefix::Pending,
@@ -207,11 +225,13 @@ impl RedisActivationStore {
                     activation.partition,
                     activation.id.clone(),
                 );
-                pipe.rpush(pending_key, activation.id.clone());
+                pipe.rpush(pending_key.clone(), activation.id.clone());
+                queue_key_used = pending_key;
             }
 
+            let mut expired_key = String::new();
             if activation.expires_at.is_some() {
-                let expired_key = self.build_key_with_activation(
+                expired_key = self.build_key_with_activation(
                     KeyPrefix::Expired,
                     activation.namespace.clone(),
                     self.topics[0].clone(),
@@ -219,22 +239,84 @@ impl RedisActivationStore {
                     activation.id.clone(),
                 );
                 pipe.zadd(
-                    expired_key,
-                    activation.expires_at.unwrap().timestamp(),
+                    expired_key.clone(),
                     activation.id.clone(),
+                    activation.expires_at.unwrap().timestamp(),
                 );
-                expected_commands += 1;
             }
+            pipe.cmd("WAIT").arg(1).arg(1000);
 
-            let result: Vec<i32> = pipe.query_async(&mut conn).await?;
-            if result.len() != expected_commands {
+            let result: Vec<i32> = match pipe.query_async(&mut conn).await {
+                Ok(result) => result,
+                Err(err) => {
+                    error!(
+                        "Failed to store activation {} in Redis: {}",
+                        payload_key.clone(),
+                        err
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Failed to store activation: {}",
+                        payload_key.clone()
+                    ));
+                }
+            };
+
+            if result.len() != 4 && result.len() != 5 {
                 return Err(anyhow::anyhow!(
-                    "Failed to store activation: {}",
+                    "Failed to store activation: incorrect number of commands run: expected 4 or 5, got {} for key {}",
+                    result.len(),
                     payload_key.clone()
                 ));
             }
+            // WAIT returns the number of replicas that had the write propagated
+            // If there is only one node then it will return 0.
+            if result[result.len() - 1] < self.replicas as i32 - 1 {
+                return Err(anyhow::anyhow!(
+                    "Activation {} was not stored on any replica",
+                    payload_key
+                ));
+            }
+
+            // HSET returns the number of fields set
+            if result[0] != expected_args {
+                return Err(anyhow::anyhow!(
+                    "Failed to store activation: expected {} arguments, got {} for key {}",
+                    expected_args,
+                    result[0],
+                    payload_key.clone()
+                ));
+            }
+            // EXPIRE returns 1 on success and 0 on failure
+            if result[1] != 1 {
+                return Err(anyhow::anyhow!(
+                    "Failed to expire activation for key {}",
+                    payload_key
+                ));
+            }
+            // Both ZADD and RPUSH return a count of elements in the structure
+            if result[2] <= 0 {
+                return Err(anyhow::anyhow!(
+                    "Failed to add activation to queue for key {}",
+                    queue_key_used
+                ));
+            }
+            // Check if the ZADD happened on the expired key
+            if result.len() == 5 && result[3] <= 0 {
+                return Err(anyhow::anyhow!(
+                    "Failed to add activation to expired queue for key {}",
+                    expired_key
+                ));
+            }
+            // Check to ensure that the WAIT command returned at least one replica
+            if result.len() == 5 && result[4] <= 0 {
+                return Err(anyhow::anyhow!(
+                    "Failed to wait for activation to be stored on at least one replica for key {}",
+                    payload_key
+                ));
+            }
+            rows_affected += 1;
         }
-        Ok(QueryResult { rows_affected: 0 })
+        Ok(QueryResult { rows_affected })
     }
 
     // Called when rebalancing partitions
@@ -377,6 +459,16 @@ impl RedisActivationStore {
         Ok(())
     }
 
+    // Only used in testing
+    pub async fn delete_all_keys(&self) -> Result<(), Error> {
+        let mut conn = self.pool.get().await?;
+        let keys: Vec<String> = conn.keys("*").await?;
+        for key in keys {
+            conn.del(key).await?;
+        }
+        Ok(())
+    }
+
     /// Get an activation by id. Primarily used for testing
     pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
         return Ok(None);
@@ -448,16 +540,76 @@ impl RedisActivationStore {
         return Ok(vec![]);
     }
 
+    #[instrument(skip_all)]
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
-        return Ok(0);
+        let mut conn = self.pool.get().await?;
+        let mut total_count = 0;
+        for topic in self.topics.iter() {
+            for namespace in self.namespaces.iter() {
+                for partition in self.partitions.iter() {
+                    for bucket_hash in self.bucket_hashes.iter() {
+                        let pending_key = self.build_key(
+                            KeyPrefix::Pending,
+                            namespace.to_string(),
+                            topic.to_string(),
+                            *partition,
+                            bucket_hash.to_string(),
+                        );
+                        let count: usize = conn.llen(pending_key).await?;
+                        total_count += count;
+                    }
+                }
+            }
+        }
+        return Ok(total_count);
     }
 
+    #[instrument(skip_all)]
     pub async fn count_delayed_activations(&self) -> Result<usize, Error> {
-        return Ok(0);
+        let mut conn = self.pool.get().await?;
+        let mut total_count = 0;
+        for topic in self.topics.iter() {
+            for namespace in self.namespaces.iter() {
+                for partition in self.partitions.iter() {
+                    for bucket_hash in self.bucket_hashes.iter() {
+                        let delay_key = self.build_key(
+                            KeyPrefix::Delay,
+                            namespace.to_string(),
+                            topic.to_string(),
+                            *partition,
+                            bucket_hash.to_string(),
+                        );
+                        let count: usize = conn.zcard(delay_key.clone()).await?;
+                        total_count += count;
+                    }
+                }
+            }
+        }
+        return Ok(total_count);
     }
 
+    #[instrument(skip_all)]
     pub async fn count_processing_activations(&self) -> Result<usize, Error> {
-        return Ok(0);
+        let mut conn = self.pool.get().await?;
+        let mut total_count = 0;
+        for topic in self.topics.iter() {
+            for namespace in self.namespaces.iter() {
+                for partition in self.partitions.iter() {
+                    for bucket_hash in self.bucket_hashes.iter() {
+                        let processing_key = self.build_key(
+                            KeyPrefix::Processing,
+                            namespace.to_string(),
+                            topic.to_string(),
+                            *partition,
+                            bucket_hash.to_string(),
+                        );
+                        let count: usize = conn.zcard(processing_key.clone()).await?;
+                        total_count += count;
+                    }
+                }
+            }
+        }
+        return Ok(total_count);
     }
 
     pub async fn db_size(&self) -> Result<u64, Error> {
