@@ -14,7 +14,7 @@ use crate::store::inflight_redis_activation::RedisActivationStore;
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
-    pub store: Arc<InflightActivationStore>,
+    pub store: Arc<RedisActivationStore>,
 }
 
 #[tonic::async_trait]

@@ -1105,6 +1105,7 @@ async fn test_clear() {
         }
         .encode_to_vec(),
         status: InflightActivationStatus::Pending,
+        topic: "test_topic".into(),
         partition: 0,
         offset: 0,
         added_at: Utc::now(),

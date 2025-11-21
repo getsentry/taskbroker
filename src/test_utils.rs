@@ -15,6 +15,7 @@ use crate::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig,
     },
+    store::inflight_redis_activation::{RedisActivationStore, RedisActivationStoreConfig},
 };
 use chrono::{Timelike, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
@@ -85,6 +86,18 @@ pub async fn create_test_store() -> Arc<InflightActivationStore> {
         InflightActivationStore::new(
             &generate_temp_filename(),
             InflightActivationStoreConfig::from_config(&create_integration_config()),
+        )
+        .await
+        .unwrap(),
+    )
+}
+
+/// Create a RedisActivationStore instance
+pub async fn create_redis_test_store() -> Arc<RedisActivationStore> {
+    Arc::new(
+        RedisActivationStore::new(
+            generate_temp_redis_urls(),
+            RedisActivationStoreConfig::from_config(&create_integration_config()),
         )
         .await
         .unwrap(),

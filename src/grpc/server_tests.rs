@@ -4,11 +4,11 @@ use tonic::{Code, Request};
 
 use crate::grpc::server::TaskbrokerServer;
 
-use crate::test_utils::{create_test_store, make_activations};
+use crate::test_utils::{create_redis_test_store, create_test_store, make_activations};
 
 #[tokio::test]
 async fn test_get_task() {
-    let store = create_test_store().await;
+    let store = create_redis_test_store().await;
     let service = TaskbrokerServer { store };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
@@ -21,7 +21,7 @@ async fn test_get_task() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_set_task_status() {
-    let store = create_test_store().await;
+    let store = create_redis_test_store().await;
     let service = TaskbrokerServer { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -37,7 +37,7 @@ async fn test_set_task_status() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_set_task_status_invalid() {
-    let store = create_test_store().await;
+    let store = create_redis_test_store().await;
     let service = TaskbrokerServer { store };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -57,7 +57,7 @@ async fn test_set_task_status_invalid() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_get_task_success() {
-    let store = create_test_store().await;
+    let store = create_redis_test_store().await;
     let activations = make_activations(1);
     store.store(activations).await.unwrap();
 
@@ -74,7 +74,7 @@ async fn test_get_task_success() {
 #[tokio::test]
 #[allow(deprecated)]
 async fn test_set_task_status_success() {
-    let store = create_test_store().await;
+    let store = create_redis_test_store().await;
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 

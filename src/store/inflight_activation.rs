@@ -20,6 +20,7 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
+use std::collections::HashMap;
 use tracing::instrument;
 
 use crate::config::Config;
@@ -47,6 +48,19 @@ impl InflightActivationStatus {
                 | InflightActivationStatus::Retry
                 | InflightActivationStatus::Failure
         )
+    }
+
+    pub fn from_str(value: String) -> Self {
+        match value.as_str() {
+            "Unspecified" => InflightActivationStatus::Unspecified,
+            "Pending" => InflightActivationStatus::Pending,
+            "Processing" => InflightActivationStatus::Processing,
+            "Failure" => InflightActivationStatus::Failure,
+            "Retry" => InflightActivationStatus::Retry,
+            "Complete" => InflightActivationStatus::Complete,
+            "Delay" => InflightActivationStatus::Delay,
+            _ => InflightActivationStatus::Unspecified,
+        }
     }
 }
 
@@ -217,6 +231,61 @@ impl From<TableRow> for InflightActivation {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+        }
+    }
+}
+
+impl From<HashMap<String, String>> for InflightActivation {
+    fn from(value: HashMap<String, String>) -> Self {
+        Self {
+            id: value.get("id").unwrap().to_string(),
+            activation: value.get("activation").unwrap().clone().into_bytes(),
+            status: InflightActivationStatus::from_str(value.get("status").unwrap().to_string()),
+            topic: value.get("topic").unwrap().to_string(),
+            partition: value.get("partition").unwrap().parse::<i32>().unwrap(),
+            offset: value.get("offset").unwrap().parse::<i64>().unwrap(),
+            added_at: value
+                .get("added_at")
+                .unwrap()
+                .parse::<DateTime<Utc>>()
+                .unwrap(),
+            received_at: value
+                .get("received_at")
+                .unwrap()
+                .parse::<DateTime<Utc>>()
+                .unwrap(),
+            processing_attempts: value
+                .get("processing_attempts")
+                .unwrap()
+                .parse::<i32>()
+                .unwrap(),
+            processing_deadline_duration: value
+                .get("processing_deadline_duration")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap(),
+            expires_at: value
+                .get("expires_at")
+                .unwrap()
+                .parse::<DateTime<Utc>>()
+                .ok(),
+            delay_until: value
+                .get("delay_until")
+                .unwrap()
+                .parse::<DateTime<Utc>>()
+                .ok(),
+            processing_deadline: value
+                .get("processing_deadline")
+                .unwrap()
+                .parse::<DateTime<Utc>>()
+                .ok(),
+            at_most_once: value.get("at_most_once").unwrap().parse::<bool>().unwrap(),
+            namespace: value.get("namespace").unwrap().to_string(),
+            taskname: value.get("taskname").unwrap().to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::from_str_name(
+                value.get("on_attempts_exceeded").unwrap().as_str(),
+            )
+            .unwrap(),
         }
     }
 }

@@ -190,8 +190,8 @@ async fn main() -> Result<(), Error> {
 
     // GRPC server
     let grpc_server_task = tokio::spawn({
-        // let grpc_store = redis_store.clone();
-        let grpc_store = store.clone();
+        let grpc_store = redis_store.clone();
+        // let grpc_store = store.clone();
         let grpc_config = config.clone();
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
