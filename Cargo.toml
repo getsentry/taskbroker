@@ -10,6 +10,7 @@ debug = 1
 
 [dependencies]
 anyhow = "1.0.92"
+base64 = "0.21.0"
 bytes = "1.10.0"
 chrono = { version = "0.4.26" }
 clap = { version = "4.5.20", features = ["derive"] }
@@ -47,6 +48,7 @@ serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
 sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
+thiserror = "2.0.17"
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }
 tokio-util = "0.7.12"

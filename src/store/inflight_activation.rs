@@ -1,6 +1,5 @@
-use std::{str::FromStr, time::Instant};
-
 use anyhow::{Error, anyhow};
+use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use libsqlite3_sys::{
     SQLITE_DBSTATUS_CACHE_HIT, SQLITE_DBSTATUS_CACHE_MISS, SQLITE_DBSTATUS_CACHE_SPILL,
@@ -21,6 +20,7 @@ use sqlx::{
     },
 };
 use std::collections::HashMap;
+use std::{str::FromStr, time::Instant};
 use tracing::instrument;
 
 use crate::config::Config;
@@ -50,7 +50,7 @@ impl InflightActivationStatus {
         )
     }
 
-    pub fn from_str(value: String) -> Self {
+    pub fn decode_from_str(value: String) -> Self {
         match value.as_str() {
             "Unspecified" => InflightActivationStatus::Unspecified,
             "Pending" => InflightActivationStatus::Pending,
@@ -237,23 +237,35 @@ impl From<TableRow> for InflightActivation {
 
 impl From<HashMap<String, String>> for InflightActivation {
     fn from(value: HashMap<String, String>) -> Self {
+        let decoded_activation = general_purpose::STANDARD
+            .decode(value.get("activation").unwrap().clone())
+            .unwrap();
+        let expires_at = value.get("expires_at").map(|expires_at| {
+            DateTime::from_timestamp_millis(expires_at.parse::<i64>().unwrap()).unwrap()
+        });
+        let delay_until = value.get("delay_until").map(|delay_until| {
+            DateTime::from_timestamp_millis(delay_until.parse::<i64>().unwrap()).unwrap()
+        });
+        let processing_deadline = value.get("processing_deadline").map(|processing_deadline| {
+            DateTime::from_timestamp_millis(processing_deadline.parse::<i64>().unwrap()).unwrap()
+        });
         Self {
             id: value.get("id").unwrap().to_string(),
-            activation: value.get("activation").unwrap().clone().into_bytes(),
-            status: InflightActivationStatus::from_str(value.get("status").unwrap().to_string()),
+            activation: decoded_activation,
+            status: InflightActivationStatus::decode_from_str(
+                value.get("status").unwrap().to_string(),
+            ),
             topic: value.get("topic").unwrap().to_string(),
             partition: value.get("partition").unwrap().parse::<i32>().unwrap(),
             offset: value.get("offset").unwrap().parse::<i64>().unwrap(),
-            added_at: value
-                .get("added_at")
-                .unwrap()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
-            received_at: value
-                .get("received_at")
-                .unwrap()
-                .parse::<DateTime<Utc>>()
-                .unwrap(),
+            added_at: DateTime::from_timestamp_millis(
+                value.get("added_at").unwrap().parse::<i64>().unwrap(),
+            )
+            .unwrap(),
+            received_at: DateTime::from_timestamp_millis(
+                value.get("received_at").unwrap().parse::<i64>().unwrap(),
+            )
+            .unwrap(),
             processing_attempts: value
                 .get("processing_attempts")
                 .unwrap()
@@ -264,21 +276,9 @@ impl From<HashMap<String, String>> for InflightActivation {
                 .unwrap()
                 .parse::<u32>()
                 .unwrap(),
-            expires_at: value
-                .get("expires_at")
-                .unwrap()
-                .parse::<DateTime<Utc>>()
-                .ok(),
-            delay_until: value
-                .get("delay_until")
-                .unwrap()
-                .parse::<DateTime<Utc>>()
-                .ok(),
-            processing_deadline: value
-                .get("processing_deadline")
-                .unwrap()
-                .parse::<DateTime<Utc>>()
-                .ok(),
+            expires_at,
+            delay_until,
+            processing_deadline,
             at_most_once: value.get("at_most_once").unwrap().parse::<bool>().unwrap(),
             namespace: value.get("namespace").unwrap().to_string(),
             taskname: value.get("taskname").unwrap().to_string(),

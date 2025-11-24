@@ -269,7 +269,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -304,7 +304,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Delay,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -374,7 +374,7 @@ mod tests {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Pending,
-            topic: "test_topic".to_string(),
+            topic: "taskbroker-test".to_string(),
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
@@ -441,7 +441,7 @@ mod tests {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Delay,
-            topic: "test_topic".to_string(),
+            topic: "taskbroker-test".to_string(),
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
@@ -508,7 +508,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -543,7 +543,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Delay,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -617,7 +617,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -652,7 +652,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -724,7 +724,7 @@ mod tests {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Processing,
-            topic: "test_topic".to_string(),
+            topic: "taskbroker-test".to_string(),
             partition: 0,
             offset: 0,
             added_at: Utc::now(),
@@ -760,7 +760,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),
@@ -795,7 +795,7 @@ mod tests {
                 }
                 .encode_to_vec(),
                 status: InflightActivationStatus::Pending,
-                topic: "test_topic".to_string(),
+                topic: "taskbroker-test".to_string(),
                 partition: 0,
                 offset: 0,
                 added_at: Utc::now(),

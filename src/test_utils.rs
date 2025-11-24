@@ -40,7 +40,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             id: format!("id_{i}"),
             activation: TaskActivation {
                 id: format!("id_{i}"),
-                namespace: "namespace".into(),
+                namespace: "default".into(),
                 taskname: "taskname".into(),
                 parameters: "{}".into(),
                 headers: HashMap::new(),
@@ -55,7 +55,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Pending,
-            topic: "test_topic".to_string(),
+            topic: "taskbroker-test".to_string(),
             partition: 0,
             offset: i as i64,
             added_at: now,
@@ -66,7 +66,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             delay_until: None,
             processing_deadline: None,
             at_most_once: false,
-            namespace: "namespace".into(),
+            namespace: "default".into(),
             taskname: "taskname".into(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
