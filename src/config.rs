@@ -291,8 +291,7 @@ impl Default for Config {
             // Redis information
             redis_cluster_urls: vec!["redis://127.0.0.1:6379".to_owned()],
             namespaces: vec!["default".to_owned()],
-            // num_redis_buckets: 256,
-            num_redis_buckets: 1,
+            num_redis_buckets: 256,
             payload_ttl_seconds: 60 * 60 * 24,
         }
     }

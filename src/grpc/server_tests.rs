@@ -70,7 +70,6 @@ async fn test_get_task_success() {
     };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
-    println!("response: {:?}", response);
     assert!(response.is_ok());
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_some());
@@ -98,10 +97,10 @@ async fn test_set_task_status_success() {
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_some());
     let task = resp.get_ref().task.as_ref().unwrap();
-    assert!(task.id == "id_0");
-
+    assert!(task.id == "id_0" || task.id == "id_1");
+    let first_task_id = task.id.clone();
     let request = SetTaskStatusRequest {
-        id: "id_0".to_string(),
+        id: first_task_id.clone(),
         status: 5, // Complete
         fetch_next_task: Some(FetchNextTask { namespace: None }),
     };
@@ -111,7 +110,12 @@ async fn test_set_task_status_success() {
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_some());
     let task = resp.get_ref().task.as_ref().unwrap();
-    assert_eq!(task.id, "id_1");
+    let second_task_id = if first_task_id == "id_0" {
+        "id_1"
+    } else {
+        "id_0"
+    };
+    assert_eq!(task.id, second_task_id);
     let pending_count = store.count_pending_activations().await.unwrap();
     let processing_count = store.count_processing_activations().await.unwrap();
     assert!(pending_count == 0, "pending_count: {:?}", pending_count);
