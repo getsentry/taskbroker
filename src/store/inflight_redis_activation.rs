@@ -1,23 +1,15 @@
 use crate::store::inner_redis_activation_store::InnerRedisActivationStore;
 use crate::store::redis_utils::HashKey;
-use base64::{Engine as _, engine::general_purpose};
 use thiserror::Error;
 
-use tracing::{error, info, instrument};
+use tracing::error;
 // use deadpool_redis::Pool;
 use crate::config::Config;
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, QueryResult,
 };
-use anyhow::Error;
-use chrono::{DateTime, Duration, Utc};
-use cityhasher;
-use deadpool_redis::cluster::{
-    Config as RedisClusterConfig, Pool as RedisClusterPool, Runtime as RedisClusterRuntime,
-};
+use chrono::{DateTime, Utc};
 use deadpool_redis::{Config as RedisConfig, Pool, Runtime};
-use redis::AsyncTypedCommands;
-use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use std::collections::HashMap;
 // use std::sync::RwLock;
 use tokio::sync::RwLock;
@@ -130,7 +122,6 @@ impl RedisActivationStore {
         let result = self.inner.read().await.store(batch).await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
-            println!("error: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "store".to_string(),
                 error: error_string,
@@ -301,7 +292,6 @@ impl RedisActivationStore {
             .await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
-            println!("error: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "set_status".to_string(),
                 error: error_string,
@@ -348,7 +338,6 @@ impl RedisActivationStore {
         let result = self.inner.read().await.handle_processing_deadline().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
-            println!("error: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "handle_processing_deadline".to_string(),
                 error: error_string,

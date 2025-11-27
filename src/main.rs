@@ -6,12 +6,11 @@ use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
 use taskbroker::upkeep::upkeep;
+use tokio::select;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tokio::{select, time};
 use tonic::transport::Server;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info};
 
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
@@ -31,9 +30,6 @@ use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::inflight_activation::{
-    InflightActivationStore, InflightActivationStoreConfig,
-};
 use taskbroker::store::inflight_redis_activation::{
     RedisActivationStore, RedisActivationStoreConfig,
 };
@@ -66,13 +62,6 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
-    let store = Arc::new(
-        InflightActivationStore::new(
-            &config.db_path,
-            InflightActivationStoreConfig::from_config(&config),
-        )
-        .await?,
-    );
     let redis_store = Arc::new(
         RedisActivationStore::new(
             config.redis_cluster_urls.clone(),
@@ -89,13 +78,6 @@ async fn main() -> Result<(), Error> {
             config.default_topic_partitions,
         )
         .await?;
-    }
-    if config.full_vacuum_on_start {
-        info!("Running full vacuum on database");
-        match store.full_vacuum_db().await {
-            Ok(_) => info!("Full vacuum completed."),
-            Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
-        }
     }
     // Get startup time after migrations and vacuum
     let startup_time = Utc::now();

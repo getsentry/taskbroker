@@ -1,25 +1,16 @@
-use base64::{Engine as _, engine::general_purpose};
-use thiserror::Error;
-use tracing::{error, info, instrument};
-// use deadpool_redis::Pool;
-use crate::config::Config;
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, QueryResult,
 };
+use crate::store::redis_utils::{HashKey, KeyBuilder};
 use anyhow::Error;
+use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Duration, Utc};
-use cityhasher;
-use deadpool_redis::cluster::{
-    Config as RedisClusterConfig, Pool as RedisClusterPool, Runtime as RedisClusterRuntime,
-};
-use deadpool_redis::{Config as RedisConfig, Pool, Runtime};
+use deadpool_redis::Pool;
 use futures::future::try_join_all;
 use redis::AsyncTypedCommands;
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use std::collections::HashMap;
-// use std::sync::RwLock;
-use crate::store::redis_utils::{HashKey, KeyBuilder};
-use tokio::sync::RwLock;
+use tracing::{error, info, instrument};
 
 #[derive(Debug)]
 pub struct InnerRedisActivationStore {
@@ -113,7 +104,6 @@ impl InnerRedisActivationStore {
 
             // Base64 encode the activation since Redis HGETALL doesn't handle the bytes correctly (it tries to UTF-8 decode it)
             let encoded_activation = general_purpose::STANDARD.encode(&activation.activation);
-            println!("payload_key: {:?}", payload_key);
             let mut pipe = redis::pipe();
             pipe.atomic()
                 .hset(payload_key.clone(), "id", activation.id.clone())
@@ -152,12 +142,12 @@ impl InnerRedisActivationStore {
             }
             if activation.delay_until.is_some() {
                 pipe.arg("delay_until")
-                    .arg(activation.delay_until.unwrap().timestamp());
+                    .arg(activation.delay_until.unwrap().timestamp_millis());
                 expected_args += 1;
             }
             if activation.processing_deadline.is_some() {
                 pipe.arg("processing_deadline")
-                    .arg(activation.processing_deadline.unwrap().timestamp());
+                    .arg(activation.processing_deadline.unwrap().timestamp_millis());
                 expected_args += 1;
             }
             pipe.expire(payload_key.clone(), self.payload_ttl_seconds as i64);
@@ -178,7 +168,7 @@ impl InnerRedisActivationStore {
                 pipe.zadd(
                     delay_key.clone(),
                     activation.id.clone(),
-                    activation.delay_until.unwrap().timestamp(),
+                    activation.delay_until.unwrap().timestamp_millis() as isize,
                 );
                 queue_key_used = delay_key;
             } else {
@@ -210,7 +200,6 @@ impl InnerRedisActivationStore {
                         activation.id.as_str(),
                     )
                     .build_redis_key();
-                println!("expired_key: {:?}", expired_key);
                 pipe.zadd(
                     expired_key.clone(),
                     activation.id.clone(),
@@ -280,7 +269,6 @@ impl InnerRedisActivationStore {
                     expired_key
                 ));
             }
-            println!("result: {:?}", result);
             // This should always return 0
             if *result.last().unwrap() != 0 {
                 return Err(anyhow::anyhow!(
@@ -328,120 +316,38 @@ impl InnerRedisActivationStore {
         Ok(QueryResult { rows_affected })
     }
 
-    // pub async fn add_to_pending(&self, activation: InflightActivation) -> Result<(), Error> {
-    //     let mut conn = self.pool.get().await?;
-    //     let pending_key = self.key_builder.get_pending_key(
-    //         activation.topic.clone(),
-    //         activation.partition,
-    //         activation.namespace.clone(),
-    //         activation.id.as_str(),
-    //     ).build_redis_key();
-    //     let newlen: usize = conn
-    //         .rpush(pending_key.clone(), activation.id.clone())
-    //         .await?;
-    //     if newlen == 0 {
-    //         return Err(anyhow::anyhow!(
-    //             "Failed to add activation to pending: {}",
-    //             pending_key.clone()
-    //         ));
-    //     }
-    //     Ok(())
-    // }
-
-    // pub async fn add_to_processing(&self, activation: InflightActivation) -> Result<(), Error> {
-    //     let mut conn = self.pool.get().await?;
-    //     let processing_key = Key::new(
-    //         activation.topic.clone(),
-    //         activation.partition,
-    //         activation.namespace.clone(),
-    //         self.num_buckets,
-    //         activation.id.clone(),
-    //         None,
-    //     ).build_redis_key(KeyPrefix::Processing);
-    //     let newlen: usize = conn
-    //         .zadd(
-    //             processing_key.clone(),
-    //             activation.processing_deadline.unwrap().timestamp(),
-    //             activation.id.clone(),
-    //         )
-    //         .await?;
-    //     if newlen == 0 {
-    //         return Err(anyhow::anyhow!(
-    //             "Failed to add activation to processing: {}",
-    //             processing_key.clone()
-    //         ));
-    //     }
-    //     Ok(())
-    // }
-
-    // pub async fn add_to_delay(&self, activation: InflightActivation) -> Result<(), Error> {
-    //     let mut conn = self.pool.get().await?;
-    //     let delay_key = Key::new(
-    //         activation.topic.clone(),
-    //         activation.partition,
-    //         activation.namespace.clone(),
-    //         self.num_buckets,
-    //         activation.id.clone(),
-    //         None,
-    //     ).build_redis_key(KeyPrefix::Delay);
-    //     let newlen: usize = conn
-    //         .zadd(
-    //             delay_key.clone(),
-    //             activation.delay_until.unwrap().timestamp(),
-    //             activation.id.clone(),
-    //         )
-    //         .await?;
-    //     if newlen == 0 {
-    //         return Err(anyhow::anyhow!(
-    //             "Failed to add activation to delay: {}",
-    //             delay_key.clone()
-    //         ));
-    //     }
-    //     Ok(())
-    // }
-
-    // pub async fn add_to_retry(&self, activation: InflightActivation) -> Result<(), Error> {
-    //     let mut conn = self.pool.get().await?;
-    //     let retry_key = Key::new(
-    //         activation.topic.clone(),
-    //         activation.partition,
-    //         activation.namespace.clone(),
-    //         self.num_buckets,
-    //         activation.id.clone(),
-    //         None,
-    //     ).build_redis_key(KeyPrefix::Retry);
-    //     let newlen: usize = conn.rpush(retry_key.clone(), activation.id.clone()).await?;
-    //     if newlen == 0 {
-    //         return Err(anyhow::anyhow!(
-    //             "Failed to add activation to retry: {}",
-    //             retry_key.clone()
-    //         ));
-    //     }
-    //     Ok(())
-    // }
-
-    // pub async fn add_to_deadletter(&self, activation: InflightActivation) -> Result<(), Error> {
-    //     let mut conn = self.pool.get().await?;
-    //     let deadletter_key = Key::new(
-    //         activation.topic.clone(),
-    //         activation.partition,
-    //         activation.namespace.clone(),
-    //         self.num_buckets,
-    //         activation.id.clone(),
-    //         None,
-    //     ).build_redis_key(KeyPrefix::Deadletter);
-    //     let newlen: usize = conn
-    //         .rpush(deadletter_key.clone(), activation.id.clone())
-    //         .await?;
-    //     if newlen == 0 {
-    //         return Err(anyhow::anyhow!(
-    //             "Failed to add activation to deadletter: {}",
-    //             deadletter_key.clone()
-    //         ));
-    //     }
-    //     Ok(())
-    // }
-
+    pub async fn cleanup_activation(
+        &self,
+        hashkey: HashKey,
+        activation_id: &str,
+    ) -> Result<(), Error> {
+        let mut conn = self.pool.get().await?;
+        let payload_key = self
+            .key_builder
+            .get_payload_key(hashkey, activation_id)
+            .build_redis_key();
+        let id_lookup_key = self
+            .key_builder
+            .get_id_lookup_key(activation_id)
+            .build_redis_key();
+        let result: usize = conn.del(payload_key.clone()).await?;
+        if result != 1 {
+            return Err(anyhow::anyhow!(
+                "Failed to cleanup payload for key {}",
+                payload_key.clone()
+            ));
+        }
+        let result: usize = conn.del(id_lookup_key.clone()).await?;
+        if result != 1 {
+            return Err(anyhow::anyhow!(
+                "Failed to cleanup id lookup for key {}",
+                id_lookup_key.clone()
+            ));
+        }
+        Ok(())
+    }
+    /// Discard an activation. If the activation is at_most_once, remove the payloads.
+    #[instrument(skip_all)]
     pub async fn discard_activation(
         &self,
         hashkey: HashKey,
@@ -479,38 +385,7 @@ impl InnerRedisActivationStore {
             }
             return Ok(());
         }
-        let payload_key = self
-            .key_builder
-            .get_payload_key(hashkey, activation_id)
-            .build_redis_key();
-        let id_lookup_key = self
-            .key_builder
-            .get_id_lookup_key(activation_id)
-            .build_redis_key();
-        let result: usize = conn.del(payload_key.clone()).await?;
-        if result != 1 {
-            return Err(anyhow::anyhow!(
-                "Failed to discard payload for key {}",
-                payload_key.clone()
-            ));
-        }
-        let result: usize = conn.del(id_lookup_key.clone()).await?;
-        if result != 1 {
-            return Err(anyhow::anyhow!(
-                "Failed to discard id lookup for key {}",
-                id_lookup_key.clone()
-            ));
-        }
-        Ok(())
-    }
-
-    // Only used in testing
-    pub async fn delete_all_keys(&self) -> Result<(), Error> {
-        let mut conn = self.pool.get().await?;
-        let keys: Vec<String> = conn.keys("*").await?;
-        for key in keys {
-            conn.del(key).await?;
-        }
+        self.cleanup_activation(hashkey, activation_id).await?;
         Ok(())
     }
 
@@ -555,7 +430,6 @@ impl InnerRedisActivationStore {
                     continue;
                 }
                 let activation_id: String = result.unwrap().to_string();
-                println!("activation_id: {:?}", activation_id);
 
                 let act_result = self.get_by_id(hash_key.clone(), &activation_id).await?;
                 if act_result.is_none() {
@@ -721,12 +595,11 @@ impl InnerRedisActivationStore {
         let mut has_failure = false;
         if status == InflightActivationStatus::Retry {
             has_failure = true;
-            pipe.rpush(
-                self.key_builder
-                    .get_retry_key(hash_key.clone(), activation.id.as_str())
-                    .build_redis_key(),
-                activation_id,
-            );
+            let retry_key = self
+                .key_builder
+                .get_retry_key(hash_key.clone(), activation.id.as_str())
+                .build_redis_key();
+            pipe.rpush(retry_key, activation_id);
         } else if status == InflightActivationStatus::Failure
             && activation.on_attempts_exceeded == OnAttemptsExceeded::Deadletter
         {
@@ -737,6 +610,9 @@ impl InnerRedisActivationStore {
                     .build_redis_key(),
                 activation_id,
             );
+        } else if status == InflightActivationStatus::Complete {
+            self.cleanup_activation(hash_key.clone(), activation.id.as_str())
+                .await?;
         }
         let processing_key = self
             .key_builder
@@ -889,7 +765,6 @@ impl InnerRedisActivationStore {
         let mut processing_attempts_exceeded_count: u64 = 0;
         for hash_key in self.hash_keys.iter() {
             for bucket_hash in self.bucket_hashes.iter() {
-                let mut pipe = redis::pipe();
                 let processing_key = self
                     .key_builder
                     .get_processing_key_for_iter(hash_key.clone(), bucket_hash.as_str())
@@ -1014,11 +889,6 @@ impl InnerRedisActivationStore {
         ))
     }
 
-    pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
-        // No-op
-        Ok(0)
-    }
-
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
         let mut conn = self.pool.get().await?;
         let mut total_rows_affected = 0;
@@ -1064,68 +934,59 @@ impl InnerRedisActivationStore {
     }
 
     pub async fn handle_delay_until(&self) -> Result<u64, Error> {
-        Ok(0)
-    }
-
-    pub async fn handle_deadletter_tasks(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
-        Ok(vec![])
-    }
-
-    pub async fn mark_deadletter_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
-        Ok(0)
+        let mut conn = self.pool.get().await?;
+        let mut total_rows_affected = 0;
+        for hash_key in self.hash_keys.iter() {
+            for bucket_hash in self.bucket_hashes.iter() {
+                let delay_until_key = self
+                    .key_builder
+                    .get_delay_key_for_iter(hash_key.clone(), bucket_hash.as_str())
+                    .build_redis_key();
+                let activations: Vec<String> = conn
+                    .zrangebyscore(
+                        delay_until_key.clone(),
+                        0,
+                        Utc::now().timestamp_millis() as isize,
+                    )
+                    .await?;
+                if activations.is_empty() {
+                    continue;
+                }
+                total_rows_affected += activations.len() as u64;
+                let mut pipe = redis::pipe();
+                pipe.atomic();
+                for activation_id in activations.iter() {
+                    let pending_key = self
+                        .key_builder
+                        .get_pending_key(hash_key.clone(), activation_id)
+                        .build_redis_key();
+                    pipe.rpush(pending_key, activation_id);
+                    pipe.zrem(delay_until_key.clone(), activation_id);
+                }
+                let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
+                if results.len() != 2 * activations.len() {
+                    return Err(anyhow::anyhow!(
+                        "Failed to remove expired activations: {}",
+                        delay_until_key
+                    ));
+                }
+            }
+        }
+        Ok(total_rows_affected)
     }
 
     pub async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
+        // TODO
         Ok(0)
     }
 
     pub async fn mark_demoted_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        // TODO
         Ok(0)
     }
 
-    pub async fn move_delay_to_pending(&self) -> Result<(), Error> {
-        Ok(())
-    }
-
-    pub async fn get_processing_deadline_exceeded_activations(
-        &self,
-    ) -> Result<Vec<InflightActivation>, Error> {
-        return Ok(vec![]);
-    }
-
-    pub async fn get_processing_attempts_for_activation(&self, id: &str) -> Result<i32, Error> {
-        return Ok(0);
-    }
-
-    pub async fn retry_activation_locally(&self, id: &str) -> Result<(), Error> {
-        // Increment processing attempts by 1 and push back to pending in transaction
-        return Ok(());
-    }
-
-    pub async fn remove_from_processing(&self, id: &str) -> Result<(), Error> {
-        // Remove from processing in transaction
-        return Ok(());
-    }
-
-    pub async fn remove_from_pending(&self, id: &str) -> Result<(), Error> {
-        // Remove from pending in transaction
-        return Ok(());
-    }
-
-    pub async fn remove_from_delay(&self, id: &str) -> Result<(), Error> {
-        // Remove from delay in transaction
-        return Ok(());
-    }
-
-    pub async fn get_deadletter_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        return Ok(vec![]);
-    }
-
-    pub async fn get_expired_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        return Ok(vec![]);
-    }
-
     pub async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> Result<u64, Error> {
+        // TODO
         Ok(0)
     }
 
@@ -1143,7 +1004,7 @@ impl InnerRedisActivationStore {
                 total_count += count;
             }
         }
-        return Ok(total_count);
+        Ok(total_count)
     }
 
     #[instrument(skip_all)]
@@ -1160,7 +1021,7 @@ impl InnerRedisActivationStore {
                 total_count += count;
             }
         }
-        return Ok(total_count);
+        Ok(total_count)
     }
 
     #[instrument(skip_all)]
@@ -1177,7 +1038,7 @@ impl InnerRedisActivationStore {
                 total_count += count;
             }
         }
-        return Ok(total_count);
+        Ok(total_count)
     }
 
     pub async fn count_retry_activations(&self) -> Result<usize, Error> {
@@ -1193,7 +1054,7 @@ impl InnerRedisActivationStore {
                 total_count += count;
             }
         }
-        return Ok(total_count);
+        Ok(total_count)
     }
 
     pub async fn count_deadletter_activations(&self) -> Result<usize, Error> {
@@ -1209,10 +1070,36 @@ impl InnerRedisActivationStore {
                 total_count += count;
             }
         }
-        return Ok(total_count);
+        Ok(total_count)
+    }
+
+    // Only used in testing
+    pub async fn delete_all_keys(&self) -> Result<(), Error> {
+        let mut conn = self.pool.get().await?;
+        let keys: Vec<String> = conn.keys("*").await?;
+        for key in keys {
+            conn.del(key).await?;
+        }
+        Ok(())
     }
 
     pub async fn db_size(&self) -> Result<u64, Error> {
-        return Ok(0);
+        // Not needed
+        Ok(0)
+    }
+
+    pub async fn handle_deadletter_tasks(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
+        // Not needed
+        Ok(vec![])
+    }
+
+    pub async fn mark_deadletter_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        // Not needed
+        Ok(0)
+    }
+
+    pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+        // Not needed
+        Ok(0)
     }
 }

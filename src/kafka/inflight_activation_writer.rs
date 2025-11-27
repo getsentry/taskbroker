@@ -5,13 +5,10 @@ use std::{
 
 use crate::{
     config::Config,
-    store::inflight_activation::{
-        InflightActivation, InflightActivationStatus, InflightActivationStore,
-    },
+    store::inflight_activation::{InflightActivation, InflightActivationStatus},
     store::inflight_redis_activation::RedisActivationStore,
 };
 use chrono::Utc;
-use std::sync::RwLock;
 use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
