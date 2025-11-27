@@ -291,6 +291,7 @@ impl InnerRedisActivationStore {
                 .arg(activation.partition)
                 .arg("namespace")
                 .arg(activation.namespace.clone());
+
             pipe.expire(lookup_key.clone(), self.payload_ttl_seconds as i64);
             let result: Vec<i32> = pipe.query_async(&mut conn).await?;
             if result.len() != 2 {
@@ -455,11 +456,11 @@ impl InnerRedisActivationStore {
                     )
                     .await?;
                 if result == 0 {
-                    return Err(anyhow::anyhow!(
+                    // If the activation is already in the processing set, this is not an error.
+                    error!(
                         "Failed to move activation to processing: {} {}",
-                        processing_key,
-                        activation_id
-                    ));
+                        processing_key, activation_id
+                    );
                 }
 
                 let result: usize = conn
@@ -589,6 +590,7 @@ impl InnerRedisActivationStore {
             activation.topic.clone(),
             activation.partition,
         );
+
         let mut conn = self.pool.get().await?;
         let mut pipe = redis::pipe();
         pipe.atomic();
@@ -640,11 +642,11 @@ impl InnerRedisActivationStore {
         }
 
         if processing_removed != 1 {
-            // Removing from processing set
-            return Err(anyhow::anyhow!(
+            // If another worker already removed the activation from the processing set, this is not an error.
+            error!(
                 "Failed to remove activation from processing set: {}",
                 activation_id
-            ));
+            );
         }
         Ok(())
     }
@@ -686,6 +688,7 @@ impl InnerRedisActivationStore {
 
         // Since this is a global operation, there is no guarantee that the keys will have the same hash key.
         // Group the activations by hash key and then remove them in transactions.
+        // TODO: This is wrong, it should include the bucket hash as well.
         let mut hash_key_to_activations = HashMap::new();
         for activation in activations.iter() {
             let hash_key = HashKey::new(
@@ -1075,11 +1078,15 @@ impl InnerRedisActivationStore {
 
     // Only used in testing
     pub async fn delete_all_keys(&self) -> Result<(), Error> {
+        error!("deleting all keys");
         let mut conn = self.pool.get().await?;
         let keys: Vec<String> = conn.keys("*").await?;
+        let mut deleted_keys = 0;
         for key in keys {
             conn.del(key).await?;
+            deleted_keys += 1;
         }
+        error!("deleted {:?} keys", deleted_keys);
         Ok(())
     }
 

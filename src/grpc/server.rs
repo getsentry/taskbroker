@@ -30,7 +30,6 @@ impl ConsumerService for TaskbrokerServer {
             .store
             .get_pending_activation(namespace.as_deref())
             .await;
-
         match inflight {
             Ok(Some(inflight)) => {
                 let now = Utc::now();

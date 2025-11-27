@@ -69,6 +69,7 @@ async fn main() -> Result<(), Error> {
         )
         .await?,
     );
+
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
         let kafka_client_config = config.kafka_consumer_config();
