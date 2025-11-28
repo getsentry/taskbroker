@@ -8,21 +8,21 @@ from typing import Any
 
 import sentry_sdk
 from arroyo.backends.kafka import KafkaPayload, KafkaProducer
-from arroyo.types import BrokerValue
-from arroyo.types import Topic as ArroyoTopic
-from django.conf import settings
-from sentry.conf.types.kafka_definition import Topic
-from sentry.silo.base import SiloMode
-from sentry.taskworker.constants import DEFAULT_PROCESSING_DEADLINE, CompressionType
-from sentry.taskworker.retry import Retry
-from sentry.taskworker.router import TaskRouter
-from sentry.taskworker.silolimiter import TaskSiloLimit
-from sentry.taskworker.task import P, R, Task
-from sentry.utils import metrics
-from sentry.utils.arroyo_producer import SingletonProducer, get_arroyo_producer
-from sentry.utils.imports import import_string
+from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
+
+# from django.conf import settings
+# from sentry.conf.types.kafka_definition import Topic
+# from sentry.silo.base import SiloMode
+from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, CompressionType
+
+# from sentry.utils import metrics
+# from sentry.utils.arroyo_producer import SingletonProducer, get_arroyo_producer
+from taskbroker_client.imports import import_string
+from taskbroker_client.retry import Retry
+from taskbroker_client.router import TaskRouter
+from taskbroker_client.task import P, R, Task
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ class TaskNamespace:
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
     ):
+        # TODO Figure out how to get producers here.
         self.name = name
         self.router = router
         self.default_retry = retry
@@ -52,7 +53,7 @@ class TaskNamespace:
         self.default_processing_deadline_duration = processing_deadline_duration  # seconds
         self.app_feature = app_feature or name
         self._registered_tasks: dict[str, Task[Any, Any]] = {}
-        self._producers: dict[Topic, SingletonProducer] = {}
+        # self._producers: dict[Topic, SingletonProducer] = {}
 
     def get(self, name: str) -> Task[Any, Any]:
         """
@@ -131,9 +132,6 @@ class TaskNamespace:
                 wait_for_delivery=wait_for_delivery,
                 compression_type=compression_type,
             )
-            if silo_mode:
-                silo_limiter = TaskSiloLimit(silo_mode)
-                task = silo_limiter(task)
             # TODO(taskworker) tasks should be registered into the registry
             # so that we can ensure task names are globally unique
             self._registered_tasks[name] = task
@@ -216,7 +214,8 @@ class TaskRegistry:
         self._router = self._build_router()
 
     def _build_router(self) -> TaskRouter:
-        router_name: str = settings.TASKWORKER_ROUTER
+        # TODO add setting for this
+        router_name = "taskbroker_client.router.DefaultRouter"
         router_class = import_string(router_name)
         router = router_class()
         assert hasattr(router, "route_namespace")
@@ -266,6 +265,3 @@ class TaskRegistry:
         self._namespaces[name] = namespace
 
         return namespace
-
-
-taskregistry = TaskRegistry()
