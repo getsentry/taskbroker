@@ -1,6 +1,7 @@
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
 from taskbroker_client.app import AtMostOnceStore, TaskworkerApp
+from taskbroker_client.router import TaskRouter
 from taskbroker_client.registry import TaskRegistry
 
 
@@ -15,10 +16,21 @@ class StubAtMostOnce(AtMostOnceStore):
         return True
 
 
-def test_taskregistry_param_and_property() -> None:
-    registry = TaskRegistry()
-    app = TaskworkerApp(taskregistry=registry)
-    assert app.taskregistry == registry
+class StubRouter(TaskRouter):
+    def route_namespace(self, name: str) -> str:
+        return "honk"
+
+
+def test_taskregistry_router_object() -> None:
+    app = TaskworkerApp(router_class=StubRouter())
+    ns = app.taskregistry.create_namespace("test")
+    assert ns.topic == "honk"
+
+
+def test_taskregistry_router_str() -> None:
+    app = TaskworkerApp(router_class="taskbroker_client.router.DefaultRouter")
+    ns = app.taskregistry.create_namespace("test")
+    assert ns.topic == "default"
 
 
 def test_set_config() -> None:

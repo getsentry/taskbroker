@@ -72,7 +72,7 @@ class TaskNamespace:
         return name in self._registered_tasks
 
     @property
-    def topic(self) -> Topic:
+    def topic(self) -> str:
         return self.router.route_namespace(self.name)
 
     def register(
@@ -209,18 +209,9 @@ class TaskRegistry:
     during startup.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, router: TaskRouter) -> None:
         self._namespaces: dict[str, TaskNamespace] = {}
-        self._router = self._build_router()
-
-    def _build_router(self) -> TaskRouter:
-        # TODO add setting for this
-        router_name = "taskbroker_client.router.DefaultRouter"
-        router_class = import_string(router_name)
-        router = router_class()
-        assert hasattr(router, "route_namespace")
-
-        return router
+        self._router = router
 
     def contains(self, name: str) -> bool:
         return name in self._namespaces
