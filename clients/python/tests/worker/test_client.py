@@ -11,6 +11,15 @@ from unittest.mock import Mock, patch
 import grpc
 import pytest
 from google.protobuf.message import Message
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    TASK_ACTIVATION_STATUS_COMPLETE,
+    TASK_ACTIVATION_STATUS_RETRY,
+    FetchNextTask,
+    GetTaskResponse,
+    SetTaskStatusResponse,
+    TaskActivation,
+)
+
 from sentry.taskworker.client.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
@@ -20,14 +29,6 @@ from sentry.taskworker.client.client import (
 from sentry.taskworker.client.processing_result import ProcessingResult
 from sentry.taskworker.constants import DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH
 from sentry.testutils.pytest.fixtures import django_db_all
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
-    TASK_ACTIVATION_STATUS_COMPLETE,
-    TASK_ACTIVATION_STATUS_RETRY,
-    FetchNextTask,
-    GetTaskResponse,
-    SetTaskStatusResponse,
-    TaskActivation,
-)
 
 
 @dataclasses.dataclass
