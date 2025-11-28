@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import grpc
+import orjson
 from google.protobuf.message import Message
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     FetchNextTask,
@@ -18,14 +19,13 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_protos.taskbroker.v1.taskbroker_pb2_grpc import ConsumerServiceStub
 
-from sentry.taskworker.client.inflight_task_activation import InflightTaskActivation
-from sentry.taskworker.client.processing_result import ProcessingResult
-from sentry.taskworker.constants import (
+from taskbroker_client.constants import (
     DEFAULT_CONSECUTIVE_UNAVAILABLE_ERRORS,
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_TEMPORARY_UNAVAILABLE_HOST_TIMEOUT,
 )
-from sentry.utils import json, metrics
+from taskbroker_client.metrics import MetricsBackend
+from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 
 logger = logging.getLogger("sentry.taskworker.client")
 
@@ -120,7 +120,7 @@ class HealthCheckSettings:
     touch_interval_sec: float
 
 
-class TaskworkerClient:
+class TaskbrokerClient:
     """
     Taskworker RPC client wrapper
 
@@ -131,6 +131,7 @@ class TaskworkerClient:
     def __init__(
         self,
         hosts: list[str],
+        metrics: MetricsBackend,
         max_tasks_before_rebalance: int = DEFAULT_REBALANCE_AFTER,
         max_consecutive_unavailable_errors: int = DEFAULT_CONSECUTIVE_UNAVAILABLE_ERRORS,
         temporary_unavailable_host_timeout: int = DEFAULT_TEMPORARY_UNAVAILABLE_HOST_TIMEOUT,
@@ -141,6 +142,7 @@ class TaskworkerClient:
         assert len(hosts) > 0, "You must provide at least one RPC host to connect to"
         self._hosts = hosts
         self._rpc_secret = rpc_secret
+        self._metrics = metrics
 
         self._grpc_options: list[tuple[str, Any]] = [
             ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)
@@ -183,7 +185,7 @@ class TaskworkerClient:
                 return
 
             self._health_check_settings.file_path.touch()
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.client.health_check.touched",
             )
             self._timestamp_since_touch = cur_time
@@ -192,7 +194,7 @@ class TaskworkerClient:
         logger.info("taskworker.client.connect", extra={"host": host})
         channel = grpc.insecure_channel(host, options=self._grpc_options)
         if self._rpc_secret:
-            secrets = json.loads(self._rpc_secret)
+            secrets = orjson.loads(self._rpc_secret)
             channel = grpc.intercept_channel(channel, RequestSignatureInterceptor(secrets))
         return ConsumerServiceStub(channel)
 
@@ -229,7 +231,7 @@ class TaskworkerClient:
             self._cur_host = random.choice(available_hosts)
             self._num_tasks_before_rebalance = self._max_tasks_before_rebalance
             self._num_consecutive_unavailable_errors = 0
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.client.loadbalancer.rebalance",
                 tags={"reason": "unavailable_count_reached"},
             )
@@ -237,7 +239,7 @@ class TaskworkerClient:
             self._cur_host = random.choice(available_hosts)
             self._num_tasks_before_rebalance = self._max_tasks_before_rebalance
             self._num_consecutive_unavailable_errors = 0
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.client.loadbalancer.rebalance",
                 tags={"reason": "max_tasks_reached"},
             )
@@ -260,10 +262,10 @@ class TaskworkerClient:
         request = GetTaskRequest(namespace=namespace)
         try:
             host, stub = self._get_cur_stub()
-            with metrics.timer("taskworker.get_task.rpc", tags={"host": host}):
+            with self._metrics.timer("taskworker.get_task.rpc", tags={"host": host}):
                 response = stub.GetTask(request)
         except grpc.RpcError as err:
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.client.rpc_error", tags={"method": "GetTask", "status": err.code().name}
             )
             if err.code() == grpc.StatusCode.NOT_FOUND:
@@ -277,7 +279,7 @@ class TaskworkerClient:
         self._num_consecutive_unavailable_errors = 0
         self._temporary_unavailable_hosts.pop(host, None)
         if response.HasField("task"):
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.client.get_task",
                 tags={"namespace": response.task.namespace},
             )
@@ -298,7 +300,7 @@ class TaskworkerClient:
         """
         self._emit_health_check()
 
-        metrics.incr("taskworker.client.fetch_next", tags={"next": fetch_next_task is not None})
+        self._metrics.incr("taskworker.client.fetch_next", tags={"next": fetch_next_task is not None})
         self._clear_temporary_unavailable_hosts()
         request = SetTaskStatusRequest(
             id=processing_result.task_id,
@@ -308,7 +310,7 @@ class TaskworkerClient:
 
         try:
             if processing_result.host in self._temporary_unavailable_hosts:
-                metrics.incr(
+                self._metrics.incr(
                     "taskworker.client.skipping_set_task_due_to_unavailable_host",
                     tags={"broker_host": processing_result.host},
                 )
@@ -316,10 +318,10 @@ class TaskworkerClient:
                     f"Host: {processing_result.host} is temporarily unavailable"
                 )
 
-            with metrics.timer("taskworker.update_task.rpc", tags={"host": processing_result.host}):
+            with self._metrics.timer("taskworker.update_task.rpc", tags={"host": processing_result.host}):
                 response = self._host_to_stubs[processing_result.host].SetTaskStatus(request)
         except grpc.RpcError as err:
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.client.rpc_error",
                 tags={"method": "SetTaskStatus", "status": err.code().name},
             )

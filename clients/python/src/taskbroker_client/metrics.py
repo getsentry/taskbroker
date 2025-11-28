@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from collections.abc import Mapping
-from typing import Protocol, runtime_checkable
+from contextlib import contextmanager
+from typing import Generator, Protocol, runtime_checkable
 
 Tags = Mapping[str, str]
 
@@ -40,6 +41,20 @@ class MetricsBackend(Protocol):
         """
         raise NotImplementedError
 
+    @contextmanager
+    def timer(
+        self,
+        key: str,
+        instance: str | None = None,
+        tags: Tags | None = None,
+        sample_rate: float | None = None,
+        stacklevel: int = 0,
+    ) -> Generator[None]:
+        """
+        Records a distribution metric with a context manager.
+        """
+        raise NotImplementedError
+
 
 class NoOpMetricsBackend(MetricsBackend):
     """
@@ -64,3 +79,14 @@ class NoOpMetricsBackend(MetricsBackend):
         sample_rate: float | None = None,
     ) -> None:
         pass
+
+    @contextmanager
+    def timer(
+        self,
+        key: str,
+        instance: str | None = None,
+        tags: Tags | None = None,
+        sample_rate: float | None = None,
+        stacklevel: int = 0,
+    ) -> Generator[None]:
+        yield None
