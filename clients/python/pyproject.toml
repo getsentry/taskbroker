@@ -1,0 +1,76 @@
+[project]
+name = "taskbroker-client"
+version = "0.1.0"
+description = "Taskbroker python client and worker runtime"
+readme = "README.md"
+requires-python = ">=3.12.11"
+dependencies = [
+    "sentry-protos>=0.2.0",
+    "confluent_kafka>=2.3.0",
+    "grpcio==1.66.1",
+    "orjson>=3.10.10",
+    "protobuf>=5.28.3",
+    "types-protobuf>=6.30.2.20250703",
+]
+
+[dependency-groups]
+dev = [
+    "devservices>=1.2.1",
+    "sentry-devenv>=1.22.2",
+    "black==24.10.0",
+    "pre-commit>=4.2.0",
+    "pytest>=8.3.3",
+    "flake8>=7.3.0",
+    "isort>=5.13.2",
+    "mypy>=1.17.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.2,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+url = "https://pypi.devinfra.sentry.io/simple"
+default = true
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.mypy]
+mypy_path = "python"
+explicit_package_bases = true
+# minimal strictness settings
+check_untyped_defs = true
+no_implicit_reexport = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+enable_error_code = ["ignore-without-code", "redundant-self"]
+local_partial_types = true  # compat with dmypy
+disallow_any_generics = true
+disallow_untyped_defs = true
+
+# begin: missing 3rd party stubs
+[[tool.mypy.overrides]]
+module = [
+    "confluent_kafka.*",
+]
+ignore_missing_imports = true
+# end: missing 3rd party stubs
+
+[tool.black]
+# File filtering is taken care of in pre-commit.
+line-length = 100
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+lines_between_sections = 1
