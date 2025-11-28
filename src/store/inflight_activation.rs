@@ -1,6 +1,5 @@
-use std::{str::FromStr, time::Instant};
-
 use anyhow::{Error, anyhow};
+use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Utc};
 use libsqlite3_sys::{
     SQLITE_DBSTATUS_CACHE_HIT, SQLITE_DBSTATUS_CACHE_MISS, SQLITE_DBSTATUS_CACHE_SPILL,
@@ -20,6 +19,8 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
+use std::collections::HashMap;
+use std::{str::FromStr, time::Instant};
 use tracing::instrument;
 
 use crate::config::Config;
@@ -48,6 +49,19 @@ impl InflightActivationStatus {
                 | InflightActivationStatus::Failure
         )
     }
+
+    pub fn decode_from_str(value: String) -> Self {
+        match value.as_str() {
+            "Unspecified" => InflightActivationStatus::Unspecified,
+            "Pending" => InflightActivationStatus::Pending,
+            "Processing" => InflightActivationStatus::Processing,
+            "Failure" => InflightActivationStatus::Failure,
+            "Retry" => InflightActivationStatus::Retry,
+            "Complete" => InflightActivationStatus::Complete,
+            "Delay" => InflightActivationStatus::Delay,
+            _ => InflightActivationStatus::Unspecified,
+        }
+    }
 }
 
 impl From<TaskActivationStatus> for InflightActivationStatus {
@@ -71,6 +85,9 @@ pub struct InflightActivation {
 
     /// The current status of the activation
     pub status: InflightActivationStatus,
+
+    /// The topic the activation was received from
+    pub topic: String,
 
     /// The partition the activation was received from
     pub partition: i32,
@@ -200,6 +217,7 @@ impl From<TableRow> for InflightActivation {
             id: value.id,
             activation: value.activation,
             status: value.status,
+            topic: "topic".to_string(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -213,6 +231,61 @@ impl From<TableRow> for InflightActivation {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+        }
+    }
+}
+
+impl From<HashMap<String, String>> for InflightActivation {
+    fn from(value: HashMap<String, String>) -> Self {
+        let decoded_activation = general_purpose::STANDARD
+            .decode(value.get("activation").unwrap().clone())
+            .unwrap();
+        let expires_at = value.get("expires_at").map(|expires_at| {
+            DateTime::from_timestamp_millis(expires_at.parse::<i64>().unwrap()).unwrap()
+        });
+        let delay_until = value.get("delay_until").map(|delay_until| {
+            DateTime::from_timestamp_millis(delay_until.parse::<i64>().unwrap()).unwrap()
+        });
+        let processing_deadline = value.get("processing_deadline").map(|processing_deadline| {
+            DateTime::from_timestamp_millis(processing_deadline.parse::<i64>().unwrap()).unwrap()
+        });
+        Self {
+            id: value.get("id").unwrap().to_string(),
+            activation: decoded_activation,
+            status: InflightActivationStatus::decode_from_str(
+                value.get("status").unwrap().to_string(),
+            ),
+            topic: value.get("topic").unwrap().to_string(),
+            partition: value.get("partition").unwrap().parse::<i32>().unwrap(),
+            offset: value.get("offset").unwrap().parse::<i64>().unwrap(),
+            added_at: DateTime::from_timestamp_millis(
+                value.get("added_at").unwrap().parse::<i64>().unwrap(),
+            )
+            .unwrap(),
+            received_at: DateTime::from_timestamp_millis(
+                value.get("received_at").unwrap().parse::<i64>().unwrap(),
+            )
+            .unwrap(),
+            processing_attempts: value
+                .get("processing_attempts")
+                .unwrap()
+                .parse::<i32>()
+                .unwrap(),
+            processing_deadline_duration: value
+                .get("processing_deadline_duration")
+                .unwrap()
+                .parse::<u32>()
+                .unwrap(),
+            expires_at,
+            delay_until,
+            processing_deadline,
+            at_most_once: value.get("at_most_once").unwrap().parse::<bool>().unwrap(),
+            namespace: value.get("namespace").unwrap().to_string(),
+            taskname: value.get("taskname").unwrap().to_string(),
+            on_attempts_exceeded: OnAttemptsExceeded::from_str_name(
+                value.get("on_attempts_exceeded").unwrap().as_str(),
+            )
+            .unwrap(),
         }
     }
 }

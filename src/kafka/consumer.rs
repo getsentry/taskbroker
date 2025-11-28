@@ -1,3 +1,4 @@
+use crate::store::inflight_redis_activation::RedisActivationStore;
 use anyhow::{Error, anyhow};
 use futures::{
     Stream, StreamExt,
@@ -21,10 +22,8 @@ use std::{
     future::Future,
     iter,
     mem::take,
-    sync::{
-        Arc,
-        mpsc::{SyncSender, sync_channel},
-    },
+    sync::Arc,
+    sync::mpsc::{SyncSender, sync_channel},
     time::Duration,
 };
 use tokio::{
@@ -44,6 +43,7 @@ use tracing::{debug, error, info, instrument, warn};
 pub async fn start_consumer(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
+    redis_store: Arc<RedisActivationStore>,
     spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,
         &BTreeSet<(String, i32)>,
@@ -51,7 +51,7 @@ pub async fn start_consumer(
 ) -> Result<(), Error> {
     let (client_shutdown_sender, client_shutdown_receiver) = oneshot::channel();
     let (event_sender, event_receiver) = unbounded_channel();
-    let context = KafkaContext::new(event_sender.clone());
+    let context = KafkaContext::new(event_sender.clone(), redis_store.clone());
     let consumer: Arc<StreamConsumer<KafkaContext>> = Arc::new(
         kafka_client_config
             .create_with_context(context)
@@ -67,6 +67,7 @@ pub async fn start_consumer(
     metrics::gauge!("arroyo.consumer.current_partitions").set(0);
     handle_events(
         consumer,
+        redis_store,
         event_receiver,
         client_shutdown_sender,
         spawn_actors,
@@ -118,11 +119,18 @@ pub fn poll_consumer_client(
 #[derive(Debug)]
 pub struct KafkaContext {
     event_sender: UnboundedSender<(Event, SyncSender<()>)>,
+    redis_store: Arc<RedisActivationStore>,
 }
 
 impl KafkaContext {
-    pub fn new(event_sender: UnboundedSender<(Event, SyncSender<()>)>) -> Self {
-        Self { event_sender }
+    pub fn new(
+        event_sender: UnboundedSender<(Event, SyncSender<()>)>,
+        redis_store: Arc<RedisActivationStore>,
+    ) -> Self {
+        Self {
+            event_sender,
+            redis_store,
+        }
     }
 }
 
@@ -339,6 +347,7 @@ enum ConsumerState {
 #[instrument(skip_all)]
 pub async fn handle_events(
     consumer: Arc<StreamConsumer<KafkaContext>>,
+    redis_store: Arc<RedisActivationStore>,
     events: UnboundedReceiver<(Event, SyncSender<()>)>,
     shutdown_client: oneshot::Sender<()>,
     mut spawn_actors: impl FnMut(
@@ -372,6 +381,17 @@ pub async fn handle_events(
                 state = match (state, event) {
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
                         metrics::gauge!("arroyo.consumer.current_partitions").set(tpl.len() as f64);
+                        let mut topics = HashMap::<String, Vec<i32>>::new();
+                        for (topic, partition) in tpl.iter() {
+                            if !topics.contains_key(topic) {
+                                topics.insert(topic.clone(), vec![*partition]);
+                            } else {
+                                topics.get_mut(topic).unwrap().push(*partition);
+                            }
+                        }
+                        for (topic, partitions) in topics.iter() {
+                            redis_store.rebalance_partitions(topic.clone(), partitions.clone()).await;
+                        }
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
