@@ -12,11 +12,8 @@ import orjson
 import sentry_sdk
 import zstandard as zstd
 
-# from django.conf import settings
-# from django.utils import timezone
 from google.protobuf.timestamp_pb2 import Timestamp
 
-# from sentry.utils import metrics
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DISCARD,
     RetryState,
@@ -33,6 +30,12 @@ from taskbroker_client.retry import Retry
 if TYPE_CHECKING:
     from taskbroker_client.registry import TaskNamespace
 
+
+ALWAYS_EAGER = False
+"""
+Whether or not tasks should be invoked eagerly (synchronously)
+This can be mutated by application test harnesses to run tasks without Kafka.
+"""
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -126,10 +129,9 @@ class Task(Generic[P, R]):
         activation = self.create_activation(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
-        if settings.TASKWORKER_ALWAYS_EAGER:
+        if ALWAYS_EAGER:
             self._func(*args, **kwargs)
         else:
-            # TODO(taskworker) promote parameters to headers
             self._namespace.send_task(
                 activation,
                 wait_for_delivery=self.wait_for_delivery,
@@ -137,8 +139,8 @@ class Task(Generic[P, R]):
 
     def _signal_send(self, task: Task[Any, Any], args: Any, kwargs: Any) -> None:
         """
-        This method is a stub that sentry.testutils.task_runner.BurstRunner or other testing
-        hooks can monkeypatch to capture tasks that are being produced.
+        This method is a stub that test harnesses can monkey patch to capture tasks that
+        are being produced.
         """
         pass
 
@@ -151,7 +153,7 @@ class Task(Generic[P, R]):
         countdown: int | datetime.timedelta | None = None,
     ) -> TaskActivation:
         received_at = Timestamp()
-        received_at.FromDatetime(timezone.now())
+        received_at.FromDatetime(datetime.datetime.now(tz=datetime.UTC))
 
         processing_deadline = self._processing_deadline_duration
         if isinstance(processing_deadline, datetime.timedelta):
@@ -201,22 +203,22 @@ class Task(Generic[P, R]):
             parameters_str = base64.b64encode(zstd.compress(parameters_json)).decode("utf8")
             end_time = time.perf_counter()
 
-            metrics.distribution(
+            self.namespace.metrics.distribution(
                 "taskworker.producer.compressed_parameters_size",
                 len(parameters_str),
                 tags={
                     "namespace": self._namespace.name,
                     "taskname": self.name,
-                    "topic": self._namespace.topic.value,
+                    "topic": self._namespace.topic,
                 },
             )
-            metrics.distribution(
+            self.namespace.metrics.distribution(
                 "taskworker.producer.compression_time",
                 end_time - start_time,
                 tags={
                     "namespace": self._namespace.name,
                     "taskname": self.name,
-                    "topic": self._namespace.topic.value,
+                    "topic": self._namespace.topic
                 },
             )
         else:

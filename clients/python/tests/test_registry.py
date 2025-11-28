@@ -1,27 +1,31 @@
 import base64
 from concurrent.futures import Future
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import orjson
 import pytest
 import zstandard as zstd
-from django.test.utils import override_settings
-from sentry.conf.types.kafka_definition import Topic
-from sentry.taskworker.constants import MAX_PARAMETER_BYTES_BEFORE_COMPRESSION, CompressionType
-from sentry.taskworker.registry import TaskNamespace, TaskRegistry
-from sentry.taskworker.retry import LastAction, Retry
-from sentry.taskworker.router import DefaultRouter
-from sentry.taskworker.task import Task
+# from django.test.utils import override_settings
+# from sentry.conf.types.kafka_definition import Topic
+from taskbroker_client.constants import MAX_PARAMETER_BYTES_BEFORE_COMPRESSION, CompressionType
+from taskbroker_client.registry import TaskNamespace, TaskRegistry
+from taskbroker_client.retry import LastAction, Retry
+from taskbroker_client.router import DefaultRouter
+from taskbroker_client.metrics import NoOpMetricsBackend
+from taskbroker_client.task import Task
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DEADLETTER,
     ON_ATTEMPTS_EXCEEDED_DISCARD,
 )
+from .conftest import producer_factory
 
 
 def test_namespace_register_task() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=None,
     )
 
@@ -41,7 +45,9 @@ def test_namespace_register_task() -> None:
 def test_namespace_register_inherits_default_retry() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=Retry(times=5, on=(RuntimeError,)),
     )
 
@@ -69,7 +75,9 @@ def test_namespace_register_inherits_default_retry() -> None:
 def test_register_inherits_default_expires_processing_deadline() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=None,
         expires=10 * 60,
         processing_deadline_duration=5,
@@ -97,7 +105,9 @@ def test_register_inherits_default_expires_processing_deadline() -> None:
 def test_namespace_get_unknown() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=None,
     )
 
@@ -106,11 +116,12 @@ def test_namespace_get_unknown() -> None:
     assert "No task registered" in str(err)
 
 
-@pytest.mark.django_db
 def test_namespace_send_task_no_retry() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=None,
     )
 
@@ -124,23 +135,24 @@ def test_namespace_send_task_no_retry() -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DISCARD
 
     mock_producer = Mock()
-    namespace._producers[Topic.TASKWORKER] = mock_producer
+    namespace._producers["taskbroker"] = mock_producer
 
     namespace.send_task(activation)
     assert mock_producer.produce.call_count == 1
 
     mock_call = mock_producer.produce.call_args
-    assert mock_call[0][0].name == "taskworker"
+    assert mock_call[0][0].name == "taskbroker"
 
     proto_message = mock_call[0][1].value
     assert proto_message == activation.SerializeToString()
 
 
-@pytest.mark.django_db
 def test_namespace_send_task_with_compression() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=None,
     )
 
@@ -163,11 +175,12 @@ def test_namespace_send_task_with_compression() -> None:
     assert actual_params == expected_params
 
 
-@pytest.mark.django_db
 def test_namespace_send_task_with_auto_compression() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=None,
     )
 
@@ -191,11 +204,12 @@ def test_namespace_send_task_with_auto_compression() -> None:
     assert actual_params == expected_params
 
 
-@pytest.mark.django_db
 def test_namespace_send_task_with_retry() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=None,
     )
 
@@ -211,7 +225,7 @@ def test_namespace_send_task_with_retry() -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DEADLETTER
 
     mock_producer = Mock()
-    namespace._producers[Topic.TASKWORKER] = mock_producer
+    namespace._producers["taskbroker"] = mock_producer
 
     namespace.send_task(activation)
     assert mock_producer.produce.call_count == 1
@@ -221,11 +235,12 @@ def test_namespace_send_task_with_retry() -> None:
     assert proto_message == activation.SerializeToString()
 
 
-@pytest.mark.django_db
 def test_namespace_with_retry_send_task() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=Retry(times=3),
     )
 
@@ -239,23 +254,24 @@ def test_namespace_with_retry_send_task() -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DISCARD
 
     mock_producer = Mock()
-    namespace._producers[Topic.TASKWORKER] = mock_producer
+    namespace._producers["taskbroker"] = mock_producer
 
     namespace.send_task(activation)
     assert mock_producer.produce.call_count == 1
 
     mock_call = mock_producer.produce.call_args
-    assert mock_call[0][0].name == "taskworker"
+    assert mock_call[0][0].name == "taskbroker"
 
     proto_message = mock_call[0][1].value
     assert proto_message == activation.SerializeToString()
 
 
-@pytest.mark.django_db
 def test_namespace_with_wait_for_delivery_send_task() -> None:
     namespace = TaskNamespace(
         name="tests",
+        producer_factory=producer_factory,
         router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
         retry=Retry(times=3),
     )
 
@@ -266,7 +282,7 @@ def test_namespace_with_wait_for_delivery_send_task() -> None:
     activation = simple_task.create_activation([], {})
 
     mock_producer = Mock()
-    namespace._producers[Topic.TASKWORKER] = mock_producer
+    namespace._producers["taskbroker"] = mock_producer
 
     ret_value: Future[None] = Future()
     ret_value.set_result(None)
@@ -275,15 +291,18 @@ def test_namespace_with_wait_for_delivery_send_task() -> None:
     assert mock_producer.produce.call_count == 1
 
     mock_call = mock_producer.produce.call_args
-    assert mock_call[0][0].name == "taskworker"
+    assert mock_call[0][0].name == "taskbroker"
 
     proto_message = mock_call[0][1].value
     assert proto_message == activation.SerializeToString()
 
 
-@pytest.mark.django_db
 def test_registry_get() -> None:
-    registry = TaskRegistry()
+    registry = TaskRegistry(
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+    )
     ns = registry.create_namespace(name="tests")
 
     assert isinstance(ns, TaskNamespace)
@@ -298,9 +317,12 @@ def test_registry_get() -> None:
     assert registry.contains("tests")
 
 
-@pytest.mark.django_db
 def test_registry_get_task() -> None:
-    registry = TaskRegistry()
+    registry = TaskRegistry(
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+    )
     ns = registry.create_namespace(name="tests")
 
     @ns.register(name="test.simpletask")
@@ -317,15 +339,18 @@ def test_registry_get_task() -> None:
         registry.get_task(ns.name, "nope")
 
 
-@pytest.mark.django_db
 def test_registry_create_namespace_simple() -> None:
-    registry = TaskRegistry()
+    registry = TaskRegistry(
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+    )
     ns = registry.create_namespace(name="tests")
     assert ns.default_retry is None
     assert ns.default_expires is None
     assert ns.default_processing_deadline_duration == 10
     assert ns.name == "tests"
-    assert ns.topic == Topic.TASKWORKER
+    assert ns.topic == "taskbroker"
     assert ns.app_feature == "tests"
 
     retry = Retry(times=3)
@@ -340,31 +365,16 @@ def test_registry_create_namespace_simple() -> None:
     assert ns.default_processing_deadline_duration == 60
     assert ns.default_expires == 60 * 10
     assert ns.name == "test-two"
-    assert ns.topic == Topic.TASKWORKER
+    assert ns.topic == "taskbroker"
     assert ns.app_feature == "anvils"
 
 
-@pytest.mark.django_db
 def test_registry_create_namespace_duplicate() -> None:
-    registry = TaskRegistry()
+    registry = TaskRegistry(
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+    )
     registry.create_namespace(name="tests")
     with pytest.raises(ValueError, match="tests already exists"):
         registry.create_namespace(name="tests")
-
-
-@pytest.mark.django_db
-def test_registry_create_namespace_route_setting() -> None:
-    with override_settings(TASKWORKER_ROUTES='{"profiling":"profiles", "lol":"nope"}'):
-        registry = TaskRegistry()
-
-        # namespaces without routes resolve to the default topic.
-        tests = registry.create_namespace(name="tests")
-        assert tests.topic == Topic.TASKWORKER
-
-        profiling = registry.create_namespace(name="profiling")
-        assert profiling.topic == Topic.PROFILES
-
-        with pytest.raises(ValueError):
-            ns = registry.create_namespace(name="lol")
-            # Should raise as the name is routed to an invalid topic
-            ns.topic

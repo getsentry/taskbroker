@@ -11,8 +11,8 @@ class TaskRouter(Protocol):
 
 class DefaultRouter(TaskRouter):
     """
-    Stub router that resolves all namespaces to the default topic
+    Stub router that resolves all namespaces to a default topic
     """
 
     def route_namespace(self, name: str) -> str:
-        return "default"
+        return "taskbroker"
