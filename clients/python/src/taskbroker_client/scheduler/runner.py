@@ -3,19 +3,19 @@ from __future__ import annotations
 import heapq
 import logging
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from django.utils import timezone
 from redis.client import StrictRedis
 from rediscluster import RedisCluster
-from taskbroker_client.scheduler.config import ScheduleConfig, crontab
-from sentry.taskworker.app import TaskworkerApp
-from sentry.taskworker.scheduler.schedules import CrontabSchedule, Schedule, TimedeltaSchedule
-from sentry.taskworker.task import Task
-from sentry.utils import metrics
 from sentry_sdk import capture_exception
 from sentry_sdk.crons import MonitorStatus, capture_checkin
+
+from taskbroker_client.app import TaskbrokerApp
+from taskbroker_client.metrics import MetricsBackend
+from taskbroker_client.scheduler.config import ScheduleConfig, crontab
+from taskbroker_client.scheduler.schedules import CrontabSchedule, Schedule, TimedeltaSchedule
+from taskbroker_client.task import Task
 
 logger = logging.getLogger("taskworker.scheduler")
 
@@ -30,8 +30,11 @@ class RunStorage:
     in the future, or adapt taskworkers for other applications should we need to.
     """
 
-    def __init__(self, redis: RedisCluster[str] | StrictRedis[str]) -> None:
+    def __init__(
+        self, metrics: MetricsBackend, redis: RedisCluster[str] | StrictRedis[str]
+    ) -> None:
         self._redis = redis
+        self._metrics = metrics
 
     def _make_key(self, taskname: str) -> str:
         return f"tw:scheduler:{taskname}"
@@ -44,7 +47,7 @@ class RunStorage:
 
         Returns False when the key is set and a task should not be spawned.
         """
-        now = timezone.now()
+        now = datetime.now(tz=UTC)
         # next_runtime & now could be the same second, and redis gets sad if ex=0
         duration = max(int((next_runtime - now).total_seconds()), 1)
 
@@ -60,7 +63,9 @@ class RunStorage:
         if result:
             return datetime.fromisoformat(result)
 
-        metrics.incr("taskworker.scheduler.run_storage.read.miss", tags={"taskname": taskname})
+        self._metrics.incr(
+            "taskworker.scheduler.run_storage.read.miss", tags={"taskname": taskname}
+        )
         return None
 
     def read_many(self, tasknames: list[str]) -> Mapping[str, datetime | None]:
@@ -149,7 +154,7 @@ class ScheduleEntry:
     def monitor_config(self) -> MonitorConfig | None:
         checkin_config: MonitorConfig = {
             "schedule": {},
-            "timezone": timezone.get_current_timezone_name(),
+            "timezone": "UTC",
         }
         if isinstance(self._schedule, CrontabSchedule):
             checkin_config["schedule"]["type"] = "crontab"
@@ -177,7 +182,7 @@ class ScheduleRunner:
     is used in a while loop to spawn tasks and sleep.
     """
 
-    def __init__(self, app: TaskworkerApp, run_storage: RunStorage) -> None:
+    def __init__(self, app: TaskbrokerApp, run_storage: RunStorage) -> None:
         self._entries: list[ScheduleEntry] = []
         self._app = app
         self._run_storage = run_storage
@@ -230,14 +235,14 @@ class ScheduleRunner:
         return self._heap[0][0]
 
     def _try_spawn(self, entry: ScheduleEntry) -> None:
-        now = timezone.now()
+        now = datetime.now(tz=UTC)
         next_runtime = entry.runtime_after(now)
         if self._run_storage.set(entry.fullname, next_runtime):
             entry.delay_task()
             entry.set_last_run(now)
 
             logger.debug("taskworker.scheduler.delay_task", extra={"fullname": entry.fullname})
-            metrics.incr(
+            self._app.metrics.incr(
                 "taskworker.scheduler.delay_task",
                 tags={
                     "taskname": entry.taskname,
@@ -258,7 +263,7 @@ class ScheduleRunner:
                     "last_runtime": run_state.isoformat() if run_state else None,
                 },
             )
-            metrics.incr(
+            self._app.metrics.incr(
                 "taskworker.scheduler.sync_with_storage",
                 tags={"taskname": entry.taskname, "namespace": entry.namespace},
             )
