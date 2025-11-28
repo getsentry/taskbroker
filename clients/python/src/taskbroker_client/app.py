@@ -1,26 +1,26 @@
 import importlib
 from collections.abc import Iterable
-from typing import Any, Protocol
+from typing import Any
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
+from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.registry import TaskRegistry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.imports import import_string
+from taskbroker_client.types import AtMostOnceStore, ProducerFactory
 
 
-class AtMostOnceStore(Protocol):
-    def add(self, key: str, value: str, timeout: int) -> bool: ...
-
-
-class TaskworkerApp:
+class TaskbrokerApp:
     """
     Container for an application's task setup and configuration.
     """
 
     def __init__(
         self,
+        producer_factory: ProducerFactory,
         router_class: str | TaskRouter = "taskbroker_client.router.DefaultRouter",
+        metrics_class: str | MetricsBackend = "taskbroker_client.metrics.NoOpMetricsBackend",
         at_most_once_store: AtMostOnceStore | None = None,
     ) -> None:
         self._config = {
@@ -28,8 +28,11 @@ class TaskworkerApp:
             "at_most_once_timeout": None,
         }
         self._modules: Iterable[str] = []
+        self._metrics = self._build_metrics(metrics_class)
         self._taskregistry = TaskRegistry(
-            router=self._build_router(router_class)
+            producer_factory=producer_factory,
+            router=self._build_router(router_class),
+            metrics=self._metrics,
         )
         if at_most_once_store:
             self.at_most_once_store(at_most_once_store)
@@ -43,6 +46,12 @@ class TaskworkerApp:
         assert hasattr(router, "route_namespace")
 
         return router
+
+    def _build_metrics(self, backend_name: str | MetricsBackend) -> MetricsBackend:
+        if isinstance(backend_name, str):
+            metrics_class = import_string(backend_name)
+            return metrics_class()
+        return backend_name
 
     @property
     def taskregistry(self) -> TaskRegistry:
@@ -93,7 +102,7 @@ def get_at_most_once_key(namespace: str, taskname: str, task_id: str) -> str:
     return f"tw:amo:{namespace}:{taskname}:{task_id}"
 
 
-def import_app(app_module: str) -> TaskworkerApp:
+def import_app(app_module: str) -> TaskbrokerApp:
     """
     Resolve an application path like `acme.worker.runtime:app`
     into the `app` symbol defined in the module.

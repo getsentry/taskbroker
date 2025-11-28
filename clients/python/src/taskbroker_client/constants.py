@@ -52,6 +52,13 @@ The number of gRPC requests before touching the health check file
 """
 
 
+ALWAYS_EAGER = False
+"""
+Whether or not tasks should be invoked eagerly (synchronously)
+This can be mutated by application test harnesses to run tasks without Kafka.
+"""
+
+
 class CompressionType(Enum):
     """
     The type of compression used for task parameters.

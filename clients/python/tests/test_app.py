@@ -1,8 +1,9 @@
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
-from taskbroker_client.app import AtMostOnceStore, TaskworkerApp
+from taskbroker_client.app import TaskbrokerApp
 from taskbroker_client.router import TaskRouter
-from taskbroker_client.registry import TaskRegistry
+from taskbroker_client.types import AtMostOnceStore
+from .conftest import producer_factory
 
 
 class StubAtMostOnce(AtMostOnceStore):
@@ -21,20 +22,27 @@ class StubRouter(TaskRouter):
         return "honk"
 
 
+
 def test_taskregistry_router_object() -> None:
-    app = TaskworkerApp(router_class=StubRouter())
+    app = TaskbrokerApp(
+        producer_factory=producer_factory,
+        router_class=StubRouter()
+    )
     ns = app.taskregistry.create_namespace("test")
     assert ns.topic == "honk"
 
 
 def test_taskregistry_router_str() -> None:
-    app = TaskworkerApp(router_class="taskbroker_client.router.DefaultRouter")
+    app = TaskbrokerApp(
+        producer_factory=producer_factory,
+        router_class="taskbroker_client.router.DefaultRouter",
+    )
     ns = app.taskregistry.create_namespace("test")
     assert ns.topic == "default"
 
 
 def test_set_config() -> None:
-    app = TaskworkerApp()
+    app = TaskbrokerApp(producer_factory=producer_factory)
     app.set_config({"rpc_secret": "testing", "ignored": "key"})
     assert app.config["rpc_secret"] == "testing"
     assert "ignored" not in app.config
@@ -49,7 +57,7 @@ def test_should_attempt_at_most_once() -> None:
         processing_deadline_duration=2,
     )
     at_most = StubAtMostOnce()
-    app = TaskworkerApp()
+    app = TaskbrokerApp(producer_factory=producer_factory)
     app.at_most_once_store(at_most)
     assert app.should_attempt_at_most_once(activation)
     assert not app.should_attempt_at_most_once(activation)

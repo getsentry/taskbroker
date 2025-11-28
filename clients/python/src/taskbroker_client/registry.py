@@ -12,17 +12,13 @@ from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
 
-# from django.conf import settings
-# from sentry.conf.types.kafka_definition import Topic
-# from sentry.silo.base import SiloMode
 from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, CompressionType
 
-# from sentry.utils import metrics
-# from sentry.utils.arroyo_producer import SingletonProducer, get_arroyo_producer
-from taskbroker_client.imports import import_string
+from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import P, R, Task
+from taskbroker_client.types import ProducerFactory
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +35,14 @@ class TaskNamespace:
     def __init__(
         self,
         name: str,
+        producer_factory: ProducerFactory,
         router: TaskRouter,
+        metrics: MetricsBackend,
         retry: Retry | None,
         expires: int | datetime.timedelta | None = None,
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
     ):
-        # TODO Figure out how to get producers here.
         self.name = name
         self.router = router
         self.default_retry = retry
@@ -53,7 +50,9 @@ class TaskNamespace:
         self.default_processing_deadline_duration = processing_deadline_duration  # seconds
         self.app_feature = app_feature or name
         self._registered_tasks: dict[str, Task[Any, Any]] = {}
-        # self._producers: dict[Topic, SingletonProducer] = {}
+        self._producers: dict[str, KafkaProducer] = {}
+        self._producer_factory = producer_factory
+        self.metrics = metrics
 
     def get(self, name: str) -> Task[Any, Any]:
         """
@@ -85,7 +84,6 @@ class TaskNamespace:
         at_most_once: bool = False,
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
-        silo_mode: SiloMode | None = None,
     ) -> Callable[[Callable[P, R]], Task[P, R]]:
         """
         Register a task.
@@ -141,12 +139,12 @@ class TaskNamespace:
 
     def _handle_produce_future(self, future: ProducerFuture, tags: dict[str, str]) -> None:
         if future.cancelled():
-            metrics.incr("taskworker.registry.send_task.cancelled", tags=tags)
+            self.metrics.incr("taskworker.registry.send_task.cancelled", tags=tags)
         elif future.exception(1):
             # this does not block since this callback only gets run when the future is finished and exception is set
-            metrics.incr("taskworker.registry.send_task.failed", tags=tags)
+            self.metrics.incr("taskworker.registry.send_task.failed", tags=tags)
         else:
-            metrics.incr("taskworker.registry.send_task.success", tags=tags)
+            self.metrics.incr("taskworker.registry.send_task.success", tags=tags)
 
     def send_task(self, activation: TaskActivation, wait_for_delivery: bool = False) -> None:
         topic = self.router.route_namespace(self.name)
@@ -161,16 +159,16 @@ class TaskNamespace:
             span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
 
             produce_future = self._producer(topic).produce(
-                ArroyoTopic(name=topic.value),
+                Topic(name=topic),
                 KafkaPayload(key=None, value=activation.SerializeToString(), headers=[]),
             )
 
-        metrics.incr(
+        self.metrics.incr(
             "taskworker.registry.send_task.scheduled",
             tags={
                 "namespace": activation.namespace,
                 "taskname": activation.taskname,
-                "topic": topic.value,
+                "topic": topic,
             },
         )
         # We know this type is futures.Future, but cannot assert so,
@@ -181,7 +179,7 @@ class TaskNamespace:
                 tags={
                     "namespace": activation.namespace,
                     "taskname": activation.taskname,
-                    "topic": topic.value,
+                    "topic": topic,
                 },
             )
         )
@@ -191,16 +189,13 @@ class TaskNamespace:
             except Exception:
                 logger.exception("Failed to wait for delivery")
 
-    def _producer(self, topic: Topic) -> SingletonProducer:
+    def _producer(self, topic: str) -> KafkaProducer:
         if topic not in self._producers:
-
-            def factory() -> KafkaProducer:
-                return get_arroyo_producer(f"sentry.taskworker.{topic.value}", topic)
-
-            self._producers[topic] = SingletonProducer(factory, max_futures=1000)
+            self._producers[topic] = self._producer_factory(topic)
         return self._producers[topic]
 
 
+# TODO(mark) All of TaskRegistry could be folded into TaskworkerApp later.
 class TaskRegistry:
     """
     Registry of all namespaces.
@@ -209,9 +204,16 @@ class TaskRegistry:
     during startup.
     """
 
-    def __init__(self, router: TaskRouter) -> None:
+    def __init__(
+        self,
+        producer_factory: ProducerFactory,
+        router: TaskRouter,
+        metrics: MetricsBackend,
+    ) -> None:
         self._namespaces: dict[str, TaskNamespace] = {}
+        self._producer_factory = producer_factory
         self._router = router
+        self._metrics = metrics
 
     def contains(self, name: str) -> bool:
         return name in self._namespaces
@@ -248,6 +250,8 @@ class TaskRegistry:
         namespace = TaskNamespace(
             name=name,
             router=self._router,
+            metrics=self._metrics,
+            producer_factory=self._producer_factory,
             retry=retry,
             expires=expires,
             processing_deadline_duration=processing_deadline_duration,
