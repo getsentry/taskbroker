@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from django.utils import timezone
 from redis.client import StrictRedis
 from rediscluster import RedisCluster
-from sentry.conf.types.taskworker import ScheduleConfig, crontab
+from taskbroker_client.scheduler.config import ScheduleConfig, crontab
 from sentry.taskworker.app import TaskworkerApp
 from sentry.taskworker.scheduler.schedules import CrontabSchedule, Schedule, TimedeltaSchedule
 from sentry.taskworker.task import Task

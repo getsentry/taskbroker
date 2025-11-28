@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import abc
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import TYPE_CHECKING
 
 from cronsim import CronSim, CronSimError
-from django.utils import timezone
-from sentry.conf.types.taskworker import crontab
+from taskbroker_client.scheduler.config import crontab
 
 if TYPE_CHECKING:
     from sentry_sdk._types import MonitorConfigScheduleUnit
@@ -81,7 +80,7 @@ class TimedeltaSchedule(Schedule):
         if last_run is None:
             return 0
         # floor to timestamp as microseconds are not relevant
-        now = int(timezone.now().timestamp())
+        now = int(datetime.now(tz=UTC).timestamp())
         last_run_ts = int(last_run.timestamp())
 
         seconds_remaining = self._delta.total_seconds() - (now - last_run_ts)
@@ -112,7 +111,7 @@ class CrontabSchedule(Schedule):
         self._crontab = crontab
         self._name = name
         try:
-            self._cronsim = CronSim(str(crontab), timezone.now())
+            self._cronsim = CronSim(str(crontab), datetime.now(tz=UTC))
         except CronSimError as e:
             raise ValueError(f"crontab expression {self._crontab} is invalid") from e
 
@@ -123,7 +122,7 @@ class CrontabSchedule(Schedule):
     def is_due(self, last_run: datetime | None = None) -> bool:
         """Check if the schedule is due to run again based on last_run."""
         if last_run is None:
-            last_run = timezone.now() - timedelta(minutes=1)
+            last_run = datetime.now(tz=UTC) - timedelta(minutes=1)
         remaining = self.remaining_seconds(last_run)
         return remaining <= 0
 
@@ -134,11 +133,11 @@ class CrontabSchedule(Schedule):
         Use the current time to find the next schedule time
         """
         if last_run is None:
-            last_run = timezone.now() - timedelta(minutes=1)
+            last_run = datetime.now(tz=UTC) - timedelta(minutes=1)
 
         # This could result in missed beats, or increased load on redis.
         last_run = last_run.replace(second=0, microsecond=0)
-        now = timezone.now().replace(second=0, microsecond=0)
+        now = datetime.now(tz=UTC).replace(second=0, microsecond=0)
 
         # A future last_run means we should wait until the
         # next scheduled time, and then we can try again.
