@@ -11,24 +11,27 @@ from uuid import uuid4
 import orjson
 import sentry_sdk
 import zstandard as zstd
-from django.conf import settings
-from django.utils import timezone
+
+# from django.conf import settings
+# from django.utils import timezone
 from google.protobuf.timestamp_pb2 import Timestamp
-from sentry.taskworker.constants import (
-    DEFAULT_PROCESSING_DEADLINE,
-    MAX_PARAMETER_BYTES_BEFORE_COMPRESSION,
-    CompressionType,
-)
-from sentry.taskworker.retry import Retry
-from sentry.utils import metrics
+
+# from sentry.utils import metrics
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DISCARD,
     RetryState,
     TaskActivation,
 )
 
+from taskbroker_client.constants import (
+    DEFAULT_PROCESSING_DEADLINE,
+    MAX_PARAMETER_BYTES_BEFORE_COMPRESSION,
+    CompressionType,
+)
+from taskbroker_client.retry import Retry
+
 if TYPE_CHECKING:
-    from sentry.taskworker.registry import TaskNamespace
+    from taskbroker_client.registry import TaskNamespace
 
 
 P = ParamSpec("P")

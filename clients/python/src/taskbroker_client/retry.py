@@ -3,14 +3,15 @@ from __future__ import annotations
 from enum import Enum
 from multiprocessing.context import TimeoutError
 
-from sentry.taskworker.state import current_task
-from sentry.utils import metrics
+# from sentry.utils import metrics
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DEADLETTER,
     ON_ATTEMPTS_EXCEEDED_DISCARD,
     OnAttemptsExceeded,
     RetryState,
 )
+
+from taskbroker_client.state import current_task
 
 
 class RetryTaskError(Exception):
