@@ -19,16 +19,10 @@ class MetricsBackend(Protocol):
         name: str,
         value: int | float = 1,
         tags: Tags | None = None,
+        sample_rate: float | None = None,
     ) -> None:
         """
         Increments a counter metric by a given value.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def gauge(self, name: str, value: int | float, tags: Tags | None = None) -> None:
-        """
-        Sets a gauge metric to the given value.
         """
         raise NotImplementedError
 
@@ -39,6 +33,7 @@ class MetricsBackend(Protocol):
         value: int | float,
         tags: Tags | None = None,
         unit: str | None = None,
+        sample_rate: float | None = None,
     ) -> None:
         """
         Records a distribution metric.
@@ -56,10 +51,8 @@ class NoOpMetricsBackend(MetricsBackend):
         name: str,
         value: int | float = 1,
         tags: Tags | None = None,
+        sample_rate: float | None = None,
     ) -> None:
-        pass
-
-    def gauge(self, name: str, value: int | float, tags: Tags | None = None) -> None:
         pass
 
     def distribution(
@@ -68,5 +61,6 @@ class NoOpMetricsBackend(MetricsBackend):
         value: int | float,
         tags: Tags | None = None,
         unit: str | None = None,
+        sample_rate: float | None = None,
     ) -> None:
         pass

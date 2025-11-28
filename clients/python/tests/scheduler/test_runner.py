@@ -2,19 +2,19 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock, patch
 
 import pytest
-from django.utils import timezone
-from sentry.conf.types.taskworker import crontab
-from sentry.silo.base import SiloMode
-from sentry.taskworker.app import TaskworkerApp
-from sentry.taskworker.scheduler.runner import RunStorage, ScheduleRunner
-from sentry.testutils.helpers.datetime import freeze_time
-from sentry.testutils.thread_leaks.pytest import thread_leak_allowlist
-from sentry.utils.redis import redis_clusters
+from redis import StrictRedis
+
+from taskbroker_client.app import TaskbrokerApp
+from taskbroker_client.metrics import NoOpMetricsBackend
+from taskbroker_client.scheduler.config import crontab
+from taskbroker_client.scheduler.runner import RunStorage, ScheduleRunner
+
+from ..conftest import freeze_time, producer_factory
 
 
 @pytest.fixture
-def task_app() -> TaskworkerApp:
-    app = TaskworkerApp()
+def task_app() -> TaskbrokerApp:
+    app = TaskbrokerApp(producer_factory=producer_factory)
     namespace = app.taskregistry.create_namespace("test")
 
     @namespace.register(name="valid")
@@ -30,21 +30,22 @@ def task_app() -> TaskworkerApp:
 
 @pytest.fixture
 def run_storage() -> RunStorage:
-    redis = redis_clusters.get("default")
+    # TODO use env vars for redis port.
+    redis = StrictRedis(host="localhost", port=6379, decode_responses=True)
     redis.flushdb()
-    return RunStorage(redis)
+    return RunStorage(metrics=NoOpMetricsBackend(), redis=redis)
 
 
 def test_runstorage_zero_duration(run_storage: RunStorage) -> None:
     with freeze_time("2025-07-19 14:25:00"):
-        now = timezone.now()
+        now = datetime.now(tz=UTC)
         result = run_storage.set("test:do_stuff", now)
         assert result is True
 
 
 def test_runstorage_double_set(run_storage: RunStorage) -> None:
     with freeze_time("2025-07-19 14:25:00"):
-        now = timezone.now()
+        now = datetime.now(tz=UTC)
         first = run_storage.set("test:do_stuff", now)
         second = run_storage.set("test:do_stuff", now)
 
@@ -52,7 +53,6 @@ def test_runstorage_double_set(run_storage: RunStorage) -> None:
         assert second is False, "writing a key that exists should fail"
 
 
-@pytest.mark.django_db
 def test_schedulerunner_add_invalid(task_app) -> None:
     run_storage = Mock(spec=RunStorage)
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
@@ -88,18 +88,16 @@ def test_schedulerunner_add_invalid(task_app) -> None:
     assert "microseconds" in str(err)
 
 
-@pytest.mark.django_db
-def test_schedulerunner_tick_no_tasks(task_app: TaskworkerApp, run_storage: RunStorage) -> None:
+def test_schedulerunner_tick_no_tasks(task_app: TaskbrokerApp, run_storage: RunStorage) -> None:
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
 
-    with freeze_time("2025-01-24 14:25:00"):
+    with freeze_time("2025-01-24 14:25:00 UTC"):
         sleep_time = schedule_set.tick()
         assert sleep_time == 60
 
 
-@pytest.mark.django_db
 def test_schedulerunner_tick_one_task_time_remaining(
-    task_app: TaskworkerApp, run_storage: RunStorage
+    task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
 
@@ -111,11 +109,11 @@ def test_schedulerunner_tick_one_task_time_remaining(
         },
     )
     # Last run was two minutes ago.
-    with freeze_time("2025-01-24 14:23:00"):
+    with freeze_time("2025-01-24 14:23:00 UTC"):
         run_storage.set("test:valid", datetime(2025, 1, 24, 14, 28, 0, tzinfo=UTC))
 
     namespace = task_app.taskregistry.get("test")
-    with freeze_time("2025-01-24 14:25:00"), patch.object(namespace, "send_task") as mock_send:
+    with freeze_time("2025-01-24 14:25:00 UTC"), patch.object(namespace, "send_task") as mock_send:
         sleep_time = schedule_set.tick()
         assert sleep_time == 180
         assert mock_send.call_count == 0
@@ -124,9 +122,8 @@ def test_schedulerunner_tick_one_task_time_remaining(
     assert last_run == datetime(2025, 1, 24, 14, 23, 0, tzinfo=UTC)
 
 
-@pytest.mark.django_db
 def test_schedulerunner_tick_one_task_spawned(
-    task_app: TaskworkerApp, run_storage: RunStorage
+    task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     run_storage = Mock(spec=RunStorage)
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
@@ -140,12 +137,12 @@ def test_schedulerunner_tick_one_task_spawned(
 
     # Last run was 5 minutes from the freeze_time below
     run_storage.read_many.return_value = {
-        "test:valid": datetime(2025, 1, 24, 14, 19, 55),
+        "test:valid": datetime(2025, 1, 24, 14, 19, 55, tzinfo=UTC),
     }
     run_storage.set.return_value = True
 
     namespace = task_app.taskregistry.get("test")
-    with freeze_time("2025-01-24 14:25:00"), patch.object(namespace, "send_task") as mock_send:
+    with freeze_time("2025-01-24 14:25:00 UTC"), patch.object(namespace, "send_task") as mock_send:
         sleep_time = schedule_set.tick()
         assert sleep_time == 300
         assert mock_send.call_count == 1
@@ -160,10 +157,9 @@ def test_schedulerunner_tick_one_task_spawned(
     run_storage.set.assert_called_with("test:valid", datetime(2025, 1, 24, 14, 30, 0, tzinfo=UTC))
 
 
-@pytest.mark.django_db
-@patch("sentry.taskworker.scheduler.runner.capture_checkin")
+@patch("taskbroker_client.scheduler.runner.capture_checkin")
 def test_schedulerunner_tick_create_checkin(
-    mock_capture_checkin: Mock, task_app: TaskworkerApp, run_storage: RunStorage
+    mock_capture_checkin: Mock, task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     run_storage = Mock(spec=RunStorage)
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
@@ -177,14 +173,14 @@ def test_schedulerunner_tick_create_checkin(
 
     # Last run was 5 minutes from the freeze_time below
     run_storage.read_many.return_value = {
-        "test:valid": datetime(2025, 1, 24, 14, 19, 55),
+        "test:valid": datetime(2025, 1, 24, 14, 19, 55, tzinfo=UTC),
     }
     run_storage.set.return_value = True
     mock_capture_checkin.return_value = "checkin-id"
 
     namespace = task_app.taskregistry.get("test")
     with (
-        freeze_time("2025-01-24 14:25:00"),
+        freeze_time("2025-01-24 14:25:00 UTC"),
         patch.object(namespace, "send_task") as mock_send,
     ):
         sleep_time = schedule_set.tick()
@@ -215,9 +211,8 @@ def test_schedulerunner_tick_create_checkin(
         )
 
 
-@pytest.mark.django_db
 def test_schedulerunner_tick_key_exists_no_spawn(
-    task_app: TaskworkerApp, run_storage: RunStorage
+    task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
     schedule_set.add(
@@ -229,30 +224,28 @@ def test_schedulerunner_tick_key_exists_no_spawn(
     )
 
     namespace = task_app.taskregistry.get("test")
-    with patch.object(namespace, "send_task") as mock_send, freeze_time("2025-01-24 14:25:00"):
+    with patch.object(namespace, "send_task") as mock_send, freeze_time("2025-01-24 14:25:00 UTC"):
         # Run tick() to initialize state in the scheduler. This will write a key to run_storage.
         sleep_time = schedule_set.tick()
         assert sleep_time == 300
         assert mock_send.call_count == 1
 
-    with freeze_time("2025-01-24 14:30:00"):
+    with freeze_time("2025-01-24 14:30:00 UTC"):
         # Set a key into run_storage to simulate another scheduler running
         run_storage.delete("test:valid")
-        assert run_storage.set("test:valid", timezone.now() + timedelta(minutes=2))
+        assert run_storage.set("test:valid", datetime.now(tz=UTC) + timedelta(minutes=2))
 
     # Our scheduler would wakeup and tick again.
     # The key exists in run_storage so we should not spawn a task.
     # last_run time should synchronize with run_storage state, and count down from 14:30
-    with freeze_time("2025-01-24 14:30:02"):
+    with freeze_time("2025-01-24 14:30:02 UTC"):
         sleep_time = schedule_set.tick()
         assert sleep_time == 298
         assert mock_send.call_count == 1
 
 
-@pytest.mark.django_db
-@thread_leak_allowlist(reason="taskworker", issue=97034)
 def test_schedulerunner_tick_one_task_multiple_ticks(
-    task_app: TaskworkerApp, run_storage: RunStorage
+    task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
     schedule_set.add(
@@ -263,22 +256,21 @@ def test_schedulerunner_tick_one_task_multiple_ticks(
         },
     )
 
-    with freeze_time("2025-01-24 14:25:00"):
+    with freeze_time("2025-01-24 14:25:00 UTC"):
         sleep_time = schedule_set.tick()
         assert sleep_time == 300
 
-    with freeze_time("2025-01-24 14:26:00"):
+    with freeze_time("2025-01-24 14:26:00 UTC"):
         sleep_time = schedule_set.tick()
         assert sleep_time == 240
 
-    with freeze_time("2025-01-24 14:28:00"):
+    with freeze_time("2025-01-24 14:28:00 UTC"):
         sleep_time = schedule_set.tick()
         assert sleep_time == 120
 
 
-@pytest.mark.django_db
 def test_schedulerunner_tick_one_task_multiple_ticks_crontab(
-    task_app: TaskworkerApp, run_storage: RunStorage
+    task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
     schedule_set.add(
@@ -291,26 +283,25 @@ def test_schedulerunner_tick_one_task_multiple_ticks_crontab(
 
     namespace = task_app.taskregistry.get("test")
     with patch.object(namespace, "send_task") as mock_send:
-        with freeze_time("2025-01-24 14:24:00"):
+        with freeze_time("2025-01-24 14:24:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 120
         assert mock_send.call_count == 1
 
-        with freeze_time("2025-01-24 14:25:00"):
+        with freeze_time("2025-01-24 14:25:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 60
 
         # Remove key to simulate expiration
         run_storage.delete("test:valid")
-        with freeze_time("2025-01-24 14:26:00"):
+        with freeze_time("2025-01-24 14:26:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 120
         assert mock_send.call_count == 2
 
 
-@pytest.mark.django_db
 def test_schedulerunner_tick_multiple_tasks(
-    task_app: TaskworkerApp, run_storage: RunStorage
+    task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
     schedule_set.add(
@@ -330,13 +321,13 @@ def test_schedulerunner_tick_multiple_tasks(
 
     namespace = task_app.taskregistry.get("test")
     with patch.object(namespace, "send_task") as mock_send:
-        with freeze_time("2025-01-24 14:25:00"):
+        with freeze_time("2025-01-24 14:25:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 120
 
         assert mock_send.call_count == 2
 
-        with freeze_time("2025-01-24 14:26:00"):
+        with freeze_time("2025-01-24 14:26:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 60
 
@@ -344,7 +335,7 @@ def test_schedulerunner_tick_multiple_tasks(
 
         # Remove the redis key, as the ttl in redis doesn't respect freeze_time()
         run_storage.delete("test:second")
-        with freeze_time("2025-01-24 14:27:01"):
+        with freeze_time("2025-01-24 14:27:01 UTC"):
             sleep_time = schedule_set.tick()
             # two minutes left on the 5 min task
             assert sleep_time == 120
@@ -352,9 +343,8 @@ def test_schedulerunner_tick_multiple_tasks(
         assert mock_send.call_count == 3
 
 
-@pytest.mark.django_db
 def test_schedulerunner_tick_fast_and_slow(
-    task_app: TaskworkerApp, run_storage: RunStorage
+    task_app: TaskbrokerApp, run_storage: RunStorage
 ) -> None:
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
     schedule_set.add(
@@ -374,7 +364,7 @@ def test_schedulerunner_tick_fast_and_slow(
 
     namespace = task_app.taskregistry.get("test")
     with patch.object(namespace, "send_task") as mock_send:
-        with freeze_time("2025-01-24 14:25:00"):
+        with freeze_time("2025-01-24 14:25:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
 
@@ -382,7 +372,7 @@ def test_schedulerunner_tick_fast_and_slow(
         assert called == ["valid"]
 
         run_storage.delete("test:valid")
-        with freeze_time("2025-01-24 14:25:30"):
+        with freeze_time("2025-01-24 14:25:30 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
 
@@ -390,7 +380,7 @@ def test_schedulerunner_tick_fast_and_slow(
         assert called == ["valid", "valid"]
 
         run_storage.delete("test:valid")
-        with freeze_time("2025-01-24 14:26:00"):
+        with freeze_time("2025-01-24 14:26:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
 
@@ -398,7 +388,7 @@ def test_schedulerunner_tick_fast_and_slow(
         assert called == ["valid", "valid", "second", "valid"]
 
         run_storage.delete("test:valid")
-        with freeze_time("2025-01-24 14:26:30"):
+        with freeze_time("2025-01-24 14:26:30 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
 
@@ -406,7 +396,7 @@ def test_schedulerunner_tick_fast_and_slow(
         assert called == ["valid", "valid", "second", "valid", "valid"]
 
         run_storage.delete("test:valid")
-        with freeze_time("2025-01-24 14:27:00"):
+        with freeze_time("2025-01-24 14:27:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
 
@@ -424,47 +414,3 @@ def test_schedulerunner_tick_fast_and_slow(
 
 def extract_sent_tasks(mock: Mock) -> list[str]:
     return [call[0][0].taskname for call in mock.call_args_list]
-
-
-@pytest.mark.django_db
-def test_schedulerunner_silo_limited_task_has_task_properties() -> None:
-    app = TaskworkerApp()
-    namespace = app.taskregistry.create_namespace("test")
-
-    @namespace.register(
-        name="region_task",
-        at_most_once=True,
-        wait_for_delivery=True,
-        silo_mode=SiloMode.REGION,
-    )
-    def region_task() -> None:
-        pass
-
-    for attr in region_task.__dict__.keys():
-        if attr.startswith("_") and not attr.startswith("__"):
-            continue
-        assert hasattr(region_task, attr)
-
-    assert region_task.fullname == "test:region_task"
-    assert region_task.namespace.name == "test"
-    assert region_task.name == "region_task"
-    assert region_task.at_most_once is True
-    assert region_task.wait_for_delivery is True
-
-    run_storage = Mock(spec=RunStorage)
-    schedule_set = ScheduleRunner(app=app, run_storage=run_storage)
-    schedule_set.add(
-        "region-task",
-        {
-            "task": "test:region_task",
-            "schedule": timedelta(minutes=5),
-        },
-    )
-
-    schedule_set.log_startup()
-
-    assert len(schedule_set._entries) == 1
-    entry = schedule_set._entries[0]
-    assert entry.fullname == "test:region_task"
-    assert entry.namespace == "test"
-    assert entry.taskname == "region_task"

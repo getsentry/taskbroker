@@ -4,10 +4,10 @@ from typing import Any
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
+from taskbroker_client.imports import import_string
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.registry import TaskRegistry
 from taskbroker_client.router import TaskRouter
-from taskbroker_client.imports import import_string
 from taskbroker_client.types import AtMostOnceStore, ProducerFactory
 
 
@@ -23,16 +23,16 @@ class TaskbrokerApp:
         metrics_class: str | MetricsBackend = "taskbroker_client.metrics.NoOpMetricsBackend",
         at_most_once_store: AtMostOnceStore | None = None,
     ) -> None:
+        self.metrics = self._build_metrics(metrics_class)
         self._config = {
             "rpc_secret": None,
             "at_most_once_timeout": None,
         }
         self._modules: Iterable[str] = []
-        self._metrics = self._build_metrics(metrics_class)
         self._taskregistry = TaskRegistry(
             producer_factory=producer_factory,
             router=self._build_router(router_class),
-            metrics=self._metrics,
+            metrics=self.metrics,
         )
         if at_most_once_store:
             self.at_most_once_store(at_most_once_store)
