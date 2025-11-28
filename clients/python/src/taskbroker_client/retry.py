@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from multiprocessing.context import TimeoutError
 
-# from sentry.utils import metrics
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DEADLETTER,
     ON_ATTEMPTS_EXCEEDED_DISCARD,
@@ -12,6 +12,8 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 
 from taskbroker_client.state import current_task
+
+logger = logging.getLogger(__name__)
 
 
 class RetryTaskError(Exception):
@@ -48,7 +50,9 @@ def retry_task(exc: Exception | None = None, raise_on_no_retries: bool = True) -
     """
     current = current_task()
     if current and not current.retries_remaining:
-        metrics.incr("taskworker.retry.no_retries_remaining")
+        logger.info("taskworker.retry.no_retries_remaining", extra={
+            "taskname": current.taskname
+        })
         if raise_on_no_retries:
             raise NoRetriesRemainingError()
         else:

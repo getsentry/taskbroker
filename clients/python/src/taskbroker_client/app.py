@@ -26,6 +26,7 @@ class TaskbrokerApp:
         self.metrics = self._build_metrics(metrics_class)
         self._config = {
             "rpc_secret": None,
+            "grpc_config": None,
             "at_most_once_timeout": None,
         }
         self._modules: Iterable[str] = []
@@ -34,8 +35,7 @@ class TaskbrokerApp:
             router=self._build_router(router_class),
             metrics=self.metrics,
         )
-        if at_most_once_store:
-            self.at_most_once_store(at_most_once_store)
+        self.at_most_once_store(at_most_once_store)
 
     def _build_router(self, router_name: str | TaskRouter) -> TaskRouter:
         if isinstance(router_name, str):
@@ -80,7 +80,7 @@ class TaskbrokerApp:
         for mod in self._modules:
             __import__(mod)
 
-    def at_most_once_store(self, backend: AtMostOnceStore) -> None:
+    def at_most_once_store(self, backend: AtMostOnceStore | None) -> None:
         """
         Set the backend store for `at_most_once` tasks.
         The storage implementation should support atomic operations

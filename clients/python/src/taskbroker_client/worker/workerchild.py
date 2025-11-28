@@ -15,9 +15,13 @@ from typing import Any
 import orjson
 import sentry_sdk
 import zstandard as zstd
-from sentry.taskworker.client.inflight_task_activation import InflightTaskActivation
-from sentry.taskworker.client.processing_result import ProcessingResult
-from sentry.taskworker.constants import CompressionType
+
+from taskbroker_client.app import import_app
+from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.constants import CompressionType
+from taskbroker_client.retry import NoRetriesRemainingError
+from taskbroker_client.state import clear_current_task, current_task, set_current_task
+from taskbroker_client.task import Task
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_COMPLETE,
     TASK_ACTIVATION_STATUS_FAILURE,
@@ -33,18 +37,6 @@ logger = logging.getLogger("sentry.taskworker.worker")
 
 class ProcessingDeadlineExceeded(BaseException):
     pass
-
-
-def child_worker_init(process_type: str) -> None:
-    """
-    Configure django and load task modules for workers
-    Child worker processes are spawned and don't inherit db
-    connections or configuration from the parent process.
-    """
-    from sentry.runner import configure
-
-    if process_type == "spawn":
-        configure()
 
 
 @contextlib.contextmanager
@@ -107,18 +99,10 @@ def child_process(
     and not the module root. If modules that include django are imported at
     the module level the wrong django settings will be used.
     """
-    child_worker_init(process_type)
-
-    from sentry.taskworker.app import import_app
-    from sentry.taskworker.retry import NoRetriesRemainingError
-    from sentry.taskworker.state import clear_current_task, current_task, set_current_task
-    from sentry.taskworker.task import Task
-    from sentry.utils import metrics
-    from sentry.utils.memory import track_memory_usage
-
     app = import_app(app_module)
     app.load_modules()
     taskregistry = app.taskregistry
+    metrics = app.metrics
 
     def _get_known_task(activation: TaskActivation) -> Task[Any, Any] | None:
         if not taskregistry.contains(activation.namespace):
@@ -344,7 +328,7 @@ def child_process(
             }
         }
         with (
-            track_memory_usage(
+            metrics.track_memory_usage(
                 "taskworker.worker.memory_change",
                 tags={"namespace": activation.namespace, "taskname": activation.taskname},
             ),
@@ -440,7 +424,7 @@ def child_process(
         namespace = taskregistry.get(activation.namespace)
         metrics.incr(
             "taskworker.cogs.usage",
-            amount=int(execution_duration * 1000),
+            value=int(execution_duration * 1000),
             tags={"feature": namespace.app_feature},
         )
 
