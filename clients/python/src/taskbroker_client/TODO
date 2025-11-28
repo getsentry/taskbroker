@@ -1,9 +1,0 @@
-Fix ups
-- metrics - How will that even work?
-  Maybe attach a metrics backend to the app, and import the app all over the place?
-- Kafka producers? - Use arroyo? How to get at the singletons's? Perhaps have a protocol for getting a producer based on topic?
-
-
-Application improvements
-- need a way to inject a router object.
-- need a way to provide a producer factory.
