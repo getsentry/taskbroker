@@ -15,23 +15,20 @@ from typing import Any
 import grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import FetchNextTask
 
-from sentry import options
-from sentry.taskworker.app import import_app
-from sentry.taskworker.client.client import (
+from taskbroker_client.app import import_app
+from taskbroker_client.worker.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
-    TaskworkerClient,
+    TaskbrokerClient,
 )
-from sentry.taskworker.client.inflight_task_activation import InflightTaskActivation
-from sentry.taskworker.client.processing_result import ProcessingResult
-from sentry.taskworker.constants import (
+from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.constants import (
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
     MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE,
 )
-from sentry.taskworker.workerchild import child_process
-from sentry.utils import metrics
+from taskbroker_client.worker.workerchild import child_process
 
 logger = logging.getLogger("sentry.taskworker.worker")
 
@@ -72,8 +69,9 @@ class TaskWorker:
         self._concurrency = concurrency
         app = import_app(app_module)
 
-        self.client = TaskworkerClient(
+        self.client = TaskbrokerClient(
             hosts=broker_hosts,
+            metrics=app.metrics,
             max_tasks_before_rebalance=rebalance_after,
             health_check_settings=(
                 None
@@ -81,8 +79,10 @@ class TaskWorker:
                 else HealthCheckSettings(Path(health_check_file_path), health_check_sec_per_touch)
             ),
             rpc_secret=app.config["rpc_secret"],
-            grpc_config=options.get("taskworker.grpc_service_config"),
+            grpc_config=app.config["grpc_config"],
         )
+        self._metrics = app.metrics
+
         if process_type == "fork":
             self.mp_context = multiprocessing.get_context("fork")
         elif process_type == "spawn":
@@ -181,7 +181,7 @@ class TaskWorker:
             # causing processing deadline expiration.
             # Whereas in pools that have consistent short tasks, this happens
             # more frequently, allowing workers to run more smoothly.
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.worker.add_tasks.child_tasks_full",
                 tags={"processing_pool": self._processing_pool_name},
             )
@@ -194,13 +194,13 @@ class TaskWorker:
             try:
                 start_time = time.monotonic()
                 self._child_tasks.put(inflight)
-                metrics.distribution(
+                self._metrics.distribution(
                     "taskworker.worker.child_task.put.duration",
                     time.monotonic() - start_time,
                     tags={"processing_pool": self._processing_pool_name},
                 )
             except queue.Full:
-                metrics.incr(
+                self._metrics.incr(
                     "taskworker.worker.child_tasks.put.full",
                     tags={"processing_pool": self._processing_pool_name},
                 )
@@ -231,15 +231,16 @@ class TaskWorker:
             iopool = ThreadPoolExecutor(max_workers=self._concurrency)
             with iopool as executor:
                 while not self._shutdown_event.is_set():
-                    fetch_next = self._processing_pool_name not in options.get(
-                        "taskworker.fetch_next.disabled_pools"
-                    )
-
+                    # TODO We should remove fetch_next = False from sentry as it couldn't be rolled
+                    # out everywhere.
+                    # fetch_next = self._processing_pool_name not in options.get(
+                    #     "taskworker.fetch_next.disabled_pools"
+                    # )
                     try:
                         result = self._processed_tasks.get(timeout=1.0)
-                        executor.submit(self._send_result, result, fetch_next)
+                        executor.submit(self._send_result, result, fetch=True)
                     except queue.Empty:
-                        metrics.incr(
+                        self._metrics.incr(
                             "taskworker.worker.result_thread.queue_empty",
                             tags={"processing_pool": self._processing_pool_name},
                         )
@@ -257,7 +258,7 @@ class TaskWorker:
         Run in a thread to avoid blocking the process, and during shutdown/
         See `start_result_thread`
         """
-        metrics.distribution(
+        self._metrics.distribution(
             "taskworker.worker.complete_duration",
             time.monotonic() - result.receive_timestamp,
             tags={"processing_pool": self._processing_pool_name},
@@ -273,7 +274,7 @@ class TaskWorker:
                 try:
                     start_time = time.monotonic()
                     self._child_tasks.put(next)
-                    metrics.distribution(
+                    self._metrics.distribution(
                         "taskworker.worker.child_task.put.duration",
                         time.monotonic() - start_time,
                         tags={"processing_pool": self._processing_pool_name},
@@ -360,7 +361,7 @@ class TaskWorker:
                         "taskworker.spawn_child",
                         extra={"pid": process.pid, "processing_pool": self._processing_pool_name},
                     )
-                    metrics.incr(
+                    self._metrics.incr(
                         "taskworker.worker.spawn_child",
                         tags={"processing_pool": self._processing_pool_name},
                     )
@@ -387,7 +388,7 @@ class TaskWorker:
             return None
 
         if not activation:
-            metrics.incr(
+            self._metrics.incr(
                 "taskworker.worker.fetch_task.not_found",
                 tags={"processing_pool": self._processing_pool_name},
             )
