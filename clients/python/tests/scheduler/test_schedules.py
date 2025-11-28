@@ -1,10 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from django.utils import timezone
-from sentry.conf.types.taskworker import crontab
-from sentry.taskworker.scheduler.schedules import CrontabSchedule, TimedeltaSchedule
-from sentry.testutils.helpers.datetime import freeze_time
+from taskbroker_client.scheduler.config import crontab
+from taskbroker_client.scheduler.schedules import CrontabSchedule, TimedeltaSchedule
+from ..conftest import freeze_time
 
 
 def test_timedeltaschedule_invalid() -> None:
@@ -17,7 +16,7 @@ def test_timedeltaschedule_invalid() -> None:
 
 @freeze_time("2025-01-24 14:25:00")
 def test_timedeltaschedule_is_due() -> None:
-    now = timezone.now()
+    now = datetime.now(tz=UTC)
     schedule = TimedeltaSchedule(timedelta(minutes=5))
 
     assert not schedule.is_due(now)
@@ -48,7 +47,7 @@ def test_timedeltaschedule_monitor_interval() -> None:
 
 @freeze_time("2025-01-24 14:25:00")
 def test_timedeltaschedule_remaining_seconds() -> None:
-    now = timezone.now()
+    now = datetime.now(tz=UTC)
     delta = timedelta(minutes=5)
     schedule = TimedeltaSchedule(delta)
 
@@ -81,33 +80,33 @@ def test_crontabschedule_is_due() -> None:
 
     # no last_run and not time to spawn
     with freeze_time("2025-01-24 14:23:00"):
-        now = timezone.now()
+        now = datetime.now(tz=UTC)
         assert not schedule.is_due(None)
         assert not schedule.is_due(now)
 
     with freeze_time("2025-01-24 14:25:00"):
-        now = timezone.now()
+        now = datetime.now(tz=UTC)
         assert schedule.is_due(None)
         assert not schedule.is_due(now)
 
     # last run was 14:20, current time is 14:22 = not due
     with freeze_time("2025-01-24 14:22:00"):
-        two_twenty = timezone.now() - timedelta(minutes=2)
+        two_twenty = datetime.now(tz=UTC) - timedelta(minutes=2)
         assert not schedule.is_due(two_twenty)
 
     # last run was 14:20, current time is 14:25 = due
     with freeze_time("2025-01-24 14:25:00"):
-        two_twenty = timezone.now() - timedelta(minutes=5)
+        two_twenty = datetime.now(tz=UTC) - timedelta(minutes=5)
         assert schedule.is_due(two_twenty)
 
     # last run was 14:15, current time is 14:25 = due as we missed an interval
     with freeze_time("2025-01-24 14:25:00"):
-        two_fifteen = timezone.now() - timedelta(minutes=10)
+        two_fifteen = datetime.now(tz=UTC) - timedelta(minutes=10)
         assert schedule.is_due(two_fifteen)
 
     # last run was 14:26 (the future) current time is 14:25 = not due
     with freeze_time("2025-01-24 14:25:00"):
-        future = timezone.now() + timedelta(minutes=1)
+        future = datetime.now(tz=UTC) + timedelta(minutes=1)
         assert not schedule.is_due(future)
 
 
@@ -126,52 +125,52 @@ def test_crontabschedule_remaining_seconds() -> None:
 
     # last run was late (14:21), next spawn is at 14:25
     with freeze_time("2025-01-24 14:25:00"):
-        four_min_ago = timezone.now() - timedelta(minutes=4)
+        four_min_ago = datetime.now(tz=UTC) - timedelta(minutes=4)
         assert schedule.remaining_seconds(four_min_ago) == 0
 
     # last run was 5 min ago, right on schedule
     with freeze_time("2025-01-24 14:25:00"):
-        five_min_ago = timezone.now() - timedelta(minutes=5)
+        five_min_ago = datetime.now(tz=UTC) - timedelta(minutes=5)
         assert schedule.remaining_seconds(five_min_ago) == 0
 
     # last run was mere seconds ago. 5 min remaining
     with freeze_time("2025-01-24 14:25:10"):
-        five_min_ago = timezone.now()
+        five_min_ago = datetime.now(tz=UTC)
         assert schedule.remaining_seconds(five_min_ago) == 300
 
     # Later in the minute. crontabs only have minute precision.
     with freeze_time("2025-01-24 14:25:59"):
-        five_min_ago = timezone.now()
+        five_min_ago = datetime.now(tz=UTC)
         assert schedule.remaining_seconds(five_min_ago) == 300
 
     # It isn't time yet, as we're mid interval
     with freeze_time("2025-01-24 14:23:10"):
-        three_min_ago = timezone.now() - timedelta(minutes=3)
+        three_min_ago = datetime.now(tz=UTC) - timedelta(minutes=3)
         assert schedule.remaining_seconds(three_min_ago) == 120
 
     # 14:19 was 1 min late, we missed a beat but we're currently on time.
     with freeze_time("2025-01-24 14:25:10"):
-        six_min_ago = timezone.now() - timedelta(minutes=6)
+        six_min_ago = datetime.now(tz=UTC) - timedelta(minutes=6)
         assert schedule.remaining_seconds(six_min_ago) == 0
 
     # We have missed a few intervals, try to get back on schedule for the next beat
     with freeze_time("2025-01-24 14:23:00"):
-        twenty_two_min_ago = timezone.now() - timedelta(minutes=22)
+        twenty_two_min_ago = datetime.now(tz=UTC) - timedelta(minutes=22)
         assert schedule.remaining_seconds(twenty_two_min_ago) == 120
 
     # We have encountered a value from the future.
     # Our clock could be wrong, or we competing with another scheduler.
     # Advance to the next tick 14:30.
     with freeze_time("2025-01-24 14:24:00"):
-        future_two = timezone.now() + timedelta(minutes=2)
+        future_two = datetime.now(tz=UTC) + timedelta(minutes=2)
         assert schedule.remaining_seconds(future_two) == 360
 
 
-@freeze_time("2025-01-24 14:25:00")
+@freeze_time(datetime(2025, 1, 24, 14, 25, 0, tzinfo=UTC))
 def test_crontabschedule_runtime_after() -> None:
     schedule = CrontabSchedule("test", crontab(minute="*/15"))
 
-    now = timezone.now()
+    now = datetime.now(tz=UTC)
     assert schedule.runtime_after(now) == datetime(2025, 1, 24, 14, 30, 0, tzinfo=UTC)
 
     last_run = datetime(2025, 1, 24, 14, 29, 15, tzinfo=UTC)
@@ -185,7 +184,7 @@ def test_crontabschedule_runtime_after() -> None:
     assert schedule.runtime_after(last_run) == datetime(2025, 1, 24, 18, 1, 0, tzinfo=UTC)
 
     schedule = CrontabSchedule("test", crontab(minute="*/1"))
-    now = timezone.now()
+    now = datetime.now(tz=UTC)
     assert schedule.runtime_after(now) == datetime(2025, 1, 24, 14, 26, 0, tzinfo=UTC)
 
 
