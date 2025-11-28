@@ -1,24 +1,21 @@
 import base64
 import queue
 import time
+from redis import StrictRedis
 from multiprocessing import Event
-from unittest import mock
+from unittest import mock, TestCase
 
 import grpc
 import orjson
 import pytest
 import zstandard as zstd
-from sentry.taskworker.client.inflight_task_activation import InflightTaskActivation
-from sentry.taskworker.client.processing_result import ProcessingResult
-from sentry.taskworker.constants import CompressionType
-from sentry.taskworker.retry import NoRetriesRemainingError
-from sentry.taskworker.state import current_task
-from sentry.taskworker.worker import TaskWorker
-from sentry.taskworker.workerchild import ProcessingDeadlineExceeded, child_process
-from sentry.testutils.cases import TestCase
-from sentry.testutils.helpers.options import override_options
-from sentry.testutils.thread_leaks.pytest import thread_leak_allowlist
-from sentry.utils.redis import redis_clusters
+from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.constants import CompressionType
+from taskbroker_client.retry import NoRetriesRemainingError
+from taskbroker_client.state import current_task
+from taskbroker_client.worker.worker import TaskWorker
+from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded, child_process
+# from sentry.utils.redis import redis_clusters
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DISCARD,
     TASK_ACTIVATION_STATUS_COMPLETE,
@@ -28,6 +25,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivation,
 )
 from sentry_sdk.crons import MonitorStatus
+from ..example_app import exampletasks
 
 SIMPLE_TASK = InflightTaskActivation(
     host="localhost:50051",
@@ -148,19 +146,10 @@ COMPRESSED_TASK = InflightTaskActivation(
 )
 
 
-@pytest.mark.django_db
-@thread_leak_allowlist(reason="taskworker", issue=97034)
 class TestTaskWorker(TestCase):
-    def test_tasks_exist(self) -> None:
-        import sentry.taskworker.tasks.examples as example_tasks
-
-        assert example_tasks.simple_task
-        assert example_tasks.retry_task
-        assert example_tasks.at_most_once_task
-
     def test_fetch_task(self) -> None:
         taskworker = TaskWorker(
-            app_module="sentry.taskworker.runtime:app",
+            app_module="examples.example_app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=100,
             process_type="fork",
@@ -176,7 +165,7 @@ class TestTaskWorker(TestCase):
 
     def test_fetch_no_task(self) -> None:
         taskworker = TaskWorker(
-            app_module="sentry.taskworker.runtime:app",
+            app_module="examples.example_app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=100,
             process_type="fork",
@@ -191,7 +180,7 @@ class TestTaskWorker(TestCase):
     def test_run_once_no_next_task(self) -> None:
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="sentry.taskworker.runtime:app",
+            app_module="examples.example_app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -227,7 +216,7 @@ class TestTaskWorker(TestCase):
         # be processed.
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="sentry.taskworker.runtime:app",
+            app_module="examples.example_app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -264,49 +253,12 @@ class TestTaskWorker(TestCase):
             )
             assert mock_client.update_task.call_args.args[1] is None
 
-    @override_options({"taskworker.fetch_next.disabled_pools": ["testing"]})
-    def test_run_once_with_fetch_next_disabled(self) -> None:
-        # Cover the scenario where taskworker.fetch_next.disabled_pools is defined
-        max_runtime = 5
-        taskworker = TaskWorker(
-            app_module="sentry.taskworker.runtime:app",
-            broker_hosts=["127.0.0.1:50051"],
-            max_child_task_count=1,
-            process_type="fork",
-            processing_pool_name="testing",
-        )
-        with mock.patch.object(taskworker, "client") as mock_client:
-            mock_client.update_task.return_value = None
-            mock_client.get_task.return_value = SIMPLE_TASK
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
-
-            # Run until two tasks have been processed
-            start = time.time()
-            while True:
-                taskworker.run_once()
-                if mock_client.update_task.call_count >= 2:
-                    break
-                if time.time() - start > max_runtime:
-                    taskworker.shutdown()
-                    raise AssertionError("Timeout waiting for update_task to be called")
-
-            taskworker.shutdown()
-            assert mock_client.get_task.called
-            assert mock_client.update_task.call_count == 2
-            assert mock_client.update_task.call_args.args[0].host == "localhost:50051"
-            assert mock_client.update_task.call_args.args[0].task_id == SIMPLE_TASK.activation.id
-            assert (
-                mock_client.update_task.call_args.args[0].status == TASK_ACTIVATION_STATUS_COMPLETE
-            )
-            assert mock_client.update_task.call_args.args[1] is None
-
     def test_run_once_with_update_failure(self) -> None:
         # Cover the scenario where update_task fails a few times in a row
         # We should retain the result until RPC succeeds.
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="sentry.taskworker.runtime:app",
+            app_module="examples.example_app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -352,7 +304,7 @@ class TestTaskWorker(TestCase):
         # to raise and catch a NoRetriesRemainingError
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="sentry.taskworker.runtime:app",
+            app_module="examples.example_app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -389,14 +341,14 @@ class TestTaskWorker(TestCase):
                 mock_client.update_task.call_args.args[0].status == TASK_ACTIVATION_STATUS_COMPLETE
             )
 
-            redis = redis_clusters.get("default")
+            # TODO read host from env vars
+            redis = StrictRedis(host="localhost", port=6379, decode_responses=True)
             assert current_task() is None, "should clear current task on completion"
             assert redis.get("no-retries-remaining"), "key should exist if except block was hit"
             redis.delete("no-retries-remaining")
 
 
-@pytest.mark.django_db
-@mock.patch("sentry.taskworker.workerchild.capture_checkin")
+@mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -404,7 +356,7 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
 
     todo.put(SIMPLE_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -420,7 +372,6 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     assert mock_capture_checkin.call_count == 0
 
 
-@pytest.mark.django_db
 def test_child_process_remove_start_time_kwargs() -> None:
     activation = InflightTaskActivation(
         host="localhost:50051",
@@ -439,7 +390,7 @@ def test_child_process_remove_start_time_kwargs() -> None:
 
     todo.put(activation)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -454,7 +405,6 @@ def test_child_process_remove_start_time_kwargs() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.django_db
 def test_child_process_retry_task() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -462,7 +412,7 @@ def test_child_process_retry_task() -> None:
 
     todo.put(RETRY_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -477,8 +427,7 @@ def test_child_process_retry_task() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
-@mock.patch("sentry.taskworker.workerchild.sentry_sdk.capture_exception")
-@pytest.mark.django_db
+@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_retry_task_max_attempts(mock_capture: mock.Mock) -> None:
     # Create an activation that is on its final attempt and
     # will raise an error again.
@@ -503,7 +452,7 @@ def test_child_process_retry_task_max_attempts(mock_capture: mock.Mock) -> None:
 
     todo.put(activation)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -524,7 +473,6 @@ def test_child_process_retry_task_max_attempts(mock_capture: mock.Mock) -> None:
     assert isinstance(capture_call[0].__cause__, RuntimeError)
 
 
-@pytest.mark.django_db
 def test_child_process_failure_task() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -532,7 +480,7 @@ def test_child_process_failure_task() -> None:
 
     todo.put(FAIL_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -547,7 +495,6 @@ def test_child_process_failure_task() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_FAILURE
 
 
-@pytest.mark.django_db
 def test_child_process_shutdown() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -556,7 +503,7 @@ def test_child_process_shutdown() -> None:
 
     todo.put(SIMPLE_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -570,7 +517,6 @@ def test_child_process_shutdown() -> None:
     assert processed.qsize() == 0
 
 
-@pytest.mark.django_db
 def test_child_process_unknown_task() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -579,7 +525,7 @@ def test_child_process_unknown_task() -> None:
     todo.put(UNDEFINED_TASK)
     todo.put(SIMPLE_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -597,7 +543,6 @@ def test_child_process_unknown_task() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.django_db
 def test_child_process_at_most_once() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -607,7 +552,7 @@ def test_child_process_at_most_once() -> None:
     todo.put(AT_MOST_ONCE_TASK)
     todo.put(SIMPLE_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -626,8 +571,7 @@ def test_child_process_at_most_once() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.django_db
-@mock.patch("sentry.taskworker.workerchild.capture_checkin")
+@mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -635,7 +579,7 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
 
     todo.put(SCHEDULED_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -658,8 +602,7 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
     )
 
 
-@pytest.mark.django_db
-@mock.patch("sentry.taskworker.workerchild.sentry_sdk.capture_exception")
+@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_terminate_task(mock_capture: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -679,7 +622,7 @@ def test_child_process_terminate_task(mock_capture: mock.Mock) -> None:
 
     todo.put(sleepy)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,
@@ -696,8 +639,7 @@ def test_child_process_terminate_task(mock_capture: mock.Mock) -> None:
     assert type(mock_capture.call_args.args[0]) is ProcessingDeadlineExceeded
 
 
-@pytest.mark.django_db
-@mock.patch("sentry.taskworker.workerchild.capture_checkin")
+@mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> None:
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
@@ -706,7 +648,7 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
 
     todo.put(COMPRESSED_TASK)
     child_process(
-        "sentry.taskworker.runtime:app",
+        "examples.example_app:app",
         todo,
         processed,
         shutdown,

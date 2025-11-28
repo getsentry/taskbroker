@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from typing import Generator, Protocol, runtime_checkable
 
-Tags = Mapping[str, str]
+Tags = Mapping[str, str | int | float]
 
 
 @runtime_checkable
@@ -45,10 +45,20 @@ class MetricsBackend(Protocol):
     def timer(
         self,
         key: str,
-        instance: str | None = None,
         tags: Tags | None = None,
         sample_rate: float | None = None,
         stacklevel: int = 0,
+    ) -> Generator[None]:
+        """
+        Records a distribution metric with a context manager.
+        """
+        raise NotImplementedError
+
+    @contextmanager
+    def track_memory_usage(
+        self,
+        key: str,
+        tags: Tags | None = None,
     ) -> Generator[None]:
         """
         Records a distribution metric with a context manager.
@@ -84,9 +94,20 @@ class NoOpMetricsBackend(MetricsBackend):
     def timer(
         self,
         key: str,
-        instance: str | None = None,
         tags: Tags | None = None,
         sample_rate: float | None = None,
         stacklevel: int = 0,
     ) -> Generator[None]:
+        yield None
+
+    @contextmanager
+    def track_memory_usage(
+        self,
+        key: str,
+        tags: Tags | None = None,
+    ) -> Generator[None]:
+        """
+        Records a distrubtion metric that tracks the delta 
+        of rss_usage between the context manager opening and closing.
+        """
         yield None
