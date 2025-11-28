@@ -5,6 +5,8 @@ from typing import Any, Protocol
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
 from taskbroker_client.registry import TaskRegistry
+from taskbroker_client.router import TaskRouter
+from taskbroker_client.imports import import_string
 
 
 class AtMostOnceStore(Protocol):
@@ -16,14 +18,31 @@ class TaskworkerApp:
     Container for an application's task setup and configuration.
     """
 
-    def __init__(self, taskregistry: TaskRegistry | None = None) -> None:
+    def __init__(
+        self,
+        router_class: str | TaskRouter = "taskbroker_client.router.DefaultRouter",
+        at_most_once_store: AtMostOnceStore | None = None,
+    ) -> None:
         self._config = {
             "rpc_secret": None,
             "at_most_once_timeout": None,
         }
         self._modules: Iterable[str] = []
-        self._taskregistry = taskregistry or TaskRegistry()
-        self._at_most_once_store: AtMostOnceStore | None = None
+        self._taskregistry = TaskRegistry(
+            router=self._build_router(router_class)
+        )
+        if at_most_once_store:
+            self.at_most_once_store(at_most_once_store)
+
+    def _build_router(self, router_name: str | TaskRouter) -> TaskRouter:
+        if isinstance(router_name, str):
+            router_class = import_string(router_name)
+            router = router_class()
+        else:
+            router = router_name
+        assert hasattr(router, "route_namespace")
+
+        return router
 
     @property
     def taskregistry(self) -> TaskRegistry:
