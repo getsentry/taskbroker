@@ -2,18 +2,21 @@ import datetime
 from typing import Any
 from unittest.mock import patch
 
+import orjson
 import pytest
 import sentry_sdk
-from sentry.taskworker.registry import TaskNamespace
-from sentry.taskworker.retry import LastAction, Retry, RetryTaskError
-from sentry.taskworker.router import DefaultRouter
-from sentry.taskworker.task import Task
-from sentry.testutils.helpers.task_runner import TaskRunner
-from sentry.utils import json
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DEADLETTER,
     ON_ATTEMPTS_EXCEEDED_DISCARD,
 )
+
+from taskbroker_client.metrics import NoOpMetricsBackend
+from taskbroker_client.registry import TaskNamespace
+from taskbroker_client.retry import LastAction, Retry, RetryTaskError
+from taskbroker_client.router import DefaultRouter
+from taskbroker_client.task import Task
+
+from .conftest import producer_factory
 
 
 def do_things() -> None:
@@ -22,7 +25,13 @@ def do_things() -> None:
 
 @pytest.fixture
 def task_namespace() -> TaskNamespace:
-    return TaskNamespace(name="tests", router=DefaultRouter(), retry=None)
+    return TaskNamespace(
+        name="tests",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+    )
 
 
 def test_define_task_defaults(task_namespace: TaskNamespace) -> None:
@@ -66,7 +75,9 @@ def test_apply_async_expires(task_namespace: TaskNamespace) -> None:
 
     activation = call_params.args[0]
     assert activation.expires == 10
-    assert activation.parameters == json.dumps({"args": ["arg2"], "kwargs": {"org_id": 2}})
+    assert activation.parameters == orjson.dumps(
+        {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    ).decode("utf-8")
 
 
 def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
@@ -85,10 +96,12 @@ def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
 
     activation = call_params.args[0]
     assert activation.delay == 600
-    assert activation.parameters == json.dumps({"args": ["arg2"], "kwargs": {"org_id": 2}})
+    assert activation.parameters == orjson.dumps(
+        {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    ).decode("utf-8")
 
 
-def test_delay_taskrunner_immediate_mode(task_namespace: TaskNamespace) -> None:
+def test_delay_immediate_mode(task_namespace: TaskNamespace) -> None:
     calls = []
 
     def test_func(*args, **kwargs) -> None:
@@ -99,8 +112,8 @@ def test_delay_taskrunner_immediate_mode(task_namespace: TaskNamespace) -> None:
         func=test_func,
         namespace=task_namespace,
     )
-    # Within a TaskRunner context tasks should run immediately.
-    with TaskRunner():
+    # Patch the constant that controls eager execution
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
         task.delay("arg", org_id=1)
         task.apply_async(args=["arg2"], kwargs={"org_id": 2})
         task.apply_async()
@@ -111,7 +124,7 @@ def test_delay_taskrunner_immediate_mode(task_namespace: TaskNamespace) -> None:
     assert calls[2] == {"args": tuple(), "kwargs": {}}
 
 
-def test_delay_taskrunner_immediate_validate_activation(task_namespace: TaskNamespace) -> None:
+def test_delay_immediate_validate_activation(task_namespace: TaskNamespace) -> None:
     calls = []
 
     def test_func(mixed: Any) -> None:
@@ -123,7 +136,7 @@ def test_delay_taskrunner_immediate_validate_activation(task_namespace: TaskName
         namespace=task_namespace,
     )
 
-    with TaskRunner():
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
         task.delay(mixed=None)
         task.delay(mixed="str")
 
@@ -246,7 +259,7 @@ def test_create_activation_parameters(task_namespace: TaskNamespace) -> None:
         raise NotImplementedError
 
     activation = with_parameters.create_activation(["one", 22], {"org_id": 99})
-    params = json.loads(activation.parameters)
+    params = orjson.loads(activation.parameters)
     assert params["args"]
     assert params["args"] == ["one", 22]
     assert params["kwargs"] == {"org_id": 99}
