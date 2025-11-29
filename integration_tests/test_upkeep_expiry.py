@@ -7,6 +7,12 @@ from uuid import uuid4
 import orjson
 import yaml
 from google.protobuf.timestamp_pb2 import Timestamp
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    OnAttemptsExceeded,
+    RetryState,
+    TaskActivation,
+)
+
 from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
@@ -14,11 +20,6 @@ from integration_tests.helpers import (
     create_topic,
     get_num_tasks_in_sqlite,
     send_custom_messages_to_topic,
-)
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
-    OnAttemptsExceeded,
-    RetryState,
-    TaskActivation,
 )
 
 TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_expiry"
