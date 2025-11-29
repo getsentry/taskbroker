@@ -3,7 +3,6 @@ name = "taskbroker-client"
 version = "0.1.0"
 description = "Taskbroker python client and worker runtime"
 readme = "README.md"
-requires-python = ">=3.12.11"
 dependencies = [
     "sentry-arroyo>=2.33.1",
     "sentry-sdk[http2]>=2.43.0",
