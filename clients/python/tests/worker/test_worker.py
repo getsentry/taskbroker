@@ -1,20 +1,15 @@
 import base64
 import queue
 import time
-from redis import StrictRedis
 from multiprocessing import Event
-from unittest import mock, TestCase
+from unittest import TestCase, mock
 
 import grpc
 import orjson
 import pytest
 import zstandard as zstd
-from taskbroker_client.types import InflightTaskActivation, ProcessingResult
-from taskbroker_client.constants import CompressionType
-from taskbroker_client.retry import NoRetriesRemainingError
-from taskbroker_client.state import current_task
-from taskbroker_client.worker.worker import TaskWorker
-from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded, child_process
+from redis import StrictRedis
+
 # from sentry.utils.redis import redis_clusters
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DISCARD,
@@ -25,7 +20,14 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivation,
 )
 from sentry_sdk.crons import MonitorStatus
-from ..example_app import exampletasks
+
+from examples.example_app import exampletasks
+from taskbroker_client.constants import CompressionType
+from taskbroker_client.retry import NoRetriesRemainingError
+from taskbroker_client.state import current_task
+from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.worker import TaskWorker
+from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded, child_process
 
 SIMPLE_TASK = InflightTaskActivation(
     host="localhost:50051",
