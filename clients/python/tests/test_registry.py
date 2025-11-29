@@ -1,22 +1,24 @@
 import base64
 from concurrent.futures import Future
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import orjson
 import pytest
 import zstandard as zstd
-# from django.test.utils import override_settings
-# from sentry.conf.types.kafka_definition import Topic
-from taskbroker_client.constants import MAX_PARAMETER_BYTES_BEFORE_COMPRESSION, CompressionType
-from taskbroker_client.registry import TaskNamespace, TaskRegistry
-from taskbroker_client.retry import LastAction, Retry
-from taskbroker_client.router import DefaultRouter
-from taskbroker_client.metrics import NoOpMetricsBackend
-from taskbroker_client.task import Task
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DEADLETTER,
     ON_ATTEMPTS_EXCEEDED_DISCARD,
 )
+
+# from django.test.utils import override_settings
+# from sentry.conf.types.kafka_definition import Topic
+from taskbroker_client.constants import MAX_PARAMETER_BYTES_BEFORE_COMPRESSION, CompressionType
+from taskbroker_client.metrics import NoOpMetricsBackend
+from taskbroker_client.registry import TaskNamespace, TaskRegistry
+from taskbroker_client.retry import LastAction, Retry
+from taskbroker_client.router import DefaultRouter
+from taskbroker_client.task import Task
+
 from .conftest import producer_factory
 
 

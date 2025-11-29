@@ -1,5 +1,6 @@
 from taskbroker_client.types import AtMostOnceStore
 
+
 class StubAtMostOnce(AtMostOnceStore):
     def __init__(self) -> None:
         self._keys: dict[str, str] = {}

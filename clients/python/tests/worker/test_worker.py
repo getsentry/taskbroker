@@ -6,7 +6,6 @@ from unittest import TestCase, mock
 
 import grpc
 import orjson
-import pytest
 import zstandard as zstd
 from redis import StrictRedis
 
@@ -21,7 +20,6 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_sdk.crons import MonitorStatus
 
-from examples.example_app import exampletasks
 from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task

@@ -107,7 +107,7 @@ class NoOpMetricsBackend(MetricsBackend):
         tags: Tags | None = None,
     ) -> Generator[None]:
         """
-        Records a distrubtion metric that tracks the delta 
+        Records a distrubtion metric that tracks the delta
         of rss_usage between the context manager opening and closing.
         """
         yield None

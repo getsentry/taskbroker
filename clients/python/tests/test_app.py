@@ -1,8 +1,9 @@
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
+from examples.store import StubAtMostOnce
 from taskbroker_client.app import TaskbrokerApp
 from taskbroker_client.router import TaskRouter
-from examples.store import StubAtMostOnce
+
 from .conftest import producer_factory
 
 
@@ -11,12 +12,8 @@ class StubRouter(TaskRouter):
         return "honk"
 
 
-
 def test_taskregistry_router_object() -> None:
-    app = TaskbrokerApp(
-        producer_factory=producer_factory,
-        router_class=StubRouter()
-    )
+    app = TaskbrokerApp(producer_factory=producer_factory, router_class=StubRouter())
     ns = app.taskregistry.create_namespace("test")
     assert ns.topic == "honk"
 

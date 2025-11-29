@@ -1,7 +1,8 @@
 from datetime import UTC, datetime
-from arroyo.backends.kafka import KafkaProducer
 
 import time_machine
+from arroyo.backends.kafka import KafkaProducer
+
 
 def producer_factory(topic: str) -> KafkaProducer:
     config = {
