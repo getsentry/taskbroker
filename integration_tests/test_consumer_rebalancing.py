@@ -7,6 +7,7 @@ import time
 from threading import Thread
 
 import yaml
+
 from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
