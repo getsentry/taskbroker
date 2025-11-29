@@ -7,15 +7,17 @@ Used in tests for the worker.
 import logging
 from time import sleep
 from typing import Any
-from redis import StrictRedis
-from arroyo.backends.kafka import KafkaProducer
 
+from arroyo.backends.kafka import KafkaProducer
+from redis import StrictRedis
+
+from examples.store import StubAtMostOnce
 from taskbroker_client.app import TaskbrokerApp
 from taskbroker_client.retry import LastAction, NoRetriesRemainingError, Retry, RetryTaskError
 from taskbroker_client.retry import retry_task as retry_task_helper
-from examples.store import StubAtMostOnce
 
 logger = logging.getLogger(__name__)
+
 
 def producer_factory(topic: str) -> KafkaProducer:
     # TODO use env vars for kafka host/port
