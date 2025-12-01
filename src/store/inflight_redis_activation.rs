@@ -228,6 +228,7 @@ impl RedisActivationStore {
             .get_pending_activation(namespace)
             .await;
         if result.is_err() {
+            // error!("error: {:?}, urls: {:?}", result.err().unwrap(), self.urls);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "get_pending_activation".to_string(),
                 error: (format!("error: {:?}, urls: {:?}", result.err().unwrap(), self.urls)),
