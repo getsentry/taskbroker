@@ -82,6 +82,7 @@ pub async fn create_redis_pool(urls: Vec<String>) -> Result<Pool, RedisActivatio
 #[derive(Debug)]
 pub struct RedisActivationStore {
     inner: RwLock<InnerRedisActivationStore>,
+    urls: Vec<String>,
 }
 
 // Wraps the InnerRedisActivationStore to manage the locking to avoid the outer code having to handle it.
@@ -92,7 +93,7 @@ impl RedisActivationStore {
         config: RedisActivationStoreConfig,
     ) -> Result<Self, RedisActivationError> {
         let replicas = urls.len();
-        let pool = create_redis_pool(urls).await?;
+        let pool = create_redis_pool(urls.clone()).await?;
 
         let inner = InnerRedisActivationStore::new(
             pool,
@@ -112,6 +113,7 @@ impl RedisActivationStore {
         }
         Ok(Self {
             inner: RwLock::new(inner.unwrap()),
+            urls,
         })
     }
 
@@ -228,7 +230,7 @@ impl RedisActivationStore {
         if result.is_err() {
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "get_pending_activation".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: (format!("error: {:?}, urls: {:?}", result.err().unwrap(), self.urls)),
             });
         }
         let activation = result.unwrap();
