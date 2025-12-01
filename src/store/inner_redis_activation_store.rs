@@ -1,13 +1,12 @@
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, QueryResult,
 };
-use crate::store::redis_utils::{HashKey, KeyBuilder};
+use crate::store::redis_utils::{HashKey, KeyBuilder, RandomStartIterator};
 use anyhow::Error;
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Duration, Utc};
 use deadpool_redis::Pool;
 use futures::future::try_join_all;
-use rand::Rng;
 use redis::AsyncTypedCommands;
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use std::collections::HashMap;
@@ -417,17 +416,15 @@ impl InnerRedisActivationStore {
     ) -> Result<Vec<InflightActivation>, Error> {
         let mut conn = self.pool.get().await?;
         let mut activations: Vec<InflightActivation> = Vec::new();
-        let total_hash_keys = self.hash_keys.len();
-        let random_start = rand::thread_rng().gen_range(0..total_hash_keys);
-        let mut checked = 0;
-        while checked < total_hash_keys {
-            let idx = (random_start + checked) % total_hash_keys;
+        let random_iterator = RandomStartIterator::new(self.hash_keys.len());
+        for idx in random_iterator {
             let hash_key = self.hash_keys[idx].clone();
-            checked += 1;
             if namespaces.is_some() && !namespaces.unwrap().contains(&hash_key.namespace) {
                 continue;
             }
-            for bucket_hash in self.bucket_hashes.iter() {
+            let hash_iterator = RandomStartIterator::new(self.bucket_hashes.len());
+            for bucket_idx in hash_iterator {
+                let bucket_hash = self.bucket_hashes[bucket_idx].clone();
                 // Get the next pending activation
                 let pending_key = self
                     .key_builder

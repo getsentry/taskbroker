@@ -1,4 +1,5 @@
 use cityhasher;
+use rand::Rng;
 
 pub enum KeyPrefix {
     Payload,
@@ -203,5 +204,34 @@ impl Key {
         } else {
             key
         }
+    }
+}
+
+pub struct RandomStartIterator {
+    total_values: usize,
+    random_start: usize,
+    current_index: usize,
+}
+
+impl RandomStartIterator {
+    pub fn new(total_values: usize) -> Self {
+        Self {
+            total_values,
+            random_start: rand::thread_rng().gen_range(0..total_values),
+            current_index: 0,
+        }
+    }
+}
+
+impl Iterator for RandomStartIterator {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_index >= self.total_values {
+            return None;
+        }
+        self.current_index += 1;
+        let idx = (self.random_start + self.current_index) % self.total_values;
+        Some(idx)
     }
 }
