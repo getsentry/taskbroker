@@ -693,6 +693,7 @@ impl InnerRedisActivationStore {
             && activation.on_attempts_exceeded == OnAttemptsExceeded::Deadletter
         {
             has_failure = true;
+            metrics::counter!("redis_store.set_status", "status" => "deadletter").increment(1);
             pipe.rpush(
                 self.key_builder
                     .get_deadletter_key(hash_key.clone(), activation.id.as_str())
@@ -739,7 +740,8 @@ impl InnerRedisActivationStore {
         }
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
-        metrics::histogram!("redis_store.set_status.duration").record(duration.as_millis() as f64);
+        metrics::histogram!("redis_store.set_status.duration", "status" => format!("{:?}", status))
+            .record(duration.as_millis() as f64);
         Ok(())
     }
 
