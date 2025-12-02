@@ -530,14 +530,14 @@ impl InnerRedisActivationStore {
                         "redis_store.get_pending_activations_from_namespaces.duration"
                     )
                     .record(duration.as_millis() as f64);
-                    metrics::counter!(
+                    metrics::histogram!(
                         "redis_store.get_pending_activations_from_namespaces.buckets_checked"
                     )
-                    .increment(buckets_checked);
-                    metrics::counter!(
+                    .record(buckets_checked as f64);
+                    metrics::histogram!(
                         "redis_store.get_pending_activations_from_namespaces.hashes_checked"
                     )
-                    .increment(hashes_checked);
+                    .record(hashes_checked as f64);
                     return Ok(activations);
                 }
             }
@@ -693,7 +693,6 @@ impl InnerRedisActivationStore {
             && activation.on_attempts_exceeded == OnAttemptsExceeded::Deadletter
         {
             has_failure = true;
-            metrics::counter!("redis_store.set_status", "status" => "deadletter").increment(1);
             pipe.rpush(
                 self.key_builder
                     .get_deadletter_key(hash_key.clone(), activation.id.as_str())
