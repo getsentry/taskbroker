@@ -468,7 +468,7 @@ impl InnerRedisActivationStore {
                 if result.is_none() {
                     let get_by_id_duration =
                         get_by_id_start_time.duration_since(get_by_id_start_time);
-                    metrics::histogram!("redis_store.get_pending_activations_from_namespaces.process_activation.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
+                    metrics::histogram!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
                     continue;
                 }
                 let activation_id: String = result.unwrap().to_string();
@@ -477,8 +477,8 @@ impl InnerRedisActivationStore {
                 if act_result.is_none() {
                     let get_by_id_duration =
                         get_by_id_start_time.duration_since(get_by_id_start_time);
-                    metrics::histogram!("redis_store.get_pending_activations_from_namespaces.process_activation.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
-                    metrics::counter!("redis_store.get_pending_activations_from_namespaces.process_activation.not_found").increment(1);
+                    metrics::histogram!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
+                    metrics::counter!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.not_found").increment(1);
                     continue;
                 }
                 let activation = act_result.unwrap();
