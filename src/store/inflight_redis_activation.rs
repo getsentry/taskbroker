@@ -124,6 +124,7 @@ impl RedisActivationStore {
         let result = self.inner.read().await.store(batch).await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
+            error!("Failed to store activations: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "store".to_string(),
                 error: error_string,
@@ -143,9 +144,11 @@ impl RedisActivationStore {
     pub async fn count_processing_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.read().await.count_processing_activations().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to count processing activations: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "count_processing_activations".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -154,9 +157,11 @@ impl RedisActivationStore {
     pub async fn count_delayed_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.read().await.count_delayed_activations().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to count delayed activations: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "count_delayed_activations".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -165,9 +170,11 @@ impl RedisActivationStore {
     pub async fn count_pending_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.read().await.count_pending_activations().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to count pending activations: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "count_pending_activations".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -176,9 +183,11 @@ impl RedisActivationStore {
     pub async fn count_retry_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.read().await.count_retry_activations().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to count retry activations: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "count_retry_activations".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -187,9 +196,11 @@ impl RedisActivationStore {
     pub async fn count_deadletter_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.read().await.count_deadletter_activations().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to count deadletter activations: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "count_deadletter_activations".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -198,9 +209,11 @@ impl RedisActivationStore {
     pub async fn db_size(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.read().await.db_size().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to get db size: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "db_size".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -209,9 +222,11 @@ impl RedisActivationStore {
     pub async fn delete_all_keys(&self) -> Result<(), RedisActivationError> {
         let result = self.inner.read().await.delete_all_keys().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to delete all keys: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "delete_all_keys".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(())
@@ -228,17 +243,20 @@ impl RedisActivationStore {
             .get_pending_activation(namespace)
             .await;
         if result.is_err() {
-            // error!("error: {:?}, urls: {:?}", result.err().unwrap(), self.urls);
+            let error_string = result.err().unwrap().to_string();
+            error!(
+                "Failed to get pending activation ({:?}): {:?}",
+                self.urls, error_string
+            );
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "get_pending_activation".to_string(),
-                error: (format!("error: {:?}, urls: {:?}", result.err().unwrap(), self.urls)),
+                error: error_string,
             });
         }
         let activation = result.unwrap();
         if activation.is_none() {
             return Ok(None);
         }
-        self.inner.write().await.incr_next_key_idx_for_pending();
         Ok(Some(activation.unwrap()))
     }
 
@@ -254,9 +272,14 @@ impl RedisActivationStore {
             .get_pending_activations_from_namespaces(namespaces, limit)
             .await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!(
+                "Failed to get pending activations from namespaces ({:?}): {:?}",
+                namespaces, error_string
+            );
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "get_pending_activations_from_namespaces".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -271,12 +294,19 @@ impl RedisActivationStore {
             .inner
             .read()
             .await
-            .get_by_id(hash_key, activation_id)
+            .get_by_id(hash_key.clone(), activation_id)
             .await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!(
+                "Failed to get by id ({:?}, {:?}): {:?}",
+                hash_key.clone(),
+                activation_id,
+                error_string
+            );
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "get_by_id".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -295,6 +325,10 @@ impl RedisActivationStore {
             .await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
+            error!(
+                "Failed to set status ({:?}, {:?}): {:?}",
+                activation_id, status, error_string
+            );
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "set_status".to_string(),
                 error: error_string,
@@ -308,9 +342,11 @@ impl RedisActivationStore {
     ) -> Result<Vec<InflightActivation>, RedisActivationError> {
         let result = self.inner.read().await.get_retry_activations().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to get retry activations: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "get_retry_activations".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -327,9 +363,11 @@ impl RedisActivationStore {
             .mark_retry_completed(activations)
             .await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to mark retry completed: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "mark_retry_completed".to_string(),
-                error: result.err().unwrap().to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -341,6 +379,7 @@ impl RedisActivationStore {
         let result = self.inner.read().await.handle_processing_deadline().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
+            error!("Failed to handle processing deadline: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "handle_processing_deadline".to_string(),
                 error: error_string,
@@ -352,9 +391,11 @@ impl RedisActivationStore {
     pub async fn handle_processing_attempts(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.read().await.handle_processing_attempts().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to handle processing attempts: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "handle_processing_attempts".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -363,9 +404,11 @@ impl RedisActivationStore {
     pub async fn handle_expires_at(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.read().await.handle_expires_at().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to handle expires at: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "handle_expires_at".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -374,9 +417,11 @@ impl RedisActivationStore {
     pub async fn handle_delay_until(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.read().await.handle_delay_until().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to handle delay until: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "handle_delay_until".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -387,9 +432,11 @@ impl RedisActivationStore {
     ) -> Result<Vec<(String, Vec<u8>)>, RedisActivationError> {
         let result = self.inner.read().await.handle_deadletter_tasks().await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to handle deadletter tasks: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "handle_deadletter_tasks".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -401,9 +448,11 @@ impl RedisActivationStore {
     ) -> Result<u64, RedisActivationError> {
         let result = self.inner.read().await.mark_deadletter_completed(ids).await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to mark deadletter completed: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "mark_deadletter_completed".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -420,9 +469,11 @@ impl RedisActivationStore {
             .remove_killswitched(killswitched_tasks)
             .await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to remove killswitched: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "remove_killswitched".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -434,9 +485,11 @@ impl RedisActivationStore {
     ) -> Result<u64, RedisActivationError> {
         let result = self.inner.read().await.mark_demoted_completed(ids).await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!("Failed to mark demoted completed: {:?}", error_string);
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "mark_demoted_completed".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
@@ -453,9 +506,14 @@ impl RedisActivationStore {
             .pending_activation_max_lag(now)
             .await;
         if result.is_err() {
+            let error_string = result.err().unwrap().to_string();
+            error!(
+                "Failed to get pending activation max lag: {:?}",
+                error_string
+            );
             return Err(RedisActivationError::DatabaseOperation {
                 operation: "pending_activation_max_lag".to_string(),
-                error: (result.err().unwrap()).to_string(),
+                error: error_string,
             });
         }
         Ok(result.unwrap())
