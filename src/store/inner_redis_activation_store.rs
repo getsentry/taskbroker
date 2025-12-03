@@ -10,6 +10,7 @@ use futures::future::try_join_all;
 use redis::AsyncTypedCommands;
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use std::collections::HashMap;
+use std::sync::RwLock;
 use std::time::Instant;
 use tracing::{error, info, instrument};
 
@@ -17,11 +18,11 @@ use tracing::{error, info, instrument};
 pub struct InnerRedisActivationStore {
     pool: Pool,
     replicas: usize,
-    topics: HashMap<String, Vec<i32>>,
+    topics: RwLock<HashMap<String, Vec<i32>>>,
     namespaces: Vec<String>,
     payload_ttl_seconds: u64,
     bucket_hashes: Vec<String>,
-    hash_keys: Vec<HashKey>,
+    hash_keys: RwLock<Vec<HashKey>>,
     key_builder: KeyBuilder,
     processing_deadline_grace_sec: i64,
     max_processing_attempts: i32,
@@ -51,10 +52,10 @@ impl InnerRedisActivationStore {
         Ok(Self {
             pool,
             replicas,
-            topics,
+            topics: RwLock::new(topics),
             namespaces,
             bucket_hashes,
-            hash_keys,
+            hash_keys: RwLock::new(hash_keys),
             payload_ttl_seconds,
             key_builder: KeyBuilder::new(num_buckets),
             processing_deadline_grace_sec: processing_deadline_grace_sec as i64, // Duration expects i64
@@ -63,17 +64,27 @@ impl InnerRedisActivationStore {
     }
 
     // Called when rebalancing partitions
-    pub fn rebalance_partitions(&mut self, topic: String, partitions: Vec<i32>) {
+    pub fn rebalance_partitions(&self, topic: String, partitions: Vec<i32>) {
         // This assumes that the broker is always consuming from the same topics and only the partitions are changing
-        self.topics.insert(topic.clone(), partitions.clone());
-        self.hash_keys.clear();
+        // Old topics are not removed, just the partitions are updated.
+        {
+            let mut write_guard = self.topics.write().unwrap();
+            write_guard.insert(topic.clone(), partitions.clone());
+        }
         let mut hashkeys = 0;
-        for (topic, partitions) in self.topics.iter() {
-            for partition in partitions.iter() {
-                for namespace in self.namespaces.iter() {
-                    self.hash_keys
-                        .push(HashKey::new(namespace.clone(), topic.clone(), *partition));
-                    hashkeys += self.bucket_hashes.len();
+        {
+            let mut write_guard = self.hash_keys.write().unwrap();
+            write_guard.clear();
+            for (topic, partitions) in self.topics.read().unwrap().iter() {
+                for partition in partitions.iter() {
+                    for namespace in self.namespaces.iter() {
+                        write_guard.push(HashKey::new(
+                            namespace.clone(),
+                            topic.clone(),
+                            *partition,
+                        ));
+                        hashkeys += self.bucket_hashes.len();
+                    }
                 }
             }
         }
@@ -441,12 +452,13 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut activations: Vec<InflightActivation> = Vec::new();
-        let random_iterator = RandomStartIterator::new(self.hash_keys.len());
+        let hash_keys = self.get_hash_keys();
+        let random_iterator = RandomStartIterator::new(hash_keys.len());
         let mut buckets_checked = 0;
         let mut hashes_checked = 0;
         for idx in random_iterator {
             hashes_checked += 1;
-            let hash_key = self.hash_keys[idx].clone();
+            let hash_key = hash_keys[idx].clone();
             if namespaces.is_some() && !namespaces.unwrap().contains(&hash_key.namespace) {
                 metrics::counter!(
                     "redis_store.get_pending_activations_from_namespaces.namespace_not_found"
@@ -748,7 +760,7 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut activation_ids: Vec<(HashKey, String)> = Vec::new();
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let retry_key = self
                     .key_builder
@@ -889,7 +901,7 @@ impl InnerRedisActivationStore {
         let mut discarded_count: u64 = 0;
         let mut processing_attempts_exceeded_count: u64 = 0;
         let start_time = Instant::now();
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let processing_key = self
                     .key_builder
@@ -1036,7 +1048,7 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_rows_affected = 0;
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let single_bucket_start_time = Instant::now();
                 let expires_at_key = self
@@ -1090,7 +1102,7 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_rows_affected = 0;
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let single_bucket_start_time = Instant::now();
                 let delay_until_key = self
@@ -1155,12 +1167,16 @@ impl InnerRedisActivationStore {
         Ok(0)
     }
 
+    fn get_hash_keys(&self) -> Vec<HashKey> {
+        self.hash_keys.read().unwrap().clone()
+    }
+
     #[instrument(skip_all)]
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_count = 0;
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let pending_key = self
                     .key_builder
@@ -1182,7 +1198,7 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_count = 0;
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let delay_key = self
                     .key_builder
@@ -1204,7 +1220,7 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_count = 0;
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let processing_key = self
                     .key_builder
@@ -1225,7 +1241,7 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_count = 0;
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let retry_key = self
                     .key_builder
@@ -1246,7 +1262,7 @@ impl InnerRedisActivationStore {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_count = 0;
-        for hash_key in self.hash_keys.iter() {
+        for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let retry_key = self
                     .key_builder

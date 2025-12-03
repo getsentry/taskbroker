@@ -390,7 +390,7 @@ pub async fn handle_events(
                             }
                         }
                         for (topic, partitions) in topics.iter() {
-                            redis_store.rebalance_partitions(topic.clone(), partitions.clone()).await;
+                            redis_store.rebalance_partitions(topic.clone(), partitions.clone());
                         }
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
