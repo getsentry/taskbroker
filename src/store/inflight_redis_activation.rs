@@ -121,6 +121,10 @@ impl RedisActivationStore {
         &self,
         batch: Vec<InflightActivation>,
     ) -> Result<QueryResult, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in store {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.store(batch).await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -135,14 +139,22 @@ impl RedisActivationStore {
 
     // Called when rebalancing partitions
     pub async fn rebalance_partitions(&self, topic: String, partitions: Vec<i32>) {
-        error!("Rebalancing partitions: {:?}", (topic, partitions));
-        // self.inner
-        //     .write()
-        //     .await
-        //     .rebalance_partitions(topic, partitions);
+        error!(
+            "Rebalancing partitions: {:?}",
+            (topic.clone(), partitions.clone())
+        );
+        self.inner
+            .write()
+            .await
+            .rebalance_partitions(topic, partitions);
+        error!("Rebalanced partitions");
     }
 
     pub async fn count_processing_activations(&self) -> Result<usize, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in count_processing_activations {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.count_processing_activations().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -156,6 +168,10 @@ impl RedisActivationStore {
     }
 
     pub async fn count_delayed_activations(&self) -> Result<usize, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in count_delayed_activations {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.count_delayed_activations().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -169,6 +185,10 @@ impl RedisActivationStore {
     }
 
     pub async fn count_pending_activations(&self) -> Result<usize, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in count_pending_activations {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.count_pending_activations().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -182,6 +202,10 @@ impl RedisActivationStore {
     }
 
     pub async fn count_retry_activations(&self) -> Result<usize, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in count_retry_activations {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.count_retry_activations().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -195,6 +219,10 @@ impl RedisActivationStore {
     }
 
     pub async fn count_deadletter_activations(&self) -> Result<usize, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in count_deadletter_activations {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.count_deadletter_activations().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -208,6 +236,10 @@ impl RedisActivationStore {
     }
 
     pub async fn db_size(&self) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in db_size {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.db_size().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -221,6 +253,10 @@ impl RedisActivationStore {
     }
 
     pub async fn delete_all_keys(&self) -> Result<(), RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in delete_all_keys {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.delete_all_keys().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -237,6 +273,10 @@ impl RedisActivationStore {
         &self,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in get_pending_activation {:?}",
+            self.inner.try_read()
+        );
         let result = self
             .inner
             .read()
@@ -266,6 +306,10 @@ impl RedisActivationStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
     ) -> Result<Vec<InflightActivation>, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in get_pending_activations_from_namespaces {:?}",
+            self.inner.try_read()
+        );
         let result = self
             .inner
             .read()
@@ -291,6 +335,10 @@ impl RedisActivationStore {
         hash_key: HashKey,
         activation_id: &str,
     ) -> Result<Option<InflightActivation>, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in get_by_id {:?}",
+            self.inner.try_read()
+        );
         let result = self
             .inner
             .read()
@@ -318,6 +366,10 @@ impl RedisActivationStore {
         activation_id: &str,
         status: InflightActivationStatus,
     ) -> Result<(), RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in set_status {:?}",
+            self.inner.try_read()
+        );
         let result = self
             .inner
             .read()
@@ -341,6 +393,10 @@ impl RedisActivationStore {
     pub async fn get_retry_activations(
         &self,
     ) -> Result<Vec<InflightActivation>, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in get_retry_activations {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.get_retry_activations().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -357,6 +413,10 @@ impl RedisActivationStore {
         &self,
         activations: Vec<InflightActivation>,
     ) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in mark_retry_completed {:?}",
+            self.inner.try_read()
+        );
         let result = self
             .inner
             .read()
@@ -377,6 +437,10 @@ impl RedisActivationStore {
     pub async fn handle_processing_deadline(
         &self,
     ) -> Result<(u64, u64, u64), RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in handle_processing_deadline {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.handle_processing_deadline().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -390,6 +454,10 @@ impl RedisActivationStore {
     }
 
     pub async fn handle_processing_attempts(&self) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in handle_processing_attempts {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.handle_processing_attempts().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -403,6 +471,10 @@ impl RedisActivationStore {
     }
 
     pub async fn handle_expires_at(&self) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in handle_expires_at {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.handle_expires_at().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -416,6 +488,10 @@ impl RedisActivationStore {
     }
 
     pub async fn handle_delay_until(&self) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in handle_delay_until {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.handle_delay_until().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -431,6 +507,10 @@ impl RedisActivationStore {
     pub async fn handle_deadletter_tasks(
         &self,
     ) -> Result<Vec<(String, Vec<u8>)>, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in handle_deadletter_tasks {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.handle_deadletter_tasks().await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -447,6 +527,10 @@ impl RedisActivationStore {
         &self,
         ids: Vec<String>,
     ) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in mark_deadletter_completed {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.mark_deadletter_completed(ids).await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -463,6 +547,10 @@ impl RedisActivationStore {
         &self,
         killswitched_tasks: Vec<String>,
     ) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in remove_killswitched {:?}",
+            self.inner.try_read()
+        );
         let result = self
             .inner
             .read()
@@ -484,6 +572,10 @@ impl RedisActivationStore {
         &self,
         ids: Vec<String>,
     ) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in mark_demoted_completed {:?}",
+            self.inner.try_read()
+        );
         let result = self.inner.read().await.mark_demoted_completed(ids).await;
         if result.is_err() {
             let error_string = result.err().unwrap().to_string();
@@ -500,6 +592,10 @@ impl RedisActivationStore {
         &self,
         now: &DateTime<Utc>,
     ) -> Result<u64, RedisActivationError> {
+        error!(
+            "Trying to acquire read lock in pending_activation_max_lag {:?}",
+            self.inner.try_read()
+        );
         let result = self
             .inner
             .read()
