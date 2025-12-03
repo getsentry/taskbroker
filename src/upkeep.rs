@@ -411,7 +411,7 @@ pub async fn do_upkeep(
         );
     }
     metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
-
+    error!("Pending count: {}", result_context.pending);
     // Task statuses
     metrics::counter!("upkeep.task.state_transition", "state" => "completed")
         .increment(result_context.completed);
