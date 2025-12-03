@@ -135,10 +135,11 @@ impl RedisActivationStore {
 
     // Called when rebalancing partitions
     pub async fn rebalance_partitions(&self, topic: String, partitions: Vec<i32>) {
-        self.inner
-            .write()
-            .await
-            .rebalance_partitions(topic, partitions);
+        error!("Rebalancing partitions: {:?}", (topic, partitions));
+        // self.inner
+        //     .write()
+        //     .await
+        //     .rebalance_partitions(topic, partitions);
     }
 
     pub async fn count_processing_activations(&self) -> Result<usize, RedisActivationError> {
