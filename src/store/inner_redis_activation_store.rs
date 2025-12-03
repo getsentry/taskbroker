@@ -384,6 +384,7 @@ impl InnerRedisActivationStore {
         // If the activation is at_most_once, discard the activation and remove the payloads.
         // If it has deadletter configured, move it to the deadletter queue and keep the payloads.
         let start_time = Instant::now();
+        let mut conn = self.get_conn().await?;
         let fields = self
             .get_fields_by_id(
                 hashkey.clone(),
@@ -398,7 +399,7 @@ impl InnerRedisActivationStore {
         let on_attempts_exceeded =
             OnAttemptsExceeded::from_str_name(fields.get("on_attempts_exceeded").unwrap().as_str())
                 .unwrap();
-        let mut conn = self.get_conn().await?;
+
         if !at_most_once && on_attempts_exceeded == OnAttemptsExceeded::Deadletter {
             let deadletter_key = self
                 .key_builder
@@ -1173,19 +1174,20 @@ impl InnerRedisActivationStore {
 
     #[instrument(skip_all)]
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
-        let mut total_count = 0;
+        let mut pipe = redis::pipe();
         for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let pending_key = self
                     .key_builder
                     .get_pending_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
-                let count: usize = conn.llen(pending_key).await?;
-                total_count += count;
+                pipe.llen(pending_key.clone());
             }
         }
+        let mut conn = self.get_conn().await?;
+        let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
+        let total_count = results.iter().sum();
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.count_pending_activations.total_duration")
@@ -1195,19 +1197,20 @@ impl InnerRedisActivationStore {
 
     #[instrument(skip_all)]
     pub async fn count_delayed_activations(&self) -> Result<usize, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
-        let mut total_count = 0;
+        let mut pipe = redis::pipe();
         for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let delay_key = self
                     .key_builder
                     .get_delay_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
-                let count: usize = conn.zcard(delay_key.clone()).await?;
-                total_count += count;
+                pipe.zcard(delay_key.clone());
             }
         }
+        let mut conn = self.get_conn().await?;
+        let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
+        let total_count = results.iter().sum();
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.count_delayed_activations.total_duration")
@@ -1217,19 +1220,20 @@ impl InnerRedisActivationStore {
 
     #[instrument(skip_all)]
     pub async fn count_processing_activations(&self) -> Result<usize, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
-        let mut total_count = 0;
+        let mut pipe = redis::pipe();
         for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let processing_key = self
                     .key_builder
                     .get_processing_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
-                let count: usize = conn.zcard(processing_key.clone()).await?;
-                total_count += count;
+                pipe.zcard(processing_key.clone());
             }
         }
+        let mut conn = self.get_conn().await?;
+        let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
+        let total_count = results.iter().sum();
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.count_processing_activations.total_duration")
@@ -1238,19 +1242,20 @@ impl InnerRedisActivationStore {
     }
 
     pub async fn count_retry_activations(&self) -> Result<usize, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
-        let mut total_count = 0;
+        let mut pipe = redis::pipe();
         for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let retry_key = self
                     .key_builder
                     .get_retry_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
-                let count: usize = conn.llen(retry_key.clone()).await?;
-                total_count += count;
+                pipe.llen(retry_key.clone());
             }
         }
+        let mut conn = self.get_conn().await?;
+        let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
+        let total_count = results.iter().sum();
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.count_retry_activations.total_duration")
@@ -1259,19 +1264,20 @@ impl InnerRedisActivationStore {
     }
 
     pub async fn count_deadletter_activations(&self) -> Result<usize, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
-        let mut total_count = 0;
+        let mut pipe = redis::pipe();
         for hash_key in self.get_hash_keys().iter() {
             for bucket_hash in self.bucket_hashes.iter() {
                 let retry_key = self
                     .key_builder
                     .get_deadletter_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
-                let count: usize = conn.llen(retry_key.clone()).await?;
-                total_count += count;
+                pipe.llen(retry_key.clone());
             }
         }
+        let mut conn = self.get_conn().await?;
+        let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
+        let total_count = results.iter().sum();
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.count_deadletter_activations.total_duration")
