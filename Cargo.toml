@@ -10,6 +10,7 @@ debug = 1
 
 [dependencies]
 anyhow = "1.0.92"
+async-backtrace = "0.2.7"
 base64 = "0.21.0"
 bytes = "1.10.0"
 chrono = { version = "0.4.26" }

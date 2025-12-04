@@ -1,5 +1,6 @@
 use crate::store::inner_redis_activation_store::InnerRedisActivationStore;
 use crate::store::redis_utils::HashKey;
+use async_backtrace::framed;
 use thiserror::Error;
 
 use tracing::error;
@@ -11,8 +12,6 @@ use crate::store::inflight_activation::{
 use chrono::{DateTime, Utc};
 use deadpool_redis::{Config as RedisConfig, Pool, Runtime};
 use std::collections::HashMap;
-// use std::sync::RwLock;
-use tokio::sync::RwLock;
 
 #[derive(Error, Debug)]
 pub enum RedisActivationError {
@@ -127,6 +126,7 @@ impl RedisActivationStore {
         error!("Rebalanced partitions");
     }
 
+    #[framed]
     pub async fn store(
         &self,
         batch: Vec<InflightActivation>,
@@ -143,6 +143,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn count_processing_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.count_processing_activations().await;
         if result.is_err() {
@@ -156,6 +157,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn count_delayed_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.count_delayed_activations().await;
         if result.is_err() {
@@ -169,6 +171,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn count_pending_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.count_pending_activations().await;
         if result.is_err() {
@@ -182,6 +185,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn count_retry_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.count_retry_activations().await;
         if result.is_err() {
@@ -195,6 +199,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn count_deadletter_activations(&self) -> Result<usize, RedisActivationError> {
         let result = self.inner.count_deadletter_activations().await;
         if result.is_err() {
@@ -208,6 +213,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn db_size(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.db_size().await;
         if result.is_err() {
@@ -221,6 +227,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn delete_all_keys(&self) -> Result<(), RedisActivationError> {
         let result = self.inner.delete_all_keys().await;
         if result.is_err() {
@@ -234,6 +241,7 @@ impl RedisActivationStore {
         Ok(())
     }
 
+    #[framed]
     pub async fn get_pending_activation(
         &self,
         namespace: Option<&str>,
@@ -257,6 +265,7 @@ impl RedisActivationStore {
         Ok(Some(activation.unwrap()))
     }
 
+    #[framed]
     pub async fn get_pending_activations_from_namespaces(
         &self,
         namespaces: Option<&[String]>,
@@ -280,6 +289,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn get_by_id(
         &self,
         hash_key: HashKey,
@@ -302,6 +312,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn set_status(
         &self,
         activation_id: &str,
@@ -322,6 +333,7 @@ impl RedisActivationStore {
         Ok(())
     }
 
+    #[framed]
     pub async fn get_retry_activations(
         &self,
     ) -> Result<Vec<InflightActivation>, RedisActivationError> {
@@ -337,6 +349,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn mark_retry_completed(
         &self,
         activations: Vec<InflightActivation>,
@@ -353,6 +366,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn handle_processing_deadline(
         &self,
     ) -> Result<(u64, u64, u64), RedisActivationError> {
@@ -368,6 +382,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn handle_processing_attempts(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.handle_processing_attempts().await;
         if result.is_err() {
@@ -381,6 +396,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn handle_expires_at(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.handle_expires_at().await;
         if result.is_err() {
@@ -394,6 +410,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn handle_delay_until(&self) -> Result<u64, RedisActivationError> {
         let result = self.inner.handle_delay_until().await;
         if result.is_err() {
@@ -407,6 +424,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn handle_deadletter_tasks(
         &self,
     ) -> Result<Vec<(String, Vec<u8>)>, RedisActivationError> {
@@ -422,6 +440,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn mark_deadletter_completed(
         &self,
         ids: Vec<String>,
@@ -438,6 +457,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn remove_killswitched(
         &self,
         killswitched_tasks: Vec<String>,
@@ -454,6 +474,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn mark_demoted_completed(
         &self,
         ids: Vec<String>,
@@ -470,6 +491,7 @@ impl RedisActivationStore {
         Ok(result.unwrap())
     }
 
+    #[framed]
     pub async fn pending_activation_max_lag(
         &self,
         now: &DateTime<Utc>,

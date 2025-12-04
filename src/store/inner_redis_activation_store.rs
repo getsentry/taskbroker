@@ -3,6 +3,7 @@ use crate::store::inflight_activation::{
 };
 use crate::store::redis_utils::{HashKey, KeyBuilder, RandomStartIterator};
 use anyhow::Error;
+use async_backtrace::framed;
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Duration, Utc};
 use deadpool_redis::Pool;
@@ -12,7 +13,7 @@ use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::Instant;
-use tracing::{error, info, instrument};
+use tracing::{error, info};
 
 #[derive(Debug)]
 pub struct InnerRedisActivationStore {
@@ -29,6 +30,7 @@ pub struct InnerRedisActivationStore {
 }
 
 impl InnerRedisActivationStore {
+    #[framed]
     pub async fn new(
         pool: Pool,
         replicas: usize,
@@ -94,6 +96,7 @@ impl InnerRedisActivationStore {
         );
     }
 
+    #[framed]
     pub async fn get_conn(&self) -> Result<deadpool_redis::Connection, Error> {
         let start_time = Instant::now();
         let conn = self.pool.get().await?;
@@ -102,7 +105,7 @@ impl InnerRedisActivationStore {
         Ok(conn)
     }
 
-    #[instrument(skip_all)]
+    #[framed]
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         let mut conn = self.get_conn().await?;
         let mut rows_affected: u64 = 0;
@@ -339,6 +342,7 @@ impl InnerRedisActivationStore {
         Ok(QueryResult { rows_affected })
     }
 
+    #[framed]
     pub async fn cleanup_activation(
         &self,
         hashkey: HashKey,
@@ -373,8 +377,9 @@ impl InnerRedisActivationStore {
         metrics::histogram!("redis_store.cleanup_duration").record(duration.as_millis() as f64);
         Ok(())
     }
+
     /// Discard an activation. If the activation is at_most_once, remove the payloads.
-    #[instrument(skip_all)]
+    #[framed]
     pub async fn discard_activation(
         &self,
         hashkey: HashKey,
@@ -426,7 +431,7 @@ impl InnerRedisActivationStore {
         Ok(())
     }
 
-    #[instrument(skip_all)]
+    #[framed]
     pub async fn get_pending_activation(
         &self,
         namespace: Option<&str>,
@@ -444,7 +449,7 @@ impl InnerRedisActivationStore {
     /// Get a pending activation from specified namespaces
     /// If namespaces is None, gets from any namespace
     /// If namespaces is Some(&[...]), gets from those namespaces
-    #[instrument(skip_all)]
+    #[framed]
     pub async fn get_pending_activations_from_namespaces(
         &self,
         namespaces: Option<&[String]>,
@@ -567,6 +572,7 @@ impl InnerRedisActivationStore {
     }
 
     /// Get an activation by id. Primarily used for testing
+    #[framed]
     pub async fn get_by_id(
         &self,
         hash_key: HashKey,
@@ -591,6 +597,7 @@ impl InnerRedisActivationStore {
         Ok(Some(activation))
     }
 
+    #[framed]
     pub async fn get_by_id_lookup(
         &self,
         activation_id: &str,
@@ -605,6 +612,7 @@ impl InnerRedisActivationStore {
         Ok(activation)
     }
 
+    #[framed]
     pub async fn get_hashkey_by_id(&self, activation_id: &str) -> Result<Option<HashKey>, Error> {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
@@ -635,6 +643,7 @@ impl InnerRedisActivationStore {
         )))
     }
 
+    #[framed]
     pub async fn get_fields_by_id(
         &self,
         hash_key: HashKey,
@@ -668,6 +677,7 @@ impl InnerRedisActivationStore {
         Ok(fields_map)
     }
 
+    #[framed]
     pub async fn set_status(
         &self,
         activation_id: &str,
@@ -757,6 +767,7 @@ impl InnerRedisActivationStore {
         Ok(())
     }
 
+    #[framed]
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
@@ -805,6 +816,7 @@ impl InnerRedisActivationStore {
         Ok(activations.into_iter().flatten().collect())
     }
 
+    #[framed]
     pub async fn mark_retry_completed(
         &self,
         activations: Vec<InflightActivation>,
@@ -891,6 +903,7 @@ impl InnerRedisActivationStore {
         Ok(rows_affected)
     }
 
+    #[framed]
     pub async fn handle_processing_deadline(&self) -> Result<(u64, u64, u64), Error> {
         // Get all the activations that have exceeded their processing deadline
         // Idempotent activations that fail their processing deadlines go directly to failure
@@ -1050,6 +1063,7 @@ impl InnerRedisActivationStore {
         ))
     }
 
+    #[framed]
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
@@ -1104,6 +1118,7 @@ impl InnerRedisActivationStore {
         Ok(total_rows_affected)
     }
 
+    #[framed]
     pub async fn handle_delay_until(&self) -> Result<u64, Error> {
         let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
@@ -1158,16 +1173,19 @@ impl InnerRedisActivationStore {
         Ok(total_rows_affected)
     }
 
+    #[framed]
     pub async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
         // TODO
         Ok(0)
     }
 
+    #[framed]
     pub async fn mark_demoted_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
         // TODO
         Ok(0)
     }
 
+    #[framed]
     pub async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> Result<u64, Error> {
         // TODO
         Ok(0)
@@ -1177,7 +1195,7 @@ impl InnerRedisActivationStore {
         self.hash_keys.read().unwrap().clone()
     }
 
-    #[instrument(skip_all)]
+    #[framed]
     pub async fn count_pending_activations(&self) -> Result<usize, Error> {
         let start_time = Instant::now();
         let mut pipe = redis::pipe();
@@ -1200,7 +1218,7 @@ impl InnerRedisActivationStore {
         Ok(total_count)
     }
 
-    #[instrument(skip_all)]
+    #[framed]
     pub async fn count_delayed_activations(&self) -> Result<usize, Error> {
         let start_time = Instant::now();
         let mut pipe = redis::pipe();
@@ -1223,7 +1241,7 @@ impl InnerRedisActivationStore {
         Ok(total_count)
     }
 
-    #[instrument(skip_all)]
+    #[framed]
     pub async fn count_processing_activations(&self) -> Result<usize, Error> {
         let start_time = Instant::now();
         let mut pipe = redis::pipe();
@@ -1246,6 +1264,7 @@ impl InnerRedisActivationStore {
         Ok(total_count)
     }
 
+    #[framed]
     pub async fn count_retry_activations(&self) -> Result<usize, Error> {
         let start_time = Instant::now();
         let mut pipe = redis::pipe();
@@ -1268,6 +1287,7 @@ impl InnerRedisActivationStore {
         Ok(total_count)
     }
 
+    #[framed]
     pub async fn count_deadletter_activations(&self) -> Result<usize, Error> {
         let start_time = Instant::now();
         let mut pipe = redis::pipe();
@@ -1291,6 +1311,7 @@ impl InnerRedisActivationStore {
     }
 
     // Only used in testing
+    #[framed]
     pub async fn delete_all_keys(&self) -> Result<(), Error> {
         error!("deleting all keys");
         let mut conn = self.get_conn().await?;
@@ -1304,21 +1325,25 @@ impl InnerRedisActivationStore {
         Ok(())
     }
 
+    #[framed]
     pub async fn db_size(&self) -> Result<u64, Error> {
         // Not needed
         Ok(0)
     }
 
+    #[framed]
     pub async fn handle_deadletter_tasks(&self) -> Result<Vec<(String, Vec<u8>)>, Error> {
         // Not needed
         Ok(vec![])
     }
 
+    #[framed]
     pub async fn mark_deadletter_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
         // Not needed
         Ok(0)
     }
 
+    #[framed]
     pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
         // Not needed
         Ok(0)

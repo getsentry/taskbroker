@@ -1,5 +1,6 @@
 use crate::store::inflight_activation::InflightActivation;
 use crate::store::inflight_redis_activation::RedisActivationStore;
+use async_backtrace::{framed, taskdump_tree};
 use chrono::{DateTime, Timelike, Utc};
 use futures::{StreamExt, stream::FuturesUnordered};
 use prost::Message;
@@ -22,6 +23,7 @@ use uuid::Uuid;
 
 use crate::{SERVICE_NAME, config::Config, runtime_config::RuntimeConfigManager};
 
+#[framed]
 /// The upkeep task that periodically performs upkeep
 /// on the inflight store
 pub async fn upkeep(
@@ -47,6 +49,7 @@ pub async fn upkeep(
         select! {
             _ = timer.tick() => {
                 error!("Running upkeep at {}", last_run.elapsed().as_millis());
+                error!("backtrace:\n{:?}", taskdump_tree(false));
                 let _ = do_upkeep(
                     config.clone(),
                     store.clone(),
@@ -102,6 +105,7 @@ impl UpkeepResults {
     }
 }
 
+#[framed]
 #[instrument(
     name = "upkeep::do_upkeep",
     skip(store, config, producer, runtime_config_manager)

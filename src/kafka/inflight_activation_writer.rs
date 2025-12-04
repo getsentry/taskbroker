@@ -1,14 +1,14 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
 use crate::{
     config::Config,
     store::inflight_activation::{InflightActivation, InflightActivationStatus},
     store::inflight_redis_activation::RedisActivationStore,
 };
+use async_backtrace::framed;
 use chrono::Utc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
@@ -68,7 +68,7 @@ impl Reducer for InflightActivationWriter {
         Ok(())
     }
 
-    #[instrument(skip_all)]
+    #[framed]
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
         let Some(ref batch) = self.batch else {
             return Ok(None);
