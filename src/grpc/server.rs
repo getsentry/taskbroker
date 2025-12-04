@@ -53,7 +53,6 @@ impl ConsumerService for TaskbrokerServer {
             }
             Ok(None) => Err(Status::not_found("No pending activation")),
             Err(e) => {
-                println!("error: {:?}", e);
                 error!("Unable to retrieve pending activation: {:?}", e);
                 Err(Status::internal("Unable to retrieve pending activation"))
             }

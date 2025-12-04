@@ -79,7 +79,7 @@ impl Reducer for InflightActivationWriter {
             self.batch.take();
             return Ok(Some(()));
         }
-        error!("Writing batch of length: {}", batch.len());
+
         // Check if writing the batch would exceed the limits
         let exceeded_pending_limit = self
             .store
@@ -144,7 +144,6 @@ impl Reducer for InflightActivationWriter {
                 "reason" => reason,
             )
             .increment(1);
-            error!("Backpressure triggered: {}", reason);
             return Ok(None);
         }
 
@@ -153,7 +152,6 @@ impl Reducer for InflightActivationWriter {
         let res = self.store.store(batch.clone()).await;
         match res {
             Ok(res) => {
-                error!("Wrote batch of length: {} to store", batch.len());
                 self.batch.take();
                 let lag = Utc::now()
                     - batch
@@ -176,7 +174,7 @@ impl Reducer for InflightActivationWriter {
                 Ok(Some(()))
             }
             Err(err) => {
-                error!("Unable to write to sqlite: {}", err);
+                error!("Unable to write to db: {}", err);
                 metrics::counter!("consumer.inflight_activation_writer.write_failed").increment(1);
                 sleep(Duration::from_millis(self.config.write_failure_backoff_ms)).await;
                 Ok(None)

@@ -999,7 +999,7 @@ impl InnerRedisActivationStore {
                         "processing_attempts",
                         (processing_attempts + 1).to_string(),
                     );
-                    pipe.rpush(pending_key, activation_id);
+                    pipe.rpush(pending_key.clone(), activation_id);
                     pipe.zrem(processing_key.clone(), activation_id);
                     let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
                     let single_activation_duration =
@@ -1020,16 +1020,24 @@ impl InnerRedisActivationStore {
                         ));
                     }
                     if results[1] != 1 {
-                        return Err(anyhow::anyhow!(
-                            "Failed to add activation to pending queue: {}",
-                            activation_id
-                        ));
+                        error!(
+                            "Failed to add activation to pending queue (output: {}): {} {}",
+                            results[1], pending_key, activation_id
+                        );
+                        // return Err(anyhow::anyhow!(
+                        //     "Failed to add activation to pending queue: {}",
+                        //     activation_id
+                        // ));
                     }
                     if results[2] != 1 {
-                        return Err(anyhow::anyhow!(
-                            "Failed to remove activation from processing set: {}",
-                            activation_id
-                        ));
+                        error!(
+                            "Failed to remove activation from processing set (output: {}): {} {}",
+                            results[2], processing_key, activation_id
+                        );
+                        // return Err(anyhow::anyhow!(
+                        //     "Failed to remove activation from processing set: {}",
+                        //     activation_id
+                        // ));
                     }
                 }
             }

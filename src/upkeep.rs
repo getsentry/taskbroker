@@ -131,6 +131,7 @@ pub async fn do_upkeep(
         killswitched: 0,
         forwarded: 0,
     };
+    error!("Starting upkeep");
 
     // 1. Handle retry tasks
     let handle_retries_start = Instant::now();
@@ -412,6 +413,14 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
     error!("Pending count: {}", result_context.pending);
+    error!("Processing count: {}", result_context.processing);
+    error!("Delay count: {}", result_context.delay);
+    error!("Delay elapsed: {}", result_context.delay_elapsed);
+    error!("Failed: {}", result_context.failed);
+    error!("Retried: {}", result_context.retried);
+    error!("Deadlettered: {}", result_context.deadlettered);
+    error!("Expired: {}", result_context.expired);
+    error!("Discarded: {}", result_context.discarded);
     // Task statuses
     metrics::counter!("upkeep.task.state_transition", "state" => "completed")
         .increment(result_context.completed);
