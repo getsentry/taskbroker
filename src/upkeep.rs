@@ -46,6 +46,7 @@ pub async fn upkeep(
     loop {
         select! {
             _ = timer.tick() => {
+                error!("Running upkeep at {}", last_run.elapsed().as_millis());
                 let _ = do_upkeep(
                     config.clone(),
                     store.clone(),

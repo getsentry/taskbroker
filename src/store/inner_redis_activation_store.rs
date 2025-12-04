@@ -1019,15 +1019,12 @@ impl InnerRedisActivationStore {
                             activation_id
                         ));
                     }
-                    if results[1] != 1 {
-                        error!(
-                            "Failed to add activation to pending queue (output: {}): {} {}",
-                            results[1], pending_key, activation_id
-                        );
-                        // return Err(anyhow::anyhow!(
-                        //     "Failed to add activation to pending queue: {}",
-                        //     activation_id
-                        // ));
+                    if results[1] == 0 {
+                        // Should at least have added itself to the pending queue
+                        return Err(anyhow::anyhow!(
+                            "Failed to add activation to pending queue: {}",
+                            activation_id
+                        ));
                     }
                     if results[2] != 1 {
                         error!(
