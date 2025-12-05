@@ -117,9 +117,9 @@ impl InnerRedisActivationStore {
 
     #[framed]
     pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
-        let mut conn = self.get_conn().await?;
         let mut rows_affected: u64 = 0;
         let start_time = Instant::now();
+        let mut conn = self.get_conn().await?;
         for activation in batch {
             let payload_key = self
                 .key_builder
@@ -399,7 +399,6 @@ impl InnerRedisActivationStore {
         // If the activation is at_most_once, discard the activation and remove the payloads.
         // If it has deadletter configured, move it to the deadletter queue and keep the payloads.
         let start_time = Instant::now();
-        let mut conn = self.get_conn().await?;
         let fields = self
             .get_fields_by_id(
                 hashkey.clone(),
@@ -420,6 +419,7 @@ impl InnerRedisActivationStore {
                 .key_builder
                 .get_deadletter_key(hashkey.clone(), activation_id)
                 .build_redis_key();
+            let mut conn = self.get_conn().await?;
             let result: usize = conn.rpush(deadletter_key.clone(), activation_id).await?;
             if result == 0 {
                 return Err(anyhow::anyhow!(
@@ -465,7 +465,6 @@ impl InnerRedisActivationStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
     ) -> Result<Vec<InflightActivation>, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut activations: Vec<InflightActivation> = Vec::new();
         let hash_keys = self.get_hash_keys();
@@ -492,14 +491,19 @@ impl InnerRedisActivationStore {
                     .key_builder
                     .get_pending_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
-                let result = conn.lindex(pending_key.clone(), 0).await?;
-                if result.is_none() {
-                    let get_by_id_duration =
-                        get_by_id_start_time.duration_since(get_by_id_start_time);
-                    metrics::histogram!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
-                    continue;
-                }
-                let activation_id: String = result.unwrap().to_string();
+
+                let activation_id: String = {
+                    // Scope for the connection
+                    let mut conn = self.get_conn().await?;
+                    let result = conn.lindex(pending_key.clone(), 0).await?;
+                    if result.is_none() {
+                        let get_by_id_duration =
+                            get_by_id_start_time.duration_since(get_by_id_start_time);
+                        metrics::histogram!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
+                        continue;
+                    }
+                    result.unwrap().to_string()
+                };
 
                 let act_result = self.get_by_id(hash_key.clone(), &activation_id).await?;
                 if act_result.is_none() {
@@ -521,32 +525,36 @@ impl InnerRedisActivationStore {
                     Some(apd) => apd,
                 }
                 .timestamp_millis();
-                let result: usize = conn
-                    .zadd(
-                        processing_key.clone(),
-                        activation.id.clone(),
-                        processing_deadline,
-                    )
-                    .await?;
-                if result == 0 {
-                    // If the activation is already in the processing set, this is not an error.
-                    error!(
-                        "Failed to move activation to processing: {} {}",
-                        processing_key, activation_id
-                    );
-                    metrics::counter!("redis_store.get_pending_activations_from_namespaces.already_moved_to_processing").increment(1);
-                }
+                {
+                    // Scope for the connection
+                    let mut conn = self.get_conn().await?;
+                    let result: usize = conn
+                        .zadd(
+                            processing_key.clone(),
+                            activation.id.clone(),
+                            processing_deadline,
+                        )
+                        .await?;
+                    if result == 0 {
+                        // If the activation is already in the processing set, this is not an error.
+                        error!(
+                            "Failed to move activation to processing: {} {}",
+                            processing_key, activation_id
+                        );
+                        metrics::counter!("redis_store.get_pending_activations_from_namespaces.already_moved_to_processing").increment(1);
+                    }
 
-                let result: usize = conn
-                    .lrem(pending_key.clone(), 1, activation_id.clone())
-                    .await?;
-                if result == 0 {
-                    error!(
-                        "Attempted to lrem an activation from pending queue, but it was not found: {} {}",
-                        pending_key, activation_id
-                    );
-                    metrics::counter!("redis_store.get_pending_activations_from_namespaces.already_removed_from_pending")
-                        .increment(1);
+                    let result: usize = conn
+                        .lrem(pending_key.clone(), 1, activation_id.clone())
+                        .await?;
+                    if result == 0 {
+                        error!(
+                            "Attempted to lrem an activation from pending queue, but it was not found: {} {}",
+                            pending_key, activation_id
+                        );
+                        metrics::counter!("redis_store.get_pending_activations_from_namespaces.already_removed_from_pending")
+                            .increment(1);
+                    }
                 }
                 let get_by_id_duration = get_by_id_start_time.duration_since(get_by_id_start_time);
                 metrics::histogram!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration", "result" => "true").record(get_by_id_duration.as_millis() as f64);
@@ -588,18 +596,21 @@ impl InnerRedisActivationStore {
         hash_key: HashKey,
         activation_id: &str,
     ) -> Result<Option<InflightActivation>, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let payload_key = self
             .key_builder
             .get_payload_key(hash_key, activation_id)
             .build_redis_key();
-        let result: HashMap<String, String> = conn.hgetall(payload_key.clone()).await?;
-        if result.is_empty() {
-            metrics::counter!("redis_store.get_by_id", "result" => "false").increment(1);
-            return Ok(None);
-        }
-        let activation: InflightActivation = result.into();
+
+        let activation: InflightActivation = {
+            let mut conn = self.get_conn().await?;
+            let result: HashMap<String, String> = conn.hgetall(payload_key.clone()).await?;
+            if result.is_empty() {
+                metrics::counter!("redis_store.get_by_id", "result" => "false").increment(1);
+                return Ok(None);
+            }
+            result.into()
+        };
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.get_by_id_duration").record(duration.as_millis() as f64);
@@ -624,32 +635,37 @@ impl InnerRedisActivationStore {
 
     #[framed]
     pub async fn get_hashkey_by_id(&self, activation_id: &str) -> Result<Option<HashKey>, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
-        let result: HashMap<String, String> = conn
-            .hgetall(
-                self.key_builder
-                    .get_id_lookup_key(activation_id)
-                    .build_redis_key(),
-            )
-            .await?;
-        if result.is_empty() {
-            metrics::counter!("redis_store.get_hashkey_by_id", "result" => "false").increment(1);
-            let end_time = Instant::now();
-            let duration = end_time.duration_since(start_time);
-            metrics::histogram!("redis_store.get_hashkey_by_id_duration")
-                .record(duration.as_millis() as f64);
-            return Ok(None);
-        }
+        let fields: HashMap<String, String> = {
+            // Scope for the connection
+            let mut conn = self.get_conn().await?;
+            let result: HashMap<String, String> = conn
+                .hgetall(
+                    self.key_builder
+                        .get_id_lookup_key(activation_id)
+                        .build_redis_key(),
+                )
+                .await?;
+            if result.is_empty() {
+                metrics::counter!("redis_store.get_hashkey_by_id", "result" => "false")
+                    .increment(1);
+                let end_time = Instant::now();
+                let duration = end_time.duration_since(start_time);
+                metrics::histogram!("redis_store.get_hashkey_by_id_duration")
+                    .record(duration.as_millis() as f64);
+                return Ok(None);
+            }
+            result
+        };
         metrics::counter!("redis_store.get_hashkey_by_id", "result" => "true").increment(1);
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.get_hashkey_by_id_duration")
             .record(duration.as_millis() as f64);
         Ok(Some(HashKey::new(
-            result.get("namespace").unwrap().to_string(),
-            result.get("topic").unwrap().to_string(),
-            result.get("partition").unwrap().parse().unwrap(),
+            fields.get("namespace").unwrap().to_string(),
+            fields.get("topic").unwrap().to_string(),
+            fields.get("partition").unwrap().parse().unwrap(),
         )))
     }
 
@@ -660,7 +676,6 @@ impl InnerRedisActivationStore {
         activation_id: &str,
         fields: &[&str],
     ) -> Result<HashMap<String, String>, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let payload_key = self
             .key_builder
@@ -671,13 +686,18 @@ impl InnerRedisActivationStore {
         for field in fields.iter().skip(1) {
             pipe.arg(field);
         }
-        let result = pipe.query_async(&mut *conn).await;
-        if result.is_err() {
-            return Ok(HashMap::new());
-        }
-        let raw_fields: Vec<Vec<String>> = result.unwrap();
         // Returns an array of tuples with the values in the same order as the fields array.
         // These needs to be combined into a map.
+        let raw_fields: Vec<Vec<String>> = {
+            // Scope for the connection
+            let mut conn = self.get_conn().await?;
+            let result = pipe.query_async(&mut *conn).await;
+            if result.is_err() {
+                return Ok(HashMap::new());
+            }
+            result.unwrap()
+        };
+
         let mut fields_map = HashMap::new();
         for values in raw_fields.iter() {
             for (idx, arg_name) in fields.iter().enumerate() {
@@ -715,7 +735,6 @@ impl InnerRedisActivationStore {
             activation.partition,
         );
 
-        let mut conn = self.get_conn().await?;
         let mut pipe = redis::pipe();
         pipe.atomic();
         let mut has_failure = false;
@@ -746,7 +765,11 @@ impl InnerRedisActivationStore {
             .build_redis_key();
         pipe.zrem(processing_key, activation_id);
 
-        let results: Vec<i32> = pipe.query_async(&mut *conn).await?;
+        let results: Vec<i32> = {
+            // Scope for the connection
+            let mut conn = self.get_conn().await?;
+            pipe.query_async(&mut *conn).await?
+        };
         let expected_commands = if has_failure { 2 } else { 1 };
         if results.len() != expected_commands {
             return Err(anyhow::anyhow!(
@@ -783,22 +806,26 @@ impl InnerRedisActivationStore {
 
     #[framed]
     pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut activation_ids: Vec<(HashKey, String)> = Vec::new();
-        for hash_key in self.get_hash_keys().iter() {
-            for bucket_hash in self.bucket_hashes.iter() {
-                let retry_key = self
-                    .key_builder
-                    .get_retry_key_for_iter(hash_key.clone(), bucket_hash.as_str());
-                let result: Vec<String> = conn.lrange(retry_key.build_redis_key(), 0, -1).await?;
-                activation_ids.extend(
-                    result
-                        .iter()
-                        .map(|id| (retry_key.hashkey.clone(), id.clone())),
-                );
+        {
+            // Scope for the connection
+            let mut conn = self.get_conn().await?;
+            for hash_key in self.get_hash_keys().iter() {
+                for bucket_hash in self.bucket_hashes.iter() {
+                    let retry_key = self
+                        .key_builder
+                        .get_retry_key_for_iter(hash_key.clone(), bucket_hash.as_str());
+                    let result: Vec<String> =
+                        conn.lrange(retry_key.build_redis_key(), 0, -1).await?;
+                    activation_ids.extend(
+                        result
+                            .iter()
+                            .map(|id| (retry_key.hashkey.clone(), id.clone())),
+                    );
+                }
             }
-        }
+        };
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
         metrics::histogram!("redis_store.get_retry_activations.retry_loop.duration")
@@ -838,7 +865,6 @@ impl InnerRedisActivationStore {
         if activations.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
 
         // Since this is a global operation, there is no guarantee that the keys will have the same hash key.
@@ -859,6 +885,7 @@ impl InnerRedisActivationStore {
 
         let mut id_lookup_keys: Vec<String> = Vec::new();
         let mut rows_affected: u64 = 0;
+        let mut conn = self.get_conn().await?;
         for (hash_key, activations) in hash_key_to_activations.iter() {
             let mut pipe = redis::pipe();
             pipe.atomic();
@@ -924,7 +951,6 @@ impl InnerRedisActivationStore {
         // there are no retries, as the worker will reject the activation due to idempotency keys.
         // If the task has processing attempts remaining, it is moved back to pending with attempts += 1
         // Otherwise it is either discarded or moved to retry/deadletter.
-        let mut conn = self.get_conn().await?;
         let mut total_rows_affected: u64 = 0;
         let mut discarded_count: u64 = 0;
         let mut processing_attempts_exceeded_count: u64 = 0;
@@ -936,13 +962,16 @@ impl InnerRedisActivationStore {
                     .get_processing_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
                 // ZRANGEBYSCORE is deprecated but ZRANGE ... BYSCORE is also not supported so?
-                let activations: Vec<String> = conn
-                    .zrangebyscore(
+                let activations: Vec<String> = {
+                    // Scope for the connection
+                    let mut conn = self.get_conn().await?;
+                    conn.zrangebyscore(
                         processing_key.clone(),
                         "-inf".to_string(),
                         Utc::now().timestamp_millis() as isize,
                     )
-                    .await?;
+                    .await?
+                };
                 if activations.is_empty() {
                     continue;
                 }
@@ -972,12 +1001,16 @@ impl InnerRedisActivationStore {
                         .parse::<bool>()
                         .unwrap();
                     if at_most_once {
-                        let result = conn.zrem(processing_key.clone(), activation_id).await?;
-                        if result != 1 {
-                            return Err(anyhow::anyhow!(
-                                "Failed to remove activation from processing set: {}",
-                                activation_id
-                            ));
+                        {
+                            // Scope for the connection
+                            let mut conn = self.get_conn().await?;
+                            let result = conn.zrem(processing_key.clone(), activation_id).await?;
+                            if result != 1 {
+                                return Err(anyhow::anyhow!(
+                                    "Failed to remove activation from processing set: {}",
+                                    activation_id
+                                ));
+                            }
                         }
                         self.discard_activation(hash_key.clone(), activation_id)
                             .await?;
@@ -995,12 +1028,16 @@ impl InnerRedisActivationStore {
                     if processing_attempts >= self.max_processing_attempts {
                         // Check for deadletter/dlq
                         processing_attempts_exceeded_count += 1;
-                        let result = conn.zrem(processing_key.clone(), activation_id).await?;
-                        if result != 1 {
-                            return Err(anyhow::anyhow!(
-                                "Failed to remove activation from processing set: {}",
-                                activation_id
-                            ));
+                        {
+                            // Scope for the connection
+                            let mut conn = self.get_conn().await?;
+                            let result = conn.zrem(processing_key.clone(), activation_id).await?;
+                            if result != 1 {
+                                return Err(anyhow::anyhow!(
+                                    "Failed to remove activation from processing set: {}",
+                                    activation_id
+                                ));
+                            }
                         }
                         self.discard_activation(hash_key.clone(), activation_id)
                             .await?;
@@ -1028,10 +1065,11 @@ impl InnerRedisActivationStore {
                     );
                     pipe.rpush(pending_key.clone(), activation_id);
                     pipe.zrem(processing_key.clone(), activation_id);
-                    let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
-                    let single_activation_duration =
-                        single_activation_start_time.duration_since(single_activation_start_time);
-                    metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "moved_to_pending").record(single_activation_duration.as_millis() as f64);
+                    let results: Vec<usize> = {
+                        // Scope for the connection
+                        let mut conn = self.get_conn().await?;
+                        pipe.query_async(&mut *conn).await?
+                    };
                     if results.len() != 3 {
                         return Err(anyhow::anyhow!(
                             "Failed to move activation back to pending: incorrect number of commands run: expected 3, got {} for key {}",
@@ -1062,7 +1100,11 @@ impl InnerRedisActivationStore {
                         //     "Failed to remove activation from processing set: {}",
                         //     activation_id
                         // ));
+                        // }
                     }
+                    let single_activation_duration =
+                        single_activation_start_time.duration_since(single_activation_start_time);
+                    metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "moved_to_pending").record(single_activation_duration.as_millis() as f64);
                 }
             }
         }
@@ -1079,7 +1121,6 @@ impl InnerRedisActivationStore {
 
     #[framed]
     pub async fn handle_expires_at(&self) -> Result<u64, Error> {
-        let mut conn = self.get_conn().await?;
         let start_time = Instant::now();
         let mut total_rows_affected = 0;
         for hash_key in self.get_hash_keys().iter() {
@@ -1089,13 +1130,16 @@ impl InnerRedisActivationStore {
                     .key_builder
                     .get_expired_key_for_iter(hash_key.clone(), bucket_hash.as_str())
                     .build_redis_key();
-                let activations: Vec<String> = conn
-                    .zrangebyscore(
+                let activations: Vec<String> = {
+                    // Scope for the connection
+                    let mut conn = self.get_conn().await?;
+                    conn.zrangebyscore(
                         expires_at_key.clone(),
                         0,
                         Utc::now().timestamp_millis() as isize,
                     )
-                    .await?;
+                    .await?
+                };
                 if activations.is_empty() {
                     continue;
                 }
@@ -1112,16 +1156,20 @@ impl InnerRedisActivationStore {
                     self.discard_activation(hash_key.clone(), activation_id)
                         .await?;
                 }
-                let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
-                let single_bucket_duration =
-                    single_bucket_start_time.duration_since(single_bucket_start_time);
-                metrics::histogram!("redis_store.handle_expires_at.single_bucket.duration")
-                    .record(single_bucket_duration.as_millis() as f64);
-                if results.len() != 2 * activations.len() {
-                    return Err(anyhow::anyhow!(
-                        "Failed to remove expired activations: {}",
-                        expires_at_key
-                    ));
+                {
+                    // Scope for the connection
+                    let mut conn = self.get_conn().await?;
+                    let results: Vec<usize> = pipe.query_async(&mut *conn).await?;
+                    let single_bucket_duration =
+                        single_bucket_start_time.duration_since(single_bucket_start_time);
+                    metrics::histogram!("redis_store.handle_expires_at.single_bucket.duration")
+                        .record(single_bucket_duration.as_millis() as f64);
+                    if results.len() != 2 * activations.len() {
+                        return Err(anyhow::anyhow!(
+                            "Failed to remove expired activations: {}",
+                            expires_at_key
+                        ));
+                    }
                 }
             }
         }
