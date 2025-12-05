@@ -149,7 +149,7 @@ COMPRESSED_TASK = InflightTaskActivation(
 class TestTaskWorker(TestCase):
     def test_fetch_task(self) -> None:
         taskworker = TaskWorker(
-            app_module="examples.example_app:app",
+            app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=100,
             process_type="fork",
@@ -165,7 +165,7 @@ class TestTaskWorker(TestCase):
 
     def test_fetch_no_task(self) -> None:
         taskworker = TaskWorker(
-            app_module="examples.example_app:app",
+            app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=100,
             process_type="fork",
@@ -180,7 +180,7 @@ class TestTaskWorker(TestCase):
     def test_run_once_no_next_task(self) -> None:
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="examples.example_app:app",
+            app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -216,7 +216,7 @@ class TestTaskWorker(TestCase):
         # be processed.
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="examples.example_app:app",
+            app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -258,7 +258,7 @@ class TestTaskWorker(TestCase):
         # We should retain the result until RPC succeeds.
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="examples.example_app:app",
+            app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -304,7 +304,7 @@ class TestTaskWorker(TestCase):
         # to raise and catch a NoRetriesRemainingError
         max_runtime = 5
         taskworker = TaskWorker(
-            app_module="examples.example_app:app",
+            app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=1,
             process_type="fork",
@@ -356,7 +356,7 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
 
     todo.put(SIMPLE_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -390,7 +390,7 @@ def test_child_process_remove_start_time_kwargs() -> None:
 
     todo.put(activation)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -412,7 +412,7 @@ def test_child_process_retry_task() -> None:
 
     todo.put(RETRY_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -452,7 +452,7 @@ def test_child_process_retry_task_max_attempts(mock_capture: mock.Mock) -> None:
 
     todo.put(activation)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -480,7 +480,7 @@ def test_child_process_failure_task() -> None:
 
     todo.put(FAIL_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -503,7 +503,7 @@ def test_child_process_shutdown() -> None:
 
     todo.put(SIMPLE_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -525,7 +525,7 @@ def test_child_process_unknown_task() -> None:
     todo.put(UNDEFINED_TASK)
     todo.put(SIMPLE_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -552,7 +552,7 @@ def test_child_process_at_most_once() -> None:
     todo.put(AT_MOST_ONCE_TASK)
     todo.put(SIMPLE_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -579,7 +579,7 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
 
     todo.put(SCHEDULED_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -622,7 +622,7 @@ def test_child_process_terminate_task(mock_capture: mock.Mock) -> None:
 
     todo.put(sleepy)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
@@ -648,7 +648,7 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
 
     todo.put(COMPRESSED_TASK)
     child_process(
-        "examples.example_app:app",
+        "examples.app:app",
         todo,
         processed,
         shutdown,
