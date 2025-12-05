@@ -8,31 +8,14 @@ import logging
 from time import sleep
 from typing import Any
 
-from arroyo.backends.kafka import KafkaProducer
 from redis import StrictRedis
 
-from examples.store import StubAtMostOnce
-from taskbroker_client.app import TaskbrokerApp
+from examples.app import app
 from taskbroker_client.retry import LastAction, NoRetriesRemainingError, Retry, RetryTaskError
 from taskbroker_client.retry import retry_task as retry_task_helper
 
 logger = logging.getLogger(__name__)
 
-
-def producer_factory(topic: str) -> KafkaProducer:
-    # TODO use env vars for kafka host/port
-    config = {
-        "bootstrap.servers": "127.0.0.1:9092",
-        "compression.type": "lz4",
-        "message.max.bytes": 50000000,  # 50MB
-    }
-    return KafkaProducer(config)
-
-
-app = TaskbrokerApp(
-    producer_factory=producer_factory,
-    at_most_once_store=StubAtMostOnce(),
-)
 
 # Create a namespace and register tasks
 exampletasks = app.taskregistry.create_namespace("examples")
