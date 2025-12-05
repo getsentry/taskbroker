@@ -60,7 +60,7 @@ def test_define_task_at_most_once_with_retry(task_namespace: TaskNamespace) -> N
 
 
 def test_apply_async_expires(task_namespace: TaskNamespace) -> None:
-    def test_func(*args, **kwargs) -> None:
+    def test_func(*args: Any, **kwargs: Any) -> None:
         pass
 
     task = Task(
@@ -81,7 +81,7 @@ def test_apply_async_expires(task_namespace: TaskNamespace) -> None:
 
 
 def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
-    def test_func(*args, **kwargs) -> None:
+    def test_func(*args: Any, **kwargs: Any) -> None:
         pass
 
     task = Task(
@@ -104,7 +104,7 @@ def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
 def test_delay_immediate_mode(task_namespace: TaskNamespace) -> None:
     calls = []
 
-    def test_func(*args, **kwargs) -> None:
+    def test_func(*args: Any, **kwargs: Any) -> None:
         calls.append({"args": args, "kwargs": kwargs})
 
     task = Task(
