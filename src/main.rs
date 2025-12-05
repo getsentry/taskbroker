@@ -69,7 +69,6 @@ async fn main() -> Result<(), Error> {
         )
         .await?,
     );
-    redis_store.delete_all_keys().await?;
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
