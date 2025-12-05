@@ -2,6 +2,7 @@ import base64
 import queue
 import time
 from multiprocessing import Event
+from typing import Any
 from unittest import TestCase, mock
 
 import grpc
@@ -223,7 +224,7 @@ class TestTaskWorker(TestCase):
         )
         with mock.patch.object(taskworker, "client") as mock_client:
 
-            def update_task_response(*args, **kwargs):
+            def update_task_response(*args: Any, **kwargs: Any) -> InflightTaskActivation | None:
                 if mock_client.update_task.call_count >= 1:
                     return None
                 return SIMPLE_TASK
@@ -265,7 +266,7 @@ class TestTaskWorker(TestCase):
         )
         with mock.patch.object(taskworker, "client") as mock_client:
 
-            def update_task_response(*args, **kwargs):
+            def update_task_response(*args: Any, **kwargs: Any) -> None:
                 if mock_client.update_task.call_count <= 2:
                     # Use setattr() because internally grpc uses _InactiveRpcError
                     # but it isn't exported.
@@ -274,7 +275,7 @@ class TestTaskWorker(TestCase):
                     raise err
                 return None
 
-            def get_task_response(*args, **kwargs):
+            def get_task_response(*args: Any, **kwargs: Any) -> InflightTaskActivation | None:
                 # Only one task that fails to update
                 if mock_client.get_task.call_count == 1:
                     return SIMPLE_TASK
@@ -311,7 +312,7 @@ class TestTaskWorker(TestCase):
         )
         with mock.patch.object(taskworker, "client") as mock_client:
 
-            def update_task_response(*args, **kwargs):
+            def update_task_response(*args: Any, **kwargs: Any) -> None:
                 return None
 
             mock_client.update_task.side_effect = update_task_response

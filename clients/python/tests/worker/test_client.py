@@ -20,15 +20,15 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivation,
 )
 
+from taskbroker_client.constants import DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH
 from taskbroker_client.metrics import NoOpMetricsBackend
+from taskbroker_client.types import ProcessingResult
 from taskbroker_client.worker.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
     TaskbrokerClient,
     make_broker_hosts,
 )
-from taskbroker_client.types import ProcessingResult
-from taskbroker_client.constants import DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH
 
 
 @dataclasses.dataclass
@@ -44,8 +44,8 @@ class MockServiceMethod:
         self,
         path: str,
         responses: list[Any],
-        request_serializer: Callable,
-        response_deserializer: Callable,
+        request_serializer: Callable[..., Any],
+        response_deserializer: Callable[..., Any],
     ):
         self.path = path
         self.request_serializer = request_serializer
@@ -74,13 +74,13 @@ class MockServiceMethod:
 
 class MockChannel:
     def __init__(self) -> None:
-        self._responses = defaultdict(list)
+        self._responses: dict[str, list[Any]] = defaultdict(list)
 
     def unary_unary(
         self,
         path: str,
-        request_serializer: Callable,
-        response_deserializer: Callable,
+        request_serializer: Callable[..., Any],
+        response_deserializer: Callable[..., Any],
         *args: Any,
         **kwargs: Any,
     ) -> MockServiceMethod:
@@ -100,7 +100,7 @@ class MockChannel:
 class MockGrpcError(grpc.RpcError):
     """Grpc error are elusive and this mock simulates the interface in mypy stubs"""
 
-    def __init__(self, code: int, message: str) -> None:
+    def __init__(self, code: grpc.StatusCode, message: str) -> None:
         self._code = code
         self._message = message
 
@@ -260,7 +260,9 @@ def test_get_task_with_interceptor() -> None:
     secret = '["a long secret value","notused"]'
     with patch("taskbroker_client.worker.client.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value = channel
-        client = TaskbrokerClient(["localhost-0:50051"], metrics=NoOpMetricsBackend(), rpc_secret=secret)
+        client = TaskbrokerClient(
+            ["localhost-0:50051"], metrics=NoOpMetricsBackend(), rpc_secret=secret
+        )
         result = client.get_task()
 
         assert result
@@ -286,7 +288,9 @@ def test_get_task_with_namespace() -> None:
     )
     with patch("taskbroker_client.worker.client.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value = channel
-        client = TaskbrokerClient(hosts=make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend())
+        client = TaskbrokerClient(
+            hosts=make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend()
+        )
         result = client.get_task(namespace="testing")
 
         assert result
@@ -371,7 +375,9 @@ def test_update_task_ok_with_next() -> None:
     )
     with patch("taskbroker_client.worker.client.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value = channel
-        client = TaskbrokerClient(make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend())
+        client = TaskbrokerClient(
+            make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend()
+        )
         assert set(client._host_to_stubs.keys()) == {"localhost-0:50051"}
         result = client.update_task(
             ProcessingResult("abc123", TASK_ACTIVATION_STATUS_RETRY, "localhost-0:50051", 0),
@@ -400,7 +406,9 @@ def test_update_task_ok_with_next_namespace() -> None:
     )
     with patch("taskbroker_client.worker.client.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value = channel
-        client = TaskbrokerClient(make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend())
+        client = TaskbrokerClient(
+            make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend()
+        )
         result = client.update_task(
             ProcessingResult(
                 task_id="id",
@@ -422,7 +430,9 @@ def test_update_task_ok_no_next() -> None:
     )
     with patch("taskbroker_client.worker.client.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value = channel
-        client = TaskbrokerClient(make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend())
+        client = TaskbrokerClient(
+            make_broker_hosts("localhost:50051", num_brokers=1), metrics=NoOpMetricsBackend()
+        )
         result = client.update_task(
             ProcessingResult(
                 task_id="abc123",
@@ -818,7 +828,9 @@ def test_client_reset_errors_after_success() -> None:
 
     with patch("taskbroker_client.worker.client.grpc.insecure_channel") as mock_channel:
         mock_channel.return_value = channel
-        client = TaskbrokerClient(["localhost:50051"], metrics=NoOpMetricsBackend(), max_consecutive_unavailable_errors=3)
+        client = TaskbrokerClient(
+            ["localhost:50051"], metrics=NoOpMetricsBackend(), max_consecutive_unavailable_errors=3
+        )
 
         with pytest.raises(grpc.RpcError, match="host is unavailable"):
             client.get_task()
@@ -863,7 +875,7 @@ def test_client_update_task_host_unavailable() -> None:
 
     current_time = 1000.0
 
-    def mock_time():
+    def mock_time() -> float:
         return current_time
 
     with (

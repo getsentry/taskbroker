@@ -53,7 +53,7 @@ def test_runstorage_double_set(run_storage: RunStorage) -> None:
         assert second is False, "writing a key that exists should fail"
 
 
-def test_schedulerunner_add_invalid(task_app) -> None:
+def test_schedulerunner_add_invalid(task_app: TaskbrokerApp) -> None:
     run_storage = Mock(spec=RunStorage)
     schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
 
