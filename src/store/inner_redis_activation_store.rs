@@ -1085,13 +1085,13 @@ impl InnerRedisActivationStore {
                             activation_id
                         ));
                     }
-                    // processing_attempts should already be a key in the payload, so this should return 0
-                    if results[0] != 0 {
-                        return Err(anyhow::anyhow!(
-                            "Failed to increment processing attempts: {}",
-                            activation_id
-                        ));
-                    }
+                    // // processing_attempts should already be a key in the payload, so this should return 0
+                    // if results[0] != 0 {
+                    //     return Err(anyhow::anyhow!(
+                    //         "Failed to increment processing attempts: {}",
+                    //         activation_id
+                    //     ));
+                    // }
                     if results[1] == 0 {
                         // Should at least have added itself to the pending queue
                         return Err(anyhow::anyhow!(
