@@ -9,11 +9,12 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
+use crate::store::inflight_activation::InflightActivationStatus;
+use crate::store::inflight_redis_activation::RedisActivationStore;
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
-    pub store: Arc<InflightActivationStore>,
+    pub store: Arc<RedisActivationStore>,
 }
 
 #[tonic::async_trait]
@@ -29,7 +30,6 @@ impl ConsumerService for TaskbrokerServer {
             .store
             .get_pending_activation(namespace.as_deref())
             .await;
-
         match inflight {
             Ok(Some(inflight)) => {
                 let now = Utc::now();

@@ -15,6 +15,7 @@ use crate::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig,
     },
+    store::inflight_redis_activation::{RedisActivationStore, RedisActivationStoreConfig},
 };
 use chrono::{Timelike, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
@@ -23,6 +24,10 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivati
 pub fn generate_temp_filename() -> String {
     let mut rng = rand::thread_rng();
     format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+}
+
+pub fn generate_temp_redis_urls() -> Vec<String> {
+    vec![format!("redis://127.0.0.1:{}", 6379)]
 }
 
 /// Create a collection of pending unsaved activations.
@@ -35,7 +40,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             id: format!("id_{i}"),
             activation: TaskActivation {
                 id: format!("id_{i}"),
-                namespace: "namespace".into(),
+                namespace: "default".into(),
                 taskname: "taskname".into(),
                 parameters: "{}".into(),
                 headers: HashMap::new(),
@@ -50,6 +55,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             }
             .encode_to_vec(),
             status: InflightActivationStatus::Pending,
+            topic: "taskbroker-test".to_string(),
             partition: 0,
             offset: i as i64,
             added_at: now,
@@ -60,7 +66,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             delay_until: None,
             processing_deadline: None,
             at_most_once: false,
-            namespace: "namespace".into(),
+            namespace: "default".into(),
             taskname: "taskname".into(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
@@ -80,6 +86,18 @@ pub async fn create_test_store() -> Arc<InflightActivationStore> {
         InflightActivationStore::new(
             &generate_temp_filename(),
             InflightActivationStoreConfig::from_config(&create_integration_config()),
+        )
+        .await
+        .unwrap(),
+    )
+}
+
+/// Create a RedisActivationStore instance
+pub async fn create_redis_test_store() -> Arc<RedisActivationStore> {
+    Arc::new(
+        RedisActivationStore::new(
+            generate_temp_redis_urls(),
+            RedisActivationStoreConfig::from_config(&create_integration_config()),
         )
         .await
         .unwrap(),
