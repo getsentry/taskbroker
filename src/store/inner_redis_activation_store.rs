@@ -6,7 +6,7 @@ use anyhow::Error;
 use async_backtrace::framed;
 use base64::{Engine as _, engine::general_purpose};
 use chrono::{DateTime, Duration, Utc};
-use deadpool_redis::Pool;
+use deadpool_redis::{Pool, Timeouts};
 use futures::future::try_join_all;
 use redis::AsyncTypedCommands;
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
@@ -99,10 +99,20 @@ impl InnerRedisActivationStore {
     #[framed]
     pub async fn get_conn(&self) -> Result<deadpool_redis::Connection, Error> {
         let start_time = Instant::now();
-        let conn = self.pool.get().await?;
-        let conn_duration = start_time.duration_since(start_time);
-        metrics::histogram!("redis_store.conn_duration").record(conn_duration.as_millis() as f64);
-        Ok(conn)
+        let mut retries = 0;
+        let timeouts = Timeouts::wait_millis(50);
+        while retries < 3 {
+            let conn = self.pool.timeout_get(&timeouts).await;
+            if conn.is_ok() {
+                return Ok(conn.unwrap());
+            }
+            retries += 1;
+        }
+        let end_time = Instant::now();
+        let duration = end_time.duration_since(start_time);
+        metrics::histogram!("redis_store.get_conn.duration").record(duration.as_millis() as f64);
+        metrics::counter!("redis_store.get_conn.retries").increment(retries as u64);
+        return Err(anyhow::anyhow!("Failed to get connection after 3 retries"));
     }
 
     #[framed]
@@ -661,11 +671,15 @@ impl InnerRedisActivationStore {
         for field in fields.iter().skip(1) {
             pipe.arg(field);
         }
-        let result: Vec<Vec<String>> = pipe.query_async(&mut *conn).await?;
+        let result = pipe.query_async(&mut *conn).await;
+        if result.is_err() {
+            return Ok(HashMap::new());
+        }
+        let raw_fields: Vec<Vec<String>> = result.unwrap();
         // Returns an array of tuples with the values in the same order as the fields array.
         // These needs to be combined into a map.
         let mut fields_map = HashMap::new();
-        for values in result.iter() {
+        for values in raw_fields.iter() {
             for (idx, arg_name) in fields.iter().enumerate() {
                 fields_map.insert(arg_name.to_string(), values[idx].clone());
             }
