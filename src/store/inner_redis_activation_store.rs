@@ -990,10 +990,14 @@ impl InnerRedisActivationStore {
                             "Failed to get payload for activation past processing deadline: {}",
                             activation_id
                         );
-                        // let single_activation_duration = single_activation_start_time
-                        //     .duration_since(single_activation_start_time);
-                        // metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "not_found").record(single_activation_duration.as_millis() as f64);
-                        // continue;
+                        {
+                            let mut conn = self.get_conn().await?;
+                            conn.zrem(processing_key.clone(), activation_id).await?;
+                        }
+                        let single_activation_duration = single_activation_start_time
+                            .duration_since(single_activation_start_time);
+                        metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "not_found").record(single_activation_duration.as_millis() as f64);
+                        continue;
                     }
                     let at_most_once = if fields.is_empty() {
                         false
