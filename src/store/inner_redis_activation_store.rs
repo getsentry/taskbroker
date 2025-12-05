@@ -990,16 +990,20 @@ impl InnerRedisActivationStore {
                             "Failed to get payload for activation past processing deadline: {}",
                             activation_id
                         );
-                        let single_activation_duration = single_activation_start_time
-                            .duration_since(single_activation_start_time);
-                        metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "not_found").record(single_activation_duration.as_millis() as f64);
-                        continue;
+                        // let single_activation_duration = single_activation_start_time
+                        //     .duration_since(single_activation_start_time);
+                        // metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "not_found").record(single_activation_duration.as_millis() as f64);
+                        // continue;
                     }
-                    let at_most_once = fields
-                        .get("at_most_once")
-                        .unwrap_or(&"false".to_string())
-                        .parse::<bool>()
-                        .unwrap();
+                    let at_most_once = if fields.is_empty() {
+                        false
+                    } else {
+                        fields
+                            .get("at_most_once")
+                            .unwrap_or(&"false".to_string())
+                            .parse::<bool>()
+                            .unwrap()
+                    };
                     if at_most_once {
                         {
                             // Scope for the connection
@@ -1020,11 +1024,15 @@ impl InnerRedisActivationStore {
                         metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "at_most_once").record(single_activation_duration.as_millis() as f64);
                         continue;
                     }
-                    let processing_attempts = fields
-                        .get("processing_attempts")
-                        .unwrap_or(&"0".to_string())
-                        .parse::<i32>()
-                        .unwrap();
+                    let processing_attempts = if fields.is_empty() {
+                        0
+                    } else {
+                        fields
+                            .get("processing_attempts")
+                            .unwrap_or(&"0".to_string())
+                            .parse::<i32>()
+                            .unwrap()
+                    };
                     if processing_attempts >= self.max_processing_attempts {
                         // Check for deadletter/dlq
                         processing_attempts_exceeded_count += 1;
