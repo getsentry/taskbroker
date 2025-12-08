@@ -619,6 +619,14 @@ impl InnerRedisActivationStore {
                 metrics::counter!("redis_store.get_by_id", "result" => "false").increment(1);
                 return Ok(None);
             }
+            if !result.contains_key("activation") {
+                // TODO remove this
+                error!(
+                    "Activation not found for id: {}, skipping get by id: {:?}",
+                    activation_id, result
+                );
+                return Ok(None);
+            }
             result.into()
         };
         let end_time = Instant::now();
