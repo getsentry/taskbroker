@@ -181,7 +181,7 @@ impl InnerRedisActivationStore {
                     .arg(activation.processing_deadline.unwrap().timestamp_millis());
                 expected_args += 1;
             }
-            pipe.expire(payload_key.clone(), self.payload_ttl_seconds as i64);
+            // pipe.expire(payload_key.clone(), self.payload_ttl_seconds as i64);
 
             let mut queue_key_used = String::new();
             if activation.delay_until.is_some() {
@@ -254,9 +254,9 @@ impl InnerRedisActivationStore {
                 }
             };
 
-            if result.len() != 4 && result.len() != 5 {
+            if result.len() != 3 && result.len() != 4 {
                 return Err(anyhow::anyhow!(
-                    "Failed to store activation: incorrect number of commands run: expected 4 or 5, got {} for key {}",
+                    "Failed to store activation: incorrect number of commands run: expected 3 or 4, got {} for key {}",
                     result.len(),
                     payload_key.clone()
                 ));
@@ -279,22 +279,22 @@ impl InnerRedisActivationStore {
                     payload_key.clone()
                 ));
             }
-            // EXPIRE returns 1 on success and 0 on failure
-            if result[1] != 1 {
-                return Err(anyhow::anyhow!(
-                    "Failed to expire activation for key {}",
-                    payload_key
-                ));
-            }
+            // // EXPIRE returns 1 on success and 0 on failure
+            // if result[1] != 1 {
+            //     return Err(anyhow::anyhow!(
+            //         "Failed to expire activation for key {}",
+            //         payload_key
+            //     ));
+            // }
             // Both ZADD and RPUSH return a count of elements in the structure
-            if result[2] <= 0 {
+            if result[1] <= 0 {
                 return Err(anyhow::anyhow!(
                     "Failed to add activation to queue for key {}",
                     queue_key_used
                 ));
             }
             // Check if the ZADD happened on the expired key
-            if result.len() == 5 && result[3] <= 0 {
+            if result.len() == 4 && result[2] <= 0 {
                 return Err(anyhow::anyhow!(
                     "Failed to add activation to expired queue for key {}",
                     expired_key
@@ -323,9 +323,9 @@ impl InnerRedisActivationStore {
                 .arg("namespace")
                 .arg(activation.namespace.clone());
 
-            pipe.expire(lookup_key.clone(), self.payload_ttl_seconds as i64);
+            // pipe.expire(lookup_key.clone(), self.payload_ttl_seconds as i64);
             let result: Vec<i32> = pipe.query_async(&mut conn).await?;
-            if result.len() != 2 {
+            if result.len() != 1 {
                 return Err(anyhow::anyhow!(
                     "Failed to set id lookup for key {}",
                     lookup_key.clone()
@@ -337,12 +337,12 @@ impl InnerRedisActivationStore {
                     lookup_key.clone()
                 ));
             }
-            if result[1] != 1 {
-                return Err(anyhow::anyhow!(
-                    "Failed to expire id lookup for key {}",
-                    lookup_key.clone()
-                ));
-            }
+            // if result[1] != 1 {
+            //     return Err(anyhow::anyhow!(
+            //         "Failed to expire id lookup for key {}",
+            //         lookup_key.clone()
+            //     ));
+            // }
             rows_affected += 1;
         }
         let end_time = Instant::now();
