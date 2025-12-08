@@ -505,15 +505,25 @@ impl InnerRedisActivationStore {
                     result.unwrap().to_string()
                 };
 
-                let act_result = self.get_by_id(hash_key.clone(), &activation_id).await?;
-                if act_result.is_none() {
+                let act_result = self.get_by_id(hash_key.clone(), &activation_id).await;
+                if act_result.is_err() {
+                    // TODO: This isn't the correct behaviour. We should be able to recover without removing the activation.
+                    self.cleanup_activation(hash_key.clone(), &activation_id)
+                        .await?;
+                    let mut conn = self.get_conn().await?;
+                    conn.lrem(pending_key.clone(), 1, activation_id.clone())
+                        .await?;
+                    continue;
+                }
+                let potential = act_result.unwrap();
+                if potential.is_none() {
                     let get_by_id_duration =
                         get_by_id_start_time.duration_since(get_by_id_start_time);
                     metrics::histogram!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
                     metrics::counter!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.not_found").increment(1);
                     continue;
                 }
-                let activation = act_result.unwrap();
+                let activation = potential.unwrap();
 
                 // Push the activation to processing. This will not create two entries for the same activation in the case of duplicates.
                 let processing_key = self
