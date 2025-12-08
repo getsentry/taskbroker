@@ -613,8 +613,7 @@ impl InflightActivationStore {
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
         let result = self
             .get_pending_activations_from_namespaces(namespaces.as_deref(), Some(1))
-            .await
-            .unwrap();
+            .await?;
         if result.is_empty() {
             return Ok(None);
         }
