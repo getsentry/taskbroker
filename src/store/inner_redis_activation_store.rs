@@ -471,7 +471,6 @@ impl InnerRedisActivationStore {
         let mut activations: Vec<InflightActivation> = Vec::new();
         let hash_keys = self.get_hash_keys();
         let random_iterator = RandomStartIterator::new(hash_keys.len());
-        error!("Hash Start: {:?}", random_iterator.random_start);
         let mut buckets_checked = 0;
         let mut hashes_checked = 0;
         for idx in random_iterator {
@@ -485,7 +484,6 @@ impl InnerRedisActivationStore {
                 continue;
             }
             let hash_iterator = RandomStartIterator::new(self.bucket_hashes.len());
-            error!("Bucket Start: {:?}", hash_iterator.random_start);
             for bucket_idx in hash_iterator {
                 let bucket_hash = self.bucket_hashes[bucket_idx].clone();
                 buckets_checked += 1;
