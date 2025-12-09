@@ -370,17 +370,19 @@ impl InnerRedisActivationStore {
             .build_redis_key();
         let result: usize = conn.del(payload_key.clone()).await?;
         if result != 1 {
-            return Err(anyhow::anyhow!(
-                "Failed to cleanup payload for key {}",
-                payload_key.clone()
-            ));
+            error!(
+                "Failed to cleanup payload for key {}: {}",
+                payload_key.clone(),
+                result
+            );
         }
         let result: usize = conn.del(id_lookup_key.clone()).await?;
         if result != 1 {
-            return Err(anyhow::anyhow!(
-                "Failed to cleanup id lookup for key {}",
-                id_lookup_key.clone()
-            ));
+            error!(
+                "Failed to cleanup id lookup for key {}: {}",
+                id_lookup_key.clone(),
+                result
+            );
         }
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
