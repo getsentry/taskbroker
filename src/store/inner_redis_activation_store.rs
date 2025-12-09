@@ -510,7 +510,7 @@ impl InnerRedisActivationStore {
                 let act_result = self.get_by_id(hash_key.clone(), &activation_id).await;
                 if act_result.is_err() {
                     error!(
-                        "Failed to get activation by id: {:?}",
+                        "Failed to get activation by id, continuing: {:?}",
                         act_result.err().unwrap()
                     );
                     // TODO: This isn't the correct behaviour. We should be able to recover without removing the activation.
@@ -527,6 +527,19 @@ impl InnerRedisActivationStore {
                         get_by_id_start_time.duration_since(get_by_id_start_time);
                     metrics::histogram!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.duration", "result" => "false").record(get_by_id_duration.as_millis() as f64);
                     metrics::counter!("redis_store.get_pending_activations_from_namespaces.get_by_id_duration.not_found").increment(1);
+
+                    error!(
+                        "Activation is missing payload, continuing: {:?}",
+                        activation_id
+                    );
+                    // TODO: There is a bug somewhere that is setting activation payloads to have just "processing_attempts" set with nothing else.
+                    // When this code finds one of these, it will clear the activation and remove it from the pending queue.
+                    // This isn't correct, we shouldn't have this behaviour in the first place but for now I am ignoring it.
+                    self.cleanup_activation(hash_key.clone(), &activation_id)
+                        .await?;
+                    let mut conn = self.get_conn().await?;
+                    conn.lrem(pending_key.clone(), 1, activation_id.clone())
+                        .await?;
                     continue;
                 }
                 let activation = potential.unwrap();
@@ -536,11 +549,10 @@ impl InnerRedisActivationStore {
                     .key_builder
                     .get_processing_key(hash_key.clone(), &activation_id)
                     .build_redis_key();
-                let processing_deadline = match activation.processing_deadline {
-                    None => Utc::now() + Duration::seconds(self.processing_deadline_grace_sec),
-                    Some(apd) => apd,
-                }
+                let processing_deadline = (Utc::now()
+                    + Duration::seconds(activation.processing_deadline_duration as i64))
                 .timestamp_millis();
+
                 {
                     // Scope for the connection
                     let mut conn = self.get_conn().await?;
@@ -628,7 +640,7 @@ impl InnerRedisActivationStore {
             if !result.contains_key("activation") {
                 // TODO remove this
                 error!(
-                    "Activation not found for id: {}, skipping get by id: {:?}",
+                    "Activation not found for id: {}, full payload: {:?}",
                     activation_id, result
                 );
                 return Ok(None);
@@ -996,6 +1008,7 @@ impl InnerRedisActivationStore {
                     )
                     .await?
                 };
+
                 if activations.is_empty() {
                     continue;
                 }
@@ -1023,15 +1036,11 @@ impl InnerRedisActivationStore {
                         metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "not_found").record(single_activation_duration.as_millis() as f64);
                         continue;
                     }
-                    let at_most_once = if fields.is_empty() {
-                        false
-                    } else {
-                        fields
-                            .get("at_most_once")
-                            .unwrap_or(&"false".to_string())
-                            .parse::<bool>()
-                            .unwrap()
-                    };
+                    let at_most_once = fields
+                        .get("at_most_once")
+                        .unwrap_or(&"false".to_string())
+                        .parse::<bool>()
+                        .unwrap();
                     if at_most_once {
                         {
                             // Scope for the connection
@@ -1052,15 +1061,11 @@ impl InnerRedisActivationStore {
                         metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "at_most_once").record(single_activation_duration.as_millis() as f64);
                         continue;
                     }
-                    let processing_attempts = if fields.is_empty() {
-                        0
-                    } else {
-                        fields
-                            .get("processing_attempts")
-                            .unwrap_or(&"0".to_string())
-                            .parse::<i32>()
-                            .unwrap()
-                    };
+                    let processing_attempts = fields
+                        .get("processing_attempts")
+                        .unwrap_or(&"0".to_string())
+                        .parse::<i32>()
+                        .unwrap();
                     if processing_attempts >= self.max_processing_attempts {
                         // Check for deadletter/dlq
                         processing_attempts_exceeded_count += 1;
@@ -1083,7 +1088,7 @@ impl InnerRedisActivationStore {
                         metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "processing_attempts_exceeded").record(single_activation_duration.as_millis() as f64);
                         continue;
                     }
-                    // Move back to pending
+
                     let pending_key = self
                         .key_builder
                         .get_pending_key(hash_key.clone(), activation_id)
@@ -1092,21 +1097,39 @@ impl InnerRedisActivationStore {
                         .key_builder
                         .get_payload_key(hash_key.clone(), activation_id)
                         .build_redis_key();
+                    let activation = self.get_by_id(hash_key.clone(), activation_id).await?;
+
+                    // Move back to pending
                     let mut pipe = redis::pipe();
-                    pipe.atomic();
-                    pipe.hset(
-                        payload_key,
-                        "processing_attempts",
-                        (processing_attempts + 1).to_string(),
-                    );
-                    pipe.rpush(pending_key.clone(), activation_id);
+                    if activation.is_some() {
+                        pipe.atomic();
+                        pipe.hset(
+                            payload_key,
+                            "processing_attempts",
+                            (processing_attempts + 1).to_string(),
+                        );
+                        pipe.rpush(pending_key.clone(), activation_id);
+                    } else {
+                        metrics::counter!(
+                            "redis_store.handle_processing_deadline.activation_not_found"
+                        )
+                        .increment(1);
+                    }
                     pipe.zrem(processing_key.clone(), activation_id);
                     let results: Vec<usize> = {
                         // Scope for the connection
                         let mut conn = self.get_conn().await?;
                         pipe.query_async(&mut *conn).await?
                     };
-                    if results.len() != 3 {
+
+                    if results.len() == 1 {
+                        if results[0] != 1 {
+                            error!(
+                                "Failed to remove activation from processing set (output: {}): {} {}",
+                                results[2], processing_key, activation_id
+                            );
+                        }
+                    } else if results.len() != 3 {
                         return Err(anyhow::anyhow!(
                             "Failed to move activation back to pending: incorrect number of commands run: expected 3, got {} for key {}",
                             results.len(),
@@ -1120,24 +1143,24 @@ impl InnerRedisActivationStore {
                     //         activation_id
                     //     ));
                     // }
-                    if results[1] == 0 {
-                        // Should at least have added itself to the pending queue
-                        return Err(anyhow::anyhow!(
-                            "Failed to add activation to pending queue: {}",
-                            activation_id
-                        ));
-                    }
-                    if results[2] != 1 {
-                        error!(
-                            "Failed to remove activation from processing set (output: {}): {} {}",
-                            results[2], processing_key, activation_id
-                        );
-                        // return Err(anyhow::anyhow!(
-                        //     "Failed to remove activation from processing set: {}",
-                        //     activation_id
-                        // ));
-                        // }
-                    }
+                    // if results[1] == 0 {
+                    //     // Should at least have added itself to the pending queue
+                    //     return Err(anyhow::anyhow!(
+                    //         "Failed to add activation to pending queue: {}",
+                    //         activation_id
+                    //     ));
+                    // }
+                    // if results[2] != 1 {
+                    //     error!(
+                    //         "Failed to remove activation from processing set (output: {}): {} {}",
+                    //         results[2], processing_key, activation_id
+                    //     );
+                    //     // return Err(anyhow::anyhow!(
+                    //     //     "Failed to remove activation from processing set: {}",
+                    //     //     activation_id
+                    //     // ));
+                    //     // }
+                    // }
                     let single_activation_duration =
                         single_activation_start_time.duration_since(single_activation_start_time);
                     metrics::histogram!("redis_store.handle_processing_deadline.single_activation.duration", "status" => "moved_to_pending").record(single_activation_duration.as_millis() as f64);
@@ -1447,3 +1470,147 @@ impl InnerRedisActivationStore {
         Ok(0)
     }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::{ActivationWriterConfig, InflightActivation, InflightActivationWriter, Reducer};
+//     use chrono::{DateTime, Duration, Utc};
+//     use prost::Message;
+//     use prost_types::Timestamp;
+//     use std::collections::HashMap;
+//     use uuid::Uuid;
+
+//     use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
+//     use sentry_protos::taskbroker::v1::TaskActivation;
+//     use std::sync::Arc;
+
+//     use crate::store::inflight_activation::InflightActivationStatus;
+//     use crate::store::inflight_redis_activation::RedisActivationStore;
+//     use crate::store::inflight_redis_activation::RedisActivationStoreConfig;
+//     use crate::test_utils::create_integration_config;
+//     use crate::test_utils::generate_temp_redis_urls;
+//     use crate::test_utils::create_test_store;
+//     use crate::test_utils::make_activations;
+
+//     fn activation_id() -> String {
+//         Uuid::new_v4().to_string()
+//     }
+//     #[tokio::test]
+//     async fn test_handle_processing_deadline() {
+//         let store = Arc::new(
+//             RedisActivationStore::new(
+//                 generate_temp_redis_urls(),
+//                 RedisActivationStoreConfig::from_config(&create_integration_config()),
+//             )
+//             .await
+//             .unwrap(),
+//         );
+//         store
+//             .delete_all_keys()
+//             .await
+//             .expect("Error deleting all keys");
+
+//         let writer_config = ActivationWriterConfig {
+//             db_max_size: None,
+//             max_buf_len: 100,
+//             max_pending_activations: 10,
+//             max_processing_activations: 10,
+//             max_delay_activations: 10,
+//             write_failure_backoff_ms: 4000,
+//         };
+//         let store = Arc::new(
+//             RedisActivationStore::new(
+//                 generate_temp_redis_urls(),
+//                 RedisActivationStoreConfig::from_config(&create_integration_config()),
+//             )
+//             .await
+//             .unwrap(),
+//         );
+//         store
+//             .delete_all_keys()
+//             .await
+//             .expect("Error deleting all keys");
+//         let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
+//         let received_at = Timestamp {
+//             seconds: 0,
+//             nanos: 0,
+//         };
+//         let batch = vec![
+//             InflightActivation {
+//                 id: activation_id(),
+//                 activation: TaskActivation {
+//                     id: activation_id(),
+//                     namespace: "default".to_string(),
+//                     taskname: "pending_task".to_string(),
+//                     parameters: "{}".to_string(),
+//                     headers: HashMap::new(),
+//                     received_at: Some(received_at),
+//                     retry_state: None,
+//                     processing_deadline_duration: 0,
+//                     expires: None,
+//                     delay: None,
+//                 }
+//                 .encode_to_vec(),
+//                 status: InflightActivationStatus::Pending,
+//                 topic: "taskbroker-test".to_string(),
+//                 partition: 0,
+//                 offset: 0,
+//                 added_at: Utc::now(),
+//                 received_at: DateTime::from_timestamp(
+//                     received_at.seconds,
+//                     received_at.nanos as u32,
+//                 )
+//                 .unwrap(),
+//                 processing_attempts: 0,
+//                 processing_deadline_duration: 0,
+//                 expires_at: None,
+//                 delay_until: None,
+//                 processing_deadline: None,
+//                 at_most_once: false,
+//                 namespace: "default".to_string(),
+//                 taskname: "pending_task".to_string(),
+//                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
+//             },
+//             InflightActivation {
+//                 id: activation_id(),
+//                 activation: TaskActivation {
+//                     id: activation_id(),
+//                     namespace: "default".to_string(),
+//                     taskname: "delay_task".to_string(),
+//                     parameters: "{}".to_string(),
+//                     headers: HashMap::new(),
+//                     received_at: Some(received_at),
+//                     retry_state: None,
+//                     processing_deadline_duration: 0,
+//                     expires: None,
+//                     delay: None,
+//                 }
+//                 .encode_to_vec(),
+//                 status: InflightActivationStatus::Delay,
+//                 topic: "taskbroker-test".to_string(),
+//                 partition: 0,
+//                 offset: 0,
+//                 added_at: Utc::now(),
+//                 received_at: DateTime::from_timestamp(
+//                     received_at.seconds,
+//                     received_at.nanos as u32,
+//                 )
+//                 .unwrap(),
+//                 processing_attempts: 0,
+//                 processing_deadline_duration: 0,
+//                 expires_at: None,
+//                 delay_until: None,
+//                 processing_deadline: None,
+//                 at_most_once: false,
+//                 namespace: "default".to_string(),
+//                 taskname: "delay_task".to_string(),
+//                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
+//             },
+//         ];
+//         writer.reduce(batch).await.unwrap();
+//         writer.flush().await.unwrap();
+//         let count_pending = writer.store.count_pending_activations().await.unwrap();
+//         let count_delay = writer.store.count_delayed_activations().await.unwrap();
+//         assert_eq!(count_pending + count_delay, 2);
+//     }
+// }

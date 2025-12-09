@@ -983,6 +983,7 @@ mod tests {
         batch[0].status = InflightActivationStatus::Processing;
         batch[0].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[0].processing_deadline_duration = 0;
         assert!(store.store(batch.clone()).await.is_ok());
         assert!(store.get_pending_activation(None).await.unwrap().is_some()); // Move to processing
 
@@ -1009,6 +1010,25 @@ mod tests {
             1,
             "Should be one in pending"
         );
+        let activation = store
+            .get_by_id(
+                HashKey::new(
+                    batch[0].namespace.clone(),
+                    batch[0].topic.clone(),
+                    batch[0].partition,
+                ),
+                &batch[0].id,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(activation.processing_attempts, 1);
+        assert_eq!(activation.status, InflightActivationStatus::Processing);
+        assert_eq!(
+            activation.processing_deadline,
+            Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap())
+        );
+        assert_eq!(activation.on_attempts_exceeded, OnAttemptsExceeded::Discard);
     }
 
     #[tokio::test]
