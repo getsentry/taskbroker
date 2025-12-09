@@ -209,7 +209,7 @@ impl Key {
 
 pub struct RandomStartIterator {
     total_values: usize,
-    random_start: usize,
+    pub random_start: usize,
     current_index: usize,
 }
 

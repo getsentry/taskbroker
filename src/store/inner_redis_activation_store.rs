@@ -469,6 +469,7 @@ impl InnerRedisActivationStore {
         let mut activations: Vec<InflightActivation> = Vec::new();
         let hash_keys = self.get_hash_keys();
         let random_iterator = RandomStartIterator::new(hash_keys.len());
+        error!("Hash Start: {:?}", random_iterator.random_start);
         let mut buckets_checked = 0;
         let mut hashes_checked = 0;
         for idx in random_iterator {
@@ -482,6 +483,7 @@ impl InnerRedisActivationStore {
                 continue;
             }
             let hash_iterator = RandomStartIterator::new(self.bucket_hashes.len());
+            error!("Bucket Start: {:?}", hash_iterator.random_start);
             for bucket_idx in hash_iterator {
                 let bucket_hash = self.bucket_hashes[bucket_idx].clone();
                 buckets_checked += 1;
@@ -507,6 +509,10 @@ impl InnerRedisActivationStore {
 
                 let act_result = self.get_by_id(hash_key.clone(), &activation_id).await;
                 if act_result.is_err() {
+                    error!(
+                        "Failed to get activation by id: {:?}",
+                        act_result.err().unwrap()
+                    );
                     // TODO: This isn't the correct behaviour. We should be able to recover without removing the activation.
                     self.cleanup_activation(hash_key.clone(), &activation_id)
                         .await?;
@@ -573,29 +579,29 @@ impl InnerRedisActivationStore {
                     let end_time = Instant::now();
                     let duration = end_time.duration_since(start_time);
                     metrics::histogram!(
-                        "redis_store.get_pending_activations_from_namespaces.duration"
+                        "redis_store.get_pending_activations_from_namespaces.duration", "found" => "true"
                     )
                     .record(duration.as_millis() as f64);
-                    metrics::histogram!(
-                        "redis_store.get_pending_activations_from_namespaces.buckets_checked"
+                    metrics::gauge!(
+                        "redis_store.get_pending_activations_from_namespaces.buckets_checked", "found" => "true"
                     )
-                    .record(buckets_checked as f64);
-                    metrics::histogram!(
-                        "redis_store.get_pending_activations_from_namespaces.hashes_checked"
+                    .set(buckets_checked as f64);
+                    metrics::gauge!(
+                        "redis_store.get_pending_activations_from_namespaces.hashes_checked", "found" => "true"
                     )
-                    .record(hashes_checked as f64);
+                    .set(hashes_checked as f64);
                     return Ok(activations);
                 }
             }
         }
         let end_time = Instant::now();
         let duration = end_time.duration_since(start_time);
-        metrics::histogram!("redis_store.get_pending_activations_from_namespaces.duration")
+        metrics::histogram!("redis_store.get_pending_activations_from_namespaces.duration", "found" => "false")
             .record(duration.as_millis() as f64);
-        metrics::counter!("redis_store.get_pending_activations_from_namespaces.buckets_checked")
-            .increment(buckets_checked);
-        metrics::counter!("redis_store.get_pending_activations_from_namespaces.hashes_checked")
-            .increment(hashes_checked);
+        metrics::gauge!("redis_store.get_pending_activations_from_namespaces.buckets_checked", "found" => "false")
+            .set(buckets_checked as f64);
+        metrics::gauge!("redis_store.get_pending_activations_from_namespaces.hashes_checked", "found" => "false")
+            .set(hashes_checked as f64);
         Ok(activations)
     }
 
