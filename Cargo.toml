@@ -10,10 +10,14 @@ debug = 1
 
 [dependencies]
 anyhow = "1.0.92"
+async-backtrace = "0.2.7"
+base64 = "0.21.0"
 bytes = "1.10.0"
 chrono = { version = "0.4.26" }
 clap = { version = "4.5.20", features = ["derive"] }
+deadpool-redis = { version = "0.22.0", features = ["cluster"] }
 elegant-departure = { version = "0.3.1", features = ["tokio"] }
+cityhasher = "0.1.0"
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 futures = "0.3.31"
 futures-util = "0.3.31"
@@ -28,6 +32,7 @@ prost = "0.13"
 prost-types = "0.13.3"
 rand = "0.8.5"
 rdkafka = { version = "0.37.0", features = ["cmake-build", "ssl"] }
+redis = "0.32.7"
 sentry = { version = "0.41.0", default-features = false, features = [
     # default features, except `release-health` is disabled
     "backtrace",
@@ -44,6 +49,7 @@ serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
 sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
+thiserror = "2.0.17"
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }
 tokio-util = "0.7.12"
