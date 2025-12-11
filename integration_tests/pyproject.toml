@@ -1,9 +1,8 @@
 [project]
-name = "taskbroker"
+name = "taskbroker-integration-tests"
 # we only have this here to make uv happy
 # we use uv for dependency management, not packaging
 version = "0.0.0"
-requires-python = ">=3.11"
 
 [dependency-groups]
 dev = [
@@ -32,8 +31,11 @@ environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
 url = "https://pypi.devinfra.sentry.io/simple"
 default = true
 
-[tool.uv.workspace]
-members = ["integration_tests", "clients/python"]
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
 
 [tool.mypy]
 mypy_path = "python"
