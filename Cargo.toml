@@ -39,7 +39,7 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "tracing",
     "logs"
 ] }
-sentry_protos = "0.2.0"
+sentry_protos = "0.4.7"
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
@@ -47,8 +47,8 @@ sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }
 tokio-util = "0.7.12"
-tonic = "0.12"
-tonic-health = "0.12.3"
+tonic = "0.13.1"
+tonic-health = "0.13.1"
 tower = "0.5.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = [
@@ -57,6 +57,9 @@ tracing-subscriber = { version = "0.3.18", features = [
     "json",
 ] }
 uuid = { version = "1.11.0", features = ["v4"] }
+
+[patch.crates-io]
+sentry_protos = { path = "../sentry-protos/rust/" }
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio"] }
