@@ -279,6 +279,27 @@ async fn test_get_pending_activation_earliest() {
 }
 
 #[tokio::test]
+async fn test_get_pending_activation_fetches_application() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(1);
+    batch[0].application = "hammers".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // Getting an activation with no application filter should
+    // include activations with application set.
+    let result = store
+        .get_pending_activation(None, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_0");
+    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert!(result.processing_deadline.unwrap() > Utc::now());
+    assert_eq!(result.application, "hammers");
+}
+
+#[tokio::test]
 async fn test_get_pending_activation_with_application() {
     let store = create_test_store().await;
 

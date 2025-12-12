@@ -1,5 +1,8 @@
+use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
-use sentry_protos::taskbroker::v1::{FetchNextTask, GetTaskRequest, SetTaskStatusRequest};
+use sentry_protos::taskbroker::v1::{
+    FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivation,
+};
 use tonic::{Code, Request};
 
 use crate::grpc::server::TaskbrokerServer;
@@ -75,6 +78,34 @@ async fn test_get_task_success() {
     assert!(resp.get_ref().task.is_some());
     let task = resp.get_ref().task.as_ref().unwrap();
     assert!(task.id == "id_0");
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn test_get_task_with_application_success() {
+    let store = create_test_store().await;
+    let mut activations = make_activations(2);
+
+    let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
+    payload.application = Some("hammers".into());
+    activations[1].activation = payload.encode_to_vec();
+    activations[1].application = "hammers".into();
+
+    store.store(activations).await.unwrap();
+
+    let service = TaskbrokerServer { store };
+    let request = GetTaskRequest {
+        namespace: None,
+        application: Some("hammers".into()),
+    };
+    let response = service.get_task(Request::new(request)).await;
+    assert!(response.is_ok());
+    let resp = response.unwrap();
+    assert!(resp.get_ref().task.is_some());
+    let task = resp.get_ref().task.as_ref().unwrap();
+    assert_eq!(task.id, "id_1");
+    println!("{:?}", task);
+    assert_eq!(task.application, Some("hammers".into()));
 }
 
 #[tokio::test]
