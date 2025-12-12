@@ -58,9 +58,6 @@ tracing-subscriber = { version = "0.3.18", features = [
 ] }
 uuid = { version = "1.11.0", features = ["v4"] }
 
-[patch.crates-io]
-sentry_protos = { path = "../sentry-protos/rust/" }
-
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 

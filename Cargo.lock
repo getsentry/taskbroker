@@ -4013,7 +4013,3 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[patch.unused]]
-name = "sentry_protos"
-version = "0.4.7"
