@@ -304,7 +304,7 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations_from_namespaces(Some(&demoted_namespaces), None)
+            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -481,7 +481,7 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
-    mut health_reporter: HealthReporter,
+    health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
     if config.health_check_killswitched {
@@ -1149,14 +1149,20 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_pending_activation(None)
+                .get_pending_activation(None, None)
                 .await
                 .unwrap()
                 .unwrap()
                 .id,
             "id_0",
         );
-        assert!(store.get_pending_activation(None).await.unwrap().is_none());
+        assert!(
+            store
+                .get_pending_activation(None, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         sleep(Duration::from_secs(2)).await;
         let result_context = do_upkeep(
@@ -1178,7 +1184,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_pending_activation(None)
+                .get_pending_activation(None, None)
                 .await
                 .unwrap()
                 .unwrap()
