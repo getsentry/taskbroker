@@ -104,7 +104,6 @@ async fn test_get_task_with_application_success() {
     assert!(resp.get_ref().task.is_some());
     let task = resp.get_ref().task.as_ref().unwrap();
     assert_eq!(task.id, "id_1");
-    println!("{:?}", task);
     assert_eq!(task.application, Some("hammers".into()));
 }
 
