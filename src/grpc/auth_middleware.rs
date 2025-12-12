@@ -56,7 +56,6 @@ impl<Inner> AuthService<Inner> {
 
 // We need to narrow the request trait bounds so that we can read the request body
 // and set the response body.
-// type TonicBody = UnsyncBoxBody<Bytes, tonic::Status>;
 type TonicBody = tonic::body::Body;
 
 impl<Inner> Service<http::Request<TonicBody>> for AuthService<Inner>
