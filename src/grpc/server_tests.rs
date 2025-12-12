@@ -10,7 +10,7 @@ use crate::test_utils::{create_test_store, make_activations};
 async fn test_get_task() {
     let store = create_test_store().await;
     let service = TaskbrokerServer { store };
-    let request = GetTaskRequest { namespace: None };
+    let request = GetTaskRequest { namespace: None, application: None };
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_err());
     let e = response.unwrap_err();
@@ -62,7 +62,7 @@ async fn test_get_task_success() {
     store.store(activations).await.unwrap();
 
     let service = TaskbrokerServer { store };
-    let request = GetTaskRequest { namespace: None };
+    let request = GetTaskRequest { namespace: None, application: None };
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -80,7 +80,7 @@ async fn test_set_task_status_success() {
 
     let service = TaskbrokerServer { store };
 
-    let request = GetTaskRequest { namespace: None };
+    let request = GetTaskRequest { namespace: None, application: None};
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -91,7 +91,7 @@ async fn test_set_task_status_success() {
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
-        fetch_next_task: Some(FetchNextTask { namespace: None }),
+        fetch_next_task: Some(FetchNextTask { namespace: None, application: None}),
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());

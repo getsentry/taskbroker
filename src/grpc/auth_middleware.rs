@@ -2,7 +2,6 @@ use anyhow::Context;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use hmac::{Hmac, Mac};
-use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full};
 use sha2::Sha256;
 use std::mem;
@@ -57,7 +56,9 @@ impl<Inner> AuthService<Inner> {
 
 // We need to narrow the request trait bounds so that we can read the request body
 // and set the response body.
-type TonicBody = UnsyncBoxBody<Bytes, tonic::Status>;
+// type TonicBody = UnsyncBoxBody<Bytes, tonic::Status>;
+type TonicBody = tonic::body::Body;
+
 
 impl<Inner> Service<http::Request<TonicBody>> for AuthService<Inner>
 where
@@ -88,11 +89,9 @@ where
 
             match validate_signature(&secret, &parts, body_bytes) {
                 Ok(body) => {
-                    // reconstruct a request with the bytes we read from the request.
-                    // tonic::body::boxed satifies the TonicBody trait bounds.
                     let new_body = Full::new(body);
-                    let boxed_body = tonic::body::boxed(new_body);
-                    let new_req = http::Request::from_parts(parts, boxed_body);
+                    let tb = tonic::body::Body::new(new_body);
+                    let new_req = http::Request::from_parts(parts, tb);
 
                     inner.call(new_req).await
                 }
@@ -301,7 +300,7 @@ mod tests {
     #[tokio::test]
     async fn test_auth_middleware_no_signature() {
         let mut service = AuthLayer::default().layer(tower::service_fn(|_req| async {
-            let body = tonic::body::empty_body();
+            let body = tonic::body::Body::empty();
             Ok::<_, http::Error>(
                 http::Response::builder()
                     .status(StatusCode::OK)
@@ -310,7 +309,7 @@ mod tests {
             )
         }));
 
-        let req_body = tonic::body::empty_body();
+        let req_body = tonic::body::Body::empty();
         let req = http::Request::builder()
             .uri("http://localhost:8080/test")
             .body(req_body)
@@ -327,7 +326,7 @@ mod tests {
             shared_secret: secret,
         };
         let mut service = layer.layer(tower::service_fn(|_req| async {
-            let body = tonic::body::empty_body();
+            let body = tonic::body::Body::empty();
             Ok::<_, http::Error>(
                 http::Response::builder()
                     .status(StatusCode::OK)
@@ -345,11 +344,11 @@ mod tests {
         );
 
         let body_bytes = Bytes::from("\0\0\0\0&A request data that is 38 bytes long..");
-        let request_body = tonic::body::boxed(Full::new(body_bytes));
+        let request_body = tonic::body::Body::new(Full::new(body_bytes));
         let req = http::Request::builder()
             .uri("http://localhost:8080/rpc/service/method")
             .header("sentry-signature", signature)
-            .body(tonic::body::boxed(request_body))
+            .body(request_body)
             .unwrap();
 
         let res = service.call(req).await.unwrap();
@@ -367,7 +366,7 @@ mod tests {
             shared_secret: secret,
         };
         let mut service = layer.layer(tower::service_fn(|_req| async {
-            let body = tonic::body::empty_body();
+            let body = tonic::body::Body::empty();
             let res = http::Response::builder()
                 .status(StatusCode::OK)
                 .body(body)
@@ -376,11 +375,11 @@ mod tests {
         }));
 
         let body_bytes = Bytes::from("\0\0\0\0&A request data that is 38 bytes long..");
-        let request_body = tonic::body::boxed(Full::new(body_bytes));
+        let request_body = tonic::body::Body::new(Full::new(body_bytes));
         let req = http::Request::builder()
             .uri("http://localhost:8080/rpc/service/method")
             .header("sentry-signature", "lol nope")
-            .body(tonic::body::boxed(request_body))
+            .body(request_body)
             .unwrap();
 
         let res = service.call(req).await.unwrap();

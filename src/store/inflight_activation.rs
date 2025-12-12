@@ -607,12 +607,17 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn get_pending_activation(
         &self,
+        application: Option<&str>,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
         let result = self
-            .get_pending_activations_from_namespaces(namespaces.as_deref(), Some(1))
+            .get_pending_activations_from_namespaces(
+                application.as_deref(),
+                namespaces.as_deref(),
+                Some(1)
+            )
             .await?;
         if result.is_empty() {
             return Ok(None);
@@ -626,6 +631,7 @@ impl InflightActivationStore {
     #[instrument(skip_all)]
     pub async fn get_pending_activations_from_namespaces(
         &self,
+        application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
     ) -> Result<Vec<InflightActivation>, Error> {
@@ -653,7 +659,11 @@ impl InflightActivationStore {
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        // Handle namespace filtering
+        // Handle application & namespace filtering
+        if let Some(value) = application {
+            query_builder.push(" AND application =");
+            query_builder.push_bind(value);
+        }
         if let Some(namespaces) = namespaces
             && !namespaces.is_empty()
         {

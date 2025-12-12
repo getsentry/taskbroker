@@ -248,6 +248,7 @@ demoted_namespaces:
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "task_to_be_filtered".to_string(),
                 parameters: "{}".to_string(),
@@ -294,6 +295,7 @@ demoted_namespaces:
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "task_to_be_filtered".to_string(),
                 parameters: "{}".to_string(),
@@ -343,6 +345,7 @@ demoted_namespaces:
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "taskname".to_string(),
                 parameters: "{}".to_string(),
@@ -394,6 +397,7 @@ demoted_namespaces:
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "taskname".to_string(),
                 parameters: "{}".to_string(),
@@ -425,6 +429,7 @@ demoted_namespaces:
             id: "1".to_string(),
             activation: TaskActivation {
                 id: "1".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "taskname".to_string(),
                 parameters: "{}".to_string(),
@@ -485,6 +490,7 @@ demoted_topic: taskworker-demoted"#;
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "bad_namespace".to_string(),
                 taskname: "task_to_be_filtered".to_string(),
                 parameters: "{}".to_string(),
@@ -516,6 +522,7 @@ demoted_topic: taskworker-demoted"#;
             id: "1".to_string(),
             activation: TaskActivation {
                 id: "1".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "good_namespace".to_string(),
                 taskname: "good_task".to_string(),
                 parameters: "{}".to_string(),

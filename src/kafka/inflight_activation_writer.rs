@@ -248,6 +248,7 @@ mod tests {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
@@ -282,6 +283,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),
@@ -354,6 +356,7 @@ mod tests {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
                 parameters: "{}".to_string(),
@@ -418,6 +421,7 @@ mod tests {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "pending_task".to_string(),
                 parameters: "{}".to_string(),
@@ -486,6 +490,7 @@ mod tests {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
@@ -520,6 +525,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),
@@ -595,6 +601,7 @@ mod tests {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
@@ -629,6 +636,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
@@ -700,6 +708,7 @@ mod tests {
             id: "existing".to_string(),
             activation: TaskActivation {
                 id: "existing".to_string(),
+                application: Some("sentry".to_string()),
                 namespace: "namespace".to_string(),
                 taskname: "existing_task".to_string(),
                 parameters: "{}".to_string(),
@@ -735,6 +744,7 @@ mod tests {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
@@ -769,6 +779,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
+                    application: Some("sentry".to_string()),
                     namespace: "namespace".to_string(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),

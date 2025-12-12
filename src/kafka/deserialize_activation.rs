@@ -121,6 +121,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: "namespace".into(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -165,6 +166,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: "namespace".into(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -210,6 +212,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: "namespace".into(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -255,6 +258,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: "namespace".into(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -301,6 +305,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: "namespace".into(),
             taskname: "taskname".into(),
             parameters: "{}".into(),

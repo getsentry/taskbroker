@@ -35,6 +35,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             id: format!("id_{i}"),
             activation: TaskActivation {
                 id: format!("id_{i}"),
+                application: Some("sentry".into()),
                 namespace: "namespace".into(),
                 taskname: "taskname".into(),
                 parameters: "{}".into(),

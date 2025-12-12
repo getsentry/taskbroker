@@ -24,10 +24,11 @@ impl ConsumerService for TaskbrokerServer {
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
         let start_time = Instant::now();
+        let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
         let inflight = self
             .store
-            .get_pending_activation(namespace.as_deref())
+            .get_pending_activation(application.as_deref(), namespace.as_deref())
             .await;
 
         match inflight {
@@ -97,14 +98,14 @@ impl ConsumerService for TaskbrokerServer {
         }
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
-        let Some(FetchNextTask { ref namespace }) = request.get_ref().fetch_next_task else {
+        let Some(FetchNextTask { ref namespace, ref application }) = request.get_ref().fetch_next_task else {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         };
 
         let start_time = Instant::now();
         let res = match self
             .store
-            .get_pending_activation(namespace.as_deref())
+            .get_pending_activation(application.as_deref(), namespace.as_deref())
             .await
         {
             Err(e) => {
