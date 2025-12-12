@@ -61,6 +61,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             delay_until: None,
             processing_deadline: None,
             at_most_once: false,
+            application: "sentry".into(),
             namespace: "namespace".into(),
             taskname: "taskname".into(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,

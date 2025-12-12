@@ -59,7 +59,6 @@ impl<Inner> AuthService<Inner> {
 // type TonicBody = UnsyncBoxBody<Bytes, tonic::Status>;
 type TonicBody = tonic::body::Body;
 
-
 impl<Inner> Service<http::Request<TonicBody>> for AuthService<Inner>
 where
     Inner: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>

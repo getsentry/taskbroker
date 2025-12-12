@@ -52,7 +52,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
             let mut num_activations_processed = 0;
 
             while store
-                .get_pending_activation(Some("namespace"))
+                .get_pending_activation(None, Some("namespace"))
                 .await
                 .unwrap()
                 .is_some()

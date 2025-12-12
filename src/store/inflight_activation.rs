@@ -112,6 +112,7 @@ pub struct InflightActivation {
     pub at_most_once: bool,
 
     /// Details about the task
+    pub application: String,
     pub namespace: String,
     pub taskname: String,
 }
@@ -163,6 +164,7 @@ struct TableRow {
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
     at_most_once: bool,
+    application: String,
     namespace: String,
     taskname: String,
     #[sqlx(try_from = "i32")]
@@ -187,6 +189,7 @@ impl TryFrom<InflightActivation> for TableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
+            application: value.application,
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
@@ -210,6 +213,7 @@ impl From<TableRow> for InflightActivation {
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
+            application: value.application,
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
@@ -503,6 +507,7 @@ impl InflightActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
+                application,
                 namespace,
                 taskname,
                 on_attempts_exceeded
@@ -543,6 +548,7 @@ impl InflightActivationStore {
                     processing_deadline,
                     status,
                     at_most_once,
+                    application,
                     namespace,
                     taskname,
                     on_attempts_exceeded
@@ -573,6 +579,7 @@ impl InflightActivationStore {
                 }
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
+                b.push_bind(row.application);
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
@@ -613,11 +620,7 @@ impl InflightActivationStore {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
         let result = self
-            .get_pending_activations_from_namespaces(
-                application.as_deref(),
-                namespaces.as_deref(),
-                Some(1)
-            )
+            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
             .await?;
         if result.is_empty() {
             return Ok(None);
@@ -817,6 +820,7 @@ impl InflightActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
+                application,
                 namespace,
                 taskname,
                 on_attempts_exceeded

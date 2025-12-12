@@ -126,7 +126,11 @@ async fn test_get_pending_activation() {
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.get_pending_activation(None, None).await.unwrap().unwrap();
+    let result = store
+        .get_pending_activation(None, None)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
@@ -263,11 +267,83 @@ async fn test_get_pending_activation_earliest() {
     batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.get_pending_activation(None, None).await.unwrap().unwrap();
+    let result = store
+        .get_pending_activation(None, None)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         result.added_at,
         Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
     );
+}
+
+#[tokio::test]
+async fn test_get_pending_activation_with_application() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(2);
+    batch[1].application = "hammers".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // Get activation from a named application
+    let result = store
+        .get_pending_activation(Some("hammers"), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_1");
+    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert!(result.processing_deadline.unwrap() > Utc::now());
+    assert_eq!(result.application, "hammers");
+
+    let result_opt = store
+        .get_pending_activation(Some("hammers"), None)
+        .await
+        .unwrap();
+    assert!(
+        result_opt.is_none(),
+        "no pending activations in hammers left"
+    );
+
+    let result_opt = store.get_pending_activation(None, None).await.unwrap();
+    assert!(result_opt.is_some(), "one pending activation in '' left");
+}
+
+#[tokio::test]
+async fn test_get_pending_activation_with_application_and_namespace() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(3);
+    batch[0].namespace = "target".into();
+
+    batch[1].application = "hammers".into();
+    batch[1].namespace = "target".into();
+
+    batch[2].application = "hammers".into();
+    batch[2].namespace = "not-target".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // Get activation from a named application
+    let result = store
+        .get_pending_activation(Some("hammers"), Some("target"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_1");
+    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert!(result.processing_deadline.unwrap() > Utc::now());
+    assert_eq!(result.application, "hammers");
+    assert_eq!(result.namespace, "target");
+
+    let result = store
+        .get_pending_activation(Some("hammers"), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_2");
+    assert_eq!(result.application, "hammers");
+    assert_eq!(result.namespace, "not-target");
 }
 
 #[tokio::test]
@@ -356,7 +432,13 @@ async fn set_activation_status() {
         &store,
     )
     .await;
-    assert!(store.get_pending_activation(None, None).await.unwrap().is_none());
+    assert!(
+        store
+            .get_pending_activation(None, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let result = store
         .set_status("not_there", InflightActivationStatus::Complete)
@@ -1118,6 +1200,7 @@ async fn test_clear() {
         delay_until: None,
         processing_deadline: None,
         at_most_once: false,
+        application: "sentry".into(),
         namespace: "namespace".into(),
         taskname: "taskname".into(),
     }];

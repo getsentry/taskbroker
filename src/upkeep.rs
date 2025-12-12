@@ -481,7 +481,7 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
-    mut health_reporter: HealthReporter,
+    health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
     if config.health_check_killswitched {
@@ -1156,7 +1156,13 @@ mod tests {
                 .id,
             "id_0",
         );
-        assert!(store.get_pending_activation(None, None).await.unwrap().is_none());
+        assert!(
+            store
+                .get_pending_activation(None, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         sleep(Duration::from_secs(2)).await;
         let result_context = do_upkeep(
