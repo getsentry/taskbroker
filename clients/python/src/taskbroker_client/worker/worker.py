@@ -7,7 +7,7 @@ import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from multiprocessing.context import ForkContext, SpawnContext
+from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Any
@@ -16,17 +16,17 @@ import grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import FetchNextTask
 
 from taskbroker_client.app import import_app
-from taskbroker_client.worker.client import (
-    HealthCheckSettings,
-    HostTemporarilyUnavailable,
-    TaskbrokerClient,
-)
-from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.constants import (
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
     MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE,
+)
+from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.client import (
+    HealthCheckSettings,
+    HostTemporarilyUnavailable,
+    TaskbrokerClient,
 )
 from taskbroker_client.worker.workerchild import child_process
 
@@ -44,7 +44,7 @@ class TaskWorker:
     Taskworkers can be run with `sentry run taskworker`
     """
 
-    mp_context: ForkContext | SpawnContext
+    mp_context: ForkContext | SpawnContext | ForkServerContext
 
     def __init__(
         self,
@@ -87,6 +87,8 @@ class TaskWorker:
             self.mp_context = multiprocessing.get_context("fork")
         elif process_type == "spawn":
             self.mp_context = multiprocessing.get_context("spawn")
+        elif process_type == "forkserver":
+            self.mp_context = multiprocessing.get_context("forkserver")
         else:
             raise ValueError(f"Invalid process type: {process_type}")
         self._process_type = process_type
