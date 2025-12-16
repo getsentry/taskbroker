@@ -13,7 +13,7 @@ logging.basicConfig(
 
 @click.group()
 def main() -> None:
-    pass
+    click.echo("Example application")
 
 
 @main.command()

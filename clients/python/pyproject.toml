@@ -29,6 +29,7 @@ dev = [
     "isort>=5.13.2",
     "mypy>=1.17.1",
     "time-machine>=2.16.0",
+    ""
 ]
 [project.optional-dependencies]
 examples = [
@@ -72,7 +73,7 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 module = [
     ".conftest",
-    "redis",
+    "redis.*",
     "rediscluster.*",
     "confluent_kafka.*",
 ]

@@ -36,7 +36,7 @@ default = true
 members = ["integration_tests", "clients/python"]
 
 [tool.mypy]
-mypy_path = "integration_tests,clients/python"
+mypy_path = "integration_tests,clients/python/src"
 explicit_package_bases = true
 # minimal strictness settings
 check_untyped_defs = true

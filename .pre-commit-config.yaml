@@ -53,14 +53,16 @@ repos:
 
     - id: mypy
       name: mypy-tests
-      entry: mypy -p integration_testsg
+      entry: "mypy"
+      exclude: "clients/"
       language: system
       types: [python]
       require_serial: true
 
     - id: mypy
       name: mypy-client
-      entry: mypy -p taskbroker_client
+      entry: "mypy"
+      exclude: "integration_tests/"
       language: system
       types: [python]
       require_serial: true
