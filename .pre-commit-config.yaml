@@ -52,8 +52,15 @@ repos:
       require_serial: true
 
     - id: mypy
-      name: mypy
-      entry: mypy
+      name: mypy-tests
+      entry: mypy -p integration_testsg
+      language: system
+      types: [python]
+      require_serial: true
+
+    - id: mypy
+      name: mypy-client
+      entry: mypy -p taskbroker_client
       language: system
       types: [python]
       require_serial: true
