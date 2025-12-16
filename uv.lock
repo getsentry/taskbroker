@@ -76,10 +76,10 @@ wheels = [
 
 [[package]]
 name = "click"
-version = "8.2.1"
+version = "8.3.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/click-8.2.1-py3-none-any.whl", hash = "sha256:61a3265b914e850b85317d0b3109c7f8cd35a670f963866005d6ef1d5175a12b" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/click-8.3.0-py3-none-any.whl", hash = "sha256:9b9f285302c6e3064f4330c05f05b81945b2a39544279343e6e7c5f27a9baddc" },
 ]
 
 [[package]]
@@ -607,6 +607,11 @@ dependencies = [
     { name = "zstandard", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 
+[package.optional-dependencies]
+examples = [
+    { name = "click", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "black", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -622,6 +627,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", marker = "extra == 'examples'", specifier = ">=8.3" },
     { name = "confluent-kafka", specifier = ">=2.3.0" },
     { name = "cronsim", specifier = ">=2.6" },
     { name = "grpcio", specifier = "==1.66.1" },
@@ -635,6 +641,7 @@ requires-dist = [
     { name = "types-protobuf", specifier = ">=6.30.2.20250703" },
     { name = "zstandard", specifier = ">=0.18.0" },
 ]
+provides-extras = ["examples"]
 
 [package.metadata.requires-dev]
 dev = [
