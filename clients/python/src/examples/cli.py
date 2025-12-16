@@ -12,7 +12,7 @@ logging.basicConfig(
 
 
 @click.group()
-def main():
+def main() -> None:
     pass
 
 
@@ -32,7 +32,7 @@ def spawn(count: int = 1) -> None:
 
 
 @main.command()
-def scheduler():
+def scheduler() -> None:
     from redis import StrictRedis
 
     from examples.app import app
@@ -73,7 +73,7 @@ def scheduler():
     help="The number of child processes to start.",
     default=2,
 )
-def worker(rpc_host: str, concurrency: int):
+def worker(rpc_host: str, concurrency: int) -> None:
     from taskbroker_client.worker import TaskWorker
 
     click.echo("Starting worker")
@@ -86,6 +86,7 @@ def worker(rpc_host: str, concurrency: int):
         result_queue_maxsize=concurrency * 2,
         rebalance_after=32,
         processing_pool_name="examples",
+        process_type="forkserver",
     )
     exitcode = worker.start()
     raise SystemExit(exitcode)
