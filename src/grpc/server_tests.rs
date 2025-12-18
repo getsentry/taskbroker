@@ -4,7 +4,7 @@ use tonic::{Code, Request};
 
 use crate::grpc::server::TaskbrokerServer;
 
-use crate::test_utils::{create_test_store, make_activations};
+use crate::test_utils::{create_test_store, generate_unique_namespace, make_activations};
 
 #[tokio::test]
 async fn test_get_task() {

@@ -107,7 +107,9 @@ mod tests {
     use rdkafka::{Timestamp, message::OwnedMessage};
     use sentry_protos::taskbroker::v1::TaskActivation;
 
-    use crate::store::inflight_activation::InflightActivationStatus;
+    use crate::{
+        store::inflight_activation::InflightActivationStatus, test_utils::generate_unique_namespace,
+    };
 
     use super::{Config, DeserializeActivationConfig, new};
 
@@ -121,7 +123,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
-            namespace: "namespace".into(),
+            namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
             headers: HashMap::new(),
@@ -165,7 +167,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
-            namespace: "namespace".into(),
+            namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
             headers: HashMap::new(),
@@ -210,7 +212,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
-            namespace: "namespace".into(),
+            namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
             headers: HashMap::new(),
@@ -255,7 +257,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
-            namespace: "namespace".into(),
+            namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
             headers: HashMap::new(),
@@ -301,7 +303,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
-            namespace: "namespace".into(),
+            namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
             headers: HashMap::new(),
