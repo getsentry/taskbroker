@@ -31,6 +31,7 @@ pub fn generate_unique_namespace() -> String {
     Uuid::new_v4().to_string()
 }
 
+/// Create a collection of `count` pending unsaved activations in a particular `namespace`. If you do not want to provide a namespace, use `make_activations`.
 pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<InflightActivation> {
     let mut records: Vec<InflightActivation> = vec![];
 
@@ -75,7 +76,7 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
     records
 }
 
-/// Create a collection of pending unsaved activations.
+/// Create a collection of `count` pending unsaved activations in a unique namespace. If you want to provide the namespace, use `make_activations_with_namespace`.
 pub fn make_activations(count: u32) -> Vec<InflightActivation> {
     let namespace = generate_unique_namespace();
     make_activations_with_namespace(namespace, count)
