@@ -215,6 +215,7 @@ mod tests {
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     };
+    use crate::test_utils::generate_unique_namespace;
     use crate::test_utils::make_activations;
     use crate::test_utils::{create_integration_config, generate_temp_filename};
 
@@ -239,16 +240,20 @@ mod tests {
             ),
             writer_config,
         );
+
         let received_at = Timestamp {
             seconds: 0,
             nanos: 0,
         };
+
+        let namespace = generate_unique_namespace();
+
         let batch = vec![
             InflightActivation {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -274,7 +279,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "pending_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
@@ -282,7 +287,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -308,7 +313,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "delay_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
@@ -346,15 +351,19 @@ mod tests {
             ),
             writer_config,
         );
+
         let received_at = Timestamp {
             seconds: 0,
             nanos: 0,
         };
+
+        let namespace = generate_unique_namespace();
+
         let batch = vec![InflightActivation {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "pending_task".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -377,7 +386,7 @@ mod tests {
             processing_deadline: None,
             processing_deadline_duration: 0,
             at_most_once: false,
-            namespace: "namespace".to_string(),
+            namespace: namespace.clone(),
             taskname: "pending_task".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         }];
@@ -414,11 +423,14 @@ mod tests {
             seconds: 0,
             nanos: 0,
         };
+
+        let namespace = generate_unique_namespace();
+
         let batch = vec![InflightActivation {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "pending_task".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -441,7 +453,7 @@ mod tests {
             processing_deadline: None,
             processing_deadline_duration: 0,
             at_most_once: false,
-            namespace: "namespace".to_string(),
+            namespace: namespace.clone(),
             taskname: "pending_task".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         }];
@@ -477,16 +489,20 @@ mod tests {
             ),
             writer_config,
         );
+
         let received_at = Timestamp {
             seconds: 0,
             nanos: 0,
         };
+
+        let namespace = generate_unique_namespace();
+
         let batch = vec![
             InflightActivation {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -512,7 +528,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "pending_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
@@ -520,7 +536,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -546,7 +562,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "delay_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
@@ -590,12 +606,15 @@ mod tests {
             seconds: 0,
             nanos: 0,
         };
+
+        let namespace = generate_unique_namespace();
+
         let batch = vec![
             InflightActivation {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -621,7 +640,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "pending_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
@@ -629,7 +648,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -655,7 +674,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "pending_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
@@ -696,11 +715,14 @@ mod tests {
             seconds: 0,
             nanos: 0,
         };
+
+        let namespace = generate_unique_namespace();
+
         let existing_activation = InflightActivation {
             id: "existing".to_string(),
             activation: TaskActivation {
                 id: "existing".to_string(),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "existing_task".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -723,7 +745,7 @@ mod tests {
             delay_until: None,
             processing_deadline: None,
             at_most_once: false,
-            namespace: "namespace".to_string(),
+            namespace: namespace.clone(),
             taskname: "existing_task".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
@@ -735,7 +757,7 @@ mod tests {
                 id: "0".to_string(),
                 activation: TaskActivation {
                     id: "0".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "pending_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -761,7 +783,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "pending_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },
@@ -769,7 +791,7 @@ mod tests {
                 id: "1".to_string(),
                 activation: TaskActivation {
                     id: "1".to_string(),
-                    namespace: "namespace".to_string(),
+                    namespace: namespace.clone(),
                     taskname: "delay_task".to_string(),
                     parameters: "{}".to_string(),
                     headers: HashMap::new(),
@@ -795,7 +817,7 @@ mod tests {
                 delay_until: None,
                 processing_deadline: None,
                 at_most_once: false,
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "delay_task".to_string(),
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
             },

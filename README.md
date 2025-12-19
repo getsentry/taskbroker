@@ -44,7 +44,7 @@ contains a `Makefile` with frequently run development commands:
 
 - `devenv sync` Run setup tasks to create and configure your development
   environment.
-- `make test` Run rust tests.
+- `make unit-test` Run rust tests.
 - `make integration-test` Run end to end tests.
 - `make format` Format rust code with `cargo fmt` and `cargo clippy`.
 
