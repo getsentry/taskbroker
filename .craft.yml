@@ -10,7 +10,6 @@ statusProvider:
       - 'build-arm64'
       - 'build-amd64'
       - 'assemble-taskbroker-image'
-preReleaseCommand: ""
 targets:
   - id: release
     name: docker
