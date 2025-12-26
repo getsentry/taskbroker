@@ -13,6 +13,7 @@ anyhow = "1.0.92"
 bytes = "1.10.0"
 chrono = { version = "0.4.26" }
 clap = { version = "4.5.20", features = ["derive"] }
+derive_builder = "0.20.2"
 elegant-departure = { version = "0.3.1", features = ["tokio"] }
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 futures = "0.3.31"

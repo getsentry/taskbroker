@@ -1,5 +1,4 @@
-use prost::Message;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Error;
 use std::path::Path;
 use std::sync::Arc;
@@ -7,18 +6,17 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::store::inflight_activation::{
-    InflightActivation, InflightActivationStatus, InflightActivationStore,
+    InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
     InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
 };
+use crate::store::task_activation::TaskActivationBuilder;
 use crate::test_utils::{
     StatusCount, assert_counts, create_integration_config, create_test_store,
     generate_temp_filename, generate_unique_namespace, make_activations,
     make_activations_with_namespace, replace_retry_state,
 };
-use chrono::{DateTime, SubsecRound, TimeZone, Utc};
-use sentry_protos::taskbroker::v1::{
-    OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
-};
+use chrono::{SubsecRound, TimeZone, Utc};
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
 use sqlx::{QueryBuilder, Sqlite};
 use std::fs;
 use tokio::sync::broadcast;
@@ -44,6 +42,9 @@ fn test_inflightactivation_status_is_completion() {
     value = InflightActivationStatus::Complete;
     assert!(value.is_conclusion());
 }
+
+#[test]
+fn test_inflightactivation_builder() {}
 
 #[test]
 fn test_inflightactivation_status_from() {
@@ -1089,44 +1090,36 @@ async fn test_remove_killswitched() {
 #[tokio::test]
 async fn test_clear() {
     let store = create_test_store().await;
-    let namespace = generate_unique_namespace();
 
     #[allow(deprecated)]
     let received_at = prost_types::Timestamp {
         seconds: 0,
         nanos: 0,
     };
-    let batch = vec![InflightActivation {
-        id: "id_0".into(),
-        activation: TaskActivation {
-            id: "id_0".into(),
-            namespace: namespace.clone(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            headers: HashMap::new(),
-            received_at: Some(received_at),
-            retry_state: None,
-            processing_deadline_duration: 0,
-            expires: Some(1),
-            delay: None,
-        }
-        .encode_to_vec(),
-        status: InflightActivationStatus::Pending,
-        partition: 0,
-        offset: 0,
-        added_at: Utc::now(),
-        received_at: DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32)
-            .expect(""),
-        processing_attempts: 0,
-        processing_deadline_duration: 0,
-        on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        expires_at: None,
-        delay_until: None,
-        processing_deadline: None,
-        at_most_once: false,
-        namespace: namespace.clone(),
-        taskname: "taskname".into(),
-    }];
+
+    let id = "id_0";
+    let taskname = "taskname";
+    let namespace = generate_unique_namespace();
+
+    let batch = vec![
+        InflightActivationBuilder::default()
+            .id(id)
+            .namespace(&namespace)
+            .taskname(taskname)
+            .activation(
+                TaskActivationBuilder::default()
+                    .id(id)
+                    .namespace(&namespace)
+                    .taskname(taskname)
+                    .received_at(received_at)
+                    .expires(1)
+                    .build(),
+            )
+            .received_at(received_at)
+            .build()
+            .unwrap(),
+    ];
+
     assert!(store.store(batch).await.is_ok());
     assert_counts(
         StatusCount {

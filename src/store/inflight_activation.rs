@@ -1,7 +1,6 @@
-use std::{str::FromStr, time::Instant};
-
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
+use derive_builder::Builder;
 use libsqlite3_sys::{
     SQLITE_DBSTATUS_CACHE_HIT, SQLITE_DBSTATUS_CACHE_MISS, SQLITE_DBSTATUS_CACHE_SPILL,
     SQLITE_DBSTATUS_CACHE_USED, SQLITE_DBSTATUS_CACHE_USED_SHARED, SQLITE_DBSTATUS_CACHE_WRITE,
@@ -10,7 +9,9 @@ use libsqlite3_sys::{
     SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
     SQLITE_OK, sqlite3_db_status,
 };
-use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
+use prost::Message;
+use prost_types::Timestamp;
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatus};
 use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
@@ -20,6 +21,7 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
+use std::{str::FromStr, time::Instant};
 use tracing::instrument;
 
 use crate::config::Config;
@@ -63,57 +65,154 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Builder)]
+#[builder(pattern = "owned")]
+#[builder_struct_attr(doc = r#"
+Build `InflightActivation`s by only providing values you care about.
+
+### Required Fields
+- `id`
+- `namespace`
+- `taskname`
+- `activation`
+
+### Usage
+
+```rs
+InflightActivationBuilder::default()
+    .id("task-123")
+    .namespace("my-namespace")
+    .taskname("my-task")
+    .activation(
+        TaskActivationBuilder::default()
+            .id(id)
+            .namespace("my-namespace")
+            .taskname("my-task")
+            .build()
+    )
+    .build()
+    .unwrap()
+```
+
+The code above is equivalent to the snippet below.
+
+```rs
+InflightActivation {
+    id: "task-123".to_string(),
+    namespace: "my-namespace".to_string(),
+    taskname: "my-task".to_string(),
+    activation: TaskActivation {
+        id: "task-123".to_string(),
+        namespace: "my-namespace".to_string(),
+        taskname: "my-task".to_string(),
+        parameters: "{}".to_string(),
+        headers: HashMap::new(),
+        processing_deadline_duration: 0,
+        received_at: None,
+        retry_state: None,
+        expires: None,
+        delay: None,
+    }.encode_to_vec(),
+    status: InflightActivationStatus::Pending,
+    partition: 0,
+    offset: 0,
+    added_at: Utc::now(),
+    received_at: Utc::now(),
+    processing_attempts: 0,
+    processing_deadline_duration: 0,
+    expires_at: None,
+    delay_until: None,
+    processing_deadline: None,
+    on_attempts_exceeded: OnAttemptsExceeded::Discard,
+    at_most_once: false
+}
+```
+"#)]
 pub struct InflightActivation {
+    #[builder(setter(into))]
     pub id: String,
-    /// The protobuf activation that was received from kafka
+
+    /// The task namespace.
+    #[builder(setter(into))]
+    pub namespace: String,
+
+    /// The task name.
+    #[builder(setter(into))]
+    pub taskname: String,
+
+    /// The Protobuf activation that was received from Kafka.
+    #[builder(setter(custom))]
     pub activation: Vec<u8>,
 
     /// The current status of the activation
+    #[builder(default = InflightActivationStatus::Pending)]
     pub status: InflightActivationStatus,
 
     /// The partition the activation was received from
+    #[builder(default = 0)]
     pub partition: i32,
 
     /// The offset the activation had
+    #[builder(default = 0)]
     pub offset: i64,
 
     /// The timestamp when the activation was stored in activation store.
+    #[builder(default = Utc::now())]
     pub added_at: DateTime<Utc>,
 
     /// The timestamp a task was stored in Kafka
+    #[builder(default = Utc::now())]
+    #[builder(setter(custom))]
     pub received_at: DateTime<Utc>,
 
     /// The number of times the activation has been attempted to be processed. This counter is
     /// incremented everytime a task is reset from processing back to pending. When this
     /// exceeds max_processing_attempts, the task is discarded/deadlettered.
+    #[builder(default = 0)]
     pub processing_attempts: i32,
 
     /// The duration in seconds that a worker has to complete task execution.
     /// When an activation is moved from pending -> processing a result is expected
     /// in this many seconds.
+    #[builder(default = 0)]
     pub processing_deadline_duration: u32,
 
     /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
+    #[builder(default = None)]
     pub expires_at: Option<DateTime<Utc>>,
 
     /// If the task has specified a delay, this is the timestamp after which the task can be sent to workers
+    #[builder(default = None)]
     pub delay_until: Option<DateTime<Utc>>,
 
     /// The timestamp for when processing should be complete
+    #[builder(default = None)]
     pub processing_deadline: Option<DateTime<Utc>>,
 
     /// What to do when the maximum number of attempts to complete a task is exceeded
+    #[builder(default = OnAttemptsExceeded::Discard)]
     pub on_attempts_exceeded: OnAttemptsExceeded,
 
     /// Whether or not the activation uses at_most_once.
     /// When enabled activations are not retried when processing_deadlines
     /// are exceeded.
+    #[builder(default = false)]
     pub at_most_once: bool,
+}
 
-    /// Details about the task
-    pub namespace: String,
-    pub taskname: String,
+impl InflightActivationBuilder {
+    /// Override the default setter generated for `activation`.
+    pub fn activation(mut self, activation: TaskActivation) -> Self {
+        self.activation = Some(activation.encode_to_vec());
+        self
+    }
+
+    pub fn received_at(mut self, received_at: Timestamp) -> Self {
+        self.received_at = Some(
+            DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32).expect(""),
+        );
+        self
+    }
 }
 
 impl InflightActivation {
