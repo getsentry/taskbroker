@@ -9,11 +9,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
+use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
+    pub config: Arc<Config>,
 }
 
 #[tonic::async_trait]
@@ -23,6 +25,14 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
+        // Check if push mode is enabled - if so, pull mode (GetTask) is disabled
+        if self.config.taskworker_push_enabled {
+            error!("GetTask called but taskbroker is in push mode");
+            return Err(Status::failed_precondition(
+                "Pull mode disabled - taskbroker is in push mode. Workers should not call GetTask.",
+            ));
+        }
+
         let start_time = Instant::now();
         let namespace = &request.get_ref().namespace;
         let inflight = self
@@ -64,6 +74,8 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<SetTaskStatusRequest>,
     ) -> Result<Response<SetTaskStatusResponse>, Status> {
+        println!("Received set task status rpc call");
+
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
@@ -100,6 +112,11 @@ impl ConsumerService for TaskbrokerServer {
         let Some(FetchNextTask { ref namespace }) = request.get_ref().fetch_next_task else {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         };
+
+        // Check if push mode is enabled - if so, don't fetch next task
+        if self.config.taskworker_push_enabled {
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        }
 
         let start_time = Instant::now();
         let res = match self

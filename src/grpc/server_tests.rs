@@ -4,12 +4,13 @@ use tonic::{Code, Request};
 
 use crate::grpc::server::TaskbrokerServer;
 
-use crate::test_utils::{create_test_store, make_activations};
+use crate::test_utils::{create_config, create_test_store, make_activations};
 
 #[tokio::test]
 async fn test_get_task() {
     let store = create_test_store().await;
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+    let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_err());
@@ -22,7 +23,8 @@ async fn test_get_task() {
 #[allow(deprecated)]
 async fn test_set_task_status() {
     let store = create_test_store().await;
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+    let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 5, // Complete
@@ -38,7 +40,8 @@ async fn test_set_task_status() {
 #[allow(deprecated)]
 async fn test_set_task_status_invalid() {
     let store = create_test_store().await;
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+    let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 1, // Invalid
@@ -61,7 +64,8 @@ async fn test_get_task_success() {
     let activations = make_activations(1);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+    let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
@@ -78,7 +82,8 @@ async fn test_set_task_status_success() {
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+    let service = TaskbrokerServer { store, config };
 
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;

@@ -25,6 +25,13 @@ pub fn new(
     config: DeserializeActivationConfig,
 ) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
     move |msg: Arc<OwnedMessage>| {
+        println!(
+            "🟢 Deserializing activation - topic: {:?}, partition: {}, offset: {}",
+            msg.topic(),
+            msg.partition(),
+            msg.offset()
+        );
+
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
         };

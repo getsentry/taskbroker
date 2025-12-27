@@ -214,6 +214,15 @@ pub struct Config {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
+
+    /// Enable push mode where taskbroker proactively pushes tasks to taskworkers.
+    pub taskworker_push_enabled: bool,
+
+    /// The gRPC address of the taskworker to push tasks to.
+    pub taskworker_push_address: String,
+
+    /// The callback URL that taskworkers use to report task completion back to taskbroker.
+    pub taskworker_push_callback_url: String,
 }
 
 impl Default for Config {
@@ -279,6 +288,9 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            taskworker_push_enabled: false,
+            taskworker_push_address: "127.0.0.1:50052".to_owned(),
+            taskworker_push_callback_url: "127.0.0.1:50051".to_owned(),
         }
     }
 }

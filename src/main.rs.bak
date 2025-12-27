@@ -177,34 +177,9 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Push task loop (conditionally enabled)
-    let push_task = if config.taskworker_push_enabled {
-        info!("========================================");
-        info!("Running in PUSH mode");
-        info!(
-            "- Push loop will send tasks to worker at {}",
-            config.taskworker_push_address
-        );
-        info!("- Pull endpoint (GetTask) is DISABLED");
-        info!("- Workers should NOT call GetTask");
-        info!("========================================");
-        let push_store = store.clone();
-        let push_config = config.clone();
-        let client = taskbroker::grpc::taskworker_client::TaskworkerClient::new(
-            push_config.taskworker_push_address.clone(),
-        );
+    let push_task = tokio::spawn({
 
-        Some(tokio::spawn(async move {
-            taskbroker::push_task::push_task_loop(push_store, push_config, client).await
-        }))
-    } else {
-        info!("========================================");
-        info!("Running in PULL mode");
-        info!("- Workers should call GetTask to request tasks");
-        info!("- Push loop is disabled");
-        info!("========================================");
-        None
-    };
+    });
 
     // GRPC server
     let grpc_server_task = tokio::spawn({
@@ -224,7 +199,6 @@ async fn main() -> Result<(), Error> {
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
-                    config: grpc_config.clone(),
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -255,7 +229,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    let mut depart = elegant_departure::tokio::depart()
+    elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
         .on_signal(SignalKind::hangup())
@@ -263,14 +237,8 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task));
-
-    // Only register push_task if it was spawned
-    if let Some(task) = push_task {
-        depart = depart.on_completion(log_task_completion("push_task", task));
-    }
-
-    depart.await;
+        .on_completion(log_task_completion("maintenance_task", maintenance_task))
+        .await;
 
     Ok(())
 }

@@ -6,6 +6,7 @@ pub mod grpc;
 pub mod kafka;
 pub mod logging;
 pub mod metrics;
+pub mod push_task;
 pub mod runtime_config;
 pub mod store;
 pub mod test_utils;

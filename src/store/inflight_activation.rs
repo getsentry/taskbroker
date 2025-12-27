@@ -620,6 +620,46 @@ impl InflightActivationStore {
         Ok(Some(result[0].clone()))
     }
 
+    /// Peek at a pending activation without changing its status.
+    /// Used by push task loop to fetch tasks before attempting to push to worker.
+    /// Unlike get_pending_activation, this does NOT atomically update status to Processing.
+    #[instrument(skip_all)]
+    pub async fn peek_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
+        let now = Utc::now();
+
+        let row_result: Option<TableRow> = sqlx::query_as(
+            "
+            SELECT id,
+                activation,
+                partition,
+                offset,
+                added_at,
+                received_at,
+                processing_attempts,
+                expires_at,
+                delay_until,
+                processing_deadline_duration,
+                processing_deadline,
+                status,
+                at_most_once,
+                namespace,
+                taskname,
+                on_attempts_exceeded
+            FROM inflight_taskactivations
+            WHERE status = $1
+            AND (expires_at IS NULL OR expires_at > $2)
+            ORDER BY added_at
+            LIMIT 1
+            ",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .fetch_optional(&self.read_pool)
+        .await?;
+
+        Ok(row_result.map(|row| row.into()))
+    }
+
     /// Get a pending activation from specified namespaces
     /// If namespaces is None, gets from any namespace
     /// If namespaces is Some(&[...]), gets from those namespaces
@@ -761,6 +801,37 @@ impl InflightActivationStore {
         };
 
         Ok(Some(row.into()))
+    }
+
+    /// Atomically update an activation's status from Pending to Processing.
+    /// This is used by the push task loop after a worker accepts a task.
+    /// Returns true if the update succeeded (status was Pending), false if it failed
+    /// (status was already changed by another process, e.g., pulled by a worker).
+    #[instrument(skip_all)]
+    pub async fn mark_as_processing_if_pending(&self, id: &str) -> Result<bool, Error> {
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let mut conn = self
+            .acquire_write_conn_metric("mark_as_processing_if_pending")
+            .await?;
+
+        let result: Option<TableRow> = sqlx::query_as(&format!(
+            "UPDATE inflight_taskactivations
+            SET
+                processing_deadline = unixepoch(
+                    'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
+                ),
+                status = $1
+            WHERE id = $2
+            AND status = $3
+            RETURNING *"
+        ))
+        .bind(InflightActivationStatus::Processing)
+        .bind(id)
+        .bind(InflightActivationStatus::Pending)
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        Ok(result.is_some())
     }
 
     #[instrument(skip_all)]

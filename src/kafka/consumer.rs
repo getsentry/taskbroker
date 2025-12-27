@@ -459,6 +459,9 @@ pub async fn map<T>(
                     break;
                 };
                 let msg = Arc::new(msg.detach()?);
+
+                println!("🔵 Consumed message from Kafka - topic: {:?}, partition: {}, offset: {}, payload size: {} bytes",  msg.topic(), msg.partition(), msg.offset(), msg.payload().map(|p| p.len()).unwrap_or(0));
+
                 match transform(msg.clone()) {
                     Ok(transformed) => {
                         if ok.send((

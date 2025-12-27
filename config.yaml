@@ -1,0 +1,4 @@
+taskworker_push_enabled: true
+taskworker_push_address: "http://127.0.0.1:50052"
+taskworker_push_callback_url: "127.0.0.1:50051"
+kafka_topic: "test-topic"
