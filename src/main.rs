@@ -92,7 +92,7 @@ async fn main() -> Result<(), Error> {
 
     // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
     // of the application.
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter
         .set_service_status(SERVICE_NAME, ServingStatus::Serving)
         .await;
