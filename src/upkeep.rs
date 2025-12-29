@@ -481,7 +481,7 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
-    mut health_reporter: HealthReporter,
+    health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
     if config.health_check_killswitched {
