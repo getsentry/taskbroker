@@ -122,7 +122,7 @@ impl TaskActivationBuilder {
             namespace: self.namespace.expect("namespace is required"),
             taskname: self.taskname.expect("taskname is required"),
             parameters: self.parameters.unwrap_or_else(|| "{}".to_string()),
-            headers: self.headers.unwrap_or_else(|| HashMap::new()),
+            headers: self.headers.unwrap_or_default(),
             processing_deadline_duration: self.processing_deadline_duration.unwrap_or(0),
             received_at: self.received_at,
             retry_state: self.retry_state,

@@ -202,7 +202,6 @@ pub struct InflightActivation {
 }
 
 impl InflightActivationBuilder {
-    /// Override the default setter generated for `activation`.
     pub fn activation(mut self, activation: TaskActivation) -> Self {
         self.activation = Some(activation.encode_to_vec());
         self

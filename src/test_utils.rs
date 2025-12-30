@@ -7,14 +7,17 @@ use rdkafka::{
     consumer::{Consumer, StreamConsumer},
     producer::FutureProducer,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
     config::Config,
-    store::inflight_activation::{
-        InflightActivation, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig,
+    store::{
+        inflight_activation::{
+            InflightActivation, InflightActivationBuilder, InflightActivationStatus,
+            InflightActivationStore, InflightActivationStoreConfig,
+        },
+        task_activation::TaskActivationBuilder,
     },
 };
 use chrono::{Timelike, Utc};
@@ -37,40 +40,31 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
 
     for i in 0..count {
         let now = Utc::now();
-        #[allow(deprecated)]
-        let item = InflightActivation {
-            id: format!("id_{i}"),
-            activation: TaskActivation {
-                id: format!("id_{i}"),
-                namespace: namespace.clone(),
-                taskname: "taskname".into(),
-                parameters: "{}".into(),
-                headers: HashMap::new(),
-                received_at: Some(prost_types::Timestamp {
-                    seconds: now.timestamp(),
-                    nanos: now.nanosecond() as i32,
-                }),
-                retry_state: None,
-                processing_deadline_duration: 10,
-                expires: None,
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: i as i64,
-            added_at: now,
-            received_at: now,
-            processing_attempts: 0,
-            processing_deadline_duration: 10,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            namespace: namespace.clone(),
-            taskname: "taskname".into(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
+
+        let received_at = prost_types::Timestamp {
+            seconds: now.timestamp(),
+            nanos: now.nanosecond() as i32,
         };
+
+        let item = InflightActivationBuilder::default()
+            .id(format!("id_{i}"))
+            .taskname("taskname")
+            .namespace(&namespace)
+            .added_at(now)
+            .received_at(received_at)
+            .offset(i as i64)
+            .processing_deadline_duration(10)
+            .activation(
+                TaskActivationBuilder::default()
+                    .id(format!("id_{i}"))
+                    .taskname("taskname")
+                    .namespace(&namespace)
+                    .received_at(received_at)
+                    .processing_deadline_duration(10)
+                    .build(),
+            )
+            .build();
+
         records.push(item);
     }
     records
