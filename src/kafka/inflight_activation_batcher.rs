@@ -213,21 +213,16 @@ impl Reducer for InflightActivationBatcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActivationBatcherConfig, Config, InflightActivation, InflightActivationBatcher, Reducer,
-        RuntimeConfigManager,
+        ActivationBatcherConfig, Config, InflightActivationBatcher, Reducer, RuntimeConfigManager,
     };
     use chrono::Utc;
-    use std::collections::HashMap;
     use tokio::fs;
 
-    use prost::Message;
-    use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
     use std::sync::Arc;
 
     use crate::{
         store::{
-            inflight_activation::{InflightActivationBuilder, InflightActivationStatus},
-            task_activation::TaskActivationBuilder,
+            inflight_activation::InflightActivationBuilder, task_activation::TaskActivationBuilder,
         },
         test_utils::generate_unique_namespace,
     };

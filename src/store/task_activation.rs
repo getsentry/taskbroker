@@ -1,42 +1,25 @@
+use prost_types::Timestamp;
+use sentry_protos::taskbroker::v1;
 use std::collections::HashMap;
 
-use prost_types::Timestamp;
-use sentry_protos::taskbroker::v1::{self, RetryState};
+macro_rules! builder_setter {
+    // For types that should accept `impl Into<T>`
+    ($field:ident: impl Into<$ty:ty>) => {
+        pub fn $field<T: Into<$ty>>(mut self, $field: T) -> Self {
+            self.$field = Some($field.into());
+            self
+        }
+    };
 
-/// Build `TaskActivation`s by only providing values you care about.
-///
-/// ### Required Fields
-/// - `id`
-/// - `namespace`
-/// - `taskname`
-///
-/// ### Usage
-///
-/// ```rs
-/// TaskActivationBuilder::new()
-///     .id("task-123")
-///     .namespace("my-namespace")
-///     .taskname("my-task")
-///     .build()
-/// ```
-///
-/// The code above is equivalent to the snippet below.
-///
-/// ```rs
-/// TaskActivation {
-///     id: "task-123".to_string(),
-///     namespace: "my-namespace".to_string(),
-///     taskname: "my-task".to_string(),
-///     parameters: "{}".to_string(),
-///     headers: HashMap::new(),
-///     processing_deadline_duration: 0,
-///     received_at: None,
-///     retry_state: None,
-///     expires: None,
-///     delay: None,
-/// }
-/// ```
-///
+    // For types that should be used directly
+    ($field:ident: $ty:ty) => {
+        pub fn $field(mut self, $field: $ty) -> Self {
+            self.$field = Some($field);
+            self
+        }
+    };
+}
+
 pub struct TaskActivationBuilder {
     id: Option<String>,
     namespace: Option<String>,
@@ -44,7 +27,7 @@ pub struct TaskActivationBuilder {
     parameters: Option<String>,
     headers: Option<HashMap<String, String>>,
     received_at: Option<Timestamp>,
-    retry_state: Option<RetryState>,
+    retry_state: Option<v1::RetryState>,
     processing_deadline_duration: Option<u64>,
     expires: Option<u64>,
     delay: Option<u64>,
@@ -66,55 +49,19 @@ impl TaskActivationBuilder {
         }
     }
 
-    pub fn id<T: Into<String>>(mut self, id: T) -> Self {
-        self.id = Some(id.into());
-        self
-    }
+    // String fields that accept `impl Into<String>`
+    builder_setter!(id: impl Into<String>);
+    builder_setter!(namespace: impl Into<String>);
+    builder_setter!(taskname: impl Into<String>);
+    builder_setter!(parameters: impl Into<String>);
 
-    pub fn namespace<T: Into<String>>(mut self, namespace: T) -> Self {
-        self.namespace = Some(namespace.into());
-        self
-    }
-
-    pub fn taskname<T: Into<String>>(mut self, taskname: T) -> Self {
-        self.taskname = Some(taskname.into());
-        self
-    }
-
-    pub fn parameters<T: Into<String>>(mut self, parameters: T) -> Self {
-        self.parameters = Some(parameters.into());
-        self
-    }
-
-    pub fn headers(mut self, headers: HashMap<String, String>) -> Self {
-        self.headers = Some(headers);
-        self
-    }
-
-    pub fn received_at(mut self, received_at: Timestamp) -> Self {
-        self.received_at = Some(received_at);
-        self
-    }
-
-    pub fn retry_state(mut self, retry_state: RetryState) -> Self {
-        self.retry_state = Some(retry_state);
-        self
-    }
-
-    pub fn processing_deadline_duration(mut self, duration: u64) -> Self {
-        self.processing_deadline_duration = Some(duration);
-        self
-    }
-
-    pub fn expires(mut self, expires: u64) -> Self {
-        self.expires = Some(expires);
-        self
-    }
-
-    pub fn delay(mut self, delay: u64) -> Self {
-        self.delay = Some(delay);
-        self
-    }
+    // Other fields
+    builder_setter!(headers: HashMap<String, String>);
+    builder_setter!(received_at: Timestamp);
+    builder_setter!(retry_state: v1::RetryState);
+    builder_setter!(processing_deadline_duration: u64);
+    builder_setter!(expires: u64);
+    builder_setter!(delay: u64);
 
     pub fn build(self) -> v1::TaskActivation {
         v1::TaskActivation {

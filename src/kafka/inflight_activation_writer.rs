@@ -202,14 +202,9 @@ impl Reducer for InflightActivationWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivationWriterConfig, InflightActivation, InflightActivationWriter, Reducer};
-    use chrono::{DateTime, Utc};
-    use prost::Message;
-    use prost_types::Timestamp;
-    use std::collections::HashMap;
+    use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
 
-    use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
-    use sentry_protos::taskbroker::v1::TaskActivation;
+    use prost_types::Timestamp;
     use std::sync::Arc;
 
     use crate::store::inflight_activation::InflightActivationBuilder;

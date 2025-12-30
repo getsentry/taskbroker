@@ -68,67 +68,6 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
 #[derive(Clone, Debug, PartialEq, Builder)]
 #[builder(pattern = "owned")]
 #[builder(build_fn(name = "_build", private))]
-#[builder_struct_attr(doc = r#"
-Build `InflightActivation`s by only providing values you care about.
-
-### Required Fields
-- `id`
-- `namespace`
-- `taskname`
-- `activation`
-
-### Usage
-
-```rs
-InflightActivationBuilder::default()
-    .id("task-123")
-    .namespace("my-namespace")
-    .taskname("my-task")
-    .activation(
-        TaskActivationBuilder::default()
-            .id(id)
-            .namespace("my-namespace")
-            .taskname("my-task")
-            .build()
-    )
-    .build()
-    .unwrap()
-```
-
-The code above is equivalent to the snippet below.
-
-```rs
-InflightActivation {
-    id: "task-123".to_string(),
-    namespace: "my-namespace".to_string(),
-    taskname: "my-task".to_string(),
-    activation: TaskActivation {
-        id: "task-123".to_string(),
-        namespace: "my-namespace".to_string(),
-        taskname: "my-task".to_string(),
-        parameters: "{}".to_string(),
-        headers: HashMap::new(),
-        processing_deadline_duration: 0,
-        received_at: None,
-        retry_state: None,
-        expires: None,
-        delay: None,
-    }.encode_to_vec(),
-    status: InflightActivationStatus::Pending,
-    partition: 0,
-    offset: 0,
-    added_at: Utc::now(),
-    received_at: Utc::now(),
-    processing_attempts: 0,
-    processing_deadline_duration: 0,
-    expires_at: None,
-    delay_until: None,
-    processing_deadline: None,
-    on_attempts_exceeded: OnAttemptsExceeded::Discard,
-    at_most_once: false
-}
-```
-"#)]
 pub struct InflightActivation {
     #[builder(setter(into))]
     pub id: String,
