@@ -67,6 +67,7 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
 
 #[derive(Clone, Debug, PartialEq, Builder)]
 #[builder(pattern = "owned")]
+#[builder(build_fn(name = "_build", private))]
 #[builder_struct_attr(doc = r#"
 Build `InflightActivation`s by only providing values you care about.
 
@@ -178,7 +179,7 @@ pub struct InflightActivation {
     pub processing_deadline_duration: u32,
 
     /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
-    #[builder(default = None)]
+    #[builder(default = None, setter(strip_option))]
     pub expires_at: Option<DateTime<Utc>>,
 
     /// If the task has specified a delay, this is the timestamp after which the task can be sent to workers
@@ -212,6 +213,13 @@ impl InflightActivationBuilder {
             DateTime::from_timestamp(received_at.seconds, received_at.nanos as u32).expect(""),
         );
         self
+    }
+
+    pub fn build(self) -> InflightActivation {
+        match self._build() {
+            Ok(activation) => activation,
+            Err(e) => panic!("Failed to build InflightActivation: {}", e),
+        }
     }
 }
 

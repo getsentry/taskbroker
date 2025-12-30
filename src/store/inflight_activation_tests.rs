@@ -1097,27 +1097,24 @@ async fn test_clear() {
         nanos: 0,
     };
 
-    let id = "id_0";
-    let taskname = "taskname";
     let namespace = generate_unique_namespace();
 
     let batch = vec![
         InflightActivationBuilder::default()
-            .id(id)
+            .id("id_0")
+            .taskname("taskname")
             .namespace(&namespace)
-            .taskname(taskname)
+            .received_at(received_at)
             .activation(
                 TaskActivationBuilder::default()
-                    .id(id)
+                    .id("id_0")
+                    .taskname("taskname")
                     .namespace(&namespace)
-                    .taskname(taskname)
                     .received_at(received_at)
                     .expires(1)
                     .build(),
             )
-            .received_at(received_at)
-            .build()
-            .unwrap(),
+            .build(),
     ];
 
     assert!(store.store(batch).await.is_ok());

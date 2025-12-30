@@ -212,9 +212,11 @@ mod tests {
     use sentry_protos::taskbroker::v1::TaskActivation;
     use std::sync::Arc;
 
+    use crate::store::inflight_activation::InflightActivationBuilder;
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     };
+    use crate::store::task_activation::TaskActivationBuilder;
     use crate::test_utils::generate_unique_namespace;
     use crate::test_utils::make_activations;
     use crate::test_utils::{create_integration_config, generate_temp_filename};
@@ -249,74 +251,34 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivation {
-                id: "0".to_string(),
-                activation: TaskActivation {
-                    id: "0".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "pending_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+            InflightActivationBuilder::default()
+                .id("0")
+                .taskname("pending_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("0")
+                        .taskname("pending_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "pending_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
-            InflightActivation {
-                id: "1".to_string(),
-                activation: TaskActivation {
-                    id: "1".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "delay_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Delay,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+                .build(),
+            InflightActivationBuilder::default()
+                .id("1")
+                .taskname("delay_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("1")
+                        .taskname("delay_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "delay_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
+                .build(),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -498,74 +460,34 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivation {
-                id: "0".to_string(),
-                activation: TaskActivation {
-                    id: "0".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "pending_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+            InflightActivationBuilder::default()
+                .id("0")
+                .taskname("pending_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("0")
+                        .taskname("pending_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "pending_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
-            InflightActivation {
-                id: "1".to_string(),
-                activation: TaskActivation {
-                    id: "1".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "delay_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Delay,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+                .build(),
+            InflightActivationBuilder::default()
+                .id("1")
+                .taskname("delay_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("1")
+                        .taskname("delay_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "delay_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
+                .build(),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -610,74 +532,34 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivation {
-                id: "0".to_string(),
-                activation: TaskActivation {
-                    id: "0".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "pending_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+            InflightActivationBuilder::default()
+                .id("0")
+                .taskname("pending_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("0")
+                        .taskname("pending_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "pending_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
-            InflightActivation {
-                id: "1".to_string(),
-                activation: TaskActivation {
-                    id: "1".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "pending_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+                .build(),
+            InflightActivationBuilder::default()
+                .id("1")
+                .taskname("pending_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("1")
+                        .taskname("pending_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "pending_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
+                .build(),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -753,74 +635,34 @@ mod tests {
 
         let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
         let batch = vec![
-            InflightActivation {
-                id: "0".to_string(),
-                activation: TaskActivation {
-                    id: "0".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "pending_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+            InflightActivationBuilder::default()
+                .id("0")
+                .taskname("pending_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("0")
+                        .taskname("pending_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "pending_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
-            InflightActivation {
-                id: "1".to_string(),
-                activation: TaskActivation {
-                    id: "1".to_string(),
-                    namespace: namespace.clone(),
-                    taskname: "delay_task".to_string(),
-                    parameters: "{}".to_string(),
-                    headers: HashMap::new(),
-                    received_at: Some(received_at),
-                    retry_state: None,
-                    processing_deadline_duration: 0,
-                    expires: None,
-                    delay: None,
-                }
-                .encode_to_vec(),
-                status: InflightActivationStatus::Pending,
-                partition: 0,
-                offset: 0,
-                added_at: Utc::now(),
-                received_at: DateTime::from_timestamp(
-                    received_at.seconds,
-                    received_at.nanos as u32,
+                .build(),
+            InflightActivationBuilder::default()
+                .id("1")
+                .taskname("delay_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .activation(
+                    TaskActivationBuilder::default()
+                        .id("1")
+                        .taskname("delay_task")
+                        .namespace(&namespace)
+                        .received_at(received_at)
+                        .build(),
                 )
-                .unwrap(),
-                processing_attempts: 0,
-                processing_deadline_duration: 0,
-                expires_at: None,
-                delay_until: None,
-                processing_deadline: None,
-                at_most_once: false,
-                namespace: namespace.clone(),
-                taskname: "delay_task".to_string(),
-                on_attempts_exceeded: OnAttemptsExceeded::Discard,
-            },
+                .build(),
         ];
 
         writer.reduce(batch).await.unwrap();
