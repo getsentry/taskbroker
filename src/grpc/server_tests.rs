@@ -142,3 +142,66 @@ async fn test_set_task_status_success() {
     let task = resp.get_ref().task.as_ref().unwrap();
     assert_eq!(task.id, "id_1");
 }
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn test_set_task_status_with_application() {
+    let store = create_test_store().await;
+    let mut activations = make_activations(2);
+
+    let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
+    payload.application = Some("hammers".into());
+    activations[1].activation = payload.encode_to_vec();
+    activations[1].application = "hammers".into();
+
+    store.store(activations).await.unwrap();
+
+    let service = TaskbrokerServer { store };
+    let request = SetTaskStatusRequest {
+        id: "id_0".to_string(),
+        status: 5, // Complete
+        fetch_next_task: Some(FetchNextTask {
+            application: Some("hammers".into()),
+            namespace: None,
+        }),
+    };
+    let response = service.set_task_status(Request::new(request)).await;
+    assert!(response.is_ok());
+
+    let resp = response.unwrap();
+    let task_opt = &resp.get_ref().task;
+    assert!(task_opt.is_some());
+
+    let task = task_opt.as_ref().unwrap();
+    assert_eq!(task.id, "id_1");
+    assert_eq!(task.application, Some("hammers".into()));
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn test_set_task_status_with_application_no_match() {
+    let store = create_test_store().await;
+    let mut activations = make_activations(2);
+
+    let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
+    payload.application = Some("hammers".into());
+    activations[1].activation = payload.encode_to_vec();
+    activations[1].application = "hammers".into();
+
+    store.store(activations).await.unwrap();
+
+    let service = TaskbrokerServer { store };
+    // Request a task from an application without any activations.
+    let request = SetTaskStatusRequest {
+        id: "id_0".to_string(),
+        status: 5, // Complete
+        fetch_next_task: Some(FetchNextTask {
+            application: Some("no-matches".into()),
+            namespace: None,
+        }),
+    };
+    let response = service.set_task_status(Request::new(request)).await;
+    assert!(response.is_err());
+    let e = response.unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
+}
