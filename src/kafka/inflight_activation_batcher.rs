@@ -224,7 +224,9 @@ mod tests {
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
     use std::sync::Arc;
 
-    use crate::store::inflight_activation::InflightActivationStatus;
+    use crate::{
+        store::inflight_activation::InflightActivationStatus, test_utils::generate_unique_namespace,
+    };
 
     #[tokio::test]
     async fn test_drop_task_due_to_killswitch() {
@@ -244,12 +246,14 @@ demoted_namespaces:
             runtime_config,
         );
 
+        let namespace = generate_unique_namespace();
+
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
                 application: Some("sentry".to_string()),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "task_to_be_filtered".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -271,8 +275,8 @@ demoted_namespaces:
             delay_until: None,
             processing_deadline: None,
             at_most_once: false,
-            namespace: "namespace".to_string(),
             application: "sentry".to_string(),
+            namespace: namespace.clone(),
             taskname: "task_to_be_filtered".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
@@ -292,12 +296,14 @@ demoted_namespaces:
             runtime_config,
         );
 
+        let namespace = generate_unique_namespace();
+
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
                 application: Some("sentry".to_string()),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "task_to_be_filtered".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -320,7 +326,7 @@ demoted_namespaces:
             processing_deadline: None,
             at_most_once: false,
             application: "sentry".to_string(),
-            namespace: "namespace".to_string(),
+            namespace: namespace.clone(),
             taskname: "task_to_be_filtered".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
@@ -343,12 +349,14 @@ demoted_namespaces:
             runtime_config,
         );
 
+        let namespace = generate_unique_namespace();
+
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
                 application: Some("sentry".to_string()),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "taskname".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -371,7 +379,7 @@ demoted_namespaces:
             processing_deadline: None,
             at_most_once: false,
             application: "sentry".to_string(),
-            namespace: "namespace".to_string(),
+            namespace: namespace.clone(),
             taskname: "taskname".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
@@ -396,12 +404,14 @@ demoted_namespaces:
             runtime_config,
         );
 
+        let namespace = generate_unique_namespace();
+
         let inflight_activation_0 = InflightActivation {
             id: "0".to_string(),
             activation: TaskActivation {
                 id: "0".to_string(),
                 application: Some("sentry".to_string()),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "taskname".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -424,7 +434,7 @@ demoted_namespaces:
             processing_deadline: None,
             at_most_once: false,
             application: "sentry".to_string(),
-            namespace: "namespace".to_string(),
+            namespace: namespace.clone(),
             taskname: "taskname".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
@@ -434,7 +444,7 @@ demoted_namespaces:
             activation: TaskActivation {
                 id: "1".to_string(),
                 application: Some("sentry".to_string()),
-                namespace: "namespace".to_string(),
+                namespace: namespace.clone(),
                 taskname: "taskname".to_string(),
                 parameters: "{}".to_string(),
                 headers: HashMap::new(),
@@ -457,7 +467,7 @@ demoted_namespaces:
             processing_deadline: None,
             at_most_once: false,
             application: "sentry".to_string(),
-            namespace: "namespace".to_string(),
+            namespace: namespace.clone(),
             taskname: "taskname".to_string(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };

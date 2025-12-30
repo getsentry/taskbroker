@@ -12,7 +12,8 @@ use crate::store::inflight_activation::{
 };
 use crate::test_utils::{
     StatusCount, assert_counts, create_integration_config, create_test_store,
-    generate_temp_filename, make_activations, replace_retry_state,
+    generate_temp_filename, generate_unique_namespace, make_activations,
+    make_activations_with_namespace, replace_retry_state,
 };
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{
@@ -153,10 +154,13 @@ async fn test_get_pending_activation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
 async fn test_get_pending_activation_with_race() {
     let store = Arc::new(create_test_store().await);
+    let namespace = generate_unique_namespace();
 
     const NUM_CONCURRENT_WRITES: u32 = 2000;
 
-    for chunk in make_activations(NUM_CONCURRENT_WRITES).chunks(1024) {
+    for chunk in
+        make_activations_with_namespace(namespace.clone(), NUM_CONCURRENT_WRITES).chunks(1024)
+    {
         store.store(chunk.to_vec()).await.unwrap();
     }
 
@@ -166,10 +170,12 @@ async fn test_get_pending_activation_with_race() {
     for _ in 0..NUM_CONCURRENT_WRITES {
         let mut rx = tx.subscribe();
         let store = store.clone();
+        let ns = namespace.clone();
+
         join_set.spawn(async move {
             rx.recv().await.unwrap();
             store
-                .get_pending_activation(None, Some("namespace"))
+                .get_pending_activation(None, Some(&ns))
                 .await
                 .unwrap()
                 .unwrap()
@@ -1186,6 +1192,7 @@ async fn test_remove_killswitched() {
 #[tokio::test]
 async fn test_clear() {
     let store = create_test_store().await;
+    let namespace = generate_unique_namespace();
 
     #[allow(deprecated)]
     let received_at = prost_types::Timestamp {
@@ -1197,7 +1204,7 @@ async fn test_clear() {
         activation: TaskActivation {
             id: "id_0".into(),
             application: Some("sentry".into()),
-            namespace: "namespace".into(),
+            namespace: namespace.clone(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
             headers: HashMap::new(),
@@ -1222,7 +1229,7 @@ async fn test_clear() {
         processing_deadline: None,
         at_most_once: false,
         application: "sentry".into(),
-        namespace: "namespace".into(),
+        namespace: namespace.clone(),
         taskname: "taskname".into(),
     }];
     assert!(store.store(batch).await.is_ok());

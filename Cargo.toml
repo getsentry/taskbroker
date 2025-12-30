@@ -47,8 +47,8 @@ sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }
 tokio-util = "0.7.12"
-tonic = "0.13.1"
-tonic-health = "0.13.1"
+tonic = "0.13"
+tonic-health = "0.13"
 tower = "0.5.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = [

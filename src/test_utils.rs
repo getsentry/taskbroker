@@ -8,6 +8,7 @@ use rdkafka::{
     producer::FutureProducer,
 };
 use std::{collections::HashMap, sync::Arc};
+use uuid::Uuid;
 
 use crate::{
     config::Config,
@@ -25,9 +26,15 @@ pub fn generate_temp_filename() -> String {
     format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
 }
 
-/// Create a collection of pending unsaved activations.
-pub fn make_activations(count: u32) -> Vec<InflightActivation> {
+/// Generate a unique alphanumeric string for namespaces (and possibly other purposes).
+pub fn generate_unique_namespace() -> String {
+    Uuid::new_v4().to_string()
+}
+
+/// Create a collection of `count` pending unsaved activations in a particular `namespace`. If you do not want to provide a namespace, use `make_activations`.
+pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<InflightActivation> {
     let mut records: Vec<InflightActivation> = vec![];
+
     for i in 0..count {
         let now = Utc::now();
         #[allow(deprecated)]
@@ -36,7 +43,7 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             activation: TaskActivation {
                 id: format!("id_{i}"),
                 application: Some("sentry".into()),
-                namespace: "namespace".into(),
+                namespace: namespace.clone(),
                 taskname: "taskname".into(),
                 parameters: "{}".into(),
                 headers: HashMap::new(),
@@ -62,13 +69,19 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
             processing_deadline: None,
             at_most_once: false,
             application: "sentry".into(),
-            namespace: "namespace".into(),
+            namespace: namespace.clone(),
             taskname: "taskname".into(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,
         };
         records.push(item);
     }
     records
+}
+
+/// Create a collection of `count` pending unsaved activations in a unique namespace. If you want to provide the namespace, use `make_activations_with_namespace`.
+pub fn make_activations(count: u32) -> Vec<InflightActivation> {
+    let namespace = generate_unique_namespace();
+    make_activations_with_namespace(namespace, count)
 }
 
 /// Create a basic default [`Config`]

@@ -7,7 +7,9 @@ use taskbroker::{
     store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     },
-    test_utils::{generate_temp_filename, make_activations},
+    test_utils::{
+        generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
+    },
 };
 use tokio::task::JoinSet;
 
@@ -36,7 +38,9 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
         .unwrap(),
     );
 
-    for chunk in make_activations(num_activations).chunks(1024) {
+    let namespace = generate_unique_namespace();
+
+    for chunk in make_activations_with_namespace(namespace.clone(), num_activations).chunks(1024) {
         store.store(chunk.to_vec()).await.unwrap();
     }
 
@@ -48,11 +52,13 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     let mut join_set = JoinSet::new();
     for _ in 0..num_workers {
         let store = store.clone();
+        let ns = namespace.clone();
+
         join_set.spawn(async move {
             let mut num_activations_processed = 0;
 
             while store
-                .get_pending_activation(None, Some("namespace"))
+                .get_pending_activation(None, Some(&ns))
                 .await
                 .unwrap()
                 .is_some()
@@ -81,6 +87,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     } else {
         generate_temp_filename()
     };
+
     let store = Arc::new(
         InflightActivationStore::new(
             &url,
@@ -95,7 +102,9 @@ async fn set_status(num_activations: u32, num_workers: u32) {
         .unwrap(),
     );
 
-    for chunk in make_activations(num_activations).chunks(1024) {
+    let namespace = generate_unique_namespace();
+
+    for chunk in make_activations_with_namespace(namespace, num_activations).chunks(1024) {
         store.store(chunk.to_vec()).await.unwrap();
     }
 
