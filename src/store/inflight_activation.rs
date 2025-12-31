@@ -105,7 +105,6 @@ pub struct InflightActivation {
 
     /// The timestamp a task was stored in Kafka
     #[builder(default = Utc::now())]
-    #[builder(setter(custom))]
     pub received_at: DateTime<Utc>,
 
     /// The number of times the activation has been attempted to be processed. This counter is
@@ -146,11 +145,6 @@ pub struct InflightActivation {
 impl InflightActivationBuilder {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn received_at(mut self, received_at: DateTime<Utc>) -> Self {
-        self.received_at = Some(received_at);
-        self
     }
 
     pub fn build(mut self, builder: TaskActivationBuilder) -> InflightActivation {
