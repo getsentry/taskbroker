@@ -478,7 +478,7 @@ mod tests {
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
-        let existing_activation = InflightActivationBuilder::default()
+        let existing_activation = InflightActivationBuilder::new()
             .id("existing")
             .taskname("existing_task")
             .namespace(&namespace)

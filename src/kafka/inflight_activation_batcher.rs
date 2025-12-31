@@ -270,12 +270,12 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::default()
+        let inflight_activation_0 = InflightActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace(&namespace)
             .expires_at(Utc::now())
-            .build(TaskActivationBuilder::default());
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
