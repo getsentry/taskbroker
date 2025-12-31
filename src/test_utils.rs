@@ -20,7 +20,7 @@ use crate::{
         task_activation::TaskActivationBuilder,
     },
 };
-use chrono::{Timelike, Utc};
+use chrono::Utc;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
 
 /// Generate a unique filename for isolated SQLite databases.
@@ -41,29 +41,15 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
     for i in 0..count {
         let now = Utc::now();
 
-        let received_at = prost_types::Timestamp {
-            seconds: now.timestamp(),
-            nanos: now.nanosecond() as i32,
-        };
-
-        let item = InflightActivationBuilder::default()
+        let item = InflightActivationBuilder::new()
             .id(format!("id_{i}"))
             .taskname("taskname")
             .namespace(&namespace)
             .added_at(now)
-            .received_at(received_at)
+            .received_at(now)
             .offset(i as i64)
             .processing_deadline_duration(10)
-            .activation(
-                TaskActivationBuilder::default()
-                    .id(format!("id_{i}"))
-                    .taskname("taskname")
-                    .namespace(&namespace)
-                    .received_at(received_at)
-                    .processing_deadline_duration(10)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
         records.push(item);
     }

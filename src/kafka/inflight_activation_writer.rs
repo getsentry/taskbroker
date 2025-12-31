@@ -204,7 +204,7 @@ impl Reducer for InflightActivationWriter {
 mod tests {
     use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
 
-    use prost_types::Timestamp;
+    use chrono::DateTime;
     use std::sync::Arc;
 
     use crate::store::inflight_activation::InflightActivationBuilder;
@@ -238,42 +238,22 @@ mod tests {
             writer_config,
         );
 
-        let received_at = Timestamp {
-            seconds: 0,
-            nanos: 0,
-        };
-
+        let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::default()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("0")
-                        .taskname("pending_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
-            InflightActivationBuilder::default()
+                .build(TaskActivationBuilder::new()),
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("1")
-                        .taskname("delay_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
+                .build(TaskActivationBuilder::new()),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -309,28 +289,16 @@ mod tests {
             writer_config,
         );
 
-        let received_at = Timestamp {
-            seconds: 0,
-            nanos: 0,
-        };
-
+        let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::default()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("0")
-                        .taskname("pending_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
+                .build(TaskActivationBuilder::new()),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -361,29 +329,17 @@ mod tests {
             writer_config,
         );
 
-        let received_at = Timestamp {
-            seconds: 0,
-            nanos: 0,
-        };
-
+        let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::default()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .status(InflightActivationStatus::Delay)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("0")
-                        .taskname("pending_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
+                .build(TaskActivationBuilder::new()),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -418,42 +374,22 @@ mod tests {
             writer_config,
         );
 
-        let received_at = Timestamp {
-            seconds: 0,
-            nanos: 0,
-        };
-
+        let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::default()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("0")
-                        .taskname("pending_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
-            InflightActivationBuilder::default()
+                .build(TaskActivationBuilder::new()),
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("1")
-                        .taskname("delay_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
+                .build(TaskActivationBuilder::new()),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -490,42 +426,22 @@ mod tests {
             writer_config,
         );
 
-        let received_at = Timestamp {
-            seconds: 0,
-            nanos: 0,
-        };
-
+        let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::default()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("0")
-                        .taskname("pending_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
-            InflightActivationBuilder::default()
+                .build(TaskActivationBuilder::new()),
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("1")
-                        .taskname("pending_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
+                .build(TaskActivationBuilder::new()),
         ];
 
         writer.reduce(batch).await.unwrap();
@@ -559,11 +475,7 @@ mod tests {
             .unwrap(),
         );
 
-        let received_at = Timestamp {
-            seconds: 0,
-            nanos: 0,
-        };
-
+        let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let existing_activation = InflightActivationBuilder::default()
@@ -572,48 +484,24 @@ mod tests {
             .namespace(&namespace)
             .received_at(received_at)
             .status(InflightActivationStatus::Processing)
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("existing")
-                    .taskname("existing_task")
-                    .namespace(&namespace)
-                    .received_at(received_at)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
         store.store(vec![existing_activation]).await.unwrap();
 
         let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
         let batch = vec![
-            InflightActivationBuilder::default()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("0")
-                        .taskname("pending_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
-            InflightActivationBuilder::default()
+                .build(TaskActivationBuilder::new()),
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .activation(
-                    TaskActivationBuilder::default()
-                        .id("1")
-                        .taskname("delay_task")
-                        .namespace(&namespace)
-                        .received_at(received_at)
-                        .build(),
-                )
-                .build(),
+                .build(TaskActivationBuilder::new()),
         ];
 
         writer.reduce(batch).await.unwrap();

@@ -247,18 +247,11 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::default()
+        let inflight_activation_0 = InflightActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace(&namespace)
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("0")
-                    .taskname("task_to_be_filtered")
-                    .namespace(namespace)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
@@ -282,15 +275,7 @@ demoted_namespaces:
             .taskname("task_to_be_filtered")
             .namespace(&namespace)
             .expires_at(Utc::now())
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("0")
-                    .taskname("task_to_be_filtered")
-                    .namespace(namespace)
-                    .expires(0)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::default());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
@@ -312,19 +297,11 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::default()
+        let inflight_activation_0 = InflightActivationBuilder::new()
             .id("0")
             .taskname("taskname")
             .namespace(&namespace)
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("0")
-                    .taskname("taskname")
-                    .namespace(&namespace)
-                    .expires(0)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert!(batcher.is_full().await);
@@ -348,33 +325,17 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::default()
+        let inflight_activation_0 = InflightActivationBuilder::new()
             .id("0")
             .taskname("taskname")
             .namespace(&namespace)
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("0")
-                    .taskname("taskname")
-                    .namespace(&namespace)
-                    .expires(0)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivationBuilder::default()
+        let inflight_activation_1 = InflightActivationBuilder::new()
             .id("1")
             .taskname("taskname")
             .namespace(&namespace)
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("1")
-                    .taskname("taskname")
-                    .namespace(&namespace)
-                    .expires(0)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         batcher.reduce(inflight_activation_1).await.unwrap();
@@ -405,32 +366,17 @@ demoted_topic: taskworker-demoted"#;
 
         assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
 
-        let inflight_activation_0 = InflightActivationBuilder::default()
+        let inflight_activation_0 = InflightActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace("bad_namespace")
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("0")
-                    .taskname("task_to_be_filtered")
-                    .namespace("bad_namespace")
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivationBuilder::default()
+        let inflight_activation_1 = InflightActivationBuilder::new()
             .id("1")
             .taskname("good_task")
             .namespace("good_namespace")
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("1")
-                    .taskname("good_task")
-                    .namespace("good_namespace")
-                    .expires(0)
-                    .build(),
-            )
-            .build();
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         batcher.reduce(inflight_activation_1).await.unwrap();

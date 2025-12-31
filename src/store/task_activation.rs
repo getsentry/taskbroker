@@ -21,16 +21,16 @@ macro_rules! builder_setter {
 }
 
 pub struct TaskActivationBuilder {
-    id: Option<String>,
-    namespace: Option<String>,
-    taskname: Option<String>,
-    parameters: Option<String>,
-    headers: Option<HashMap<String, String>>,
-    received_at: Option<Timestamp>,
-    retry_state: Option<v1::RetryState>,
-    processing_deadline_duration: Option<u64>,
-    expires: Option<u64>,
-    delay: Option<u64>,
+    pub id: Option<String>,
+    pub namespace: Option<String>,
+    pub taskname: Option<String>,
+    pub parameters: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub received_at: Option<Timestamp>,
+    pub retry_state: Option<v1::RetryState>,
+    pub processing_deadline_duration: Option<u64>,
+    pub expires: Option<u64>,
+    pub delay: Option<u64>,
 }
 
 impl TaskActivationBuilder {

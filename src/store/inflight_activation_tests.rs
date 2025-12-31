@@ -15,7 +15,7 @@ use crate::test_utils::{
     generate_temp_filename, generate_unique_namespace, make_activations,
     make_activations_with_namespace, replace_retry_state,
 };
-use chrono::{SubsecRound, TimeZone, Utc};
+use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
 use sqlx::{QueryBuilder, Sqlite};
 use std::fs;
@@ -42,9 +42,6 @@ fn test_inflightactivation_status_is_completion() {
     value = InflightActivationStatus::Complete;
     assert!(value.is_conclusion());
 }
-
-#[test]
-fn test_inflightactivation_builder() {}
 
 #[test]
 fn test_inflightactivation_status_from() {
@@ -1091,30 +1088,19 @@ async fn test_remove_killswitched() {
 async fn test_clear() {
     let store = create_test_store().await;
 
-    #[allow(deprecated)]
-    let received_at = prost_types::Timestamp {
-        seconds: 0,
-        nanos: 0,
-    };
+    let received_at = DateTime::from_timestamp_nanos(0);
+    let expires_at = received_at + Duration::from_secs(1);
 
     let namespace = generate_unique_namespace();
 
     let batch = vec![
-        InflightActivationBuilder::default()
+        InflightActivationBuilder::new()
             .id("id_0")
             .taskname("taskname")
             .namespace(&namespace)
             .received_at(received_at)
-            .activation(
-                TaskActivationBuilder::default()
-                    .id("id_0")
-                    .taskname("taskname")
-                    .namespace(&namespace)
-                    .received_at(received_at)
-                    .expires(1)
-                    .build(),
-            )
-            .build(),
+            .expires_at(expires_at)
+            .build(TaskActivationBuilder::new()),
     ];
 
     assert!(store.store(batch).await.is_ok());
