@@ -1,124 +1,184 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use anyhow::Error;
+use anyhow::{Error, Result};
+use futures::future::join_all;
 use prost::Message;
-use tokio::time::sleep;
+use sentry_protos::taskbroker::v1::TaskActivation;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::grpc::taskworker_client::TaskworkerClient;
-use crate::store::inflight_activation::InflightActivationStore;
+use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
 
-/// Continuously fetches pending activations and pushes them to the configured taskworker.
-/// This function runs until the shutdown guard signals termination.
-pub async fn push_task_loop(
+/// Service that continuously pushes pending task activations to configured workers.
+pub struct TaskPusher {
+    /// The activation store.
     store: Arc<InflightActivationStore>,
+
+    /// The broker configuration.
     config: Arc<Config>,
-    client: TaskworkerClient,
-) -> Result<(), Error> {
-    info!(
-        "Push task loop starting, pushing to worker at {}",
-        config.taskworker_push_address
-    );
 
-    let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+    /// Map from addresses to worker clients.
+    clients: HashMap<String, TaskworkerClient>,
+}
 
-    loop {
-        tokio::select! {
-            _ = guard.wait() => {
-                info!("Push task loop received shutdown signal");
-                break;
-            }
-            _ = async {
-                // Try to fetch a pending activation
-                match store.peek_pending_activation().await {
-                    Ok(Some(inflight)) => {
-                        let start_time = Instant::now();
-                        let task_id = inflight.id.clone();
+impl TaskPusher {
+    /// Create a new `TaskPusher` instance.
+    pub fn new(store: Arc<InflightActivationStore>, config: Arc<Config>) -> Self {
+        let clients: HashMap<String, TaskworkerClient> = config
+            .taskworker_addresses
+            .clone()
+            .into_iter()
+            .map(|addr| (addr.clone(), TaskworkerClient::new(addr)))
+            .collect();
 
-                        // Decode the protobuf activation from stored bytes
-                        let activation = match sentry_protos::taskbroker::v1::TaskActivation::decode(
-                            &inflight.activation as &[u8]
-                        ) {
-                            Ok(activation) => activation,
-                            Err(e) => {
-                                error!("Failed to decode activation {}: {:?}", task_id, e);
-                                metrics::counter!("push_task.decode_error").increment(1);
-                                // This is a corrupted activation, skip it
-                                // In a real scenario, we might want to mark it as failed
-                                return;
-                            }
-                        };
-
-                        metrics::counter!("push_task.attempt").increment(1);
-
-                        // Try to push to the worker
-                        let rpc_start = Instant::now();
-                        match client.add_task(activation, config.taskworker_push_callback_url.clone()).await {
-                            Ok(true) => {
-                                // Worker accepted the task!
-                                let rpc_duration = rpc_start.elapsed();
-                                info!("Worker accepted task {} (RPC took {:?})", task_id, rpc_duration);
-
-                                // Now atomically mark it as Processing if still Pending
-                                match store.mark_as_processing_if_pending(&task_id).await {
-                                    Ok(true) => {
-                                        // Successfully marked as Processing
-                                        info!("Task {} pushed and marked as Processing", task_id);
-                                        metrics::counter!("push_task.success").increment(1);
-                                        metrics::histogram!("push_task.duration")
-                                            .record(start_time.elapsed());
-                                    }
-                                    Ok(false) => {
-                                        // Task was already grabbed by another process (race condition)
-                                        debug!(
-                                            "Task {} was already taken by another process (pull model?)",
-                                            task_id
-                                        );
-                                        metrics::counter!("push_task.race_condition").increment(1);
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to mark task {} as Processing: {:?}", task_id, e);
-                                        metrics::counter!("push_task.db_error").increment(1);
-                                        // Task will be retried on next iteration
-                                        sleep(Duration::from_millis(100)).await;
-                                    }
-                                }
-                            }
-                            Ok(false) => {
-                                // Worker rejected the task (queue full, etc.)
-                                info!("Worker rejected task {} (queue full or other reason)", task_id);
-                                metrics::counter!("push_task.rejected").increment(1);
-                                // Task stays Pending, will be retried
-                                // Brief sleep to avoid hammering a full worker
-                                sleep(Duration::from_millis(10)).await;
-                            }
-                            Err(e) => {
-                                // Connection or RPC error
-                                warn!("Failed to push task {} to worker: {:?}", task_id, e);
-                                metrics::counter!("push_task.connection_error").increment(1);
-                                // Task stays Pending, will be retried
-                                // Brief sleep before retrying
-                                sleep(Duration::from_millis(100)).await;
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        // No pending tasks available
-                        debug!("No pending tasks, sleeping briefly");
-                        sleep(Duration::from_millis(10)).await;
-                    }
-                    Err(e) => {
-                        // Database error while fetching
-                        error!("Failed to fetch pending activation: {:?}", e);
-                        sleep(Duration::from_millis(100)).await;
-                    }
-                }
-            } => {}
+        Self {
+            store,
+            config,
+            clients,
         }
     }
 
-    info!("Push task loop shutting down");
-    Ok(())
+    /// Start the push loop. Runs until the shutdown guard signals termination.
+    pub async fn start(self) -> Result<(), Error> {
+        info!("Push task loop starting...");
+
+        let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+
+        loop {
+            tokio::select! {
+                _ = guard.wait() => {
+                    info!("Push task loop received shutdown signal");
+                    break;
+                }
+
+                _ = async {
+                    self.process_next_task().await;
+                } => {}
+            }
+        }
+
+        info!("Push task loop shutting down...");
+        Ok(())
+    }
+}
+
+impl TaskPusher {
+    /// Process the next pending task from the store.
+    async fn process_next_task(&self) {
+        match self.store.peek_pending_activation().await {
+            Ok(Some(inflight)) => {
+                if let Err(e) = self.handle_task_push(inflight).await {
+                    debug!("Task push resulted in error - {:?}", e);
+                }
+            }
+
+            Ok(None) => {
+                debug!("No pending tasks, sleeping briefly");
+                sleep(10).await;
+            }
+
+            Err(e) => {
+                error!("Failed to fetch pending activation - {:?}", e);
+                sleep(100).await;
+            }
+        }
+    }
+
+    /// Handle pushing a single task to a worker.
+    async fn handle_task_push(&self, inflight: InflightActivation) -> Result<()> {
+        let task_id = inflight.id.clone();
+
+        // Decode the protobuf activation from stored bytes
+        let activation = TaskActivation::decode(&inflight.activation as &[u8]).map_err(|e| {
+            error!("Failed to decode activation {task_id}: {:?}", e);
+            e
+        })?;
+
+        // Find the best worker (smallest queue)
+        let Some(worker_address) = self.select_best_worker().await else {
+            error!("No workers are available!");
+            sleep(100).await;
+            return Err(anyhow::anyhow!("No workers available"));
+        };
+
+        info!("Sending to worker at address {}", worker_address);
+
+        // Push to the selected worker
+        self.push_to_worker(&worker_address, activation, &task_id)
+            .await
+    }
+
+    /// Select the worker with the smallest queue size.
+    async fn select_best_worker(&self) -> Option<String> {
+        let futures = self.clients.values().map(|client| client.get_queue_size());
+        let results = join_all(futures).await;
+
+        results
+            .into_iter()
+            .filter_map(Result::ok)
+            .min_by_key(|res| res.length)
+            .map(|res| res.address)
+    }
+
+    /// Push a task to a specific worker and handle the result.
+    async fn push_to_worker(
+        &self,
+        address: &str,
+        activation: TaskActivation,
+        task_id: &str,
+    ) -> Result<()> {
+        let client = self
+            .clients
+            .get(address)
+            .ok_or_else(|| anyhow::anyhow!("Client not found for address {}", address))?;
+
+        let result = client
+            .add_task(activation, self.config.taskworker_callback_url.clone())
+            .await;
+
+        match result {
+            Ok(true) => {
+                info!("Worker {address} accepted task {task_id}");
+                self.mark_task_as_processing(task_id).await;
+                Ok(())
+            }
+
+            Ok(false) => {
+                info!("Worker rejected task {task_id} (queue full or other reason)");
+                sleep(10).await;
+                Err(anyhow::anyhow!("Worker rejected task"))
+            }
+
+            Err(e) => {
+                warn!("Failed to push task {task_id} to worker - {:?}", e);
+                sleep(100).await;
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Mark a task as processing if it's still pending.
+    async fn mark_task_as_processing(&self, task_id: &str) {
+        match self.store.mark_as_processing_if_pending(task_id).await {
+            Ok(true) => {
+                info!("Task {} pushed and marked as processing", task_id);
+            }
+
+            Ok(false) => {
+                warn!("Task {task_id} was already taken by another process (race condition)");
+            }
+
+            Err(e) => {
+                error!("Failed to mark task {task_id} as processing - {:?}", e);
+                sleep(100).await;
+            }
+        }
+    }
+}
+
+async fn sleep(ms: u64) {
+    tokio::time::sleep(Duration::from_millis(ms)).await
 }

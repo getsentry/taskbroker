@@ -219,10 +219,10 @@ pub struct Config {
     pub taskworker_push_enabled: bool,
 
     /// The gRPC address of the taskworker to push tasks to.
-    pub taskworker_push_address: String,
+    pub taskworker_addresses: Vec<String>,
 
     /// The callback URL that taskworkers use to report task completion back to taskbroker.
-    pub taskworker_push_callback_url: String,
+    pub taskworker_callback_url: String,
 }
 
 impl Default for Config {
@@ -289,8 +289,8 @@ impl Default for Config {
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
             taskworker_push_enabled: false,
-            taskworker_push_address: "127.0.0.1:50052".to_owned(),
-            taskworker_push_callback_url: "127.0.0.1:50051".to_owned(),
+            taskworker_addresses: vec!["127.0.0.1:50052".into()],
+            taskworker_callback_url: "127.0.0.1:50051".into(),
         }
     }
 }

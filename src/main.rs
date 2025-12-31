@@ -183,19 +183,17 @@ async fn main() -> Result<(), Error> {
         info!("Running in PUSH mode");
         info!(
             "- Push loop will send tasks to worker at {}",
-            config.taskworker_push_address
+            config.taskworker_addresses.join(", ")
         );
         info!("- Pull endpoint (GetTask) is DISABLED");
         info!("- Workers should NOT call GetTask");
         info!("========================================");
         let push_store = store.clone();
         let push_config = config.clone();
-        let client = taskbroker::grpc::taskworker_client::TaskworkerClient::new(
-            push_config.taskworker_push_address.clone(),
-        );
 
         Some(tokio::spawn(async move {
-            taskbroker::push_task::push_task_loop(push_store, push_config, client).await
+            let pusher = taskbroker::push_task::TaskPusher::new(push_store, push_config);
+            pusher.start().await
         }))
     } else {
         info!("========================================");

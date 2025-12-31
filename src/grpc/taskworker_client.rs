@@ -1,13 +1,14 @@
 use anyhow::Error;
 use sentry_protos::taskbroker::v1::TaskActivation;
 use sentry_protos::taskworker::v1::{AddTaskRequest, AddTaskResponse, worker_client::WorkerClient};
+use sentry_protos::taskworker::v1::{GetQueueSizeRequest, GetQueueSizeResponse};
 use tonic::{Request, Status};
 use tracing::{debug, warn};
 
 /// Client for communicating with taskworker processes.
 /// Uses lazy connection - connects on each request rather than maintaining a persistent connection.
 pub struct TaskworkerClient {
-    address: String,
+    pub address: String,
 }
 
 impl TaskworkerClient {
@@ -15,6 +16,33 @@ impl TaskworkerClient {
     /// No connection is established until add_task is called.
     pub fn new(address: String) -> Self {
         Self { address }
+    }
+
+    pub async fn get_queue_size(&self) -> Result<GetQueueSizeResponse, Error> {
+        // Lazily connect to the worker
+        let mut client = match WorkerClient::connect(self.address.clone()).await {
+            Ok(client) => {
+                debug!("Connected to taskworker at {}", self.address);
+                client
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to connect to taskworker at {}: {:?}",
+                    self.address, e
+                );
+                return Err(e.into());
+            }
+        };
+
+        let request = Request::new(GetQueueSizeRequest {});
+
+        match client.get_queue_size(request).await {
+            Ok(response) => Ok(response.into_inner()),
+            Err(status) => {
+                warn!("RPC call to taskworker failed: {:?}", status);
+                Err(status.into())
+            }
+        }
     }
 
     /// Push a task to the taskworker.
