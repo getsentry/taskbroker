@@ -155,7 +155,7 @@ impl TaskPusher {
             Err(e) => {
                 warn!("Failed to push task {task_id} to worker - {:?}", e);
                 sleep(100).await;
-                Err(e.into())
+                Err(e)
             }
         }
     }

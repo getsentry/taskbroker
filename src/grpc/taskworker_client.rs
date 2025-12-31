@@ -1,73 +1,71 @@
 use anyhow::Error;
 use sentry_protos::taskbroker::v1::TaskActivation;
-use sentry_protos::taskworker::v1::{AddTaskRequest, AddTaskResponse, worker_client::WorkerClient};
+use sentry_protos::taskworker::v1::{AddTaskRequest, worker_service_client::WorkerServiceClient};
 use sentry_protos::taskworker::v1::{GetQueueSizeRequest, GetQueueSizeResponse};
-use tonic::{Request, Status};
+use tonic::Request;
+use tonic::transport::Channel;
 use tracing::{debug, warn};
 
-/// Client for communicating with taskworker processes.
-/// Uses lazy connection - connects on each request rather than maintaining a persistent connection.
+/// Client for communicating with taskworkers. Connects on each request (lazily) rather than maintaining a persistent connection.
 pub struct TaskworkerClient {
     pub address: String,
 }
 
 impl TaskworkerClient {
-    /// Create a new TaskworkerClient with the given worker address.
-    /// No connection is established until add_task is called.
+    /// Create a new `TaskworkerClient` with the given worker address.
     pub fn new(address: String) -> Self {
         Self { address }
     }
 
-    pub async fn get_queue_size(&self) -> Result<GetQueueSizeResponse, Error> {
-        // Lazily connect to the worker
-        let mut client = match WorkerClient::connect(self.address.clone()).await {
+    /// Lazily connect to the worker.
+    async fn connect(&self) -> Result<WorkerServiceClient<Channel>, Error> {
+        match WorkerServiceClient::connect(self.address.clone()).await {
             Ok(client) => {
                 debug!("Connected to taskworker at {}", self.address);
-                client
+                Ok(client)
             }
+
             Err(e) => {
                 warn!(
                     "Failed to connect to taskworker at {}: {:?}",
                     self.address, e
                 );
-                return Err(e.into());
-            }
-        };
 
-        let request = Request::new(GetQueueSizeRequest {});
-
-        match client.get_queue_size(request).await {
-            Ok(response) => Ok(response.into_inner()),
-            Err(status) => {
-                warn!("RPC call to taskworker failed: {:?}", status);
-                Err(status.into())
+                Err(e.into())
             }
         }
     }
 
+    /// Get taskworker's current queue size.
+    pub async fn get_queue_size(&self) -> Result<GetQueueSizeResponse, Error> {
+        // Connect to the worker
+        let mut client = self.connect().await?;
+
+        // Build the request
+        let request = Request::new(GetQueueSizeRequest {});
+
+        // Perform RPC
+        client
+            .get_queue_size(request)
+            .await
+            .map(|response| response.into_inner())
+            .map_err(|status| {
+                warn!("taskworker RPC failed - {:?}", status);
+                status.into()
+            })
+    }
+
     /// Push a task to the taskworker.
-    /// Returns Ok(true) if the worker accepted the task,
-    /// Ok(false) if the worker rejected it (e.g., queue full),
-    /// or Err if there was a connection/RPC error.
+    /// - Returns `Ok(true)` if the worker accepted the task
+    /// - Returns `Ok(false)` if the worker rejected it (for example, due to a full queue)
+    /// - Returns `Err` if there was a connection or RPC error
     pub async fn add_task(
         &self,
         activation: TaskActivation,
         callback_url: String,
     ) -> Result<bool, Error> {
-        // Lazily connect to the worker
-        let mut client = match WorkerClient::connect(self.address.clone()).await {
-            Ok(client) => {
-                debug!("Connected to taskworker at {}", self.address);
-                client
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to connect to taskworker at {}: {:?}",
-                    self.address, e
-                );
-                return Err(e.into());
-            }
-        };
+        // Connect to the worker
+        let mut client = self.connect().await?;
 
         // Build the request
         let request = Request::new(AddTaskRequest {
@@ -75,21 +73,24 @@ impl TaskworkerClient {
             callback_url,
         });
 
-        // Call the RPC
-        match client.add_task(request).await {
-            Ok(response) => {
+        // Perform RPC
+        client
+            .add_task(request)
+            .await
+            .map(|response| {
                 let added = response.into_inner().added;
+
                 if added {
-                    debug!("Taskworker accepted task");
+                    debug!("taskworker accepted task");
                 } else {
-                    debug!("Taskworker rejected task (queue full or other reason)");
+                    debug!("taskworker rejected task (queue full or other reason)");
                 }
-                Ok(added)
-            }
-            Err(status) => {
-                warn!("RPC call to taskworker failed: {:?}", status);
-                Err(status.into())
-            }
-        }
+
+                added
+            })
+            .map_err(|status| {
+                warn!("taskworker RPC failed - {:?}", status);
+                status.into()
+            })
     }
 }
