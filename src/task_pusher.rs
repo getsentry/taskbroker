@@ -26,9 +26,11 @@ pub struct TaskPusher {
 
 impl TaskPusher {
     /// Create a new `TaskPusher` instance.
-    pub fn new(store: Arc<InflightActivationStore>, config: Arc<Config>) -> Self {
-        let router = Arc::new(RwLock::new(WorkerRouter::new(&config.taskworker_addresses)));
-
+    pub fn new(
+        store: Arc<InflightActivationStore>,
+        config: Arc<Config>,
+        router: Arc<RwLock<WorkerRouter>>,
+    ) -> Self {
         Self {
             store,
             config,

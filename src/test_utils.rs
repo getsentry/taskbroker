@@ -8,6 +8,7 @@ use rdkafka::{
     producer::FutureProducer,
 };
 use std::{collections::HashMap, sync::Arc};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
@@ -16,6 +17,7 @@ use crate::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig,
     },
+    worker_router::WorkerRouter,
 };
 use chrono::{Timelike, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
@@ -85,6 +87,12 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
 /// Create a basic default [`Config`]
 pub fn create_config() -> Arc<Config> {
     Arc::new(Config::default())
+}
+
+pub fn create_router(config: Arc<Config>) -> Arc<RwLock<WorkerRouter>> {
+    Arc::new(RwLock::new(WorkerRouter::new(
+        config.taskworker_addresses.iter(),
+    )))
 }
 
 /// Create an InflightActivationStore instance

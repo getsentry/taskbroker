@@ -7,15 +7,18 @@ use sentry_protos::taskbroker::v1::{
 };
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 
 use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
+use crate::worker_router::WorkerRouter;
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
     pub config: Arc<Config>,
+    pub router: Arc<RwLock<WorkerRouter>>,
 }
 
 #[tonic::async_trait]

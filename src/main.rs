@@ -5,8 +5,11 @@ use std::{sync::Arc, time::Duration};
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::task_pusher::TaskPusher;
 use taskbroker::upkeep::upkeep;
+use taskbroker::worker_router::WorkerRouter;
 use tokio::signal::unix::SignalKind;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
@@ -54,6 +57,10 @@ async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
 async fn main() -> Result<(), Error> {
     let args = Args::parse();
     let config = Arc::new(Config::from_args(&args)?);
+    let router = Arc::new(RwLock::new(WorkerRouter::new(
+        config.taskworker_addresses.iter(),
+    )));
+
     let runtime_config_manager =
         Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
 
@@ -181,11 +188,12 @@ async fn main() -> Result<(), Error> {
     let push_task = if config.taskworker_push_enabled {
         info!("Running in PUSH mode");
 
-        let store = store.clone();
-        let config = config.clone();
+        let push_task_store = store.clone();
+        let push_task_config = config.clone();
+        let push_task_router = router.clone();
 
         Some(tokio::spawn(async move {
-            let pusher = taskbroker::task_pusher::TaskPusher::new(store, config);
+            let pusher = TaskPusher::new(push_task_store, push_task_config, push_task_router);
             pusher.start().await
         }))
     } else {
@@ -197,6 +205,8 @@ async fn main() -> Result<(), Error> {
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+        let grpc_router = router.clone();
+
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
@@ -212,6 +222,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                     config: grpc_config.clone(),
+                    router: grpc_router,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
