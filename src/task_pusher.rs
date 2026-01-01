@@ -20,6 +20,7 @@ pub struct TaskPusher {
     /// The broker configuration.
     config: Arc<Config>,
 
+    /// The worker router.
     router: Arc<RwLock<WorkerRouter>>,
 }
 

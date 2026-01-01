@@ -10,8 +10,12 @@ use tonic::{Request, transport::Channel};
 
 type WorkerClient = WorkerServiceClient<Channel>;
 
+/// Routes tasks to the best available workers.
 pub struct WorkerRouter {
+    /// Set of worker addresses.
     workers: Arc<RwLock<HashSet<String>>>,
+
+    /// When pushing a task, we will try every candidate in this list until one succeeds.
     candidates: Vec<String>,
 }
 
@@ -26,6 +30,7 @@ impl WorkerRouter {
         }
     }
 
+    //// Start the update loop.
     pub async fn start(&mut self) {
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
         let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -47,7 +52,7 @@ impl WorkerRouter {
     pub async fn update(&mut self) {
         // (1) Connect to every worker
         let workers = self.workers.read().await;
-        let futures = workers.iter().map(|address| connect(address));
+        let futures = workers.iter().map(connect);
 
         let mut clients: Vec<WorkerClient> = join_all(futures)
             .await

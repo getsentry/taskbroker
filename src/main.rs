@@ -185,7 +185,7 @@ async fn main() -> Result<(), Error> {
         let config = config.clone();
 
         Some(tokio::spawn(async move {
-            let pusher = taskbroker::push_task::TaskPusher::new(store, config);
+            let pusher = taskbroker::task_pusher::TaskPusher::new(store, config);
             pusher.start().await
         }))
     } else {

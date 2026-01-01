@@ -74,8 +74,6 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<SetTaskStatusRequest>,
     ) -> Result<Response<SetTaskStatusResponse>, Status> {
-        println!("Received set task status rpc call");
-
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
