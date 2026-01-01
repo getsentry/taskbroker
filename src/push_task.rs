@@ -1,16 +1,16 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Error, Result};
-use futures::future::join_all;
 use prost::Message;
 use sentry_protos::taskbroker::v1::TaskActivation;
+use sentry_protos::taskworker::v1::AddTaskRequest;
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::grpc::taskworker_client::TaskworkerClient;
 use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
+use crate::worker_router::WorkerRouter;
 
 /// Service that continuously pushes pending task activations to configured workers.
 pub struct TaskPusher {
@@ -20,24 +20,18 @@ pub struct TaskPusher {
     /// The broker configuration.
     config: Arc<Config>,
 
-    /// Map from addresses to worker clients.
-    clients: HashMap<String, TaskworkerClient>,
+    router: Arc<RwLock<WorkerRouter>>,
 }
 
 impl TaskPusher {
     /// Create a new `TaskPusher` instance.
     pub fn new(store: Arc<InflightActivationStore>, config: Arc<Config>) -> Self {
-        let clients: HashMap<String, TaskworkerClient> = config
-            .taskworker_addresses
-            .clone()
-            .into_iter()
-            .map(|addr| (addr.clone(), TaskworkerClient::new(addr)))
-            .collect();
+        let router = Arc::new(RwLock::new(WorkerRouter::new(&config.taskworker_addresses)));
 
         Self {
             store,
             config,
-            clients,
+            router,
         }
     }
 
@@ -46,6 +40,25 @@ impl TaskPusher {
         info!("Push task loop starting...");
 
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+        let router = self.router.clone();
+
+        // Spawn a separate task to update the candidate worker collection
+        tokio::spawn(async move {
+            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+            let mut beep_interval = tokio::time::interval(Duration::from_secs(1));
+
+            loop {
+                tokio::select! {
+                    _ = guard.wait() => {
+                        break;
+                    }
+
+                    _ = beep_interval.tick() => {
+                        router.write().await.update().await;
+                    }
+                }
+            }
+        });
 
         loop {
             tokio::select! {
@@ -97,63 +110,28 @@ impl TaskPusher {
             e
         })?;
 
-        // Find the best worker (smallest queue)
-        let Some(worker_address) = self.select_best_worker().await else {
-            error!("No workers are available!");
-            sleep(100).await;
-            return Err(anyhow::anyhow!("No workers available"));
+        // Push task to the best available worker
+        self.push_to_worker(activation, &task_id).await
+    }
+
+    /// Push a task through the worker router and handle the result.
+    async fn push_to_worker(&self, activation: TaskActivation, task_id: &str) -> Result<()> {
+        let request = AddTaskRequest {
+            task: Some(activation),
+            callback_url: self.config.taskworker_callback_url.clone(),
         };
 
-        info!("Sending to worker at address {}", worker_address);
-
-        // Push to the selected worker
-        self.push_to_worker(&worker_address, activation, &task_id)
-            .await
-    }
-
-    /// Select the worker with the smallest queue size.
-    async fn select_best_worker(&self) -> Option<String> {
-        let futures = self.clients.values().map(|client| client.get_queue_size());
-        let results = join_all(futures).await;
-
-        results
-            .into_iter()
-            .filter_map(Result::ok)
-            .min_by_key(|res| res.length)
-            .map(|res| res.address)
-    }
-
-    /// Push a task to a specific worker and handle the result.
-    async fn push_to_worker(
-        &self,
-        address: &str,
-        activation: TaskActivation,
-        task_id: &str,
-    ) -> Result<()> {
-        let client = self
-            .clients
-            .get(address)
-            .ok_or_else(|| anyhow::anyhow!("Client not found for address {}", address))?;
-
-        let result = client
-            .add_task(activation, self.config.taskworker_callback_url.clone())
-            .await;
+        let result = self.router.write().await.push_task(&request).await;
 
         match result {
-            Ok(true) => {
-                info!("Worker {address} accepted task {task_id}");
+            Ok(()) => {
+                info!("Pushed task {task_id}");
                 self.mark_task_as_processing(task_id).await;
                 Ok(())
             }
 
-            Ok(false) => {
-                info!("Worker rejected task {task_id} (queue full or other reason)");
-                sleep(10).await;
-                Err(anyhow::anyhow!("Worker rejected task"))
-            }
-
             Err(e) => {
-                warn!("Failed to push task {task_id} to worker - {:?}", e);
+                warn!("Could not push task {task_id} - {:?}", e);
                 sleep(100).await;
                 Err(e)
             }

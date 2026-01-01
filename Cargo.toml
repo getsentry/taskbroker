@@ -43,6 +43,7 @@ sentry_protos = { git = "https://github.com/getsentry/sentry-protos", branch = "
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
+itertools = "0.14.0"
 sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }

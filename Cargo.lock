@@ -2884,6 +2884,7 @@ dependencies = [
  "hmac",
  "http",
  "http-body-util",
+ "itertools 0.14.0",
  "libsqlite3-sys",
  "metrics",
  "metrics-exporter-statsd",

@@ -179,28 +179,17 @@ async fn main() -> Result<(), Error> {
 
     // Push task loop (conditionally enabled)
     let push_task = if config.taskworker_push_enabled {
-        info!("========================================");
         info!("Running in PUSH mode");
-        info!(
-            "- Push loop will send tasks to worker at {}",
-            config.taskworker_addresses.join(", ")
-        );
-        info!("- Pull endpoint (GetTask) is DISABLED");
-        info!("- Workers should NOT call GetTask");
-        info!("========================================");
-        let push_store = store.clone();
-        let push_config = config.clone();
+
+        let store = store.clone();
+        let config = config.clone();
 
         Some(tokio::spawn(async move {
-            let pusher = taskbroker::push_task::TaskPusher::new(push_store, push_config);
+            let pusher = taskbroker::push_task::TaskPusher::new(store, config);
             pusher.start().await
         }))
     } else {
-        info!("========================================");
         info!("Running in PULL mode");
-        info!("- Workers should call GetTask to request tasks");
-        info!("- Push loop is disabled");
-        info!("========================================");
         None
     };
 
