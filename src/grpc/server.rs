@@ -2,22 +2,46 @@ use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
+    AddWorkerRequest, AddWorkerResponse, FetchNextTask, GetTaskRequest, GetTaskResponse,
+    RemoveWorkerRequest, RemoveWorkerResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivation, TaskActivationStatus,
 };
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 
+use crate::pool::WorkerPool;
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
+    pub pool: Arc<RwLock<WorkerPool>>,
 }
 
 #[tonic::async_trait]
 impl ConsumerService for TaskbrokerServer {
+    #[instrument(skip_all)]
+    async fn add_worker(
+        &self,
+        request: Request<AddWorkerRequest>,
+    ) -> Result<Response<AddWorkerResponse>, Status> {
+        let address = &request.get_ref().address;
+        self.pool.write().await.add_worker(address);
+        Ok(Response::new(AddWorkerResponse {}))
+    }
+
+    #[instrument(skip_all)]
+    async fn remove_worker(
+        &self,
+        request: Request<RemoveWorkerRequest>,
+    ) -> Result<Response<RemoveWorkerResponse>, Status> {
+        let address = &request.get_ref().address;
+        self.pool.write().await.remove_worker(address);
+        Ok(Response::new(RemoveWorkerResponse {}))
+    }
+
     #[instrument(skip_all)]
     async fn get_task(
         &self,

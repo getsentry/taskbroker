@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use rand::seq::IteratorRandom;
@@ -12,7 +12,7 @@ pub struct WorkerPool {
     clients: HashMap<String, WorkerClient>,
 
     /// All available worker addresses.
-    addresses: Vec<String>,
+    addresses: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -39,11 +39,21 @@ impl WorkerClient {
 
 impl WorkerPool {
     /// Create a new `WorkerPool` instance.
-    pub fn new(addresses: Vec<String>) -> Self {
+    pub fn new<T: IntoIterator<Item = String>>(addresses: T) -> Self {
         Self {
-            addresses,
+            addresses: addresses.into_iter().collect(),
             clients: HashMap::new(),
         }
+    }
+
+    /// Register worker address during execution.
+    pub fn add_worker<T: Into<String>>(&mut self, address: T) {
+        self.addresses.insert(address.into());
+    }
+
+    /// Unregister worker address during execution.
+    pub fn remove_worker(&mut self, address: &String) {
+        self.addresses.remove(address);
     }
 
     /// Call this function over and over again in another thread to keep the pool of active connections updated.

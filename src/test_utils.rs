@@ -8,10 +8,12 @@ use rdkafka::{
     producer::FutureProducer,
 };
 use std::{collections::HashMap, sync::Arc};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
     config::Config,
+    pool::WorkerPool,
     store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig,
@@ -85,6 +87,11 @@ pub fn make_activations(count: u32) -> Vec<InflightActivation> {
 /// Create a basic default [`Config`]
 pub fn create_config() -> Arc<Config> {
     Arc::new(Config::default())
+}
+
+/// Create a basic [`WorkerPool`].
+pub fn create_pool() -> Arc<RwLock<WorkerPool>> {
+    Arc::new(RwLock::new(WorkerPool::new(["127.0.0.1:50052".into()])))
 }
 
 /// Create an InflightActivationStore instance

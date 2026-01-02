@@ -203,6 +203,8 @@ async fn main() -> Result<(), Error> {
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+        let grpc_pool = pool.clone();
+
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
@@ -217,6 +219,7 @@ async fn main() -> Result<(), Error> {
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
+                    pool: grpc_pool,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
