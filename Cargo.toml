@@ -26,7 +26,7 @@ metrics = "0.24.0"
 metrics-exporter-statsd = "0.9.0"
 prost = "0.13"
 prost-types = "0.13.3"
-rand = "0.8.5"
+rand = "0.9.2"
 rdkafka = { version = "0.37.0", features = ["cmake-build", "ssl"] }
 sentry = { version = "0.41.0", default-features = false, features = [
     # default features, except `release-health` is disabled
@@ -39,7 +39,7 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "tracing",
     "logs"
 ] }
-sentry_protos = "0.4.10"
+sentry_protos = { git = "https://github.com/getsentry/sentry-protos", branch = "george/push-broker-worker" }
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"

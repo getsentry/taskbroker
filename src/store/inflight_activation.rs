@@ -605,6 +605,70 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
+    pub async fn peek_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
+        let now = Utc::now();
+
+        let row_result: Option<TableRow> = sqlx::query_as(
+            "
+            SELECT id,
+                activation,
+                partition,
+                offset,
+                added_at,
+                received_at,
+                processing_attempts,
+                expires_at,
+                delay_until,
+                processing_deadline_duration,
+                processing_deadline,
+                status,
+                at_most_once,
+                namespace,
+                taskname,
+                on_attempts_exceeded
+            FROM inflight_taskactivations
+            WHERE status = $1
+            AND (expires_at IS NULL OR expires_at > $2)
+            ORDER BY added_at
+            LIMIT 1
+            ",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .fetch_optional(&self.read_pool)
+        .await?;
+
+        Ok(row_result.map(|row| row.into()))
+    }
+
+    #[instrument(skip_all)]
+    pub async fn mark_as_processing_if_pending(&self, id: &str) -> Result<bool, Error> {
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let mut conn = self
+            .acquire_write_conn_metric("mark_as_processing_if_pending")
+            .await?;
+
+        let result: Option<TableRow> = sqlx::query_as(&format!(
+            "UPDATE inflight_taskactivations
+            SET
+                processing_deadline = unixepoch(
+                    'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
+                ),
+                status = $1
+            WHERE id = $2
+            AND status = $3
+            RETURNING *"
+        ))
+        .bind(InflightActivationStatus::Processing)
+        .bind(id)
+        .bind(InflightActivationStatus::Pending)
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        Ok(result.is_some())
+    }
+
+    #[instrument(skip_all)]
     pub async fn get_pending_activation(
         &self,
         namespace: Option<&str>,

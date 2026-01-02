@@ -214,6 +214,12 @@ pub struct Config {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
+
+    /// Enable push mode.
+    pub push: bool,
+
+    /// Worker addresses.
+    pub workers: Vec<String>,
 }
 
 impl Default for Config {
@@ -279,6 +285,8 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            push: false,
+            workers: vec![],
         }
     }
 }

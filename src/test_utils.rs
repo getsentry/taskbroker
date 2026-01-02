@@ -22,8 +22,8 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivati
 
 /// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
-    let mut rng = rand::thread_rng();
-    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+    let mut rng = rand::rng();
+    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.random::<u64>())
 }
 
 /// Generate a unique alphanumeric string for namespaces (and possibly other purposes).
