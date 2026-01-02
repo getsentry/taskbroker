@@ -1,6 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+};
 
 use anyhow::Result;
+use itertools::Itertools;
+use rand::Rng;
 use rand::seq::IteratorRandom;
 use sentry_protos::taskworker::v1::{PushTaskRequest, worker_service_client::WorkerServiceClient};
 use tonic::transport::{Channel, Error};
@@ -48,12 +53,16 @@ impl WorkerPool {
 
     /// Register worker address during execution.
     pub fn add_worker<T: Into<String>>(&mut self, address: T) {
-        self.addresses.insert(address.into());
+        let address = address.into();
+        info!("Adding worker {address}");
+        self.addresses.insert(address);
     }
 
     /// Unregister worker address during execution.
     pub fn remove_worker(&mut self, address: &String) {
+        info!("Removing worker {address}");
         self.addresses.remove(address);
+        self.clients.remove(address);
     }
 
     /// Call this function over and over again in another thread to keep the pool of active connections updated.
@@ -74,6 +83,14 @@ impl WorkerPool {
                 }
             }
         }
+
+        let pool = self
+            .clients
+            .iter()
+            .map(|(address, client)| format!("{address}:{}", client.queue_size))
+            .join(",");
+
+        info!(pool)
     }
 
     /// Try pushing a task to the best worker using P2C (Power of Two Choices).
@@ -85,7 +102,19 @@ impl WorkerPool {
                 .values()
                 .choose_multiple(&mut rng, 2)
                 .into_iter()
-                .min_by_key(|client| client.queue_size)
+                .min_by(|a, b| {
+                    match a.queue_size.cmp(&b.queue_size) {
+                        // When two workers are the same, we pick one randomly to avoid hammering one worker repeatedly
+                        Ordering::Equal => {
+                            if rng.random::<bool>() {
+                                Ordering::Less
+                            } else {
+                                Ordering::Greater
+                            }
+                        }
+                        other => other,
+                    }
+                })
                 .cloned()
         };
 
@@ -104,7 +133,7 @@ impl WorkerPool {
                 }
 
                 // Update this worker's queue size
-                client.queue_size = 5;
+                client.queue_size = response.queue_size;
                 self.clients.insert(address, client);
                 Ok(())
             }

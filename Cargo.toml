@@ -40,6 +40,7 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "logs"
 ] }
 sentry_protos = { git = "https://github.com/getsentry/sentry-protos", branch = "george/push-broker-worker" }
+itertools = "0.14.0"
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
