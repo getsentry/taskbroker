@@ -15,11 +15,11 @@ use tokio::task::JoinSet;
 
 async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     let url = if cfg!(feature = "bench-with-mnt-disk") {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         format!(
             "/mnt/disks/sqlite/{}-{}.sqlite",
             Utc::now(),
-            rng.r#gen::<u64>()
+            rng.random::<u64>()
         )
     } else {
         generate_temp_filename()
@@ -78,11 +78,11 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     assert!(num_activations.is_multiple_of(num_workers));
 
     let url = if cfg!(feature = "bench-with-mnt-disk") {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         format!(
             "/mnt/disks/sqlite/{}-{}.sqlite",
             Utc::now(),
-            rng.r#gen::<u64>()
+            rng.random::<u64>()
         )
     } else {
         generate_temp_filename()
