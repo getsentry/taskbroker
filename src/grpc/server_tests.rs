@@ -31,6 +31,7 @@ async fn test_set_task_status() {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
+        address: "http://127.0.0.1:50052".into(),
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -49,6 +50,7 @@ async fn test_set_task_status_invalid() {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
+        address: "http://127.0.0.1:50052".into(),
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_err());
@@ -102,6 +104,7 @@ async fn test_set_task_status_success() {
         id: "id_0".to_string(),
         status: 5, // Complete
         fetch_next_task: Some(FetchNextTask { namespace: None }),
+        address: "http://127.0.0.1:50052".into(),
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());

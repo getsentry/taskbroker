@@ -65,6 +65,13 @@ impl WorkerPool {
         self.clients.remove(address);
     }
 
+    /// Decrement `queue_size` for the worker with address `address`. Called when worker reports task status.
+    pub fn decrement_queue_size(&mut self, address: &String) {
+        if let Some(client) = self.clients.get_mut(address) {
+            client.queue_size -= 1;
+        }
+    }
+
     /// Call this function over and over again in another thread to keep the pool of active connections updated.
     pub async fn update(&mut self) {
         for address in self.addresses.clone() {
