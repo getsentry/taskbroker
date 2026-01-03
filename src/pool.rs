@@ -1,7 +1,5 @@
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-};
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use anyhow::Result;
 use itertools::Itertools;
@@ -74,14 +72,14 @@ impl WorkerPool {
 
     /// Call this function over and over again in another thread to keep the pool of active connections updated.
     pub async fn update(&mut self) {
-        for address in self.addresses.clone() {
-            if !self.clients.contains_key(&address) {
-                match connect(&address).await {
+        for address in &self.addresses {
+            if let Entry::Vacant(e) = self.clients.entry(address.into()) {
+                match connect(address).await {
                     Ok(connection) => {
                         info!("Connected to {address}");
 
                         let client = WorkerClient::new(connection, address.clone(), 0);
-                        self.clients.insert(address, client);
+                        e.insert(client);
                     }
 
                     Err(e) => {
