@@ -92,10 +92,10 @@ impl ConsumerService for TaskbrokerServer {
         let id = request.get_ref().id.clone();
 
         // Update worker queue size estimate
-        self.pool
-            .write()
-            .await
-            .decrement_queue_size(&request.get_ref().address);
+        // self.pool
+        //     .write()
+        //     .await
+        //     .decrement_queue_size(&request.get_ref().address);
 
         let status: InflightActivationStatus =
             TaskActivationStatus::try_from(request.get_ref().status)

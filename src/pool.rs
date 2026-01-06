@@ -64,11 +64,11 @@ impl WorkerPool {
     }
 
     /// Decrement `queue_size` for the worker with address `address`. Called when worker reports task status.
-    pub fn decrement_queue_size(&mut self, address: &String) {
-        if let Some(client) = self.clients.get_mut(address) {
-            client.queue_size -= 1;
-        }
-    }
+    // pub fn decrement_queue_size(&mut self, address: &String) {
+    //     if let Some(client) = self.clients.get_mut(address) {
+    //         client.queue_size = client.queue_size.saturating_sub(1);
+    //     }
+    // }
 
     /// Call this function over and over again in another thread to keep the pool of active connections updated.
     pub async fn update(&mut self) {
@@ -137,8 +137,27 @@ impl WorkerPool {
                     return Err(anyhow::anyhow!("Selected worker was full"));
                 }
 
+                // Calculate estimation error before updating
+                let estimated = client.queue_size;
+                let actual = response.queue_size;
+                let error = (estimated as i64) - (actual as i64);
+
+                // Record the absolute error
+                metrics::histogram!("worker.queue_size.estimation_error", "worker" => address.clone())
+                    .record(error.abs() as f64);
+
+                // Record the signed error to see if we're systematically over/under-estimating
+                metrics::histogram!("worker.queue_size.estimation_delta", "worker" => address.clone())
+                    .record(error as f64);
+
+                // Record both values for reference
+                metrics::gauge!("worker.queue_size.estimated", "worker" => address.clone())
+                    .set(estimated as f64);
+                metrics::gauge!("worker.queue_size.actual", "worker" => address.clone())
+                    .set(actual as f64);
+
                 // Update this worker's queue size
-                client.queue_size = response.queue_size;
+                client.queue_size = actual;
                 self.clients.insert(address, client);
                 Ok(())
             }
