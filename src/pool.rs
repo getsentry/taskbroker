@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use rand::Rng;
 use rand::seq::IteratorRandom;
@@ -28,6 +29,12 @@ struct WorkerClient {
 
     /// The worker's ESTIMATED queue size.
     queue_size: u32,
+
+    /// (TEMP) How many times has this worker been hit?
+    hits: u32,
+
+    /// (TEMP) When was the last time this worker was hit?
+    last_hit: DateTime<Utc>,
 }
 
 impl WorkerClient {
@@ -36,6 +43,8 @@ impl WorkerClient {
             connection,
             address,
             queue_size,
+            hits: 0,
+            last_hit: Utc::now(),
         }
     }
 }
@@ -143,16 +152,32 @@ impl WorkerPool {
                 let error = (estimated as i64) - (actual as i64);
 
                 // Record the absolute error
-                metrics::histogram!("worker.queue_size.estimation_error", "worker" => address.clone())
-                    .record(error.abs() as f64);
+                // metrics::histogram!("worker.queue_size.estimation_error", "worker" => address.clone())
+                //     .record(error.abs() as f64);
 
                 // Record the signed error to see if we're systematically over/under-estimating
-                metrics::histogram!("worker.queue_size.estimation_delta", "worker" => address.clone())
-                    .record(error as f64);
+                // metrics::histogram!("worker.queue_size.estimation_delta", "worker" => address.clone())
+                //     .record(error as f64);
+
+                client.hits += 1;
+
+                metrics::gauge!("worker.queue_size.hits", "worker" => address.clone())
+                    .set(client.hits as f64);
+
+                let now = Utc::now();
+                let time_delta = (now - client.last_hit).as_seconds_f64();
+                client.last_hit = now;
+
+                metrics::gauge!("worker.queue_size.time_since_hit", "worker" => address.clone())
+                    .set(time_delta);
+
+                metrics::gauge!("worker.queue_size.delta", "worker" => address.clone())
+                    .set(error as f64);
 
                 // Record both values for reference
                 metrics::gauge!("worker.queue_size.estimated", "worker" => address.clone())
                     .set(estimated as f64);
+
                 metrics::gauge!("worker.queue_size.actual", "worker" => address.clone())
                     .set(actual as f64);
 
