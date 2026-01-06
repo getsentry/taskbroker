@@ -282,7 +282,7 @@ pub async fn do_upkeep(
             .record(remove_killswitched_start.elapsed());
     }
 
-    // 12. Forward tasks from demoted namespaces to "long" namespace
+    // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
     let forward_cluster = runtime_config
         .demoted_topic_cluster
