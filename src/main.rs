@@ -5,8 +5,11 @@ use std::{sync::Arc, time::Duration};
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::pool::WorkerPool;
+use taskbroker::push::TaskPusher;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
@@ -56,6 +59,8 @@ async fn main() -> Result<(), Error> {
     let config = Arc::new(Config::from_args(&args)?);
     let runtime_config_manager =
         Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
+
+    let pool = Arc::new(RwLock::new(WorkerPool::new(config.workers.clone())));
 
     println!("taskbroker starting");
     println!("version: {}", get_version().trim());
@@ -177,10 +182,29 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Push task loop (conditionally enabled)
+    let push_task = if config.push {
+        info!("Running in PUSH mode");
+
+        let push_task_store = store.clone();
+        let push_task_config = config.clone();
+        let push_task_pool = pool.clone();
+
+        Some(tokio::spawn(async move {
+            let pusher = TaskPusher::new(push_task_store, push_task_config, push_task_pool);
+            pusher.start().await
+        }))
+    } else {
+        info!("Running in PULL mode");
+        None
+    };
+
     // GRPC server
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+        let grpc_pool = pool.clone();
+
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
@@ -195,6 +219,7 @@ async fn main() -> Result<(), Error> {
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
+                    pool: grpc_pool,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -225,7 +250,7 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    elegant_departure::tokio::depart()
+    let mut depart = elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
         .on_signal(SignalKind::hangup())
@@ -233,8 +258,14 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task))
-        .await;
+        .on_completion(log_task_completion("maintenance_task", maintenance_task));
+
+    // Only register push_task if it was spawned
+    if let Some(task) = push_task {
+        depart = depart.on_completion(log_task_completion("push_task", task));
+    }
+
+    depart.await;
 
     Ok(())
 }

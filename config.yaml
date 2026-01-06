@@ -1,0 +1,6 @@
+kafka_topic: "test-topic"
+push: true
+# workers:
+#   - "http://127.0.0.1:50052"
+#   - "http://127.0.0.1:50053"
+#   - "http://127.0.0.1:50054"
