@@ -109,6 +109,27 @@ async fn test_get_task_with_application_success() {
 
 #[tokio::test]
 #[allow(deprecated)]
+async fn test_get_task_with_namespace_requires_application() {
+    let store = create_test_store().await;
+    let activations = make_activations(2);
+    let namespace = activations[0].namespace.clone();
+
+    store.store(activations).await.unwrap();
+
+    let service = TaskbrokerServer { store };
+    let request = GetTaskRequest {
+        namespace: Some(namespace),
+        application: None,
+    };
+    let response = service.get_task(Request::new(request)).await;
+
+    assert!(response.is_err());
+    let e = response.unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
+}
+
+#[tokio::test]
+#[allow(deprecated)]
 async fn test_set_task_status_success() {
     let store = create_test_store().await;
     let activations = make_activations(2);
