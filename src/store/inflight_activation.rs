@@ -20,7 +20,7 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 use crate::config::Config;
 
@@ -619,6 +619,14 @@ impl InflightActivationStore {
     ) -> Result<Option<InflightActivation>, Error> {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+
+        // If a namespace filter is used, an application must also be used.
+        if namespaces.is_some() && application.is_none() {
+            warn!(
+                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+            );
+            return Ok(None);
+        }
         let result = self
             .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
             .await?;

@@ -175,7 +175,7 @@ async fn test_get_pending_activation_with_race() {
         join_set.spawn(async move {
             rx.recv().await.unwrap();
             store
-                .get_pending_activation(None, Some(&ns))
+                .get_pending_activation(Some("sentry"), Some(&ns))
                 .await
                 .unwrap()
                 .unwrap()
@@ -204,7 +204,7 @@ async fn test_get_pending_activation_with_namespace() {
 
     // Get activation from other namespace
     let result = store
-        .get_pending_activation(None, Some("other_namespace"))
+        .get_pending_activation(Some("sentry"), Some("other_namespace"))
         .await
         .unwrap()
         .unwrap();
@@ -239,6 +239,35 @@ async fn test_get_pending_activation_from_multiple_namespaces() {
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
     assert_eq!(result[1].status, InflightActivationStatus::Processing);
+}
+
+#[tokio::test]
+async fn test_get_pending_activation_with_namespace_requires_application() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(2);
+    batch[1].namespace = "other_namespace".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // This is an invalid query as we don't want to allow clients
+    // to fetch tasks from any application.
+    let opt = store
+        .get_pending_activation(None, Some("other_namespace"))
+        .await
+        .unwrap();
+    assert!(opt.is_none());
+
+    // We allow no application in this method because of usage in upkeep
+    let namespaces = vec!["other_namespace".to_string()];
+    let activations = store
+        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        1,
+        activations.len(),
+        "should find 1 activation with a matching namespace"
+    );
 }
 
 #[tokio::test]
