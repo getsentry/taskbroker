@@ -6,6 +6,7 @@ use rand::Rng;
 use taskbroker::{
     store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+        SqliteActivationStore,
     },
     test_utils::{
         generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
@@ -25,7 +26,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
         generate_temp_filename()
     };
     let store = Arc::new(
-        InflightActivationStore::new(
+        SqliteActivationStore::new(
             &url,
             InflightActivationStoreConfig {
                 max_processing_attempts: 1,
@@ -89,7 +90,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     };
 
     let store = Arc::new(
-        InflightActivationStore::new(
+        SqliteActivationStore::new(
             &url,
             InflightActivationStoreConfig {
                 max_processing_attempts: 1,
