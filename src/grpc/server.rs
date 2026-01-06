@@ -13,7 +13,7 @@ use crate::store::inflight_activation::{InflightActivationStatus, InflightActiva
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
-    pub store: Arc<InflightActivationStore>,
+    pub store: Arc<dyn InflightActivationStore>,
 }
 
 #[tonic::async_trait]

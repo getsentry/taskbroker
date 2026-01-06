@@ -31,7 +31,7 @@ use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::inflight_activation::{
-    InflightActivationStore, InflightActivationStoreConfig,
+    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
 };
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
@@ -62,8 +62,8 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
-    let store = Arc::new(
-        InflightActivationStore::new(
+    let store: Arc<dyn InflightActivationStore> = Arc::new(
+        SqliteActivationStore::new(
             &config.db_path,
             InflightActivationStoreConfig::from_config(&config),
         )
