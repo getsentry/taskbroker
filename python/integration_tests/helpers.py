@@ -216,7 +216,7 @@ def get_available_ports(count: int) -> list[int]:
     MAX = 65535
     res = []
     for i in range(count):
-        for candidate in range(MIN + i, MAX, count):
+        for candidate in range(MIN + (i * count), MAX, count):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.bind(("0.0.0.0", candidate))
