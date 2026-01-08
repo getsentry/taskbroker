@@ -42,6 +42,7 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
             id: format!("id_{i}"),
             activation: TaskActivation {
                 id: format!("id_{i}"),
+                application: Some("sentry".into()),
                 namespace: namespace.clone(),
                 taskname: "taskname".into(),
                 parameters: "{}".into(),
@@ -67,6 +68,7 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
             delay_until: None,
             processing_deadline: None,
             at_most_once: false,
+            application: "sentry".into(),
             namespace: namespace.clone(),
             taskname: "taskname".into(),
             on_attempts_exceeded: OnAttemptsExceeded::Discard,

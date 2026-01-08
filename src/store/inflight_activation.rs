@@ -21,7 +21,7 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 use crate::config::Config;
 
@@ -113,6 +113,7 @@ pub struct InflightActivation {
     pub at_most_once: bool,
 
     /// Details about the task
+    pub application: String,
     pub namespace: String,
     pub taskname: String,
 }
@@ -164,6 +165,7 @@ struct TableRow {
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
     at_most_once: bool,
+    application: String,
     namespace: String,
     taskname: String,
     #[sqlx(try_from = "i32")]
@@ -188,6 +190,7 @@ impl TryFrom<InflightActivation> for TableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
+            application: value.application,
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
@@ -211,6 +214,7 @@ impl From<TableRow> for InflightActivation {
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
+            application: value.application,
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
@@ -286,12 +290,14 @@ pub trait InflightActivationStore: Send + Sync {
     /// Get a single pending activation, optionally filtered by namespace
     async fn get_pending_activation(
         &self,
+        application: Option<&str>,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error>;
 
     /// Get pending activations from specified namespaces
     async fn get_pending_activations_from_namespaces(
         &self,
+        application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
     ) -> Result<Vec<InflightActivation>, Error>;
@@ -598,6 +604,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
+                application,
                 namespace,
                 taskname,
                 on_attempts_exceeded
@@ -638,6 +645,7 @@ impl InflightActivationStore for SqliteActivationStore {
                     processing_deadline,
                     status,
                     at_most_once,
+                    application,
                     namespace,
                     taskname,
                     on_attempts_exceeded
@@ -668,6 +676,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 }
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
+                b.push_bind(row.application);
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
@@ -702,12 +711,21 @@ impl InflightActivationStore for SqliteActivationStore {
     #[instrument(skip_all)]
     async fn get_pending_activation(
         &self,
+        application: Option<&str>,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+
+        // If a namespace filter is used, an application must also be used.
+        if namespaces.is_some() && application.is_none() {
+            warn!(
+                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+            );
+            return Ok(None);
+        }
         let result = self
-            .get_pending_activations_from_namespaces(namespaces.as_deref(), Some(1))
+            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
             .await?;
         if result.is_empty() {
             return Ok(None);
@@ -721,6 +739,7 @@ impl InflightActivationStore for SqliteActivationStore {
     #[instrument(skip_all)]
     async fn get_pending_activations_from_namespaces(
         &self,
+        application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
     ) -> Result<Vec<InflightActivation>, Error> {
@@ -748,7 +767,11 @@ impl InflightActivationStore for SqliteActivationStore {
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        // Handle namespace filtering
+        // Handle application & namespace filtering
+        if let Some(value) = application {
+            query_builder.push(" AND application =");
+            query_builder.push_bind(value);
+        }
         if let Some(namespaces) = namespaces
             && !namespaces.is_empty()
         {
@@ -902,6 +925,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
+                application,
                 namespace,
                 taskname,
                 on_attempts_exceeded
