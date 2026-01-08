@@ -212,8 +212,7 @@ def get_num_tasks_group_by_status(
 
 
 def get_available_ports(count: int) -> list[int]:
-    # MIN = 49152
-    MIN = 50000
+    MIN = 49152
     MAX = 65535
     res = []
     for i in range(count):
