@@ -6,6 +6,7 @@ from collections import defaultdict
 
 import pytest
 import yaml
+
 from integration_tests.helpers import (
     TASKBROKER_BIN,
     TESTS_OUTPUT_ROOT,
@@ -16,38 +17,9 @@ from integration_tests.helpers import (
 )
 from integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
-TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_upkeep_retry"
-
-
-class TasksRetriedCounter:
-    """
-    A thread safe class that tracks the total number of tasks that have
-    been retried.
-    """
-
-    def __init__(self) -> None:
-        self.total_retried = 0
-        self.tasks_retried: defaultdict[str, int] = defaultdict(
-            int
-        )  # key: task_name, value: number of retries
-        self._lock = threading.Lock()
-
-    def increment(self, task_name: str) -> int:
-        with self._lock:
-            self.total_retried += 1
-            self.tasks_retried[task_name] += 1
-            return self.total_retried
-
-    def get_total_retried(self) -> int:
-        with self._lock:
-            return self.total_retried
-
-    def get_tasks_retried(self) -> defaultdict[str, int]:
-        with self._lock:
-            return self.tasks_retried
-
-
-counter = TasksRetriedCounter()
+TEST_OUTPUT_PATH = TESTS_OUTPUT_ROOT / "test_task_worker_processing"
+processed_tasks: defaultdict[str, list[int]] = defaultdict(list)  # key: task_id, value: worker_id
+mutex = threading.Lock()
 
 
 def manage_taskworker(
@@ -56,18 +28,14 @@ def manage_taskworker(
     log_file_path: str,
     tasks_written_event: threading.Event,
     shutdown_event: threading.Event,
-    num_messages: int,
-    retries_per_task: int,
-    timeout: int,
 ) -> None:
     print(f"[taskworker_{worker_id}] Starting taskworker_{worker_id}")
-    worker = ConfigurableTaskWorker(
-        TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"), retry_rate=1
-    )
-    retried_tasks = 0
+    worker = ConfigurableTaskWorker(TaskWorkerClient(f"127.0.0.1:{taskbroker_config.grpc_port}"))
+    fetched_tasks = 0
+    completed_tasks = 0
+
     next_task = None
     task = None
-    end = time.time() + timeout
 
     # Wait for taskbroker to initialize sqlite and write tasks to it
     print(
@@ -81,54 +49,32 @@ def manage_taskworker(
         print(f"[taskworker_{worker_id}]: Processing tasks...")
     try:
         while not shutdown_event.is_set():
-            if time.time() > end:
-                print(
-                    f"[taskworker_{worker_id}]: Timeout elapse. "
-                    f"Shutting down taskworker_{worker_id}"
-                )
-                shutdown_event.set()
-                break
             if next_task:
                 task = next_task
                 next_task = None
+                fetched_tasks += 1
             else:
                 task = worker.fetch_task()
-
-            # If there are no more pending task to be fetched, check if all
-            # tasks have been retried. If so, shutdown the taskworker.
-            # If not, wait for upkeep to re-produce the task to kafka.
+                if task:
+                    fetched_tasks += 1
             if not task:
-                task_retried_count = counter.get_total_retried()
-                if task_retried_count >= num_messages * retries_per_task:
-                    print(
-                        f"[taskworker_{worker_id}]: Total tasks retried reached: "
-                        f"{task_retried_count}/{num_messages * retries_per_task}. "
-                        f"Shutting down taskworker_{worker_id}"
-                    )
-                    shutdown_event.set()
-                    break
-                else:
-                    time.sleep(1)
-                    continue
-
-            # If the tasks's retry policy is less than specificed attempts,
-            # set the task to retry state. Otherwise, complete the task.
-            if task.retry_state.attempts < retries_per_task:
-                next_task = worker.process_task(task)
-                retried_tasks += 1
-                curr_retried = counter.increment(task.taskname)
                 print(
-                    f"[taskworker_{worker_id}]: Total tasks retried: "
-                    f"{curr_retried}/{num_messages * retries_per_task}"
+                    f"[taskworker_{worker_id}]: No more pending tasks "
+                    f"to retrieve, shutting down taskworker_{worker_id}"
                 )
-            else:
-                next_task = worker.complete_task(task)
+                shutdown_event.set()
+                break
+            next_task = worker.process_task(task)
+            completed_tasks += 1
+            with mutex:
+                processed_tasks[task.id].append(worker_id)
+
     except Exception as e:
         print(f"[taskworker_{worker_id}]: Worker process crashed: {e}")
         return
 
-    with open(log_file_path, "a") as f:
-        f.write(f"Retried:{retried_tasks}")
+    with open(log_file_path, "a") as log_file:
+        log_file.write(f"Fetched:{fetched_tasks}, Completed:{completed_tasks}")
 
 
 def manage_taskbroker(
@@ -141,12 +87,12 @@ def manage_taskbroker(
     tasks_written_event: threading.Event,
     shutdown_events: list[threading.Event],
 ) -> None:
-    with open(log_file_path, "a") as f:
+    with open(log_file_path, "a") as log_file:
         print(f"[taskbroker_0] Starting taskbroker, writing log file to " f"{log_file_path}")
         process = subprocess.Popen(
             [taskbroker_path, "-c", config_file_path],
             stderr=subprocess.STDOUT,
-            stdout=f,
+            stdout=log_file,
         )
         time.sleep(3)  # give the taskbroker some time to start
 
@@ -187,30 +133,28 @@ def manage_taskbroker(
             process.kill()
 
 
-def test_upkeep_retry() -> None:
+def test_task_worker_processing() -> None:
     """
     What does this test do?
-    This tests is responsible for checking the integrity of the retry
-    mechanism implemented in the upkeep thread of taskbroker. An initial
-    amount of messages is produced to kafka with a set number of retries
-    in its retry policy. Then, the taskworkers fetch and update the
-    task's status to retry. During an interval, the upkeep thread will
-    collect these tasks and re-produce the task to kafka. This process
-    continues until all tasks have been retried the specified number of times.
+    This tests is responsible for ensuring that all tasks sent to taskbroker
+    are processed and completed by taskworker only once. An initial
+    amount of messages is produced to kafka. Then, mock taskworkers fetches
+    and completes the task (without actually running the activation).
+    This process continues until all tasks have been completed only once.
 
     How does it accomplish this?
-    The test starts N number of taskworker(s) and a taskbroker in separate
-    threads. Synchronization events are use to instruct the taskworker(s)
-    when start processing and shutdown. A shared data structured access by
-    a mutex called TaskRetriedCounter is used to globally keep track of
-    every task retried. Finally, this total number is validated alongside the
-    number of times each individual task was retried.
+    To accomplish this, the test starts N number of taskworker(s) and a
+    taskbroker in separate. threads. Synchronization events are use to
+    instruct the taskworker(s) when start processing and shutdown.
+    A shared dictionary accessed by a mutex is used to collect duplicate
+    processed tasks. Finally, the total number of fetched and completed
+    tasks are compared to the number of messages sent to taskbroker.
 
     Sequence diagram:
     [Thread 1: Taskbroker]                                     [Thread 2-N: Taskworker(s)]
              |                                                              |
              |                                                              |
-    Start taskbroker                                               Start taskworker(s)
+    Start Taskbroker                                               Start taskworker(s)
              |                                                              |
              |                                                              |
     Consume kafka and write to sqlite                                       |
@@ -218,15 +162,11 @@ def test_upkeep_retry() -> None:
              .                                                              |
     Done initializing and writing to sqlite ---------[Send signal]--------->|
              |                                                              |
-             |                                                         Retry tasks
-             |                                                              .
-             |                                                              .
-    Upkeep thread collects retry tasks and reproduces to topic              .
+             |                                                        Process tasks
              |                                                              .
              |                                                              .
              |                                                              .
-             |                                                              .
-             |<-------------[send shutdown signal(s)]----------Completed retrying all tasks
+             |<-------------[send shutdown signal(s)]----------Completed processing all tasks
              |                                                              |
              |                                                      Stop taskworker
              |                                                              |
@@ -236,13 +176,11 @@ def test_upkeep_retry() -> None:
 
     # Test configuration
     taskbroker_path = str(TASKBROKER_BIN)
-    num_messages = 5000
-    retries_per_task = 3
+    num_messages = 10_000
     num_partitions = 1
     num_workers = 20
     max_pending_count = 100_000
     taskbroker_timeout = 60  # the time in seconds to wait for all messages to be written to sqlite
-    taskworker_timeout = 600  # the time in seconds for taskworker to finish processing
     topic_name = "taskworker"
     kafka_deadletter_topic = "taskworker-dlq"
     curr_time = int(time.time())
@@ -251,7 +189,6 @@ def test_upkeep_retry() -> None:
         f"""
 Running test with the following configuration:
         num of messages: {num_messages},
-        attempts per task: {retries_per_task},
         num of partitions: {num_partitions},
         num of workers: {num_workers},
         max pending count: {max_pending_count},
@@ -261,11 +198,11 @@ Running test with the following configuration:
 
     create_topic(topic_name, num_partitions)
 
-    # Create taskbroker config file
+    # Create config file for taskbroker
     print("Creating config file for taskbroker")
     TEST_OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
-    db_name = f"db_0_{curr_time}_test_upkeep_retry"
-    config_filename = "config_0_test_upkeep_retry.yml"
+    db_name = f"db_0_{curr_time}_test_task_worker_processing"
+    config_filename = "config_0_test_task_worker_processing.yml"
     taskbroker_config = TaskbrokerConfig(
         db_name=db_name,
         db_path=str(TEST_OUTPUT_PATH / f"{db_name}.sqlite"),
@@ -290,7 +227,7 @@ Running test with the following configuration:
                 taskbroker_path,
                 str(TEST_OUTPUT_PATH / config_filename),
                 taskbroker_config,
-                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_upkeep_retry.log"),
+                str(TEST_OUTPUT_PATH / f"taskbroker_0_{curr_time}_test_task_worker_processing.log"),
                 taskbroker_timeout,
                 num_messages,
                 tasks_written_event,
@@ -303,7 +240,8 @@ Running test with the following configuration:
         worker_log_files = []
         for i in range(num_workers):
             log_file = str(
-                TEST_OUTPUT_PATH / f"taskworker_{i}_output_{curr_time}_test_upkeep_retry.log"
+                TEST_OUTPUT_PATH
+                / f"taskworker_{i}_output_{curr_time}_test_task_worker_processing.log"
             )
             worker_log_files.append(log_file)
             worker_thread = threading.Thread(
@@ -314,9 +252,6 @@ Running test with the following configuration:
                     log_file,
                     tasks_written_event,
                     shutdown_events[i],
-                    num_messages,
-                    retries_per_task,
-                    taskworker_timeout,
                 ),
             )
             worker_thread.start()
@@ -331,14 +266,23 @@ Running test with the following configuration:
     if not tasks_written_event.is_set():
         pytest.fail("Not all messages were written to sqlite.")
 
-    total_retried = 0
-
+    total_fetched = 0
+    total_completed = 0
     for log_file in worker_log_files:
         with open(log_file, "r") as f:
             line = f.readline()
-            total_retried += int(line.split(",")[0].split(":")[1])
+            total_fetched += int(line.split(",")[0].split(":")[1])
+            total_completed += int(line.split(",")[1].split(":")[1])
 
-    print(f"\nTotal tasks retried: {total_retried}")
-
-    assert total_retried == num_messages * retries_per_task
-    assert all([val == retries_per_task for val in counter.get_tasks_retried().values()])
+    print(f"\nTotal tasks fetched: {total_fetched}, Total tasks completed: " f"{total_completed}")
+    duplicate_tasks = [
+        (task_id, worker_ids)
+        for task_id, worker_ids in processed_tasks.items()
+        if len(worker_ids) > 1
+    ]
+    if duplicate_tasks:
+        print("Duplicate processed and completed tasks found:")
+        for task_id, worker_ids in duplicate_tasks:
+            print(f"Task ID: {task_id}, Worker IDs: {worker_ids}")
+    assert total_fetched == num_messages
+    assert total_completed == num_messages

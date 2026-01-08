@@ -1,29 +1,43 @@
 [project]
-name = "taskbroker"
-# we only have this here to make uv happy
-# we use uv for dependency management, not packaging
-version = "0.0.0"
-requires-python = ">=3.11"
-
-[dependency-groups]
-dev = [
-    "black==24.10.0",
-    "devservices>=1.2.1",
-    "pre-commit>=4.2.0",
-    "pytest>=8.3.3",
-    "sentry-devenv>=1.22.2",
+name = "taskbroker-client"
+version = "0.1.0"
+description = "Taskbroker python client and worker runtime"
+readme = "README.md"
+dependencies = [
+    "sentry-arroyo>=2.33.1",
+    "sentry-sdk[http2]>=2.43.0",
+    "sentry-protos>=0.4.11",
     "confluent_kafka>=2.3.0",
+    "cronsim>=2.6",
     "grpcio==1.66.1",
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
-    "pyyaml>=6.0.2",
-    "sentry-protos>=0.2.0",
+    "types-protobuf>=6.30.2.20250703",
+    "redis>=3.4.1",
+    "redis-py-cluster>=2.1.0",
+    "zstandard>=0.18.0",
+]
+
+[dependency-groups]
+dev = [
+    "devservices>=1.2.1",
+    "sentry-devenv>=1.22.2",
+    "black==24.10.0",
+    "pre-commit>=4.2.0",
+    "pytest>=8.3.3",
     "flake8>=7.3.0",
     "isort>=5.13.2",
     "mypy>=1.17.1",
-    "types-pyyaml>=6.0.12.20241230",
-    "types-protobuf>=6.30.2.20250703",
+    "time-machine>=2.16.0",
 ]
+[project.optional-dependencies]
+examples = [
+    "click>=8.3"
+]
+
+[build-system]
+requires = ["uv_build>=0.8.2,<0.9.0"]
+build-backend = "uv_build"
 
 [tool.uv]
 environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
@@ -32,11 +46,15 @@ environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
 url = "https://pypi.devinfra.sentry.io/simple"
 default = true
 
-[tool.uv.workspace]
-members = ["integration_tests", "clients/python"]
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
 
 [tool.mypy]
-mypy_path = "integration_tests,clients/python/src"
+files = ["."]
+mypy_path = ["src"]
 explicit_package_bases = true
 # minimal strictness settings
 check_untyped_defs = true
@@ -53,6 +71,7 @@ disallow_untyped_defs = true
 # begin: missing 3rd party stubs
 [[tool.mypy.overrides]]
 module = [
+    ".conftest",
     "redis.*",
     "rediscluster.*",
     "confluent_kafka.*",
