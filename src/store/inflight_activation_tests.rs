@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationStatus, InflightActivationStore,
-    InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
+    InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
 };
 use crate::test_utils::{
     StatusCount, assert_counts, create_integration_config, create_test_store,
@@ -66,7 +66,7 @@ fn test_inflightactivation_status_from() {
 #[tokio::test]
 async fn test_create_db() {
     assert!(
-        InflightActivationStore::new(
+        SqliteActivationStore::new(
             &generate_temp_filename(),
             InflightActivationStoreConfig::from_config(&create_integration_config())
         )
@@ -146,7 +146,7 @@ async fn test_get_pending_activation() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -288,7 +288,7 @@ async fn test_get_pending_activation_skip_expires() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -417,7 +417,7 @@ async fn test_count_pending_activations() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -433,7 +433,7 @@ async fn set_activation_status() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -449,7 +449,7 @@ async fn set_activation_status() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -464,7 +464,7 @@ async fn set_activation_status() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
     assert!(
@@ -485,7 +485,7 @@ async fn set_activation_status() {
             failure: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
     assert!(
@@ -576,7 +576,7 @@ async fn test_get_retry_activations() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -592,7 +592,7 @@ async fn test_get_retry_activations() {
             retry: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -625,7 +625,7 @@ async fn test_handle_processing_deadline() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -637,7 +637,7 @@ async fn test_handle_processing_deadline() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -665,7 +665,7 @@ async fn test_handle_processing_deadline_multiple_tasks() {
             processing: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -678,7 +678,7 @@ async fn test_handle_processing_deadline_multiple_tasks() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -712,7 +712,7 @@ async fn test_handle_processing_at_most_once() {
             processing: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -725,7 +725,7 @@ async fn test_handle_processing_at_most_once() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -758,7 +758,7 @@ async fn test_handle_processing_deadline_discard_after() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -770,7 +770,7 @@ async fn test_handle_processing_deadline_discard_after() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -800,7 +800,7 @@ async fn test_handle_processing_deadline_deadletter_after() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -812,7 +812,7 @@ async fn test_handle_processing_deadline_deadletter_after() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -841,7 +841,7 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -854,7 +854,7 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -883,7 +883,7 @@ async fn test_processing_attempts_exceeded() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -896,7 +896,7 @@ async fn test_processing_attempts_exceeded() {
             failure: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -919,7 +919,7 @@ async fn test_remove_completed() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -953,7 +953,7 @@ async fn test_remove_completed() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -982,7 +982,7 @@ async fn test_remove_completed_multiple_gaps() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1024,7 +1024,7 @@ async fn test_remove_completed_multiple_gaps() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1080,7 +1080,7 @@ async fn test_handle_failed_tasks() {
             failure: 4,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1110,7 +1110,7 @@ async fn test_handle_failed_tasks() {
             complete: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1126,7 +1126,7 @@ async fn test_mark_completed() {
             pending: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1142,7 +1142,7 @@ async fn test_mark_completed() {
             complete: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1163,7 +1163,7 @@ async fn test_handle_expires_at() {
             pending: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1175,7 +1175,7 @@ async fn test_handle_expires_at() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1195,7 +1195,7 @@ async fn test_remove_killswitched() {
             pending: 6,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1213,7 +1213,7 @@ async fn test_remove_killswitched() {
             pending: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1267,14 +1267,14 @@ async fn test_clear() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
     assert_eq!(store.count().await.unwrap(), 1);
 
     assert!(store.clear().await.is_ok());
     assert_eq!(store.count().await.unwrap(), 0);
-    assert_counts(StatusCount::default(), &store).await;
+    assert_counts(StatusCount::default(), store.as_ref()).await;
 }
 
 #[tokio::test]
@@ -1305,7 +1305,7 @@ async fn test_vacuum_db_incremental() {
         vacuum_page_count: Some(10),
         ..Config::default()
     };
-    let store = InflightActivationStore::new(
+    let store = SqliteActivationStore::new(
         &generate_temp_filename(),
         InflightActivationStoreConfig::from_config(&config),
     )
@@ -1414,7 +1414,7 @@ async fn test_db_status_calls_ok() {
     let url = format!("sqlite:{db_path}");
 
     // Initialize a store to create the database and run migrations
-    InflightActivationStore::new(
+    SqliteActivationStore::new(
         &url,
         InflightActivationStoreConfig {
             max_processing_attempts: 3,

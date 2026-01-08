@@ -29,7 +29,7 @@ use crate::{
 /// on the inflight store
 pub async fn upkeep(
     config: Arc<Config>,
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     health_reporter: HealthReporter,
@@ -110,7 +110,7 @@ impl UpkeepResults {
 )]
 pub async fn do_upkeep(
     config: Arc<Config>,
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
     producer: Arc<FutureProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
@@ -522,6 +522,7 @@ mod tests {
         runtime_config::RuntimeConfigManager,
         store::inflight_activation::{
             InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+            SqliteActivationStore,
         },
         test_utils::{
             StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
@@ -531,12 +532,12 @@ mod tests {
         upkeep::{create_retry_activation, do_upkeep},
     };
 
-    async fn create_inflight_store() -> Arc<InflightActivationStore> {
+    async fn create_inflight_store() -> Arc<dyn InflightActivationStore> {
         let url = generate_temp_filename();
         let config = create_integration_config();
 
         Arc::new(
-            InflightActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
+            SqliteActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
                 .await
                 .unwrap(),
         )
@@ -784,7 +785,7 @@ mod tests {
                 processing: 1,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
         assert_eq!(result_context.processing_deadline_reset, 0);
@@ -833,7 +834,7 @@ mod tests {
                 pending: 2,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }
@@ -883,7 +884,7 @@ mod tests {
                 pending: 1,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }
@@ -1328,7 +1329,7 @@ demoted_namespaces:
                 pending: 2,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }

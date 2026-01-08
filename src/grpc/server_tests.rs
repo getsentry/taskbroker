@@ -1,11 +1,11 @@
+use crate::grpc::server::TaskbrokerServer;
+use crate::store::inflight_activation::InflightActivationStore;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivation,
 };
 use tonic::{Code, Request};
-
-use crate::grpc::server::TaskbrokerServer;
 
 use crate::test_utils::{create_test_store, make_activations};
 

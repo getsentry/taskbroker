@@ -14,7 +14,7 @@ use crate::{
     config::Config,
     store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig,
+        InflightActivationStoreConfig, SqliteActivationStore,
     },
 };
 use chrono::{Timelike, Utc};
@@ -90,9 +90,9 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create an InflightActivationStore instance
-pub async fn create_test_store() -> Arc<InflightActivationStore> {
+pub async fn create_test_store() -> Arc<SqliteActivationStore> {
     Arc::new(
-        InflightActivationStore::new(
+        SqliteActivationStore::new(
             &generate_temp_filename(),
             InflightActivationStoreConfig::from_config(&create_integration_config()),
         )
@@ -216,7 +216,7 @@ pub struct StatusCount {
 }
 
 /// Assert the state of all counts in the inflight activation store.
-pub async fn assert_counts(expected: StatusCount, store: &InflightActivationStore) {
+pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivationStore) {
     assert_eq!(
         expected.pending,
         store
