@@ -25,6 +25,7 @@ from .conftest import producer_factory
 def test_namespace_register_task() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -47,6 +48,7 @@ def test_namespace_register_task() -> None:
 def test_namespace_register_inherits_default_retry() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -77,6 +79,7 @@ def test_namespace_register_inherits_default_retry() -> None:
 def test_register_inherits_default_expires_processing_deadline() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -107,6 +110,7 @@ def test_register_inherits_default_expires_processing_deadline() -> None:
 def test_namespace_get_unknown() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -121,6 +125,7 @@ def test_namespace_get_unknown() -> None:
 def test_namespace_send_task_no_retry() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -152,6 +157,7 @@ def test_namespace_send_task_no_retry() -> None:
 def test_namespace_send_task_with_compression() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -180,6 +186,7 @@ def test_namespace_send_task_with_compression() -> None:
 def test_namespace_send_task_with_auto_compression() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -209,6 +216,7 @@ def test_namespace_send_task_with_auto_compression() -> None:
 def test_namespace_send_task_with_retry() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -240,6 +248,7 @@ def test_namespace_send_task_with_retry() -> None:
 def test_namespace_with_retry_send_task() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -271,6 +280,7 @@ def test_namespace_with_retry_send_task() -> None:
 def test_namespace_with_wait_for_delivery_send_task() -> None:
     namespace = TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -301,6 +311,7 @@ def test_namespace_with_wait_for_delivery_send_task() -> None:
 
 def test_registry_get() -> None:
     registry = TaskRegistry(
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -309,6 +320,7 @@ def test_registry_get() -> None:
 
     assert isinstance(ns, TaskNamespace)
     assert ns.name == "tests"
+    assert ns.application == "acme"
     assert ns.router
     assert ns == registry.get("tests")
 
@@ -321,6 +333,7 @@ def test_registry_get() -> None:
 
 def test_registry_get_task() -> None:
     registry = TaskRegistry(
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -343,6 +356,7 @@ def test_registry_get_task() -> None:
 
 def test_registry_create_namespace_simple() -> None:
     registry = TaskRegistry(
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -351,6 +365,7 @@ def test_registry_create_namespace_simple() -> None:
     assert ns.default_retry is None
     assert ns.default_expires is None
     assert ns.default_processing_deadline_duration == 10
+    assert ns.application == "acme"
     assert ns.name == "tests"
     assert ns.topic == "taskbroker"
     assert ns.app_feature == "tests"
@@ -367,12 +382,14 @@ def test_registry_create_namespace_simple() -> None:
     assert ns.default_processing_deadline_duration == 60
     assert ns.default_expires == 60 * 10
     assert ns.name == "test-two"
+    assert ns.application == "acme"
     assert ns.topic == "taskbroker"
     assert ns.app_feature == "anvils"
 
 
 def test_registry_create_namespace_duplicate() -> None:
     registry = TaskRegistry(
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),

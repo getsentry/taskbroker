@@ -15,6 +15,7 @@ def producer_factory(topic: str) -> KafkaProducer:
 
 
 app = TaskbrokerApp(
+    name="example-app",
     producer_factory=producer_factory,
     at_most_once_store=StubAtMostOnce(),
 )

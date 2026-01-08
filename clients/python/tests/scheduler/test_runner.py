@@ -14,7 +14,7 @@ from ..conftest import freeze_time, producer_factory
 
 @pytest.fixture
 def task_app() -> TaskbrokerApp:
-    app = TaskbrokerApp(producer_factory=producer_factory)
+    app = TaskbrokerApp(name="acme", producer_factory=producer_factory)
     namespace = app.taskregistry.create_namespace("test")
 
     @namespace.register(name="valid")

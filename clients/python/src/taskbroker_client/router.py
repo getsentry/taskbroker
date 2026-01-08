@@ -15,4 +15,4 @@ class DefaultRouter(TaskRouter):
     """
 
     def route_namespace(self, name: str) -> str:
-        return "taskworker"
+        return "taskbroker"

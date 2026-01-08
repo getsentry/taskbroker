@@ -27,6 +27,7 @@ def do_things() -> None:
 def task_namespace() -> TaskNamespace:
     return TaskNamespace(
         name="tests",
+        application="acme",
         producer_factory=producer_factory,
         router=DefaultRouter(),
         metrics=NoOpMetricsBackend(),
@@ -213,6 +214,7 @@ def test_create_activation(task_namespace: TaskNamespace) -> None:
     )
     # No retries will be made as there is no retry policy on the task or namespace.
     activation = no_retry_task.create_activation([], {})
+    assert activation.application == "acme"
     assert activation.taskname == "test.no_retry"
     assert activation.namespace == task_namespace.name
     assert activation.retry_state
@@ -221,6 +223,7 @@ def test_create_activation(task_namespace: TaskNamespace) -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DISCARD
 
     activation = retry_task.create_activation([], {})
+    assert activation.application == "acme"
     assert activation.taskname == "test.with_retry"
     assert activation.namespace == task_namespace.name
     assert activation.retry_state
@@ -229,21 +232,25 @@ def test_create_activation(task_namespace: TaskNamespace) -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DEADLETTER
 
     activation = timedelta_expiry_task.create_activation([], {})
+    assert activation.application == "acme"
     assert activation.taskname == "test.with_timedelta_expires"
     assert activation.expires == 300
     assert activation.processing_deadline_duration == 30
 
     activation = int_expiry_task.create_activation([], {})
+    assert activation.application == "acme"
     assert activation.taskname == "test.with_int_expires"
     assert activation.expires == 300
     assert activation.processing_deadline_duration == 30
 
     activation = int_expiry_task.create_activation([], {}, expires=600)
+    assert activation.application == "acme"
     assert activation.taskname == "test.with_int_expires"
     assert activation.expires == 600
     assert activation.processing_deadline_duration == 30
 
     activation = at_most_once_task.create_activation([], {})
+    assert activation.application == "acme"
     assert activation.taskname == "test.at_most_once"
     assert activation.namespace == task_namespace.name
     assert activation.retry_state

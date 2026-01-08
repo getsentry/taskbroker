@@ -18,6 +18,7 @@ class TaskbrokerApp:
 
     def __init__(
         self,
+        name: str,
         producer_factory: ProducerFactory,
         router_class: str | TaskRouter = "taskbroker_client.router.DefaultRouter",
         metrics_class: str | MetricsBackend = "taskbroker_client.metrics.NoOpMetricsBackend",
@@ -31,6 +32,7 @@ class TaskbrokerApp:
         }
         self._modules: Iterable[str] = []
         self._taskregistry = TaskRegistry(
+            application=name,
             producer_factory=producer_factory,
             router=self._build_router(router_class),
             metrics=self.metrics,

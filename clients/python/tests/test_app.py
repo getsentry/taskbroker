@@ -13,13 +13,14 @@ class StubRouter(TaskRouter):
 
 
 def test_taskregistry_router_object() -> None:
-    app = TaskbrokerApp(producer_factory=producer_factory, router_class=StubRouter())
+    app = TaskbrokerApp(name="acme", producer_factory=producer_factory, router_class=StubRouter())
     ns = app.taskregistry.create_namespace("test")
     assert ns.topic == "honk"
 
 
 def test_taskregistry_router_str() -> None:
     app = TaskbrokerApp(
+        name="acme",
         producer_factory=producer_factory,
         router_class="taskbroker_client.router.DefaultRouter",
     )
@@ -28,7 +29,7 @@ def test_taskregistry_router_str() -> None:
 
 
 def test_set_config() -> None:
-    app = TaskbrokerApp(producer_factory=producer_factory)
+    app = TaskbrokerApp(name="acme", producer_factory=producer_factory)
     app.set_config({"rpc_secret": "testing", "ignored": "key"})
     assert app.config["rpc_secret"] == "testing"
     assert "ignored" not in app.config
@@ -43,7 +44,7 @@ def test_should_attempt_at_most_once() -> None:
         processing_deadline_duration=2,
     )
     at_most = StubAtMostOnce()
-    app = TaskbrokerApp(producer_factory=producer_factory)
+    app = TaskbrokerApp(name="acme", producer_factory=producer_factory)
     app.at_most_once_store(at_most)
     assert app.should_attempt_at_most_once(activation)
     assert not app.should_attempt_at_most_once(activation)

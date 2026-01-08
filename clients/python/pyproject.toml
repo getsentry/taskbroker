@@ -6,7 +6,7 @@ readme = "README.md"
 dependencies = [
     "sentry-arroyo>=2.33.1",
     "sentry-sdk[http2]>=2.43.0",
-    "sentry-protos>=0.2.0",
+    "sentry-protos>=0.4.11",
     "confluent_kafka>=2.3.0",
     "cronsim>=2.6",
     "grpcio==1.66.1",
@@ -29,7 +29,6 @@ dev = [
     "isort>=5.13.2",
     "mypy>=1.17.1",
     "time-machine>=2.16.0",
-    ""
 ]
 [project.optional-dependencies]
 examples = [

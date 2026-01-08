@@ -11,9 +11,7 @@ from uuid import uuid4
 import orjson
 import sentry_sdk
 import zstandard as zstd
-
 from google.protobuf.timestamp_pb2 import Timestamp
-
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DISCARD,
     RetryState,
@@ -218,7 +216,7 @@ class Task(Generic[P, R]):
                 tags={
                     "namespace": self._namespace.name,
                     "taskname": self.name,
-                    "topic": self._namespace.topic
+                    "topic": self._namespace.topic,
                 },
             )
         else:
@@ -226,6 +224,7 @@ class Task(Generic[P, R]):
 
         return TaskActivation(
             id=uuid4().hex,
+            application=self._namespace.application,
             namespace=self._namespace.name,
             taskname=self.name,
             headers=headers,

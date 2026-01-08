@@ -13,7 +13,6 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
 
 from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, CompressionType
-
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
@@ -35,6 +34,7 @@ class TaskNamespace:
     def __init__(
         self,
         name: str,
+        application: str,
         producer_factory: ProducerFactory,
         router: TaskRouter,
         metrics: MetricsBackend,
@@ -44,6 +44,7 @@ class TaskNamespace:
         app_feature: str | None = None,
     ):
         self.name = name
+        self.application = application
         self.router = router
         self.default_retry = retry
         self.default_expires = expires  # seconds
@@ -206,10 +207,12 @@ class TaskRegistry:
 
     def __init__(
         self,
+        application: str,
         producer_factory: ProducerFactory,
         router: TaskRouter,
         metrics: MetricsBackend,
     ) -> None:
+        self._application = application
         self._namespaces: dict[str, TaskNamespace] = {}
         self._producer_factory = producer_factory
         self._router = router
@@ -249,6 +252,7 @@ class TaskRegistry:
             raise ValueError(f"Task namespace with name {name} already exists.")
         namespace = TaskNamespace(
             name=name,
+            application=self._application,
             router=self._router,
             metrics=self._metrics,
             producer_factory=self._producer_factory,
