@@ -32,13 +32,13 @@ url = "https://pypi.devinfra.sentry.io/simple"
 default = true
 
 [tool.pytest.ini_options]
-pythonpath = ["python"]
+pythonpath = ["integration_tests"]
 testpaths = ["."]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 
 [tool.mypy]
-mypy_path = "python"
+mypy_path = "integration_tests"
 explicit_package_bases = true
 # minimal strictness settings
 check_untyped_defs = true
