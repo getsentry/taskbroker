@@ -9,11 +9,18 @@ x-sentry-service-config:
         repo_name: sentry-shared-kafka
         branch: main
         repo_link: https://github.com/getsentry/sentry-shared-kafka
+    redis:
+      description: Shared instance of redis used by sentry services
+      remote:
+        repo_name: sentry-shared-redis
+        branch: main
+        repo_link: https://github.com/getsentry/sentry-shared-redis.git
     taskbroker:
       description: Taskbroker service
   modes:
     default: [kafka]
-    containerized: [kafka, taskbroker]
+    client: [kafka, redis]
+    containerized: [kafka, redis, taskbroker]
 
 x-programs:
   devserver:

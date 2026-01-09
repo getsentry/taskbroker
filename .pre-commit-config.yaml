@@ -52,8 +52,17 @@ repos:
       require_serial: true
 
     - id: mypy
-      name: mypy
-      entry: mypy
+      name: mypy-tests
+      entry: "mypy"
+      exclude: "clients/"
+      language: system
+      types: [python]
+      require_serial: true
+
+    - id: mypy
+      name: mypy-client
+      entry: "mypy"
+      exclude: "integration_tests/"
       language: system
       types: [python]
       require_serial: true
