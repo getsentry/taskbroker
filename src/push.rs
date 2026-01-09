@@ -40,25 +40,6 @@ impl TaskPusher {
         info!("Push task loop starting...");
 
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-        let pool = self.pool.clone();
-
-        // Spawn a separate task to update the candidate worker collection
-        tokio::spawn(async move {
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            let mut beep_interval = tokio::time::interval(Duration::from_secs(1));
-
-            loop {
-                tokio::select! {
-                    _ = guard.wait() => {
-                        break;
-                    }
-
-                    _ = beep_interval.tick() => {
-                        pool.write().await.update().await;
-                    }
-                }
-            }
-        });
 
         loop {
             tokio::select! {
@@ -68,6 +49,7 @@ impl TaskPusher {
                 }
 
                 _ = async {
+                    debug!("About to process next task...");
                     self.process_next_task().await;
                 } => {}
             }
@@ -81,10 +63,17 @@ impl TaskPusher {
 impl TaskPusher {
     /// Grab the next pending task from the store.
     async fn process_next_task(&self) {
+        debug!("Getting the next task...");
+
         match self.store.peek_pending_activation().await {
             Ok(Some(inflight)) => {
+                let id = inflight.id.clone();
+                debug!("Found task {id} with status {:?}", inflight.status);
+
                 if let Err(e) = self.handle_task_push(inflight).await {
-                    warn!("Task push resulted in error - {:?}", e);
+                    warn!("Pushing task {id} resulted in error - {:?}", e);
+                } else {
+                    debug!("Task {id} was pushed!");
                 }
             }
 
@@ -116,21 +105,23 @@ impl TaskPusher {
     async fn push_to_worker(&self, activation: TaskActivation, task_id: &str) -> Result<()> {
         let request = PushTaskRequest {
             task: Some(activation),
-            callback_url: format!("{}:{}", self.config.grpc_addr, self.config.grpc_port),
+            callback_url: format!(
+                "{}:{}",
+                self.config.default_metrics_tags["host"], self.config.grpc_port
+            ),
         };
 
         let result = self.pool.write().await.push(request).await;
 
         match result {
             Ok(()) => {
-                info!("Pushed task {task_id}");
+                debug!("Pushed task {task_id}");
                 self.mark_task_as_processing(task_id).await;
                 Ok(())
             }
 
             Err(e) => {
-                warn!("Could not push task {task_id} - {:?}", e);
-                sleep(milliseconds(100)).await;
+                debug!("Could not push task {task_id} - {:?}", e);
                 Err(e)
             }
         }
@@ -140,11 +131,11 @@ impl TaskPusher {
     async fn mark_task_as_processing(&self, task_id: &str) {
         match self.store.mark_as_processing_if_pending(task_id).await {
             Ok(true) => {
-                info!("Task {} pushed and marked as processing", task_id);
+                debug!("Task {} pushed and marked as processing", task_id);
             }
 
             Ok(false) => {
-                warn!("Task {task_id} was already taken by another process (race condition)");
+                error!("Task {task_id} was already taken by another process (race condition)");
             }
 
             Err(e) => {

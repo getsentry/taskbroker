@@ -13,11 +13,12 @@ use tonic::{Request, Response, Status};
 
 use crate::pool::WorkerPool;
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
-use tracing::{error, instrument};
+use tracing::{debug, error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
     pub pool: Arc<RwLock<WorkerPool>>,
+    pub push: bool,
 }
 
 #[tonic::async_trait]
@@ -28,7 +29,7 @@ impl ConsumerService for TaskbrokerServer {
         request: Request<AddWorkerRequest>,
     ) -> Result<Response<AddWorkerResponse>, Status> {
         let address = &request.get_ref().address;
-        self.pool.write().await.add_worker(address);
+        self.pool.write().await.add_worker(address).await;
         Ok(Response::new(AddWorkerResponse {}))
     }
 
@@ -47,6 +48,12 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
+        if self.push {
+            return Err(Status::failed_precondition(
+                "get_task is not available in push mode",
+            ));
+        }
+
         let start_time = Instant::now();
         let namespace = &request.get_ref().namespace;
         let inflight = self
@@ -91,11 +98,7 @@ impl ConsumerService for TaskbrokerServer {
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
-        // Update worker queue size estimate
-        // self.pool
-        //     .write()
-        //     .await
-        //     .decrement_queue_size(&request.get_ref().address);
+        debug!("Received task status {} for {id}", request.get_ref().status);
 
         let status: InflightActivationStatus =
             TaskActivationStatus::try_from(request.get_ref().status)
@@ -112,6 +115,8 @@ impl ConsumerService for TaskbrokerServer {
         if status == InflightActivationStatus::Failure {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
+
+        debug!("Status of task {id} set to {:?}", status);
 
         let update_result = self.store.set_status(&id, status).await;
         if let Err(e) = update_result {
@@ -130,6 +135,10 @@ impl ConsumerService for TaskbrokerServer {
         let Some(FetchNextTask { ref namespace }) = request.get_ref().fetch_next_task else {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         };
+
+        if self.push {
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        }
 
         let start_time = Instant::now();
         let res = match self

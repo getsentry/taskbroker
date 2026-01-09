@@ -220,6 +220,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                     pool: grpc_pool,
+                    push: config.push,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);

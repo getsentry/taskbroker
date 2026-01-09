@@ -1,9 +1,7 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
-use itertools::Itertools;
 use rand::Rng;
 use rand::seq::IteratorRandom;
 use sentry_protos::taskworker::v1::{PushTaskRequest, worker_service_client::WorkerServiceClient};
@@ -27,14 +25,8 @@ struct WorkerClient {
     /// The worker address.
     address: String,
 
-    /// The worker's ESTIMATED queue size.
+    /// The worker's last known queue size.
     queue_size: u32,
-
-    /// (TEMP) How many times has this worker been hit?
-    hits: u32,
-
-    /// (TEMP) When was the last time this worker was hit?
-    last_hit: DateTime<Utc>,
 }
 
 impl WorkerClient {
@@ -43,8 +35,6 @@ impl WorkerClient {
             connection,
             address,
             queue_size,
-            hits: 0,
-            last_hit: Utc::now(),
         }
     }
 }
@@ -58,11 +48,30 @@ impl WorkerPool {
         }
     }
 
-    /// Register worker address during execution.
-    pub fn add_worker<T: Into<String>>(&mut self, address: T) {
+    /// Register worker address and attempt to connect immediately.
+    /// Only adds the worker to the pool if the connection succeeds.
+    pub async fn add_worker<T: Into<String>>(&mut self, address: T) {
         let address = address.into();
         info!("Adding worker {address}");
-        self.addresses.insert(address);
+
+        // Only add to the pool if we can connect
+        match connect(&address).await {
+            Ok(connection) => {
+                info!("Connected to {address}");
+
+                let client = WorkerClient::new(connection, address.clone(), 0);
+
+                self.clients.insert(address.clone(), client);
+                self.addresses.insert(address);
+            }
+
+            Err(e) => {
+                warn!(
+                    "Did not register worker {address} due to connection error - {:?}",
+                    e
+                );
+            }
+        }
     }
 
     /// Unregister worker address during execution.
@@ -70,41 +79,6 @@ impl WorkerPool {
         info!("Removing worker {address}");
         self.addresses.remove(address);
         self.clients.remove(address);
-    }
-
-    /// Decrement `queue_size` for the worker with address `address`. Called when worker reports task status.
-    // pub fn decrement_queue_size(&mut self, address: &String) {
-    //     if let Some(client) = self.clients.get_mut(address) {
-    //         client.queue_size = client.queue_size.saturating_sub(1);
-    //     }
-    // }
-
-    /// Call this function over and over again in another thread to keep the pool of active connections updated.
-    pub async fn update(&mut self) {
-        for address in &self.addresses {
-            if let Entry::Vacant(e) = self.clients.entry(address.into()) {
-                match connect(address).await {
-                    Ok(connection) => {
-                        info!("Connected to {address}");
-
-                        let client = WorkerClient::new(connection, address.clone(), 0);
-                        e.insert(client);
-                    }
-
-                    Err(e) => {
-                        warn!("Couldn't connect to {address} - {:?}", e);
-                    }
-                }
-            }
-        }
-
-        let pool = self
-            .clients
-            .iter()
-            .map(|(address, client)| format!("{address}:{}", client.queue_size))
-            .join(",");
-
-        info!(pool)
     }
 
     /// Try pushing a task to the best worker using P2C (Power of Two Choices).
@@ -146,50 +120,23 @@ impl WorkerPool {
                     return Err(anyhow::anyhow!("Selected worker was full"));
                 }
 
-                // Calculate estimation error before updating
-                let estimated = client.queue_size;
-                let actual = response.queue_size;
-                let error = (estimated as i64) - (actual as i64);
-
-                // Record the absolute error
-                // metrics::histogram!("worker.queue_size.estimation_error", "worker" => address.clone())
-                //     .record(error.abs() as f64);
-
-                // Record the signed error to see if we're systematically over/under-estimating
-                // metrics::histogram!("worker.queue_size.estimation_delta", "worker" => address.clone())
-                //     .record(error as f64);
-
-                client.hits += 1;
-
-                metrics::gauge!("worker.queue_size.hits", "worker" => address.clone())
-                    .set(client.hits as f64);
-
-                let now = Utc::now();
-                let time_delta = (now - client.last_hit).as_seconds_f64();
-                client.last_hit = now;
-
-                metrics::gauge!("worker.queue_size.time_since_hit", "worker" => address.clone())
-                    .set(time_delta);
-
-                metrics::gauge!("worker.queue_size.delta", "worker" => address.clone())
-                    .set(error as f64);
-
-                // Record both values for reference
-                metrics::gauge!("worker.queue_size.estimated", "worker" => address.clone())
-                    .set(estimated as f64);
-
-                metrics::gauge!("worker.queue_size.actual", "worker" => address.clone())
-                    .set(actual as f64);
-
                 // Update this worker's queue size
-                client.queue_size = actual;
+                client.queue_size = response.queue_size;
                 self.clients.insert(address, client);
+
                 Ok(())
             }
 
             Err(e) => {
-                // Remove this unhealthy worker from the active connection pool
+                warn!(
+                    "Removing worker {address} from pool due to RPC error - {:?}",
+                    e
+                );
+
+                // Remove this unhealthy worker completely - from both clients and addresses
                 self.clients.remove(&address);
+                self.addresses.remove(&address);
+
                 Err(e.into())
             }
         }
