@@ -8,7 +8,6 @@ use sentry_protos::taskbroker::v1::{
 };
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
 
 use crate::pool::WorkerPool;
@@ -17,7 +16,7 @@ use tracing::{debug, error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
-    pub pool: Arc<RwLock<WorkerPool>>,
+    pub pool: Arc<WorkerPool>,
     pub push: bool,
 }
 
@@ -29,7 +28,7 @@ impl ConsumerService for TaskbrokerServer {
         request: Request<AddWorkerRequest>,
     ) -> Result<Response<AddWorkerResponse>, Status> {
         let address = &request.get_ref().address;
-        self.pool.write().await.add_worker(address).await;
+        self.pool.add_worker(address).await;
         Ok(Response::new(AddWorkerResponse {}))
     }
 
@@ -39,7 +38,7 @@ impl ConsumerService for TaskbrokerServer {
         request: Request<RemoveWorkerRequest>,
     ) -> Result<Response<RemoveWorkerResponse>, Status> {
         let address = &request.get_ref().address;
-        self.pool.write().await.remove_worker(address);
+        self.pool.remove_worker(address);
         Ok(Response::new(RemoveWorkerResponse {}))
     }
 

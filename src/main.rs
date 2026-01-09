@@ -9,7 +9,6 @@ use taskbroker::pool::WorkerPool;
 use taskbroker::push::TaskPusher;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
-use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
@@ -60,7 +59,7 @@ async fn main() -> Result<(), Error> {
     let runtime_config_manager =
         Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
 
-    let pool = Arc::new(RwLock::new(WorkerPool::new(config.workers.clone())));
+    let pool = Arc::new(WorkerPool::new(config.workers.clone()));
 
     println!("taskbroker starting");
     println!("version: {}", get_version().trim());

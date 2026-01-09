@@ -1,10 +1,11 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use prost::Message;
 use sentry_protos::{taskbroker::v1::TaskActivation, taskworker::v1::PushTaskRequest};
-use tokio::{sync::RwLock, time::sleep};
-use tracing::{debug, error, info, warn};
+use tokio::time::sleep;
+use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::pool::WorkerPool;
@@ -12,7 +13,7 @@ use crate::store::inflight_activation::{InflightActivation, InflightActivationSt
 
 pub struct TaskPusher {
     /// Pool of workers through which we will push tasks.
-    pool: Arc<RwLock<WorkerPool>>,
+    pool: Arc<WorkerPool>,
 
     /// Broker configuration.
     config: Arc<Config>,
@@ -26,7 +27,7 @@ impl TaskPusher {
     pub fn new(
         store: Arc<InflightActivationStore>,
         config: Arc<Config>,
-        pool: Arc<RwLock<WorkerPool>>,
+        pool: Arc<WorkerPool>,
     ) -> Self {
         Self {
             store,
@@ -71,7 +72,7 @@ impl TaskPusher {
                 debug!("Found task {id} with status {:?}", inflight.status);
 
                 if let Err(e) = self.handle_task_push(inflight).await {
-                    warn!("Pushing task {id} resulted in error - {:?}", e);
+                    debug!("Pushing task {id} resulted in error - {:?}", e);
                 } else {
                     debug!("Task {id} was pushed!");
                 }
@@ -111,7 +112,7 @@ impl TaskPusher {
             ),
         };
 
-        let result = self.pool.write().await.push(request).await;
+        let result = self.pool.push(request).await;
 
         match result {
             Ok(()) => {

@@ -8,7 +8,6 @@ use rdkafka::{
     producer::FutureProducer,
 };
 use std::{collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::{
@@ -90,8 +89,8 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create a basic [`WorkerPool`].
-pub fn create_pool() -> Arc<RwLock<WorkerPool>> {
-    Arc::new(RwLock::new(WorkerPool::new(["127.0.0.1:50052".into()])))
+pub fn create_pool() -> Arc<WorkerPool> {
+    Arc::new(WorkerPool::new(["127.0.0.1:50052".into()]))
 }
 
 /// Create an InflightActivationStore instance

@@ -1,20 +1,17 @@
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
+use dashmap::DashMap;
 use rand::Rng;
 use rand::seq::IteratorRandom;
 use sentry_protos::taskworker::v1::{PushTaskRequest, worker_service_client::WorkerServiceClient};
 use tonic::transport::{Channel, Error};
 use tracing::{info, warn};
 
-#[derive(Clone)]
 pub struct WorkerPool {
     /// Maps every worker address to its client.
-    clients: HashMap<String, WorkerClient>,
-
-    /// All available worker addresses.
-    addresses: HashSet<String>,
+    /// Uses DashMap for concurrent access without external locking.
+    clients: DashMap<String, WorkerClient>,
 }
 
 #[derive(Clone)]
@@ -41,16 +38,15 @@ impl WorkerClient {
 
 impl WorkerPool {
     /// Create a new `WorkerPool` instance.
-    pub fn new<T: IntoIterator<Item = String>>(addresses: T) -> Self {
+    pub fn new<T: IntoIterator<Item = String>>(_addresses: T) -> Self {
         Self {
-            addresses: addresses.into_iter().collect(),
-            clients: HashMap::new(),
+            clients: DashMap::new(),
         }
     }
 
     /// Register worker address and attempt to connect immediately.
     /// Only adds the worker to the pool if the connection succeeds.
-    pub async fn add_worker<T: Into<String>>(&mut self, address: T) {
+    pub async fn add_worker<T: Into<String>>(&self, address: T) {
         let address = address.into();
         info!("Adding worker {address}");
 
@@ -62,7 +58,6 @@ impl WorkerPool {
                 let client = WorkerClient::new(connection, address.clone(), 0);
 
                 self.clients.insert(address.clone(), client);
-                self.addresses.insert(address);
             }
 
             Err(e) => {
@@ -75,19 +70,19 @@ impl WorkerPool {
     }
 
     /// Unregister worker address during execution.
-    pub fn remove_worker(&mut self, address: &String) {
+    pub fn remove_worker(&self, address: &String) {
         info!("Removing worker {address}");
-        self.addresses.remove(address);
         self.clients.remove(address);
     }
 
     /// Try pushing a task to the best worker using P2C (Power of Two Choices).
-    pub async fn push(&mut self, request: PushTaskRequest) -> Result<()> {
+    pub async fn push(&self, request: PushTaskRequest) -> Result<()> {
         let candidate = {
             let mut rng = rand::rng();
 
             self.clients
-                .values()
+                .iter()
+                .map(|entry| entry.value().clone())
                 .choose_multiple(&mut rng, 2)
                 .into_iter()
                 .min_by(|a, b| {
@@ -103,7 +98,6 @@ impl WorkerPool {
                         other => other,
                     }
                 })
-                .cloned()
         };
 
         let Some(mut client) = candidate else {
@@ -133,9 +127,8 @@ impl WorkerPool {
                     e
                 );
 
-                // Remove this unhealthy worker completely - from both clients and addresses
+                // Remove this unhealthy worker
                 self.clients.remove(&address);
-                self.addresses.remove(&address);
 
                 Err(e.into())
             }
