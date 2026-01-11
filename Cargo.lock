@@ -2451,7 +2451,7 @@ dependencies = [
 [[package]]
 name = "sentry_protos"
 version = "0.4.10"
-source = "git+https://github.com/getsentry/sentry-protos?branch=george%2Fpush-broker-worker#a4b97fe5ae594996e20509f4053db360203e9c3c"
+source = "git+https://github.com/getsentry/sentry-protos?branch=george%2Fpush-broker-with-load-balancing#a644b270878db932563ff0ff6ef327dc73626bcd"
 dependencies = [
  "prost",
  "prost-types",

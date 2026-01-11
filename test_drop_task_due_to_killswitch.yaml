@@ -1,0 +1,5 @@
+
+drop_task_killswitch:
+  - task_to_be_killswitched
+demoted_namespaces:
+  -

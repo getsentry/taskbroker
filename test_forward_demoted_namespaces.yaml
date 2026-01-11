@@ -1,0 +1,6 @@
+
+drop_task_killswitch:
+  -
+demoted_namespaces:
+  - bad_namespace1
+  - bad_namespace2

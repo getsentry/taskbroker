@@ -215,11 +215,14 @@ pub struct Config {
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
 
-    /// Enable push mode.
-    pub push: bool,
+    /// Worker endpoint.
+    pub worker_endpoint: String,
 
-    /// Worker addresses.
-    pub workers: Vec<String>,
+    /// Enable push mode.
+    pub push_mode: bool,
+
+    /// Number of parallel task pusher threads to spawn in push mode.
+    pub push_threads: usize,
 }
 
 impl Default for Config {
@@ -285,8 +288,9 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
-            push: false,
-            workers: vec![],
+            worker_endpoint: "http://127.0.0.1:50052".into(),
+            push_mode: true,
+            push_threads: 1,
         }
     }
 }

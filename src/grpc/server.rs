@@ -2,52 +2,29 @@ use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    AddWorkerRequest, AddWorkerResponse, FetchNextTask, GetTaskRequest, GetTaskResponse,
-    RemoveWorkerRequest, RemoveWorkerResponse, SetTaskStatusRequest, SetTaskStatusResponse,
+    FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivation, TaskActivationStatus,
 };
 use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use crate::pool::WorkerPool;
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{debug, error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
-    pub pool: Arc<WorkerPool>,
-    pub push: bool,
+    pub push_mode: bool,
 }
 
 #[tonic::async_trait]
 impl ConsumerService for TaskbrokerServer {
     #[instrument(skip_all)]
-    async fn add_worker(
-        &self,
-        request: Request<AddWorkerRequest>,
-    ) -> Result<Response<AddWorkerResponse>, Status> {
-        let address = &request.get_ref().address;
-        self.pool.add_worker(address).await;
-        Ok(Response::new(AddWorkerResponse {}))
-    }
-
-    #[instrument(skip_all)]
-    async fn remove_worker(
-        &self,
-        request: Request<RemoveWorkerRequest>,
-    ) -> Result<Response<RemoveWorkerResponse>, Status> {
-        let address = &request.get_ref().address;
-        self.pool.remove_worker(address);
-        Ok(Response::new(RemoveWorkerResponse {}))
-    }
-
-    #[instrument(skip_all)]
     async fn get_task(
         &self,
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
-        if self.push {
+        if self.push_mode {
             return Err(Status::failed_precondition(
                 "get_task is not available in push mode",
             ));
@@ -135,7 +112,7 @@ impl ConsumerService for TaskbrokerServer {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         };
 
-        if self.push {
+        if self.push_mode {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 

@@ -6,12 +6,12 @@ pub mod grpc;
 pub mod kafka;
 pub mod logging;
 pub mod metrics;
-pub mod pool;
-pub mod push;
 pub mod runtime_config;
 pub mod store;
+pub mod task_pusher;
 pub mod test_utils;
 pub mod upkeep;
+pub mod worker_client;
 
 /// Name of the grpc service.
 /// Using the service type to get a name wasn't working across modules.

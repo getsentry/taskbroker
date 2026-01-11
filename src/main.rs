@@ -5,8 +5,7 @@ use std::{sync::Arc, time::Duration};
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
-use taskbroker::pool::WorkerPool;
-use taskbroker::push::TaskPusher;
+use taskbroker::task_pusher::TaskPusher;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -58,8 +57,6 @@ async fn main() -> Result<(), Error> {
     let config = Arc::new(Config::from_args(&args)?);
     let runtime_config_manager =
         Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
-
-    let pool = Arc::new(WorkerPool::new(config.workers.clone()));
 
     println!("taskbroker starting");
     println!("version: {}", get_version().trim());
@@ -182,90 +179,95 @@ async fn main() -> Result<(), Error> {
     });
 
     // Push task loop (conditionally enabled)
-    let push_task = if config.push {
-        info!("Running in PUSH mode");
+    let task_distribution_handles: Vec<JoinHandle<Result<(), Error>>> = if config.push_mode {
+        info!("Running in PUSH mode with {} threads", config.push_threads);
 
-        let push_task_store = store.clone();
-        let push_task_config = config.clone();
-        let push_task_pool = pool.clone();
-
-        Some(tokio::spawn(async move {
-            let pusher = TaskPusher::new(push_task_store, push_task_config, push_task_pool);
-            pusher.start().await
-        }))
+        (0..config.push_threads)
+            .map(|i| {
+                let store = store.clone();
+                let worker_endpoint = config.worker_endpoint.clone();
+                tokio::spawn(async move {
+                    info!("Starting task pusher thread {}", i);
+                    let pusher = TaskPusher::new(store, worker_endpoint).await;
+                    pusher.start().await
+                })
+            })
+            .collect()
     } else {
         info!("Running in PULL mode");
-        None
-    };
 
-    // GRPC server
-    let grpc_server_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
-        let grpc_pool = pool.clone();
+        vec![tokio::spawn({
+            async move {
+                let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
+                    .parse()
+                    .expect("Failed to parse address");
 
-        async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
-                .parse()
-                .expect("Failed to parse address");
+                let layers = tower::ServiceBuilder::new()
+                    .layer(MetricsLayer::default())
+                    .layer(AuthLayer::new(&config))
+                    .into_inner();
 
-            let layers = tower::ServiceBuilder::new()
-                .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&grpc_config))
-                .into_inner();
+                let server = Server::builder()
+                    .layer(layers)
+                    .add_service(ConsumerServiceServer::new(TaskbrokerServer {
+                        store,
+                        push_mode: config.push_mode,
+                    }))
+                    .add_service(health_service.clone())
+                    .serve(addr);
 
-            let server = Server::builder()
-                .layer(layers)
-                .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store: grpc_store,
-                    pool: grpc_pool,
-                    push: config.push,
-                }))
-                .add_service(health_service.clone())
-                .serve(addr);
+                let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
 
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            info!("GRPC server listening on {}", addr);
-            select! {
-                biased;
+                info!("GRPC server listening on {}", addr);
 
-                res = server => {
-                    info!("GRPC server task failed, shutting down");
+                select! {
+                    biased;
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    match res {
-                        Ok(()) => Ok(()),
-                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                    res = server => {
+                        info!("GRPC server task failed, shutting down");
+
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        match res {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                        }
+                    }
+                    _ = guard.wait() => {
+                        info!("Cancellation token received, shutting down GRPC server");
+
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        Ok(())
                     }
                 }
-                _ = guard.wait() => {
-                    info!("Cancellation token received, shutting down GRPC server");
-
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok(())
-                }
             }
-        }
-    });
+        })]
+    };
 
-    let mut depart = elegant_departure::tokio::depart()
+    let mut departure = elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
-        .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task));
 
-    // Only register push_task if it was spawned
-    if let Some(task) = push_task {
-        depart = depart.on_completion(log_task_completion("push_task", task));
+    // Register each task distribution handle
+    for (i, handle) in task_distribution_handles.into_iter().enumerate() {
+        departure = departure.on_completion(async move {
+            let task_name = format!("task_distributor_{}", i);
+
+            match handle.await {
+                Ok(Ok(())) => info!("Task {} completed", task_name),
+                Ok(Err(e)) => error!("Task {} failed: {:?}", task_name, e),
+                Err(e) => error!("Task {} panicked: {:?}", task_name, e),
+            }
+        });
     }
 
-    depart.await;
+    departure.await;
 
     Ok(())
 }
