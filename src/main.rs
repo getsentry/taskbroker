@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Duration};
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::pool::WorkerPool;
 use taskbroker::task_pusher::TaskPusher;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
@@ -57,6 +58,8 @@ async fn main() -> Result<(), Error> {
     let config = Arc::new(Config::from_args(&args)?);
     let runtime_config_manager =
         Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
+
+    let pool = Arc::new(WorkerPool::new());
 
     println!("taskbroker starting");
     println!("version: {}", get_version().trim());
@@ -181,6 +184,7 @@ async fn main() -> Result<(), Error> {
     let grpc_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+        let grpc_pool = pool.clone();
 
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
@@ -196,6 +200,7 @@ async fn main() -> Result<(), Error> {
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
+                    pool: grpc_pool,
                     push_mode: grpc_config.push_mode,
                 }))
                 .add_service(health_service.clone())
@@ -238,10 +243,11 @@ async fn main() -> Result<(), Error> {
             .map(|i| {
                 let store = store.clone();
                 let config = config.clone();
+                let pool = pool.clone();
 
                 tokio::spawn(async move {
                     info!("Starting task pusher thread {}", i);
-                    let pusher = TaskPusher::new(store, config).await;
+                    let pusher = TaskPusher::new(store, config, pool).await;
                     pusher.start().await
                 })
             })

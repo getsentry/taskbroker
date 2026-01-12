@@ -1959,7 +1959,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn",
@@ -2451,7 +2451,7 @@ dependencies = [
 [[package]]
 name = "sentry_protos"
 version = "0.4.10"
-source = "git+https://github.com/getsentry/sentry-protos?branch=george%2Fpush-taskbroker%2Fexternal-load-balancer#80f5659416fda5a442732b80abaa0dbff428a7c8"
+source = "git+https://github.com/getsentry/sentry-protos?branch=george%2Fpush-taskbroker%2Finternal-load-balancer#ab51fe4cc4e23988070bc033e471d3403d9ec810"
 dependencies = [
  "prost",
  "prost-types",

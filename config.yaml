@@ -4,7 +4,3 @@ push_threads: 8
 default_metrics_tags:
   host: "127.0.0.1"
 log_filter: "debug,sqlx=debug,librdkafka=warn,h2=off"
-# workers:
-#   - "http://127.0.0.1:50052"
-#   - "http://127.0.0.1:50053"
-#   - "http://127.0.0.1:50054"

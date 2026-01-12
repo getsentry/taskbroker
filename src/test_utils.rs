@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
+    pool::WorkerPool,
     store::inflight_activation::{
         InflightActivation, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig,
@@ -97,6 +98,10 @@ pub async fn create_test_store() -> Arc<InflightActivationStore> {
         .await
         .unwrap(),
     )
+}
+
+pub fn create_test_pool() -> Arc<WorkerPool> {
+    Arc::new(WorkerPool::new())
 }
 
 /// Create a Config instance that uses a testing topic

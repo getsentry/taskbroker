@@ -8,12 +8,12 @@ use tokio::time::sleep;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
+use crate::pool::WorkerPool;
 use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
-use crate::worker_client::WorkerClient;
 
 pub struct TaskPusher {
-    /// Load balancer client for pushing tasks.
-    worker: WorkerClient,
+    /// Pool of workers through which we will push tasks.
+    pool: Arc<WorkerPool>,
 
     /// Configuration.
     config: Arc<Config>,
@@ -24,15 +24,15 @@ pub struct TaskPusher {
 
 impl TaskPusher {
     /// Create a new `TaskPusher` instance.
-    pub async fn new(store: Arc<InflightActivationStore>, config: Arc<Config>) -> Self {
-        let worker = WorkerClient::new(config.worker_endpoint.clone())
-            .await
-            .unwrap();
-
+    pub async fn new(
+        store: Arc<InflightActivationStore>,
+        config: Arc<Config>,
+        pool: Arc<WorkerPool>,
+    ) -> Self {
         Self {
             store,
             config,
-            worker,
+            pool,
         }
     }
 
@@ -113,7 +113,7 @@ impl TaskPusher {
             ),
         };
 
-        let result = self.worker.submit(request).await;
+        let result = self.pool.push(request).await;
 
         match result {
             Ok(()) => {
