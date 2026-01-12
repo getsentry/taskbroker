@@ -3,10 +3,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use prost::Message;
-use sentry_protos::{taskbroker::v1::TaskActivation, taskworker::v1::RunTaskRequest};
+use sentry_protos::{taskbroker::v1::TaskActivation, taskworker::v1::PushTaskRequest};
 use tokio::time::sleep;
 use tracing::{debug, error, info};
 
+use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
 use crate::worker_client::WorkerClient;
 
@@ -14,18 +15,25 @@ pub struct TaskPusher {
     /// Load balancer client for pushing tasks.
     worker: WorkerClient,
 
+    /// Configuration.
+    config: Arc<Config>,
+
     /// Inflight activation store.
     store: Arc<InflightActivationStore>,
 }
 
 impl TaskPusher {
     /// Create a new `TaskPusher` instance.
-    pub async fn new(store: Arc<InflightActivationStore>, endpoint: String) -> Self {
-        let worker = WorkerClient::new(endpoint.clone(), store.clone())
+    pub async fn new(store: Arc<InflightActivationStore>, config: Arc<Config>) -> Self {
+        let worker = WorkerClient::new(config.worker_endpoint.clone())
             .await
             .unwrap();
 
-        Self { store, worker }
+        Self {
+            store,
+            config,
+            worker,
+        }
     }
 
     /// Start the worker update and push task loops.
@@ -63,7 +71,7 @@ impl TaskPusher {
                 debug!("Atomically fetched and marked task {id} as processing");
 
                 if let Err(e) = self.handle_task_push(inflight).await {
-                    // Task is already marked as processing, so processing_deadline will handle retry
+                    // Task is already marked as processing, so `processing_deadline` will handle retry
                     error!("Pushing task {id} resulted in error - {:?}", e);
                 } else {
                     debug!("Task {id} was sent to load balancer!");
@@ -97,11 +105,15 @@ impl TaskPusher {
     /// Build an RPC request and send it to the load balancer (fire-and-forget).
     /// The task has already been marked as processing before this call.
     async fn push_to_worker(&mut self, activation: TaskActivation, task_id: &str) -> Result<()> {
-        let request = RunTaskRequest {
+        let request = PushTaskRequest {
             task: Some(activation),
+            callback_url: format!(
+                "{}:{}",
+                self.config.default_metrics_tags["host"], self.config.grpc_port
+            ),
         };
 
-        let result = self.worker.run(request).await;
+        let result = self.worker.submit(request).await;
 
         match result {
             Ok(()) => {
