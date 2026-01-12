@@ -15,7 +15,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - name: Get changed files
         id: changes
@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - uses: astral-sh/setup-uv@884ad927a57e558e7a70b92f2bccf9198a4be546 # v6
         with:
@@ -112,7 +112,7 @@ jobs:
     name: Coverage (ubuntu)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -159,7 +159,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
@@ -194,7 +194,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
@@ -229,7 +229,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
@@ -264,7 +264,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
@@ -299,7 +299,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
@@ -334,7 +334,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3 # v3 # v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v3
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
