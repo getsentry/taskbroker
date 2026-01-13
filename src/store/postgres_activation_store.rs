@@ -221,8 +221,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 b.push_bind(row.added_at);
                 b.push_bind(row.received_at);
                 b.push_bind(row.processing_attempts);
-                b.push_bind(Some(row.expires_at));
-                b.push_bind(Some(row.delay_until));
+                b.push_bind(row.expires_at);
+                b.push_bind(row.delay_until);
                 b.push_bind(row.processing_deadline_duration);
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline);
