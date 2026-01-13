@@ -15,7 +15,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivation,
 )
 
-TASKBROKER_ROOT = Path(__file__).parent.parent
+TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
 TESTS_OUTPUT_ROOT = Path(__file__).parent / ".tests_output"
 TEST_PRODUCER_CONFIG = {
