@@ -64,6 +64,12 @@ impl TaskPusher {
     async fn process_next_task(&mut self) {
         debug!("Getting the next task...");
 
+        if self.pool.is_empty() {
+            info!("No connections, sleeping briefly");
+            sleep(milliseconds(100)).await;
+            return;
+        }
+
         // Use atomic get-and-mark instead of peek + mark
         match self.store.get_pending_activation(None).await {
             Ok(Some(inflight)) => {
@@ -79,7 +85,7 @@ impl TaskPusher {
             }
 
             Ok(None) => {
-                debug!("No pending tasks, sleeping briefly");
+                info!("No pending tasks, sleeping briefly");
                 sleep(milliseconds(100)).await;
             }
 

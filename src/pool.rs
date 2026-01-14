@@ -44,6 +44,10 @@ impl WorkerPool {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.clients.is_empty()
+    }
+
     /// Register worker address and attempt to connect immediately.
     /// Only adds the worker to the pool if the connection succeeds.
     pub async fn add_worker<T: Into<String>>(&self, address: T) {
