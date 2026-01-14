@@ -178,7 +178,6 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
         }),
     };
     let response = service.set_task_status(Request::new(request)).await;
-    println!("response: {:?}", response);
     assert!(response.is_ok());
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_some());

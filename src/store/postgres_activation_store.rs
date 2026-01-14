@@ -45,6 +45,7 @@ pub async fn create_default_postgres_pool(url: &str) -> Result<Pool<Postgres>, E
 pub struct PostgresActivationStoreConfig {
     pub pg_url: String,
     pub pg_database_name: String,
+    pub run_migrations: bool,
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
     pub vacuum_page_count: Option<usize>,
@@ -56,6 +57,7 @@ impl PostgresActivationStoreConfig {
         Self {
             pg_url: config.pg_url.clone(),
             pg_database_name: config.pg_database_name.clone(),
+            run_migrations: config.run_migrations,
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
@@ -82,29 +84,35 @@ impl PostgresActivationStore {
     }
 
     pub async fn new(config: PostgresActivationStoreConfig) -> Result<Self, Error> {
-        let default_pool = create_default_postgres_pool(&config.pg_url).await?;
+        if config.run_migrations {
+            let default_pool = create_default_postgres_pool(&config.pg_url).await?;
 
-        // Create the database if it doesn't exist
-        let row: (bool,) = sqlx::query_as(
-            "SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )",
-        )
-        .bind(&config.pg_database_name)
-        .fetch_one(&default_pool)
-        .await?;
+            // Create the database if it doesn't exist
+            let row: (bool,) = sqlx::query_as(
+                "SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )",
+            )
+            .bind(&config.pg_database_name)
+            .fetch_one(&default_pool)
+            .await?;
 
-        if !row.0 {
-            println!("Creating database {}", &config.pg_database_name);
-            sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
-                .bind(&config.pg_database_name)
-                .execute(&default_pool)
-                .await?;
+            if !row.0 {
+                println!("Creating database {}", &config.pg_database_name);
+                sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
+                    .bind(&config.pg_database_name)
+                    .execute(&default_pool)
+                    .await?;
+            }
+            // Close the default pool
+            default_pool.close().await;
         }
-        // Close the default pool
-        default_pool.close().await;
 
         let (read_pool, write_pool) =
             create_postgres_pool(&config.pg_url, &config.pg_database_name).await?;
-        sqlx::migrate!("./pg_migrations").run(&write_pool).await?;
+
+        if config.run_migrations {
+            println!("Running migrations on database");
+            sqlx::migrate!("./pg_migrations").run(&write_pool).await?;
+        }
 
         Ok(Self {
             read_pool,
@@ -407,7 +415,7 @@ impl InflightActivationStore for PostgresActivationStore {
         .bind(id)
         .fetch_optional(&mut *conn)
         .await?;
-        println!("result: {:?}", result);
+
         let Some(row) = result else {
             return Ok(None);
         };

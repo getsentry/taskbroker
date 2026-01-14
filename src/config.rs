@@ -8,6 +8,16 @@ use std::{borrow::Cow, collections::BTreeMap};
 
 use crate::{Args, logging::LogFormat};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DatabaseAdapter {
+    /// SQLite database adapter
+    Sqlite,
+
+    /// PostgreSQL database adapter
+    Postgres,
+}
+
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
     /// The sentry DSN to use for error reporting.
@@ -121,7 +131,13 @@ pub struct Config {
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
-    pub database_adapter: &'static str,
+    /// The database adapter to use for the inflight activation store.
+    pub database_adapter: DatabaseAdapter,
+
+    /// Whether to run the migrations on the database.
+    /// This is only used by the postgres database adapter, since
+    /// in production the migrations shouldn't be run by the taskbroker.
+    pub run_migrations: bool,
 
     /// The url of the postgres database to use for the inflight activation store.
     pub pg_url: String,
@@ -264,7 +280,8 @@ impl Default for Config {
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
-            database_adapter: "sqlite",
+            database_adapter: DatabaseAdapter::Sqlite,
+            run_migrations: false,
             pg_url: "postgres://postgres:password@sentry-postgres-1:5432/".to_owned(),
             pg_database_name: "taskbroker".to_owned(),
             db_write_failure_backoff_ms: 4000,
@@ -404,7 +421,7 @@ impl Provider for Config {
 mod tests {
     use std::{borrow::Cow, collections::BTreeMap};
 
-    use super::Config;
+    use super::{Config, DatabaseAdapter};
     use crate::{Args, logging::LogFormat};
     use figment::Jail;
 
@@ -437,11 +454,12 @@ mod tests {
                 log_format: json
                 statsd_addr: 127.0.0.1:8126
                 default_metrics_tags:
-                    key_1: value_1
+                key_1: value_1
                 kafka_cluster: 10.0.0.1:9092,10.0.0.2:9092
                 kafka_topic: error-tasks
                 kafka_deadletter_topic: error-tasks-dlq
                 kafka_auto_offset_reset: earliest
+                database_adapter: postgres
                 db_path: ./taskbroker-error.sqlite
                 db_max_size: 3000000000
                 max_pending_count: 512
@@ -475,6 +493,7 @@ mod tests {
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_topic, "error-tasks".to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
+            assert_eq!(config.database_adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 512);
             assert_eq!(config.max_processing_count, 512);
@@ -491,11 +510,13 @@ mod tests {
     fn test_from_args_env_and_args() {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
+            jail.set_env("TASKBROKER_DATABASE_ADAPTER", "postgres");
             jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
 
             let args = Args { config: None };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.log_filter, "error");
+            assert_eq!(config.database_adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.max_processing_attempts, 5);
 
             Ok(())

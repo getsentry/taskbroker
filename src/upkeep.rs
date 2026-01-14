@@ -833,7 +833,6 @@ mod tests {
         )
         .await;
 
-        println!("result_context: {:?}", result_context);
         // 0 processing, 2 pending now
         assert_eq!(result_context.processing_deadline_reset, 1);
         assert_counts(

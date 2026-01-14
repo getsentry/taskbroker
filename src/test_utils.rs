@@ -128,6 +128,7 @@ pub fn create_integration_config() -> Arc<Config> {
     let config = Config {
         pg_url: get_pg_url(),
         pg_database_name: get_pg_database_name(),
+        run_migrations: true,
         kafka_topic: "taskbroker-test".into(),
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
@@ -140,6 +141,7 @@ pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
     let config = Config {
         pg_url: get_pg_url(),
         pg_database_name: get_pg_database_name(),
+        run_migrations: true,
         kafka_topic: topic,
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()

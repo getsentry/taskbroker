@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::SERVICE_NAME;
-use taskbroker::config::Config;
+use taskbroker::config::{Config, DatabaseAdapter};
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
@@ -67,18 +67,18 @@ async fn main() -> Result<(), Error> {
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
     let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
-        "sqlite" => Arc::new(
+        DatabaseAdapter::Sqlite => Arc::new(
             SqliteActivationStore::new(
                 &config.db_path,
                 InflightActivationStoreConfig::from_config(&config),
             )
             .await?,
         ),
-        "postgres" => Arc::new(
+        DatabaseAdapter::Postgres => Arc::new(
             PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
                 .await?,
         ),
-        _ => panic!("Invalid database adapter: {}", config.database_adapter),
+        _ => panic!("Invalid database adapter: {:?}", config.database_adapter),
     };
 
     // If this is an environment where the topics might not exist, check and create them.

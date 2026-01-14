@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     processing_deadline TIMESTAMPTZ,
     status TEXT NOT NULL,
     at_most_once BOOLEAN NOT NULL DEFAULT FALSE,
-    application TEXT NOT NULL DEFAULT '',
+    application TEXT NOT NULL,
     namespace TEXT NOT NULL,
     taskname TEXT NOT NULL,
     on_attempts_exceeded INTEGER NOT NULL DEFAULT 1
