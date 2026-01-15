@@ -200,31 +200,16 @@ impl Reducer for InflightActivationWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivationWriterConfig, InflightActivation, InflightActivationWriter, Reducer};
-    use chrono::{DateTime, Utc};
-    use prost::Message;
-    use prost_types::Timestamp;
+    use chrono::DateTime;
     use rstest::rstest;
-    use std::collections::HashMap;
-
-    use crate::test_utils::create_test_store;
-    use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
-    use sentry_protos::taskbroker::v1::TaskActivation;
 
     use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
-    use crate::store::inflight_activation::InflightActivationStatus;
-
-    use chrono::DateTime;
-    use std::sync::Arc;
-
-    use crate::store::inflight_activation::InflightActivationBuilder;
-    use crate::store::inflight_activation::{
-        InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        SqliteActivationStore,
+    use crate::{
+        store::inflight_activation::{InflightActivationBuilder, InflightActivationStatus},
+        test_utils::{
+            TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
+        },
     };
-    use crate::test_utils::TaskActivationBuilder;
-    use crate::test_utils::generate_unique_namespace;
-    use crate::test_utils::make_activations;
 
     #[tokio::test]
     #[rstest]

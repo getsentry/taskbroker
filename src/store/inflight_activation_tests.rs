@@ -1,34 +1,22 @@
-use prost::Message;
-use rstest::rstest;
-use sqlx::{QueryBuilder, Sqlite};
-use std::collections::HashSet;
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::Error;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
-
-use crate::config::Config;
-use crate::store::inflight_activation::{
-    InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
-    InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
-};
-use crate::test_utils::{StatusCount, TaskActivationBuilder};
-use crate::test_utils::{
-    assert_counts, create_integration_config, create_test_store, generate_temp_filename,
-    generate_unique_namespace, make_activations, make_activations_with_namespace,
-    replace_retry_state,
-};
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
-use sentry_protos::taskbroker::v1::{
-    OnAttemptsExceeded, RetryState, TaskActivation, TaskActivationStatus,
-};
+use rstest::rstest;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
 use sqlx::{QueryBuilder, Sqlite};
-use std::fs;
-use tokio::sync::broadcast;
-use tokio::task::JoinSet;
+use std::{collections::HashSet, fs, io::Error, path::Path, sync::Arc, time::Duration};
+use tokio::{sync::broadcast, task::JoinSet};
+
+use crate::{
+    config::Config,
+    store::inflight_activation::{
+        InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
+        InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
+    },
+    test_utils::{
+        StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
+        create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
+        make_activations_with_namespace, replace_retry_state,
+    },
+};
 
 #[test]
 fn test_inflightactivation_status_is_completion() {

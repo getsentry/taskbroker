@@ -1,10 +1,4 @@
 use anyhow::{Error, anyhow};
-use sqlx::postgres::PgQueryResult;
-use std::fmt::Result as FmtResult;
-use std::fmt::{Display, Formatter};
-use std::{str::FromStr, time::Instant};
-
-use crate::config::Config;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use derive_builder::Builder;
@@ -21,13 +15,17 @@ use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::{PoolConnection, PoolOptions},
+    postgres::PgQueryResult,
     sqlite::{
         SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
         SqliteRow, SqliteSynchronous,
     },
 };
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::{str::FromStr, time::Instant};
 use tracing::{instrument, warn};
+
+use crate::config::Config;
 
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
