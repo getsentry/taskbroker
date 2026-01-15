@@ -17,6 +17,10 @@ x-sentry-service-config:
         repo_link: https://github.com/getsentry/sentry-shared-redis.git
     postgres:
       description: Shared instance of postgres used by sentry services
+      remote:
+        repo_name: sentry-shared-postgres
+        branch: main
+        repo_link: https://github.com/getsentry/sentry-shared-postgres.git
     taskbroker:
       description: Taskbroker service
   modes:
@@ -42,43 +46,8 @@ services:
       - orchestrator=devservices
     restart: unless-stopped
     platform: linux/amd64
-  postgres:
-    image: ghcr.io/getsentry/image-mirror-library-postgres:14-alpine
-    environment:
-      POSTGRES_HOST_AUTH_METHOD: trust
-      POSTGRES_DB: sentry
-    command:
-      [
-        postgres,
-        -c,
-        wal_level=logical,
-        -c,
-        max_replication_slots=1,
-        -c,
-        max_wal_senders=1,
-      ]
-    healthcheck:
-      test: pg_isready -U postgres
-      interval: 5s
-      timeout: 5s
-      retries: 3
-    networks:
-      - devservices
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    ports:
-      - 127.0.0.1:5432:5432
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    labels:
-      - orchestrator=devservices
-    restart: unless-stopped
 
 networks:
   devservices:
     name: devservices
     external: true
-
-
-volumes:
-  postgres-data:
