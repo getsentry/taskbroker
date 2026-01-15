@@ -13,7 +13,7 @@ use libsqlite3_sys::{
 };
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
-    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
+    ConnectOptions, Database, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::{PoolConnection, PoolOptions},
     sqlite::{
@@ -272,6 +272,11 @@ impl InflightActivationStoreConfig {
 
 #[async_trait]
 pub trait InflightActivationStore: Send + Sync {
+    /// Get a write connection to the database
+    async fn acquire_write_conn(&self) -> Result<PoolConnection<Box<dyn Database>>, Error>;
+    /// Get a read connection to the database
+    // async fn acquire_read_conn(&self) -> Result<PoolConnection<dyn Database>, Error>;
+
     /// Trigger incremental vacuum to reclaim free pages in the database
     async fn vacuum_db(&self) -> Result<(), Error>;
 
@@ -292,7 +297,25 @@ pub trait InflightActivationStore: Send + Sync {
         &self,
         application: Option<&str>,
         namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error>;
+    ) -> Result<Option<InflightActivation>, Error> {
+        // Convert single namespace to vector for internal use
+        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+
+        // If a namespace filter is used, an application must also be used.
+        if namespaces.is_some() && application.is_none() {
+            warn!(
+                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+            );
+            return Ok(None);
+        }
+        let result = self
+            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
+            .await?;
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result[0].clone()))
+    }
 
     /// Get pending activations from specified namespaces
     async fn get_pending_activations_from_namespaces(
@@ -306,7 +329,10 @@ pub trait InflightActivationStore: Send + Sync {
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
 
     /// Count activations with Pending status
-    async fn count_pending_activations(&self) -> Result<usize, Error>;
+    async fn count_pending_activations(&self) -> Result<usize, Error> {
+        self.count_by_status(InflightActivationStatus::Pending)
+            .await
+    }
 
     /// Count activations by status
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
@@ -708,31 +734,6 @@ impl InflightActivationStore for SqliteActivationStore {
         meta_result
     }
 
-    #[instrument(skip_all)]
-    async fn get_pending_activation(
-        &self,
-        application: Option<&str>,
-        namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
-        // Convert single namespace to vector for internal use
-        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
-
-        // If a namespace filter is used, an application must also be used.
-        if namespaces.is_some() && application.is_none() {
-            warn!(
-                "Received request for namespaced task without application. namespaces = {namespaces:?}"
-            );
-            return Ok(None);
-        }
-        let result = self
-            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
-            .await?;
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result[0].clone()))
-    }
-
     /// Get a pending activation from specified namespaces
     /// If namespaces is None, gets from any namespace
     /// If namespaces is Some(&[...]), gets from those namespaces
@@ -833,12 +834,6 @@ impl InflightActivationStore for SqliteActivationStore {
             // If we couldn't find a row, there is no latency.
             0.0
         }
-    }
-
-    #[instrument(skip_all)]
-    async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(InflightActivationStatus::Pending)
-            .await
     }
 
     #[instrument(skip_all)]
