@@ -1,24 +1,193 @@
+use chrono::Utc;
 use futures::StreamExt;
 use prost::Message as ProstMessage;
+use prost_types::Timestamp;
 use rand::Rng;
-use rdkafka::{
-    Message,
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-    consumer::{Consumer, StreamConsumer},
-    producer::FutureProducer,
-};
-use std::{collections::HashMap, sync::Arc};
+use rdkafka::Message;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::producer::FutureProducer;
+use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskActivation};
 use uuid::Uuid;
 
-use crate::{
-    config::Config,
-    store::inflight_activation::{
-        InflightActivation, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig, SqliteActivationStore,
-    },
+use crate::config::Config;
+use crate::store::inflight_activation::{
+    InflightActivation, InflightActivationBuilder, InflightActivationStatus,
+    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
 };
-use chrono::{Timelike, Utc};
-use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+/// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
+pub struct TaskActivationBuilder {
+    pub id: Option<String>,
+    pub application: Option<String>,
+    pub namespace: Option<String>,
+    pub taskname: Option<String>,
+    pub parameters: Option<String>,
+    pub headers: Option<HashMap<String, String>>,
+    pub received_at: Option<Timestamp>,
+    pub retry_state: Option<v1::RetryState>,
+    pub processing_deadline_duration: Option<u64>,
+    pub expires: Option<u64>,
+    pub delay: Option<u64>,
+}
+
+impl TaskActivationBuilder {
+    pub fn new() -> Self {
+        Self {
+            id: None,
+            application: None,
+            namespace: None,
+            taskname: None,
+            parameters: None,
+            headers: None,
+            received_at: None,
+            retry_state: None,
+            processing_deadline_duration: None,
+            expires: None,
+            delay: None,
+        }
+    }
+
+    pub fn id<T: Into<String>>(mut self, id: T) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn application<T: Into<String>>(mut self, application: T) -> Self {
+        self.application = Some(application.into());
+        self
+    }
+
+    pub fn namespace<T: Into<String>>(mut self, namespace: T) -> Self {
+        self.namespace = Some(namespace.into());
+        self
+    }
+
+    pub fn taskname<T: Into<String>>(mut self, taskname: T) -> Self {
+        self.taskname = Some(taskname.into());
+        self
+    }
+
+    pub fn parameters<T: Into<String>>(mut self, parameters: T) -> Self {
+        self.parameters = Some(parameters.into());
+        self
+    }
+
+    pub fn headers(mut self, headers: HashMap<String, String>) -> Self {
+        self.headers = Some(headers);
+        self
+    }
+
+    pub fn received_at(mut self, received_at: Timestamp) -> Self {
+        self.received_at = Some(received_at);
+        self
+    }
+
+    pub fn retry_state(mut self, retry_state: v1::RetryState) -> Self {
+        self.retry_state = Some(retry_state);
+        self
+    }
+
+    pub fn processing_deadline_duration(mut self, processing_deadline_duration: u64) -> Self {
+        self.processing_deadline_duration = Some(processing_deadline_duration);
+        self
+    }
+
+    pub fn expires(mut self, expires: u64) -> Self {
+        self.expires = Some(expires);
+        self
+    }
+
+    pub fn delay(mut self, delay: u64) -> Self {
+        self.delay = Some(delay);
+        self
+    }
+
+    pub fn build(self) -> v1::TaskActivation {
+        v1::TaskActivation {
+            id: self.id.expect("id is required"),
+            application: Some(self.application.expect("application is required")),
+            namespace: self.namespace.expect("namespace is required"),
+            taskname: self.taskname.expect("taskname is required"),
+            parameters: self.parameters.unwrap_or_else(|| "{}".to_string()),
+            headers: self.headers.unwrap_or_default(),
+            processing_deadline_duration: self.processing_deadline_duration.unwrap_or(0),
+            received_at: self.received_at,
+            retry_state: self.retry_state,
+            expires: self.expires,
+            delay: self.delay,
+        }
+    }
+}
+
+impl Default for TaskActivationBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InflightActivationBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn build(mut self, builder: TaskActivationBuilder) -> InflightActivation {
+        // Grab required fields
+        let id = self.id.as_ref().expect("field 'id' is required");
+
+        let namespace = self
+            .namespace
+            .as_ref()
+            .expect("field 'namespace' is required");
+
+        let taskname = self
+            .taskname
+            .as_ref()
+            .expect("field 'taskname' is required");
+
+        // Grab fields with defaults
+        let application = self.application.clone().unwrap_or_else(|| "sentry".into());
+        let received_at = self.received_at.unwrap_or_default();
+        let processing_deadline_duration = self.processing_deadline_duration.unwrap_or_default();
+
+        // Infer 'expires' field
+        let expires = self
+            .expires_at
+            .flatten()
+            .map(|date_time| (date_time - received_at).num_seconds() as u64);
+
+        // Infer 'delay' field
+        let delay = self
+            .delay_until
+            .flatten()
+            .map(|date_time| (date_time - received_at).num_seconds() as u64);
+
+        // Build the activation
+        let mut activation = builder
+            .id(id)
+            .application(application)
+            .taskname(taskname)
+            .namespace(namespace)
+            .received_at(Timestamp::from(SystemTime::from(received_at)))
+            .processing_deadline_duration(processing_deadline_duration as u64)
+            .build();
+
+        // Set 'expiration' and 'delay' fields manually after activation has been build
+        activation.expires = expires;
+        activation.delay = delay;
+
+        self.activation = Some(activation.encode_to_vec());
+
+        match self._build() {
+            Ok(activation) => activation,
+            Err(e) => panic!("Failed to build InflightActivation - {}", e),
+        }
+    }
+}
 
 /// Generate a unique filename for isolated SQLite databases.
 pub fn generate_temp_filename() -> String {
@@ -37,42 +206,17 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
 
     for i in 0..count {
         let now = Utc::now();
-        #[allow(deprecated)]
-        let item = InflightActivation {
-            id: format!("id_{i}"),
-            activation: TaskActivation {
-                id: format!("id_{i}"),
-                application: Some("sentry".into()),
-                namespace: namespace.clone(),
-                taskname: "taskname".into(),
-                parameters: "{}".into(),
-                headers: HashMap::new(),
-                received_at: Some(prost_types::Timestamp {
-                    seconds: now.timestamp(),
-                    nanos: now.nanosecond() as i32,
-                }),
-                retry_state: None,
-                processing_deadline_duration: 10,
-                expires: None,
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: i as i64,
-            added_at: now,
-            received_at: now,
-            processing_attempts: 0,
-            processing_deadline_duration: 10,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".into(),
-            namespace: namespace.clone(),
-            taskname: "taskname".into(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+
+        let item = InflightActivationBuilder::new()
+            .id(format!("id_{i}"))
+            .taskname("taskname")
+            .namespace(&namespace)
+            .added_at(now)
+            .received_at(now)
+            .offset(i as i64)
+            .processing_deadline_duration(10)
+            .build(TaskActivationBuilder::new());
+
         records.push(item);
     }
     records
