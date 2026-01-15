@@ -29,7 +29,7 @@ use crate::{
 /// on the inflight store
 pub async fn upkeep(
     config: Arc<Config>,
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     health_reporter: HealthReporter,
@@ -110,7 +110,7 @@ impl UpkeepResults {
 )]
 pub async fn do_upkeep(
     config: Arc<Config>,
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
     producer: Arc<FutureProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
@@ -282,7 +282,7 @@ pub async fn do_upkeep(
             .record(remove_killswitched_start.elapsed());
     }
 
-    // 12. Forward tasks from demoted namespaces to "long" namespace
+    // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
     let forward_cluster = runtime_config
         .demoted_topic_cluster
@@ -304,7 +304,7 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations_from_namespaces(Some(&demoted_namespaces), None)
+            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -481,7 +481,7 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
-    mut health_reporter: HealthReporter,
+    health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
     if config.health_check_killswitched {
@@ -522,6 +522,7 @@ mod tests {
         runtime_config::RuntimeConfigManager,
         store::inflight_activation::{
             InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+            SqliteActivationStore,
         },
         test_utils::{
             StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
@@ -531,12 +532,12 @@ mod tests {
         upkeep::{create_retry_activation, do_upkeep},
     };
 
-    async fn create_inflight_store() -> Arc<InflightActivationStore> {
+    async fn create_inflight_store() -> Arc<dyn InflightActivationStore> {
         let url = generate_temp_filename();
         let config = create_integration_config();
 
         Arc::new(
-            InflightActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
+            SqliteActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
                 .await
                 .unwrap(),
         )
@@ -784,7 +785,7 @@ mod tests {
                 processing: 1,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
         assert_eq!(result_context.processing_deadline_reset, 0);
@@ -833,7 +834,7 @@ mod tests {
                 pending: 2,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }
@@ -883,7 +884,7 @@ mod tests {
                 pending: 1,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }
@@ -1149,14 +1150,20 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_pending_activation(None)
+                .get_pending_activation(None, None)
                 .await
                 .unwrap()
                 .unwrap()
                 .id,
             "id_0",
         );
-        assert!(store.get_pending_activation(None).await.unwrap().is_none());
+        assert!(
+            store
+                .get_pending_activation(None, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         sleep(Duration::from_secs(2)).await;
         let result_context = do_upkeep(
@@ -1178,7 +1185,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_pending_activation(None)
+                .get_pending_activation(None, None)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1322,7 +1329,7 @@ demoted_namespaces:
                 pending: 2,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }

@@ -1,4 +1,5 @@
 use anyhow::{Error, anyhow};
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use derive_builder::Builder;
 use libsqlite3_sys::{
@@ -20,7 +21,7 @@ use sqlx::{
     },
 };
 use std::{str::FromStr, time::Instant};
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 use crate::config::Config;
 
@@ -70,6 +71,10 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
 pub struct InflightActivation {
     #[builder(setter(into))]
     pub id: String,
+
+    // The task application
+    #[builder(setter(into), default = "sentry".into())]
+    pub application: String,
 
     /// The task namespace.
     #[builder(setter(into))]
@@ -185,6 +190,7 @@ struct TableRow {
     processing_deadline: Option<DateTime<Utc>>,
     status: InflightActivationStatus,
     at_most_once: bool,
+    application: String,
     namespace: String,
     taskname: String,
     #[sqlx(try_from = "i32")]
@@ -209,6 +215,7 @@ impl TryFrom<InflightActivation> for TableRow {
             processing_deadline: value.processing_deadline,
             status: value.status,
             at_most_once: value.at_most_once,
+            application: value.application,
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
@@ -232,6 +239,7 @@ impl From<TableRow> for InflightActivation {
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
             at_most_once: value.at_most_once,
+            application: value.application,
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
@@ -287,22 +295,105 @@ impl InflightActivationStoreConfig {
     }
 }
 
-pub struct InflightActivationStore {
+#[async_trait]
+pub trait InflightActivationStore: Send + Sync {
+    /// Trigger incremental vacuum to reclaim free pages in the database
+    async fn vacuum_db(&self) -> Result<(), Error>;
+
+    /// Perform a full vacuum on the database
+    async fn full_vacuum_db(&self) -> Result<(), Error>;
+
+    /// Get the size of the database in bytes
+    async fn db_size(&self) -> Result<u64, Error>;
+
+    /// Get an activation by id
+    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error>;
+
+    /// Store a batch of activations
+    async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
+
+    /// Get a single pending activation, optionally filtered by namespace
+    async fn get_pending_activation(
+        &self,
+        application: Option<&str>,
+        namespace: Option<&str>,
+    ) -> Result<Option<InflightActivation>, Error>;
+
+    /// Get pending activations from specified namespaces
+    async fn get_pending_activations_from_namespaces(
+        &self,
+        application: Option<&str>,
+        namespaces: Option<&[String]>,
+        limit: Option<i32>,
+    ) -> Result<Vec<InflightActivation>, Error>;
+
+    /// Get the age of the oldest pending activation in seconds
+    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
+
+    /// Count activations with Pending status
+    async fn count_pending_activations(&self) -> Result<usize, Error>;
+
+    /// Count activations by status
+    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
+
+    /// Count all activations
+    async fn count(&self) -> Result<usize, Error>;
+
+    /// Update the status of a specific activation
+    async fn set_status(
+        &self,
+        id: &str,
+        status: InflightActivationStatus,
+    ) -> Result<Option<InflightActivation>, Error>;
+
+    /// Set the processing deadline for a specific activation
+    async fn set_processing_deadline(
+        &self,
+        id: &str,
+        deadline: Option<DateTime<Utc>>,
+    ) -> Result<(), Error>;
+
+    /// Delete an activation by id
+    async fn delete_activation(&self, id: &str) -> Result<(), Error>;
+
+    /// Get all activations with status Retry
+    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error>;
+
+    /// Clear all activations from the store
+    async fn clear(&self) -> Result<(), Error>;
+
+    /// Update tasks that exceeded their processing deadline
+    async fn handle_processing_deadline(&self) -> Result<u64, Error>;
+
+    /// Update tasks that exceeded max processing attempts
+    async fn handle_processing_attempts(&self) -> Result<u64, Error>;
+
+    /// Delete tasks past their expires_at deadline
+    async fn handle_expires_at(&self) -> Result<u64, Error>;
+
+    /// Update delayed tasks past their delay_until deadline to Pending
+    async fn handle_delay_until(&self) -> Result<u64, Error>;
+
+    /// Process failed tasks for discard or deadletter
+    async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error>;
+
+    /// Mark tasks as complete by id
+    async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error>;
+
+    /// Remove completed tasks
+    async fn remove_completed(&self) -> Result<u64, Error>;
+
+    /// Remove killswitched tasks
+    async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error>;
+}
+
+pub struct SqliteActivationStore {
     read_pool: SqlitePool,
     write_pool: SqlitePool,
     config: InflightActivationStoreConfig,
 }
 
-impl InflightActivationStore {
-    async fn acquire_write_conn_metric(
-        &self,
-        caller: &'static str,
-    ) -> Result<PoolConnection<Sqlite>, Error> {
-        let start = Instant::now();
-        let conn = self.write_pool.acquire().await?;
-        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller).record(start.elapsed());
-        Ok(conn)
-    }
+impl SqliteActivationStore {
     pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
         let (read_pool, write_pool) = create_sqlite_pool(url).await?;
 
@@ -315,40 +406,14 @@ impl InflightActivationStore {
         })
     }
 
-    /// Trigger incremental vacuum to reclaim free pages in the database.
-    /// Depending on config data, will either vacuum a set number of
-    /// pages or attempt to reclaim all free pages.
-    #[instrument(skip_all)]
-    pub async fn vacuum_db(&self) -> Result<(), Error> {
-        let timer = Instant::now();
-
-        if let Some(page_count) = self.config.vacuum_page_count {
-            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
-            sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
-                .execute(&mut *conn)
-                .await?;
-        } else {
-            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
-            sqlx::query("PRAGMA incremental_vacuum")
-                .execute(&mut *conn)
-                .await?;
-        }
-        let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
-            .fetch_one(&self.read_pool)
-            .await?
-            .get("freelist_count");
-
-        metrics::histogram!("store.vacuum", "database" => "meta").record(timer.elapsed());
-        metrics::gauge!("store.vacuum.freelist", "database" => "meta").set(freelist_count);
-        Ok(())
-    }
-
-    /// Perform a full vacuum on the database.
-    pub async fn full_vacuum_db(&self) -> Result<(), Error> {
-        let mut conn = self.acquire_write_conn_metric("full_vacuum_db").await?;
-        sqlx::query("VACUUM").execute(&mut *conn).await?;
-        self.emit_db_status_metrics().await;
-        Ok(())
+    async fn acquire_write_conn_metric(
+        &self,
+        caller: &'static str,
+    ) -> Result<PoolConnection<Sqlite>, Error> {
+        let start = Instant::now();
+        let conn = self.write_pool.acquire().await?;
+        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller).record(start.elapsed());
+        Ok(conn)
     }
 
     async fn emit_db_status_metrics(&self) {
@@ -495,9 +560,48 @@ impl InflightActivationStore {
             }
         }
     }
+}
+
+#[async_trait]
+impl InflightActivationStore for SqliteActivationStore {
+    /// Trigger incremental vacuum to reclaim free pages in the database.
+    /// Depending on config data, will either vacuum a set number of
+    /// pages or attempt to reclaim all free pages.
+    #[instrument(skip_all)]
+    async fn vacuum_db(&self) -> Result<(), Error> {
+        let timer = Instant::now();
+
+        if let Some(page_count) = self.config.vacuum_page_count {
+            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
+            sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
+                .execute(&mut *conn)
+                .await?;
+        } else {
+            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
+            sqlx::query("PRAGMA incremental_vacuum")
+                .execute(&mut *conn)
+                .await?;
+        }
+        let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
+            .fetch_one(&self.read_pool)
+            .await?
+            .get("freelist_count");
+
+        metrics::histogram!("store.vacuum", "database" => "meta").record(timer.elapsed());
+        metrics::gauge!("store.vacuum.freelist", "database" => "meta").set(freelist_count);
+        Ok(())
+    }
+
+    /// Perform a full vacuum on the database.
+    async fn full_vacuum_db(&self) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("full_vacuum_db").await?;
+        sqlx::query("VACUUM").execute(&mut *conn).await?;
+        self.emit_db_status_metrics().await;
+        Ok(())
+    }
 
     /// Get the size of the database in bytes based on SQLite metadata queries.
-    pub async fn db_size(&self) -> Result<u64, Error> {
+    async fn db_size(&self) -> Result<u64, Error> {
         let result: u64 = sqlx::query(
             "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
         )
@@ -509,7 +613,7 @@ impl InflightActivationStore {
     }
 
     /// Get an activation by id. Primarily used for testing
-    pub async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
         let row_result: Option<TableRow> = sqlx::query_as(
             "
             SELECT id,
@@ -525,6 +629,7 @@ impl InflightActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
+                application,
                 namespace,
                 taskname,
                 on_attempts_exceeded
@@ -544,7 +649,7 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+    async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
         if batch.is_empty() {
             return Ok(QueryResult { rows_affected: 0 });
         }
@@ -565,6 +670,7 @@ impl InflightActivationStore {
                     processing_deadline,
                     status,
                     at_most_once,
+                    application,
                     namespace,
                     taskname,
                     on_attempts_exceeded
@@ -595,6 +701,7 @@ impl InflightActivationStore {
                 }
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
+                b.push_bind(row.application);
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
@@ -627,14 +734,23 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn get_pending_activation(
+    async fn get_pending_activation(
         &self,
+        application: Option<&str>,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+
+        // If a namespace filter is used, an application must also be used.
+        if namespaces.is_some() && application.is_none() {
+            warn!(
+                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+            );
+            return Ok(None);
+        }
         let result = self
-            .get_pending_activations_from_namespaces(namespaces.as_deref(), Some(1))
+            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
             .await?;
         if result.is_empty() {
             return Ok(None);
@@ -646,8 +762,9 @@ impl InflightActivationStore {
     /// If namespaces is None, gets from any namespace
     /// If namespaces is Some(&[...]), gets from those namespaces
     #[instrument(skip_all)]
-    pub async fn get_pending_activations_from_namespaces(
+    async fn get_pending_activations_from_namespaces(
         &self,
+        application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
     ) -> Result<Vec<InflightActivation>, Error> {
@@ -675,7 +792,11 @@ impl InflightActivationStore {
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        // Handle namespace filtering
+        // Handle application & namespace filtering
+        if let Some(value) = application {
+            query_builder.push(" AND application =");
+            query_builder.push_bind(value);
+        }
         if let Some(namespaces) = namespaces
             && !namespaces.is_empty()
         {
@@ -709,7 +830,7 @@ impl InflightActivationStore {
     /// as we are interested in latency to the *first* attempt.
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
-    pub async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
+    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
         let result = sqlx::query(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
@@ -740,13 +861,13 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn count_pending_activations(&self) -> Result<usize, Error> {
+    async fn count_pending_activations(&self) -> Result<usize, Error> {
         self.count_by_status(InflightActivationStatus::Pending)
             .await
     }
 
     #[instrument(skip_all)]
-    pub async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
+    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
                 .bind(status)
@@ -755,7 +876,7 @@ impl InflightActivationStore {
         Ok(result.get::<u64, _>("count") as usize)
     }
 
-    pub async fn count(&self) -> Result<usize, Error> {
+    async fn count(&self) -> Result<usize, Error> {
         let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
             .fetch_one(&self.read_pool)
             .await?;
@@ -764,7 +885,7 @@ impl InflightActivationStore {
 
     /// Update the status of a specific activation
     #[instrument(skip_all)]
-    pub async fn set_status(
+    async fn set_status(
         &self,
         id: &str,
         status: InflightActivationStatus,
@@ -786,7 +907,7 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn set_processing_deadline(
+    async fn set_processing_deadline(
         &self,
         id: &str,
         deadline: Option<DateTime<Utc>>,
@@ -803,7 +924,7 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn delete_activation(&self, id: &str) -> Result<(), Error> {
+    async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
         sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
             .bind(id)
@@ -813,7 +934,7 @@ impl InflightActivationStore {
     }
 
     #[instrument(skip_all)]
-    pub async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
+    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         Ok(sqlx::query_as(
             "
             SELECT id,
@@ -829,6 +950,7 @@ impl InflightActivationStore {
                 processing_deadline,
                 status,
                 at_most_once,
+                application,
                 namespace,
                 taskname,
                 on_attempts_exceeded
@@ -844,7 +966,7 @@ impl InflightActivationStore {
         .collect())
     }
 
-    pub async fn clear(&self) -> Result<(), Error> {
+    async fn clear(&self) -> Result<(), Error> {
         let mut conn = self.acquire_write_conn_metric("clear").await?;
         sqlx::query("DELETE FROM inflight_taskactivations")
             .execute(&mut *conn)
@@ -856,7 +978,7 @@ impl InflightActivationStore {
     /// Exceeding a processing deadline does not consume a retry as we don't know
     /// if a worker took the task and was killed, or failed.
     #[instrument(skip_all)]
-    pub async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
@@ -904,7 +1026,7 @@ impl InflightActivationStore {
     /// Update tasks that have exceeded their max processing attempts.
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
     #[instrument(skip_all)]
-    pub async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+    async fn handle_processing_attempts(&self) -> Result<u64, Error> {
         let mut conn = self
             .acquire_write_conn_metric("handle_processing_attempts")
             .await?;
@@ -933,7 +1055,7 @@ impl InflightActivationStore {
     ///
     /// The number of impacted records is returned in a Result.
     #[instrument(skip_all)]
-    pub async fn handle_expires_at(&self) -> Result<u64, Error> {
+    async fn handle_expires_at(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut conn = self.acquire_write_conn_metric("handle_expires_at").await?;
         let query = sqlx::query(
@@ -954,7 +1076,7 @@ impl InflightActivationStore {
     ///
     /// The number of impacted records is returned in a Result.
     #[instrument(skip_all)]
-    pub async fn handle_delay_until(&self) -> Result<u64, Error> {
+    async fn handle_delay_until(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut conn = self.acquire_write_conn_metric("handle_delay_until").await?;
         let update_result = sqlx::query(
@@ -979,7 +1101,7 @@ impl InflightActivationStore {
     /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
     /// complete.
     #[instrument(skip_all)]
-    pub async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
+    async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
         let mut atomic = self.write_pool.begin().await?;
 
         let failed_tasks: Vec<SqliteRow> =
@@ -1035,7 +1157,7 @@ impl InflightActivationStore {
 
     /// Mark a collection of tasks as complete by id
     #[instrument(skip_all)]
-    pub async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+    async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
         query_builder
             .push("SET status = ")
@@ -1056,7 +1178,7 @@ impl InflightActivationStore {
     /// Remove completed tasks.
     /// This method is a garbage collector for the inflight task store.
     #[instrument(skip_all)]
-    pub async fn remove_completed(&self) -> Result<u64, Error> {
+    async fn remove_completed(&self) -> Result<u64, Error> {
         let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
         let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
             .bind(InflightActivationStatus::Complete)
@@ -1068,7 +1190,7 @@ impl InflightActivationStore {
 
     /// Remove killswitched tasks.
     #[instrument(skip_all)]
-    pub async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
+    async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
         let mut query_builder =
             QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE taskname IN (");
         let mut separated = query_builder.separated(", ");

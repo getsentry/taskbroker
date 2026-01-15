@@ -44,12 +44,12 @@ impl ActivationWriterConfig {
 
 pub struct InflightActivationWriter {
     config: ActivationWriterConfig,
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
     batch: Option<Vec<InflightActivation>>,
 }
 
 impl InflightActivationWriter {
-    pub fn new(store: Arc<InflightActivationStore>, config: ActivationWriterConfig) -> Self {
+    pub fn new(store: Arc<dyn InflightActivationStore>, config: ActivationWriterConfig) -> Self {
         Self {
             config,
             store,
@@ -210,6 +210,7 @@ mod tests {
     use crate::store::inflight_activation::InflightActivationBuilder;
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
+        SqliteActivationStore,
     };
     use crate::test_utils::TaskActivationBuilder;
     use crate::test_utils::generate_unique_namespace;
@@ -228,7 +229,7 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
+                SqliteActivationStore::new(
                     &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
@@ -279,7 +280,7 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
+                SqliteActivationStore::new(
                     &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
@@ -319,7 +320,7 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
+                SqliteActivationStore::new(
                     &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
@@ -364,7 +365,7 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
+                SqliteActivationStore::new(
                     &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
@@ -416,7 +417,7 @@ mod tests {
         };
         let mut writer = InflightActivationWriter::new(
             Arc::new(
-                InflightActivationStore::new(
+                SqliteActivationStore::new(
                     &generate_temp_filename(),
                     InflightActivationStoreConfig::from_config(&create_integration_config()),
                 )
@@ -467,7 +468,7 @@ mod tests {
             write_failure_backoff_ms: 4000,
         };
         let store = Arc::new(
-            InflightActivationStore::new(
+            SqliteActivationStore::new(
                 &generate_temp_filename(),
                 InflightActivationStoreConfig::from_config(&create_integration_config()),
             )
@@ -538,7 +539,7 @@ mod tests {
             write_failure_backoff_ms: 4000,
         };
         let store = Arc::new(
-            InflightActivationStore::new(
+            SqliteActivationStore::new(
                 &generate_temp_filename(),
                 InflightActivationStoreConfig::from_config(&create_integration_config()),
             )
@@ -572,7 +573,7 @@ mod tests {
             write_failure_backoff_ms: 4000,
         };
         let store = Arc::new(
-            InflightActivationStore::new(
+            SqliteActivationStore::new(
                 &generate_temp_filename(),
                 InflightActivationStoreConfig::from_config(&create_integration_config()),
             )

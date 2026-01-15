@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::store::inflight_activation::{
     InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
-    InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
+    InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
 };
 use crate::test_utils::{StatusCount, TaskActivationBuilder};
 use crate::test_utils::{
@@ -64,7 +64,7 @@ fn test_inflightactivation_status_from() {
 #[tokio::test]
 async fn test_create_db() {
     assert!(
-        InflightActivationStore::new(
+        SqliteActivationStore::new(
             &generate_temp_filename(),
             InflightActivationStoreConfig::from_config(&create_integration_config())
         )
@@ -125,7 +125,11 @@ async fn test_get_pending_activation() {
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.get_pending_activation(None).await.unwrap().unwrap();
+    let result = store
+        .get_pending_activation(None, None)
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
@@ -140,7 +144,7 @@ async fn test_get_pending_activation() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -169,7 +173,7 @@ async fn test_get_pending_activation_with_race() {
         join_set.spawn(async move {
             rx.recv().await.unwrap();
             store
-                .get_pending_activation(Some(&ns))
+                .get_pending_activation(Some("sentry"), Some(&ns))
                 .await
                 .unwrap()
                 .unwrap()
@@ -198,7 +202,7 @@ async fn test_get_pending_activation_with_namespace() {
 
     // Get activation from other namespace
     let result = store
-        .get_pending_activation(Some("other_namespace"))
+        .get_pending_activation(Some("sentry"), Some("other_namespace"))
         .await
         .unwrap()
         .unwrap();
@@ -222,7 +226,7 @@ async fn test_get_pending_activation_from_multiple_namespaces() {
     // Get activation from multiple namespaces (should get oldest)
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(Some(&namespaces), None)
+        .get_pending_activations_from_namespaces(None, Some(&namespaces), None)
         .await
         .unwrap();
 
@@ -236,6 +240,35 @@ async fn test_get_pending_activation_from_multiple_namespaces() {
 }
 
 #[tokio::test]
+async fn test_get_pending_activation_with_namespace_requires_application() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(2);
+    batch[1].namespace = "other_namespace".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // This is an invalid query as we don't want to allow clients
+    // to fetch tasks from any application.
+    let opt = store
+        .get_pending_activation(None, Some("other_namespace"))
+        .await
+        .unwrap();
+    assert!(opt.is_none());
+
+    // We allow no application in this method because of usage in upkeep
+    let namespaces = vec!["other_namespace".to_string()];
+    let activations = store
+        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2))
+        .await
+        .unwrap();
+    assert_eq!(
+        1,
+        activations.len(),
+        "should find 1 activation with a matching namespace"
+    );
+}
+
+#[tokio::test]
 async fn test_get_pending_activation_skip_expires() {
     let store = create_test_store().await;
 
@@ -243,7 +276,7 @@ async fn test_get_pending_activation_skip_expires() {
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.get_pending_activation(None).await;
+    let result = store.get_pending_activation(None, None).await;
     assert!(result.is_ok());
     let res_option = result.unwrap();
     assert!(res_option.is_none());
@@ -253,7 +286,7 @@ async fn test_get_pending_activation_skip_expires() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -267,11 +300,104 @@ async fn test_get_pending_activation_earliest() {
     batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.get_pending_activation(None).await.unwrap().unwrap();
+    let result = store
+        .get_pending_activation(None, None)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         result.added_at,
         Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
     );
+}
+
+#[tokio::test]
+async fn test_get_pending_activation_fetches_application() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(1);
+    batch[0].application = "hammers".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // Getting an activation with no application filter should
+    // include activations with application set.
+    let result = store
+        .get_pending_activation(None, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_0");
+    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert!(result.processing_deadline.unwrap() > Utc::now());
+    assert_eq!(result.application, "hammers");
+}
+
+#[tokio::test]
+async fn test_get_pending_activation_with_application() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(2);
+    batch[1].application = "hammers".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // Get activation from a named application
+    let result = store
+        .get_pending_activation(Some("hammers"), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_1");
+    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert!(result.processing_deadline.unwrap() > Utc::now());
+    assert_eq!(result.application, "hammers");
+
+    let result_opt = store
+        .get_pending_activation(Some("hammers"), None)
+        .await
+        .unwrap();
+    assert!(
+        result_opt.is_none(),
+        "no pending activations in hammers left"
+    );
+
+    let result_opt = store.get_pending_activation(None, None).await.unwrap();
+    assert!(result_opt.is_some(), "one pending activation in '' left");
+}
+
+#[tokio::test]
+async fn test_get_pending_activation_with_application_and_namespace() {
+    let store = create_test_store().await;
+
+    let mut batch = make_activations(3);
+    batch[0].namespace = "target".into();
+
+    batch[1].application = "hammers".into();
+    batch[1].namespace = "target".into();
+
+    batch[2].application = "hammers".into();
+    batch[2].namespace = "not-target".into();
+    assert!(store.store(batch.clone()).await.is_ok());
+
+    // Get activation from a named application
+    let result = store
+        .get_pending_activation(Some("hammers"), Some("target"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_1");
+    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert!(result.processing_deadline.unwrap() > Utc::now());
+    assert_eq!(result.application, "hammers");
+    assert_eq!(result.namespace, "target");
+
+    let result = store
+        .get_pending_activation(Some("hammers"), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.id, "id_2");
+    assert_eq!(result.application, "hammers");
+    assert_eq!(result.namespace, "not-target");
 }
 
 #[tokio::test]
@@ -289,7 +415,7 @@ async fn test_count_pending_activations() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -305,7 +431,7 @@ async fn set_activation_status() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -321,7 +447,7 @@ async fn set_activation_status() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -336,7 +462,7 @@ async fn set_activation_status() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
     assert!(
@@ -357,10 +483,16 @@ async fn set_activation_status() {
             failure: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
-    assert!(store.get_pending_activation(None).await.unwrap().is_none());
+    assert!(
+        store
+            .get_pending_activation(None, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let result = store
         .set_status("not_there", InflightActivationStatus::Complete)
@@ -442,7 +574,7 @@ async fn test_get_retry_activations() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -458,7 +590,7 @@ async fn test_get_retry_activations() {
             retry: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -491,7 +623,7 @@ async fn test_handle_processing_deadline() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -503,7 +635,7 @@ async fn test_handle_processing_deadline() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -531,7 +663,7 @@ async fn test_handle_processing_deadline_multiple_tasks() {
             processing: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -544,7 +676,7 @@ async fn test_handle_processing_deadline_multiple_tasks() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -578,7 +710,7 @@ async fn test_handle_processing_at_most_once() {
             processing: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -591,7 +723,7 @@ async fn test_handle_processing_at_most_once() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -624,7 +756,7 @@ async fn test_handle_processing_deadline_discard_after() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -636,7 +768,7 @@ async fn test_handle_processing_deadline_discard_after() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -666,7 +798,7 @@ async fn test_handle_processing_deadline_deadletter_after() {
             processing: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -678,7 +810,7 @@ async fn test_handle_processing_deadline_deadletter_after() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -707,7 +839,7 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -720,7 +852,7 @@ async fn test_handle_processing_deadline_no_retries_remaining() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -749,7 +881,7 @@ async fn test_processing_attempts_exceeded() {
             pending: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -762,7 +894,7 @@ async fn test_processing_attempts_exceeded() {
             failure: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -785,7 +917,7 @@ async fn test_remove_completed() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -819,7 +951,7 @@ async fn test_remove_completed() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -848,7 +980,7 @@ async fn test_remove_completed_multiple_gaps() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -890,7 +1022,7 @@ async fn test_remove_completed_multiple_gaps() {
             failure: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -946,7 +1078,7 @@ async fn test_handle_failed_tasks() {
             failure: 4,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -976,7 +1108,7 @@ async fn test_handle_failed_tasks() {
             complete: 2,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -992,7 +1124,7 @@ async fn test_mark_completed() {
             pending: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1008,7 +1140,7 @@ async fn test_mark_completed() {
             complete: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1029,7 +1161,7 @@ async fn test_handle_expires_at() {
             pending: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1041,7 +1173,7 @@ async fn test_handle_expires_at() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1061,7 +1193,7 @@ async fn test_remove_killswitched() {
             pending: 6,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 
@@ -1079,7 +1211,7 @@ async fn test_remove_killswitched() {
             pending: 3,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
 }
@@ -1109,14 +1241,14 @@ async fn test_clear() {
             pending: 1,
             ..StatusCount::default()
         },
-        &store,
+        store.as_ref(),
     )
     .await;
     assert_eq!(store.count().await.unwrap(), 1);
 
     assert!(store.clear().await.is_ok());
     assert_eq!(store.count().await.unwrap(), 0);
-    assert_counts(StatusCount::default(), &store).await;
+    assert_counts(StatusCount::default(), store.as_ref()).await;
 }
 
 #[tokio::test]
@@ -1147,7 +1279,7 @@ async fn test_vacuum_db_incremental() {
         vacuum_page_count: Some(10),
         ..Config::default()
     };
-    let store = InflightActivationStore::new(
+    let store = SqliteActivationStore::new(
         &generate_temp_filename(),
         InflightActivationStoreConfig::from_config(&config),
     )
@@ -1256,7 +1388,7 @@ async fn test_db_status_calls_ok() {
     let url = format!("sqlite:{db_path}");
 
     // Initialize a store to create the database and run migrations
-    InflightActivationStore::new(
+    SqliteActivationStore::new(
         &url,
         InflightActivationStoreConfig {
             max_processing_attempts: 3,

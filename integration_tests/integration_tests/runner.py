@@ -1,6 +1,6 @@
 import os
 
-from .worker import ConfigurableTaskWorker, TaskWorkerClient
+from integration_tests.worker import ConfigurableTaskWorker, TaskWorkerClient
 
 
 def main() -> None:

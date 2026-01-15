@@ -17,7 +17,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
-TESTS_OUTPUT_ROOT = Path(__file__).parent / ".tests_output"
+TESTS_OUTPUT_ROOT = Path(__file__).parent.parent / ".tests_output"
 TEST_PRODUCER_CONFIG = {
     "bootstrap.servers": "127.0.0.1:9092",
     "broker.address.family": "v4",

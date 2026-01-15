@@ -30,6 +30,7 @@ pub fn new(
         };
 
         let activation = TaskActivation::decode(payload)?;
+        let application = activation.application.unwrap_or("".into());
         let namespace = activation.namespace.clone();
         let taskname = activation.taskname.clone();
 
@@ -91,6 +92,7 @@ pub fn new(
             expires_at,
             delay_until,
             at_most_once,
+            application,
             namespace,
             taskname,
             on_attempts_exceeded,
@@ -123,6 +125,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -167,6 +170,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -212,6 +216,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -257,6 +262,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -303,6 +309,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),

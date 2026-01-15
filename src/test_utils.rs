@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::store::inflight_activation::{
     InflightActivation, InflightActivationBuilder, InflightActivationStatus,
-    InflightActivationStore, InflightActivationStoreConfig,
+    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
 };
 
 use std::collections::HashMap;
@@ -23,6 +23,7 @@ use std::time::SystemTime;
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {
     pub id: Option<String>,
+    pub application: Option<String>,
     pub namespace: Option<String>,
     pub taskname: Option<String>,
     pub parameters: Option<String>,
@@ -38,6 +39,7 @@ impl TaskActivationBuilder {
     pub fn new() -> Self {
         Self {
             id: None,
+            application: None,
             namespace: None,
             taskname: None,
             parameters: None,
@@ -52,6 +54,11 @@ impl TaskActivationBuilder {
 
     pub fn id<T: Into<String>>(mut self, id: T) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    pub fn application<T: Into<String>>(mut self, application: T) -> Self {
+        self.application = Some(application.into());
         self
     }
 
@@ -103,6 +110,7 @@ impl TaskActivationBuilder {
     pub fn build(self) -> v1::TaskActivation {
         v1::TaskActivation {
             id: self.id.expect("id is required"),
+            application: Some(self.application.expect("application is required")),
             namespace: self.namespace.expect("namespace is required"),
             taskname: self.taskname.expect("taskname is required"),
             parameters: self.parameters.unwrap_or_else(|| "{}".to_string()),
@@ -142,6 +150,7 @@ impl InflightActivationBuilder {
             .expect("field 'taskname' is required");
 
         // Grab fields with defaults
+        let application = self.application.clone().unwrap_or_else(|| "sentry".into());
         let received_at = self.received_at.unwrap_or_default();
         let processing_deadline_duration = self.processing_deadline_duration.unwrap_or_default();
 
@@ -160,6 +169,7 @@ impl InflightActivationBuilder {
         // Build the activation
         let mut activation = builder
             .id(id)
+            .application(application)
             .taskname(taskname)
             .namespace(namespace)
             .received_at(Timestamp::from(SystemTime::from(received_at)))
@@ -224,9 +234,9 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create an InflightActivationStore instance
-pub async fn create_test_store() -> Arc<InflightActivationStore> {
+pub async fn create_test_store() -> Arc<SqliteActivationStore> {
     Arc::new(
-        InflightActivationStore::new(
+        SqliteActivationStore::new(
             &generate_temp_filename(),
             InflightActivationStoreConfig::from_config(&create_integration_config()),
         )
@@ -350,7 +360,7 @@ pub struct StatusCount {
 }
 
 /// Assert the state of all counts in the inflight activation store.
-pub async fn assert_counts(expected: StatusCount, store: &InflightActivationStore) {
+pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivationStore) {
     assert_eq!(
         expected.pending,
         store
