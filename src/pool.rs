@@ -1,17 +1,18 @@
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use anyhow::Result;
-use dashmap::DashMap;
 use rand::Rng;
 use rand::seq::IteratorRandom;
 use sentry_protos::taskworker::v1::{PushTaskRequest, worker_service_client::WorkerServiceClient};
+use tokio::sync::RwLock;
 use tonic::transport::{Channel, Error};
 use tracing::{info, warn};
 
 pub struct WorkerPool {
     /// Maps every worker address to its client.
-    /// Uses DashMap for concurrent access without external locking.
-    clients: DashMap<String, WorkerClient>,
+    /// Uses Arc<RwLock> for read-heavy concurrent access with rare writes.
+    clients: Arc<RwLock<Vec<WorkerClient>>>,
 }
 
 #[derive(Clone)]
@@ -40,12 +41,12 @@ impl WorkerPool {
     /// Create a new `WorkerPool` instance.
     pub fn new() -> Self {
         Self {
-            clients: DashMap::new(),
+            clients: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.clients.is_empty()
+    pub async fn is_empty(&self) -> bool {
+        self.clients.read().await.is_empty()
     }
 
     /// Register worker address and attempt to connect immediately.
@@ -61,7 +62,10 @@ impl WorkerPool {
 
                 let client = WorkerClient::new(connection, address.clone(), 0);
 
-                self.clients.insert(address.clone(), client);
+                let mut clients = self.clients.write().await;
+                // Remove any existing entry with this address first
+                clients.retain(|c| c.address != address);
+                clients.push(client);
             }
 
             Err(e) => {
@@ -74,19 +78,21 @@ impl WorkerPool {
     }
 
     /// Unregister worker address during execution.
-    pub fn remove_worker(&self, address: &String) {
+    pub async fn remove_worker(&self, address: &String) {
         info!("Removing worker {address}");
-        self.clients.remove(address);
+        let mut clients = self.clients.write().await;
+        clients.retain(|c| &c.address != address);
     }
 
     /// Try pushing a task to the best worker using P2C (Power of Two Choices).
     pub async fn push(&self, request: PushTaskRequest) -> Result<()> {
-        let candidate = {
+        let (candidate, address) = {
+            let clients = self.clients.read().await;
             let mut rng = rand::rng();
 
-            self.clients
+            let candidate = clients
                 .iter()
-                .map(|entry| entry.value().clone())
+                .cloned()
                 .choose_multiple(&mut rng, 2)
                 .into_iter()
                 .min_by(|a, b| {
@@ -101,14 +107,16 @@ impl WorkerPool {
                         }
                         other => other,
                     }
-                })
-        };
+                });
 
-        let Some(mut client) = candidate else {
-            return Err(anyhow::anyhow!("No connected workers"));
-        };
+            let Some(client) = candidate else {
+                return Err(anyhow::anyhow!("No connected workers"));
+            };
 
-        let address = client.address.clone();
+            (client.clone(), client.address.clone())
+        }; // Read lock is released here
+
+        let mut client = candidate;
 
         match client.connection.push_task(request).await {
             Ok(response) => {
@@ -116,7 +124,11 @@ impl WorkerPool {
 
                 // Update this worker's queue size
                 client.queue_size = response.queue_size;
-                self.clients.insert(address, client);
+
+                let mut clients = self.clients.write().await;
+                if let Some(pos) = clients.iter().position(|c| c.address == address) {
+                    clients[pos] = client;
+                }
 
                 Ok(())
             }
@@ -128,7 +140,8 @@ impl WorkerPool {
                 );
 
                 // Remove this unhealthy worker
-                self.clients.remove(&address);
+                let mut clients = self.clients.write().await;
+                clients.retain(|c| c.address != address);
 
                 Err(e.into())
             }

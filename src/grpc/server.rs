@@ -38,7 +38,7 @@ impl ConsumerService for TaskbrokerServer {
         request: Request<RemoveWorkerRequest>,
     ) -> Result<Response<RemoveWorkerResponse>, Status> {
         let address = &request.get_ref().address;
-        self.pool.remove_worker(address);
+        self.pool.remove_worker(address).await;
         Ok(Response::new(RemoveWorkerResponse {}))
     }
 

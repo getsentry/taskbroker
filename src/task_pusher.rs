@@ -64,7 +64,7 @@ impl TaskPusher {
     async fn process_next_task(&mut self) {
         debug!("Getting the next task...");
 
-        if self.pool.is_empty() {
+        if self.pool.is_empty().await {
             info!("No connections, sleeping briefly");
             sleep(milliseconds(100)).await;
             return;
