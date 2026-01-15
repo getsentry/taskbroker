@@ -213,19 +213,16 @@ impl Reducer for InflightActivationBatcher {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActivationBatcherConfig, Config, InflightActivation, InflightActivationBatcher, Reducer,
-        RuntimeConfigManager,
+        ActivationBatcherConfig, Config, InflightActivationBatcher, Reducer, RuntimeConfigManager,
     };
     use chrono::Utc;
-    use std::collections::HashMap;
     use tokio::fs;
 
-    use prost::Message;
-    use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
     use std::sync::Arc;
 
     use crate::{
-        store::inflight_activation::InflightActivationStatus, test_utils::generate_unique_namespace,
+        store::inflight_activation::InflightActivationBuilder,
+        test_utils::{TaskActivationBuilder, generate_unique_namespace},
     };
 
     #[tokio::test]
@@ -248,38 +245,11 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivation {
-            id: "0".to_string(),
-            activation: TaskActivation {
-                id: "0".to_string(),
-                application: Some("sentry".to_string()),
-                namespace: namespace.clone(),
-                taskname: "task_to_be_filtered".to_string(),
-                parameters: "{}".to_string(),
-                headers: HashMap::new(),
-                received_at: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: None,
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            received_at: Utc::now(),
-            processing_attempts: 0,
-            processing_deadline_duration: 0,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".to_string(),
-            namespace: namespace.clone(),
-            taskname: "task_to_be_filtered".to_string(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+        let inflight_activation_0 = InflightActivationBuilder::new()
+            .id("0")
+            .taskname("task_to_be_filtered")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
@@ -298,38 +268,12 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivation {
-            id: "0".to_string(),
-            activation: TaskActivation {
-                id: "0".to_string(),
-                application: Some("sentry".to_string()),
-                namespace: namespace.clone(),
-                taskname: "task_to_be_filtered".to_string(),
-                parameters: "{}".to_string(),
-                headers: HashMap::new(),
-                received_at: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: Some(0),
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            received_at: Utc::now(),
-            processing_attempts: 0,
-            processing_deadline_duration: 0,
-            expires_at: Some(Utc::now()),
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".to_string(),
-            namespace: namespace.clone(),
-            taskname: "task_to_be_filtered".to_string(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+        let inflight_activation_0 = InflightActivationBuilder::new()
+            .id("0")
+            .taskname("task_to_be_filtered")
+            .namespace(&namespace)
+            .expires_at(Utc::now())
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
@@ -351,38 +295,11 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivation {
-            id: "0".to_string(),
-            activation: TaskActivation {
-                id: "0".to_string(),
-                application: Some("sentry".to_string()),
-                namespace: namespace.clone(),
-                taskname: "taskname".to_string(),
-                parameters: "{}".to_string(),
-                headers: HashMap::new(),
-                received_at: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: Some(0),
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            received_at: Utc::now(),
-            processing_attempts: 0,
-            processing_deadline_duration: 0,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".to_string(),
-            namespace: namespace.clone(),
-            taskname: "taskname".to_string(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+        let inflight_activation_0 = InflightActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert!(batcher.is_full().await);
@@ -406,71 +323,17 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivation {
-            id: "0".to_string(),
-            activation: TaskActivation {
-                id: "0".to_string(),
-                application: Some("sentry".to_string()),
-                namespace: namespace.clone(),
-                taskname: "taskname".to_string(),
-                parameters: "{}".to_string(),
-                headers: HashMap::new(),
-                received_at: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: Some(0),
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            received_at: Utc::now(),
-            processing_attempts: 0,
-            processing_deadline_duration: 0,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".to_string(),
-            namespace: namespace.clone(),
-            taskname: "taskname".to_string(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+        let inflight_activation_0 = InflightActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivation {
-            id: "1".to_string(),
-            activation: TaskActivation {
-                id: "1".to_string(),
-                application: Some("sentry".to_string()),
-                namespace: namespace.clone(),
-                taskname: "taskname".to_string(),
-                parameters: "{}".to_string(),
-                headers: HashMap::new(),
-                received_at: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: Some(0),
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            received_at: Utc::now(),
-            processing_attempts: 0,
-            processing_deadline_duration: 0,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".to_string(),
-            namespace: namespace.clone(),
-            taskname: "taskname".to_string(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+        let inflight_activation_1 = InflightActivationBuilder::new()
+            .id("1")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         batcher.reduce(inflight_activation_1).await.unwrap();
@@ -501,71 +364,17 @@ demoted_topic: taskworker-demoted"#;
 
         assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
 
-        let inflight_activation_0 = InflightActivation {
-            id: "0".to_string(),
-            activation: TaskActivation {
-                id: "0".to_string(),
-                application: Some("sentry".to_string()),
-                namespace: "bad_namespace".to_string(),
-                taskname: "task_to_be_filtered".to_string(),
-                parameters: "{}".to_string(),
-                headers: HashMap::new(),
-                received_at: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: None,
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            received_at: Utc::now(),
-            processing_attempts: 0,
-            processing_deadline_duration: 0,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".to_string(),
-            namespace: "bad_namespace".to_string(),
-            taskname: "taskname".to_string(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+        let inflight_activation_0 = InflightActivationBuilder::new()
+            .id("0")
+            .taskname("task_to_be_filtered")
+            .namespace("bad_namespace")
+            .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivation {
-            id: "1".to_string(),
-            activation: TaskActivation {
-                id: "1".to_string(),
-                application: Some("sentry".to_string()),
-                namespace: "good_namespace".to_string(),
-                taskname: "good_task".to_string(),
-                parameters: "{}".to_string(),
-                headers: HashMap::new(),
-                received_at: None,
-                retry_state: None,
-                processing_deadline_duration: 0,
-                expires: Some(0),
-                delay: None,
-            }
-            .encode_to_vec(),
-            status: InflightActivationStatus::Pending,
-            partition: 0,
-            offset: 0,
-            added_at: Utc::now(),
-            received_at: Utc::now(),
-            processing_attempts: 0,
-            processing_deadline_duration: 0,
-            expires_at: None,
-            delay_until: None,
-            processing_deadline: None,
-            at_most_once: false,
-            application: "sentry".to_string(),
-            namespace: "good_namespace".to_string(),
-            taskname: "good_task".to_string(),
-            on_attempts_exceeded: OnAttemptsExceeded::Discard,
-        };
+        let inflight_activation_1 = InflightActivationBuilder::new()
+            .id("1")
+            .taskname("good_task")
+            .namespace("good_namespace")
+            .build(TaskActivationBuilder::new());
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         batcher.reduce(inflight_activation_1).await.unwrap();
