@@ -15,12 +15,14 @@ x-sentry-service-config:
         repo_name: sentry-shared-redis
         branch: main
         repo_link: https://github.com/getsentry/sentry-shared-redis.git
+    postgres:
+      description: Shared instance of postgres used by sentry services
     taskbroker:
       description: Taskbroker service
   modes:
     default: [kafka]
     client: [kafka, redis]
-    containerized: [kafka, redis, taskbroker]
+    containerized: [kafka, redis, postgres, taskbroker]
 
 x-programs:
   devserver:
