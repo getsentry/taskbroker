@@ -13,7 +13,7 @@ use libsqlite3_sys::{
 };
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
-    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
+    ConnectOptions, Database, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::{PoolConnection, PoolOptions},
     sqlite::{
@@ -272,18 +272,19 @@ impl InflightActivationStoreConfig {
 
 #[async_trait]
 pub trait InflightActivationStore: Send + Sync {
+    type Database: Database;
     /// CONNECTION FUNCTIONS
     /// Get a write connection to the database
     async fn acquire_write_conn(
         &self,
         caller: &'static str,
-    ) -> Result<PoolConnection<Sqlite>, Error>;
+    ) -> Result<PoolConnection<Self::Database>, Error>;
 
     /// Get a read connection to the database
     async fn acquire_read_pool(
         &self,
         caller: &'static str,
-    ) -> Result<PoolConnection<Sqlite>, Error>;
+    ) -> Result<PoolConnection<Self::Database>, Error>;
 
     /// CONSUMER FUNCTIONS
     /// Store a batch of activations
@@ -342,6 +343,61 @@ pub trait InflightActivationStore: Send + Sync {
     async fn delete_activation(&self, id: &str) -> Result<(), Error>;
 
     /// METRICS FUNCTIONS
+    /// Get the age of the oldest pending activation in seconds.
+    /// Only activations with status=pending and processing_attempts=0 are considered
+    /// as we are interested in latency to the *first* attempt.
+    /// Tasks with delay_until set, will have their age adjusted based on their
+    /// delay time. No tasks = 0 lag
+    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
+        let mut conn = self
+            .acquire_read_pool("pending_activation_max_lag")
+            .await
+            .unwrap();
+        let result = sqlx::query(
+            "SELECT received_at, delay_until
+            FROM inflight_taskactivations
+            WHERE status = $1
+            AND processing_attempts = 0
+            ORDER BY received_at ASC
+            LIMIT 1
+            ",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .execute(&mut *conn)
+        .await;
+
+        if let Ok(row) = result {
+            let received_at: DateTime<Utc> = row.get("received_at");
+            let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
+            let millis = now.signed_duration_since(received_at).num_milliseconds()
+                - delay_until.map_or(0, |delay_time| {
+                    delay_time
+                        .signed_duration_since(received_at)
+                        .num_milliseconds()
+                });
+            millis as f64 / 1000.0
+        } else {
+            // If we couldn't find a row, there is no latency.
+            0.0
+        }
+    }
+
+    #[instrument(skip_all)]
+    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
+        let result =
+            sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
+                .bind(status)
+                .fetch_one(&self.read_pool)
+                .await?;
+        Ok(result.get::<u64, _>("count") as usize)
+    }
+
+    async fn count(&self) -> Result<usize, Error> {
+        let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
+            .fetch_one(&self.read_pool)
+            .await?;
+        Ok(result.get::<u64, _>("count") as usize)
+    }
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
 
@@ -570,6 +626,8 @@ impl SqliteActivationStore {
 
 #[async_trait]
 impl InflightActivationStore for SqliteActivationStore {
+    type Database = Sqlite;
+
     async fn acquire_write_conn(
         &self,
         caller: &'static str,
@@ -822,58 +880,6 @@ impl InflightActivationStore for SqliteActivationStore {
             .await?;
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
-    }
-
-    /// Get the age of the oldest pending activation in seconds.
-    /// Only activations with status=pending and processing_attempts=0 are considered
-    /// as we are interested in latency to the *first* attempt.
-    /// Tasks with delay_until set, will have their age adjusted based on their
-    /// delay time. No tasks = 0 lag
-    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
-        let result = sqlx::query(
-            "SELECT received_at, delay_until
-            FROM inflight_taskactivations
-            WHERE status = $1
-            AND processing_attempts = 0
-            ORDER BY received_at ASC
-            LIMIT 1
-            ",
-        )
-        .bind(InflightActivationStatus::Pending)
-        .fetch_optional(&self.read_pool)
-        .await;
-
-        if let Ok(Some(row)) = result {
-            let received_at: DateTime<Utc> = row.get("received_at");
-            let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
-            let millis = now.signed_duration_since(received_at).num_milliseconds()
-                - delay_until.map_or(0, |delay_time| {
-                    delay_time
-                        .signed_duration_since(received_at)
-                        .num_milliseconds()
-                });
-            millis as f64 / 1000.0
-        } else {
-            // If we couldn't find a row, there is no latency.
-            0.0
-        }
-    }
-
-    #[instrument(skip_all)]
-    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
-        let result =
-            sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
-                .bind(status)
-                .fetch_one(&self.read_pool)
-                .await?;
-        Ok(result.get::<u64, _>("count") as usize)
-    }
-
-    async fn count(&self) -> Result<usize, Error> {
-        let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
-            .fetch_one(&self.read_pool)
-            .await?;
-        Ok(result.get::<u64, _>("count") as usize)
     }
 
     /// Update the status of a specific activation
