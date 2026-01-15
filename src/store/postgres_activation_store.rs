@@ -12,7 +12,7 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow},
 };
 use std::{str::FromStr, time::Instant};
-use tracing::{instrument, warn};
+use tracing::instrument;
 
 use crate::config::Config;
 
@@ -251,31 +251,6 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(query.execute(&mut *conn).await?.into())
     }
 
-    #[instrument(skip_all)]
-    async fn get_pending_activation(
-        &self,
-        application: Option<&str>,
-        namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
-        // Convert single namespace to vector for internal use
-        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
-
-        // If a namespace filter is used, an application must also be used.
-        if namespaces.is_some() && application.is_none() {
-            warn!(
-                "Received request for namespaced task without application. namespaces = {namespaces:?}"
-            );
-            return Ok(None);
-        }
-        let result = self
-            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
-            .await?;
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result[0].clone()))
-    }
-
     /// Get a pending activation from specified namespaces
     /// If namespaces is None, gets from any namespace
     /// If namespaces is Some(&[...]), gets from those namespaces
@@ -375,12 +350,6 @@ impl InflightActivationStore for PostgresActivationStore {
             // If we couldn't find a row, there is no latency.
             0.0
         }
-    }
-
-    #[instrument(skip_all)]
-    async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(InflightActivationStatus::Pending)
-            .await
     }
 
     #[instrument(skip_all)]

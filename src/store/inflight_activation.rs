@@ -332,7 +332,25 @@ pub trait InflightActivationStore: Send + Sync {
         &self,
         application: Option<&str>,
         namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error>;
+    ) -> Result<Option<InflightActivation>, Error> {
+        // Convert single namespace to vector for internal use
+        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+
+        // If a namespace filter is used, an application must also be used.
+        if namespaces.is_some() && application.is_none() {
+            warn!(
+                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+            );
+            return Ok(None);
+        }
+        let result = self
+            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
+            .await?;
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result[0].clone()))
+    }
 
     /// Get pending activations from specified namespaces
     async fn get_pending_activations_from_namespaces(
@@ -346,7 +364,10 @@ pub trait InflightActivationStore: Send + Sync {
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
 
     /// Count activations with Pending status
-    async fn count_pending_activations(&self) -> Result<usize, Error>;
+    async fn count_pending_activations(&self) -> Result<usize, Error> {
+        self.count_by_status(InflightActivationStatus::Pending)
+            .await
+    }
 
     /// Count activations by status
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
@@ -402,7 +423,9 @@ pub trait InflightActivationStore: Send + Sync {
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error>;
 
     /// Remove the database, used only in tests
-    async fn remove_db(&self) -> Result<(), Error>;
+    async fn remove_db(&self) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub struct SqliteActivationStore {
@@ -752,31 +775,6 @@ impl InflightActivationStore for SqliteActivationStore {
         meta_result
     }
 
-    #[instrument(skip_all)]
-    async fn get_pending_activation(
-        &self,
-        application: Option<&str>,
-        namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
-        // Convert single namespace to vector for internal use
-        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
-
-        // If a namespace filter is used, an application must also be used.
-        if namespaces.is_some() && application.is_none() {
-            warn!(
-                "Received request for namespaced task without application. namespaces = {namespaces:?}"
-            );
-            return Ok(None);
-        }
-        let result = self
-            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
-            .await?;
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result[0].clone()))
-    }
-
     /// Get a pending activation from specified namespaces
     /// If namespaces is None, gets from any namespace
     /// If namespaces is Some(&[...]), gets from those namespaces
@@ -877,12 +875,6 @@ impl InflightActivationStore for SqliteActivationStore {
             // If we couldn't find a row, there is no latency.
             0.0
         }
-    }
-
-    #[instrument(skip_all)]
-    async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(InflightActivationStatus::Pending)
-            .await
     }
 
     #[instrument(skip_all)]
@@ -1223,10 +1215,5 @@ impl InflightActivationStore for SqliteActivationStore {
         let query = query_builder.build().execute(&mut *conn).await?;
 
         Ok(query.rows_affected())
-    }
-
-    // Used in tests
-    async fn remove_db(&self) -> Result<(), Error> {
-        Ok(())
     }
 }
