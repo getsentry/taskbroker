@@ -35,11 +35,11 @@ pub async fn create_postgres_pool(
 
 pub async fn create_default_postgres_pool(url: &str) -> Result<Pool<Postgres>, Error> {
     let conn_str = url.to_owned() + "/postgres";
-    let read_pool = PgPoolOptions::new()
+    let default_pool = PgPoolOptions::new()
         .max_connections(64)
         .connect_with(PgConnectOptions::from_str(&conn_str)?)
         .await?;
-    Ok(read_pool)
+    Ok(default_pool)
 }
 
 pub struct PostgresActivationStoreConfig {
