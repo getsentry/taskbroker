@@ -501,8 +501,8 @@ impl InflightActivationStore for PostgresActivationStore {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
-        // Idempotent tasks that fail their processing deadlines go directly to failure
-        // there are no retries, as the worker will reject the task due to idempotency keys.
+        // At-most-once tasks that fail their processing deadlines go directly to failure
+        // there are no retries, as the worker will reject the task due to at_most_once keys.
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
@@ -519,7 +519,7 @@ impl InflightActivationStore for PostgresActivationStore {
             processing_deadline_modified_rows = query_res.rows_affected();
         }
 
-        // Update non-idempotent tasks.
+        // Update regular tasks.
         // Increment processing_attempts by 1 and reset processing_deadline to null.
         let result = sqlx::query(
             "UPDATE inflight_taskactivations

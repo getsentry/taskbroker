@@ -283,7 +283,7 @@ impl Default for Config {
             database_adapter: DatabaseAdapter::Sqlite,
             run_migrations: false,
             pg_url: "postgres://postgres:password@sentry-postgres-1:5432/".to_owned(),
-            pg_database_name: "taskbroker".to_owned(),
+            pg_database_name: "default".to_owned(),
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
