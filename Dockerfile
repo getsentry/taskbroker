@@ -3,7 +3,7 @@
 # recent enough version of protobuf-compiler
 FROM rust:1-bookworm AS build
 
-RUN apt-get update && apt-get upgrade -y 
+RUN apt-get update && apt-get upgrade -y
 RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
 
 RUN USER=root cargo new --bin taskbroker
@@ -17,6 +17,7 @@ ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
+COPY ./pg_migrations ./pg_migrations
 COPY ./benches ./benches
 
 # Build dependencies in a way they can be cached

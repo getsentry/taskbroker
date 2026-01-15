@@ -2,23 +2,26 @@ use chrono::Utc;
 use futures::StreamExt;
 use prost::Message as ProstMessage;
 use prost_types::Timestamp;
-use rand::Rng;
-use rdkafka::Message;
-use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
-use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::producer::FutureProducer;
+use rdkafka::{
+    Message,
+    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
+    consumer::{CommitMode, Consumer, StreamConsumer},
+    producer::FutureProducer,
+};
 use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskActivation};
+use std::{collections::HashMap, env::var, sync::Arc, time::SystemTime};
 use uuid::Uuid;
 
-use crate::config::Config;
-use crate::store::inflight_activation::{
-    InflightActivation, InflightActivationBuilder, InflightActivationStatus,
-    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
+use crate::{
+    config::Config,
+    store::{
+        inflight_activation::{
+            InflightActivation, InflightActivationBuilder, InflightActivationStatus,
+            InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
+        },
+        postgres_activation_store::{PostgresActivationStore, PostgresActivationStoreConfig},
+    },
 };
-
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::SystemTime;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {
@@ -189,10 +192,20 @@ impl InflightActivationBuilder {
     }
 }
 
-/// Generate a unique filename for isolated SQLite databases.
+pub fn get_pg_url() -> String {
+    var("TASKBROKER_PG_URL").unwrap_or("postgres://postgres:password@localhost:5432/".to_string())
+}
+
+pub fn get_pg_database_name() -> String {
+    let random_name = format!("a{}", Uuid::new_v4().to_string().replace("-", ""));
+    var("TASKBROKER_PG_DATABASE_NAME").unwrap_or(random_name)
+}
+
 pub fn generate_temp_filename() -> String {
-    let mut rng = rand::thread_rng();
-    format!("/var/tmp/{}-{}.sqlite", Utc::now(), rng.r#gen::<u64>())
+    format!(
+        "/tmp/taskbroker-test-{}",
+        Uuid::new_v4().to_string().replace("-", "")
+    )
 }
 
 /// Generate a unique alphanumeric string for namespaces (and possibly other purposes).
@@ -234,15 +247,25 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create an InflightActivationStore instance
-pub async fn create_test_store() -> Arc<SqliteActivationStore> {
-    Arc::new(
-        SqliteActivationStore::new(
-            &generate_temp_filename(),
-            InflightActivationStoreConfig::from_config(&create_integration_config()),
-        )
-        .await
-        .unwrap(),
-    )
+pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore> {
+    match adapter {
+        "sqlite" => Arc::new(
+            SqliteActivationStore::new(
+                &generate_temp_filename(),
+                InflightActivationStoreConfig::from_config(&create_integration_config()),
+            )
+            .await
+            .unwrap(),
+        ) as Arc<dyn InflightActivationStore>,
+        "postgres" => Arc::new(
+            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
+                &create_integration_config(),
+            ))
+            .await
+            .unwrap(),
+        ) as Arc<dyn InflightActivationStore>,
+        _ => panic!("Invalid adapter: {}", adapter),
+    }
 }
 
 /// Create a Config instance that uses a testing topic
@@ -250,7 +273,23 @@ pub async fn create_test_store() -> Arc<SqliteActivationStore> {
 /// with [`reset_topic`]
 pub fn create_integration_config() -> Arc<Config> {
     let config = Config {
+        pg_url: get_pg_url(),
+        pg_database_name: get_pg_database_name(),
+        run_migrations: true,
         kafka_topic: "taskbroker-test".into(),
+        kafka_auto_offset_reset: "earliest".into(),
+        ..Config::default()
+    };
+
+    Arc::new(config)
+}
+
+pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
+    let config = Config {
+        pg_url: get_pg_url(),
+        pg_database_name: get_pg_database_name(),
+        run_migrations: true,
+        kafka_topic: topic,
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
     };
@@ -310,6 +349,7 @@ pub async fn consume_topic(
 
     let mut stream = consumer.stream();
     let mut results: Vec<TaskActivation> = vec![];
+    let mut last_message = None;
     let start = Utc::now();
     loop {
         let current = Utc::now();
@@ -331,8 +371,12 @@ pub async fn consume_topic(
         let payload = message.payload().expect("Could not fetch message payload");
         let activation = TaskActivation::decode(payload).unwrap();
         results.push(activation);
+        last_message = Some(message);
     }
-
+    // Commit the last message's offset so subsequent calls start from the next message
+    if let Some(msg) = last_message {
+        consumer.commit_message(&msg, CommitMode::Sync).unwrap();
+    }
     results
 }
 

@@ -80,7 +80,6 @@ impl Reducer for InflightActivationWriter {
             self.batch.take();
             return Ok(Some(()));
         }
-
         // Check if writing the batch would exceed the limits
         let exceeded_pending_limit = self
             .store
@@ -145,7 +144,6 @@ impl Reducer for InflightActivationWriter {
                 "reason" => reason,
             )
             .increment(1);
-
             return Ok(None);
         }
 
@@ -202,23 +200,23 @@ impl Reducer for InflightActivationWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
-
     use chrono::DateTime;
-    use std::sync::Arc;
+    use rstest::rstest;
 
-    use crate::store::inflight_activation::InflightActivationBuilder;
-    use crate::store::inflight_activation::{
-        InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        SqliteActivationStore,
+    use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
+    use crate::{
+        store::inflight_activation::{InflightActivationBuilder, InflightActivationStatus},
+        test_utils::{
+            TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
+        },
     };
-    use crate::test_utils::TaskActivationBuilder;
-    use crate::test_utils::generate_unique_namespace;
-    use crate::test_utils::make_activations;
-    use crate::test_utils::{create_integration_config, generate_temp_filename};
 
     #[tokio::test]
-    async fn test_writer_flush_batch() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_flush_batch(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             db_max_size: None,
             max_buf_len: 100,
@@ -227,17 +225,7 @@ mod tests {
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(
-            Arc::new(
-                SqliteActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
-                )
-                .await
-                .unwrap(),
-            ),
-            writer_config,
-        );
+        let mut writer = InflightActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -266,29 +254,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count_pending + count_delay, 2);
+        writer.store.remove_db().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_writer_flush_only_pending() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_flush_only_pending(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
-            max_delay_activations: 0,
+            max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(
-            Arc::new(
-                SqliteActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
-                )
-                .await
-                .unwrap(),
-            ),
-            writer_config,
-        );
+        let mut writer = InflightActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -306,10 +289,15 @@ mod tests {
         writer.flush().await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 1);
+        writer.store.remove_db().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_writer_flush_only_delay() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_flush_only_delay(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             db_max_size: None,
             max_buf_len: 100,
@@ -318,17 +306,7 @@ mod tests {
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(
-            Arc::new(
-                SqliteActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
-                )
-                .await
-                .unwrap(),
-            ),
-            writer_config,
-        );
+        let mut writer = InflightActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -351,10 +329,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count_delay, 1);
+        writer.store.remove_db().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_writer_backpressure_pending_limit_reached() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_backpressure_pending_limit_reached(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             db_max_size: None,
             max_buf_len: 100,
@@ -363,17 +346,7 @@ mod tests {
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(
-            Arc::new(
-                SqliteActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
-                )
-                .await
-                .unwrap(),
-            ),
-            writer_config,
-        );
+        let mut writer = InflightActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -403,10 +376,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
+        writer.store.remove_db().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_writer_backpressure_only_delay_limit_reached_and_entire_batch_is_pending() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_backpressure_only_delay_limit_reached_and_entire_batch_is_pending(
+        #[case] adapter: &str,
+    ) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             db_max_size: None,
             max_buf_len: 100,
@@ -415,17 +395,7 @@ mod tests {
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(
-            Arc::new(
-                SqliteActivationStore::new(
-                    &generate_temp_filename(),
-                    InflightActivationStoreConfig::from_config(&create_integration_config()),
-                )
-                .await
-                .unwrap(),
-            ),
-            writer_config,
-        );
+        let mut writer = InflightActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -455,10 +425,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
+        writer.store.remove_db().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_writer_backpressure_processing_limit_reached() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_backpressure_processing_limit_reached(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             db_max_size: None,
             max_buf_len: 100,
@@ -467,14 +442,6 @@ mod tests {
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let store = Arc::new(
-            SqliteActivationStore::new(
-                &generate_temp_filename(),
-                InflightActivationStoreConfig::from_config(&create_integration_config()),
-            )
-            .await
-            .unwrap(),
-        );
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -525,10 +492,17 @@ mod tests {
             .unwrap();
         // Only the existing processing activation should remain, new ones should be blocked
         assert_eq!(count_processing, 1);
+        // TODO: Because the store and the writer both access the DB, both need to be cleaned up.
+        // Uncomment this when we figure out how to do that cleanly.
+        // writer.store.remove_db().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_writer_backpressure_db_size_limit_reached() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_backpressure_db_size_limit_reached(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             // 200 rows is ~50KB
             db_max_size: Some(50_000),
@@ -538,14 +512,6 @@ mod tests {
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let store = Arc::new(
-            SqliteActivationStore::new(
-                &generate_temp_filename(),
-                InflightActivationStoreConfig::from_config(&create_integration_config()),
-            )
-            .await
-            .unwrap(),
-        );
         let first_round = make_activations(200);
         store.store(first_round).await.unwrap();
         assert!(store.db_size().await.unwrap() > 50_000);
@@ -560,10 +526,15 @@ mod tests {
 
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 200);
+        writer.store.remove_db().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_writer_flush_empty_batch() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_flush_empty_batch(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
             db_max_size: None,
             max_buf_len: 100,
@@ -572,17 +543,10 @@ mod tests {
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let store = Arc::new(
-            SqliteActivationStore::new(
-                &generate_temp_filename(),
-                InflightActivationStoreConfig::from_config(&create_integration_config()),
-            )
-            .await
-            .unwrap(),
-        );
         let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
         writer.reduce(vec![]).await.unwrap();
         let flush_result = writer.flush().await.unwrap();
         assert!(flush_result.is_some());
+        writer.store.remove_db().await.unwrap();
     }
 }
