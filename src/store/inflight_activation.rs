@@ -9,8 +9,6 @@ use libsqlite3_sys::{
     SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
     SQLITE_OK, sqlite3_db_status,
 };
-use prost::Message;
-use prost_types::Timestamp;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
@@ -21,13 +19,10 @@ use sqlx::{
         SqliteRow, SqliteSynchronous,
     },
 };
-use std::{
-    str::FromStr,
-    time::{Instant, SystemTime},
-};
+use std::{str::FromStr, time::Instant};
 use tracing::instrument;
 
-use crate::{config::Config, store::task_activation::TaskActivationBuilder};
+use crate::config::Config;
 
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
@@ -70,7 +65,8 @@ impl From<TaskActivationStatus> for InflightActivationStatus {
 
 #[derive(Clone, Debug, PartialEq, Builder)]
 #[builder(pattern = "owned")]
-#[builder(build_fn(name = "_build", private))]
+#[builder(build_fn(name = "_build"))]
+#[builder(field(public))]
 pub struct InflightActivation {
     #[builder(setter(into))]
     pub id: String,
@@ -140,61 +136,6 @@ pub struct InflightActivation {
     /// are exceeded.
     #[builder(default = false)]
     pub at_most_once: bool,
-}
-
-impl InflightActivationBuilder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn build(mut self, builder: TaskActivationBuilder) -> InflightActivation {
-        // Grab required fields
-        let id = self.id.as_ref().expect("field 'id' is required");
-        let namespace = self
-            .namespace
-            .as_ref()
-            .expect("field 'namespace' is required");
-        let taskname = self
-            .taskname
-            .as_ref()
-            .expect("field 'taskname' is required");
-
-        // Grab fields with defaults
-        let received_at = self.received_at.unwrap_or_default();
-        let processing_deadline_duration = self.processing_deadline_duration.unwrap_or_default();
-
-        // Infer 'expires' field
-        let expires = self
-            .expires_at
-            .flatten()
-            .map(|date_time| (date_time - received_at).num_seconds() as u64);
-
-        // Infer 'delay' field
-        let delay = self
-            .delay_until
-            .flatten()
-            .map(|date_time| (date_time - received_at).num_seconds() as u64);
-
-        // Build the activation
-        let mut activation = builder
-            .id(id)
-            .taskname(taskname)
-            .namespace(namespace)
-            .received_at(Timestamp::from(SystemTime::from(received_at)))
-            .processing_deadline_duration(processing_deadline_duration as u64)
-            .build();
-
-        // Set 'expiration' and 'delay' fields manually after activation has been build
-        activation.expires = expires;
-        activation.delay = delay;
-
-        self.activation = Some(activation.encode_to_vec());
-
-        match self._build() {
-            Ok(activation) => activation,
-            Err(e) => panic!("Failed to build InflightActivation: {}", e),
-        }
-    }
 }
 
 impl InflightActivation {

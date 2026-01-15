@@ -221,10 +221,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        store::{
-            inflight_activation::InflightActivationBuilder, task_activation::TaskActivationBuilder,
-        },
-        test_utils::generate_unique_namespace,
+        store::inflight_activation::InflightActivationBuilder,
+        test_utils::{TaskActivationBuilder, generate_unique_namespace},
     };
 
     #[tokio::test]

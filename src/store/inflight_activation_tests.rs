@@ -9,11 +9,11 @@ use crate::store::inflight_activation::{
     InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
     InflightActivationStoreConfig, QueryResult, create_sqlite_pool,
 };
-use crate::store::task_activation::TaskActivationBuilder;
+use crate::test_utils::{StatusCount, TaskActivationBuilder};
 use crate::test_utils::{
-    StatusCount, assert_counts, create_integration_config, create_test_store,
-    generate_temp_filename, generate_unique_namespace, make_activations,
-    make_activations_with_namespace, replace_retry_state,
+    assert_counts, create_integration_config, create_test_store, generate_temp_filename,
+    generate_unique_namespace, make_activations, make_activations_with_namespace,
+    replace_retry_state,
 };
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};

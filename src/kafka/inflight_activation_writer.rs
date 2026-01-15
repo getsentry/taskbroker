@@ -211,7 +211,7 @@ mod tests {
     use crate::store::inflight_activation::{
         InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
     };
-    use crate::store::task_activation::TaskActivationBuilder;
+    use crate::test_utils::TaskActivationBuilder;
     use crate::test_utils::generate_unique_namespace;
     use crate::test_utils::make_activations;
     use crate::test_utils::{create_integration_config, generate_temp_filename};
