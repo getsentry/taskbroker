@@ -78,7 +78,6 @@ async fn main() -> Result<(), Error> {
             PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
                 .await?,
         ),
-        _ => panic!("Invalid database adapter: {:?}", config.database_adapter),
     };
 
     // If this is an environment where the topics might not exist, check and create them.
