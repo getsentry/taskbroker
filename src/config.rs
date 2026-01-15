@@ -454,7 +454,7 @@ mod tests {
                 log_format: json
                 statsd_addr: 127.0.0.1:8126
                 default_metrics_tags:
-                key_1: value_1
+                    key_1: value_1
                 kafka_cluster: 10.0.0.1:9092,10.0.0.2:9092
                 kafka_topic: error-tasks
                 kafka_deadletter_topic: error-tasks-dlq
