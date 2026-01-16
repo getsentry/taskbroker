@@ -11,6 +11,8 @@ use sqlx::{
     pool::PoolConnection,
     postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow},
 };
+use std::collections::HashMap;
+use std::sync::RwLock;
 use std::{str::FromStr, time::Instant};
 use tracing::instrument;
 
@@ -70,6 +72,7 @@ pub struct PostgresActivationStore {
     read_pool: PgPool,
     write_pool: PgPool,
     config: PostgresActivationStoreConfig,
+    partitions: RwLock<Vec<i32>>,
 }
 
 impl PostgresActivationStore {
@@ -118,7 +121,28 @@ impl PostgresActivationStore {
             read_pool,
             write_pool,
             config,
+            partitions: RwLock::new(vec![]),
         })
+    }
+
+    /// Add the partition condition to the query builder in a thread-safe manner
+    fn add_partition_condition(
+        &self,
+        query_builder: &mut QueryBuilder<Postgres>,
+        first_condition: bool,
+    ) {
+        let partitions = self.partitions.read().unwrap();
+        let condition = if first_condition { "WHERE" } else { "AND" };
+        if !partitions.is_empty() {
+            query_builder.push(" ");
+            query_builder.push(condition);
+            query_builder.push(" partition IN (");
+            let mut separated = query_builder.separated(", ");
+            for partition in partitions.iter() {
+                separated.push_bind(*partition);
+            }
+            query_builder.push(")");
+        }
     }
 }
 
@@ -185,6 +209,13 @@ impl InflightActivationStore for PostgresActivationStore {
         };
 
         Ok(Some(row.into()))
+    }
+
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        let mut write_guard = self.partitions.write().unwrap();
+        write_guard.clear();
+        write_guard.extend(partitions);
+        Ok(())
     }
 
     #[instrument(skip_all)]
@@ -275,6 +306,8 @@ impl InflightActivationStore for PostgresActivationStore {
         query_builder.push_bind(now);
         query_builder.push(")");
 
+        self.add_partition_condition(&mut query_builder, false);
+
         // Handle application & namespace filtering
         if let Some(value) = application {
             query_builder.push(" AND application =");
@@ -324,21 +357,25 @@ impl InflightActivationStore for PostgresActivationStore {
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
-        let result = sqlx::query(
+        let mut query_builder = QueryBuilder::new(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
-            WHERE status = $1
-            AND processing_attempts = 0
-            ORDER BY received_at ASC
-            LIMIT 1
-            ",
-        )
-        .bind(InflightActivationStatus::Pending.to_string())
-        .fetch_one(&self.read_pool)
-        .await;
+            WHERE status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        query_builder.push(" AND processing_attempts = 0");
+
+        self.add_partition_condition(&mut query_builder, false);
+
+        query_builder.push(" ORDER BY received_at ASC LIMIT 1");
+
+        let result = query_builder
+            .build_query_as::<(DateTime<Utc>, Option<DateTime<Utc>>)>()
+            .fetch_one(&self.read_pool)
+            .await;
         if let Ok(row) = result {
-            let received_at: DateTime<Utc> = row.get("received_at");
-            let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
+            let received_at: DateTime<Utc> = row.0;
+            let delay_until: Option<DateTime<Utc>> = row.1;
             let millis = now.signed_duration_since(received_at).num_milliseconds()
                 - delay_until.map_or(0, |delay_time| {
                     delay_time
@@ -354,19 +391,27 @@ impl InflightActivationStore for PostgresActivationStore {
 
     #[instrument(skip_all)]
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
-        let result =
-            sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
-                .bind(status.to_string())
-                .fetch_one(&self.read_pool)
-                .await?;
-        Ok(result.get::<i64, _>("count") as usize)
+        let mut query_builder = QueryBuilder::new(
+            "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = ",
+        );
+        query_builder.push_bind(status.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+        let result = query_builder
+            .build_query_as::<(i64,)>()
+            .fetch_one(&self.read_pool)
+            .await?;
+        Ok(result.0 as usize)
     }
 
     async fn count(&self) -> Result<usize, Error> {
-        let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
+        let mut query_builder =
+            QueryBuilder::new("SELECT COUNT(*) as count FROM inflight_taskactivations");
+        self.add_partition_condition(&mut query_builder, true);
+        let result = query_builder
+            .build_query_as::<(i64,)>()
             .fetch_one(&self.read_pool)
             .await?;
-        Ok(result.get::<i64, _>("count") as usize)
+        Ok(result.0 as usize)
     }
 
     /// Update the status of a specific activation
@@ -421,9 +466,8 @@ impl InflightActivationStore for PostgresActivationStore {
 
     #[instrument(skip_all)]
     async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        Ok(sqlx::query_as(
-            "
-            SELECT id,
+        let mut query_builder = QueryBuilder::new(
+            "SELECT id,
                 activation,
                 partition,
                 kafka_offset AS offset,
@@ -441,15 +485,18 @@ impl InflightActivationStore for PostgresActivationStore {
                 taskname,
                 on_attempts_exceeded
             FROM inflight_taskactivations
-            WHERE status = $1
-            ",
-        )
-        .bind(InflightActivationStatus::Retry.to_string())
-        .fetch_all(&self.read_pool)
-        .await?
-        .into_iter()
-        .map(|row: TableRow| row.into())
-        .collect())
+            WHERE status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Retry.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+
+        Ok(query_builder
+            .build_query_as::<TableRow>()
+            .fetch_all(&self.read_pool)
+            .await?
+            .into_iter()
+            .map(|row| row.into())
+            .collect())
     }
 
     // Used in tests
@@ -472,16 +519,19 @@ impl InflightActivationStore for PostgresActivationStore {
 
         // At-most-once tasks that fail their processing deadlines go directly to failure
         // there are no retries, as the worker will reject the task due to at_most_once keys.
-        let most_once_result = sqlx::query(
+        let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
-        )
-        .bind(InflightActivationStatus::Failure.to_string())
-        .bind(now)
-        .bind(InflightActivationStatus::Processing.to_string())
-        .execute(&mut *atomic)
-        .await;
+            SET processing_deadline = null, status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Failure.to_string());
+        query_builder.push("WHERE processing_deadline < ");
+        query_builder.push_bind(now);
+        query_builder.push(" AND at_most_once = TRUE AND status = ");
+        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+
+        self.add_partition_condition(&mut query_builder, false);
+
+        let most_once_result = query_builder.build().execute(&mut *atomic).await;
 
         let mut processing_deadline_modified_rows = 0;
         if let Ok(query_res) = most_once_result {
@@ -490,16 +540,19 @@ impl InflightActivationStore for PostgresActivationStore {
 
         // Update regular tasks.
         // Increment processing_attempts by 1 and reset processing_deadline to null.
-        let result = sqlx::query(
+        let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
-            WHERE processing_deadline < $2 AND status = $3",
-        )
-        .bind(InflightActivationStatus::Pending.to_string())
-        .bind(now)
-        .bind(InflightActivationStatus::Processing.to_string())
-        .execute(&mut *atomic)
-        .await;
+            SET processing_deadline = null, status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        query_builder.push(", processing_attempts = processing_attempts + 1");
+        query_builder.push(" WHERE processing_deadline < ");
+        query_builder.push_bind(now);
+        query_builder.push(" AND status = ");
+        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+
+        let result = query_builder.build().execute(&mut *atomic).await;
 
         atomic.commit().await?;
 
@@ -518,16 +571,17 @@ impl InflightActivationStore for PostgresActivationStore {
         let mut conn = self
             .acquire_write_conn_metric("handle_processing_attempts")
             .await?;
-        let processing_attempts_result = sqlx::query(
+        let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
-            SET status = $1
-            WHERE processing_attempts >= $2 AND status = $3",
-        )
-        .bind(InflightActivationStatus::Failure.to_string())
-        .bind(self.config.max_processing_attempts as i32)
-        .bind(InflightActivationStatus::Pending.to_string())
-        .execute(&mut *conn)
-        .await;
+            SET status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Failure.to_string());
+        query_builder.push(" WHERE processing_attempts >= ");
+        query_builder.push_bind(self.config.max_processing_attempts as i32);
+        query_builder.push(" AND status = ");
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+        let processing_attempts_result = query_builder.build().execute(&mut *conn).await;
 
         if let Ok(query_res) = processing_attempts_result {
             return Ok(query_res.rows_affected());
@@ -546,15 +600,15 @@ impl InflightActivationStore for PostgresActivationStore {
     async fn handle_expires_at(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut conn = self.acquire_write_conn_metric("handle_expires_at").await?;
-        let query = sqlx::query(
-            "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
-        )
-        .bind(InflightActivationStatus::Pending.to_string())
-        .bind(now)
-        .execute(&mut *conn)
-        .await?;
+        let mut query_builder =
+            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE status = ");
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        query_builder.push(" AND expires_at IS NOT NULL AND expires_at < ");
+        query_builder.push_bind(now);
+        self.add_partition_condition(&mut query_builder, false);
+        let result = query_builder.build().execute(&mut *conn).await?;
 
-        Ok(query.rows_affected())
+        Ok(result.rows_affected())
     }
 
     /// Perform upkeep work for tasks that are past delay_until deadlines
@@ -567,17 +621,18 @@ impl InflightActivationStore for PostgresActivationStore {
     async fn handle_delay_until(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut conn = self.acquire_write_conn_metric("handle_delay_until").await?;
-        let update_result = sqlx::query(
-            r#"UPDATE inflight_taskactivations
-            SET status = $1
-            WHERE delay_until IS NOT NULL AND delay_until < $2 AND status = $3
-            "#,
-        )
-        .bind(InflightActivationStatus::Pending.to_string())
-        .bind(now)
-        .bind(InflightActivationStatus::Delay.to_string())
-        .execute(&mut *conn)
-        .await?;
+
+        let mut query_builder = QueryBuilder::new(
+            "UPDATE inflight_taskactivations
+            SET status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        query_builder.push(" WHERE delay_until IS NOT NULL AND delay_until < ");
+        query_builder.push_bind(now);
+        query_builder.push(" AND status = ");
+        query_builder.push_bind(InflightActivationStatus::Delay.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+        let update_result = query_builder.build().execute(&mut *conn).await?;
 
         Ok(update_result.rows_affected())
     }
@@ -592,13 +647,15 @@ impl InflightActivationStore for PostgresActivationStore {
     async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
         let mut atomic = self.write_pool.begin().await?;
 
-        let failed_tasks: Vec<PgRow> =
-            sqlx::query("SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1")
-                .bind(InflightActivationStatus::Failure.to_string())
-                .fetch_all(&mut *atomic)
-                .await?
-                .into_iter()
-                .collect();
+        let mut query_builder = QueryBuilder::new(
+            "SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Failure.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+        let failed_tasks = query_builder
+            .build_query_as::<(String, Vec<u8>, i32)>()
+            .fetch_all(&mut *atomic)
+            .await?;
 
         let mut forwarder = FailedTasksForwarder {
             to_discard: vec![],
@@ -606,13 +663,11 @@ impl InflightActivationStore for PostgresActivationStore {
         };
 
         for record in failed_tasks.iter() {
-            let activation_data: &[u8] = record.get("activation");
-            let id: String = record.get("id");
+            let activation_data: &[u8] = record.1.as_slice();
+            let id: String = record.0.clone();
             // We could be deadlettering because of activation.expires
             // when a task expires we still deadletter if configured.
-            let on_attempts_exceeded_val: i32 = record.get("on_attempts_exceeded");
-            let on_attempts_exceeded: OnAttemptsExceeded =
-                on_attempts_exceeded_val.try_into().unwrap();
+            let on_attempts_exceeded: OnAttemptsExceeded = record.2.try_into().unwrap();
             if on_attempts_exceeded == OnAttemptsExceeded::Discard
                 || on_attempts_exceeded == OnAttemptsExceeded::Unspecified
             {
@@ -668,12 +723,13 @@ impl InflightActivationStore for PostgresActivationStore {
     #[instrument(skip_all)]
     async fn remove_completed(&self) -> Result<u64, Error> {
         let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
-        let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
-            .bind(InflightActivationStatus::Complete.to_string())
-            .execute(&mut *conn)
-            .await?;
+        let mut query_builder =
+            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE status = ");
+        query_builder.push_bind(InflightActivationStatus::Complete.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+        let result = query_builder.build().execute(&mut *conn).await?;
 
-        Ok(query.rows_affected())
+        Ok(result.rows_affected())
     }
 
     /// Remove killswitched tasks.
@@ -686,6 +742,7 @@ impl InflightActivationStore for PostgresActivationStore {
             separated.push_bind(taskname);
         }
         separated.push_unseparated(")");
+        self.add_partition_condition(&mut query_builder, false);
         let mut conn = self
             .acquire_write_conn_metric("remove_killswitched")
             .await?;
