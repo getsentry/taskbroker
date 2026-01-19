@@ -36,8 +36,7 @@ default = true
 members = ["integration_tests", "clients/python"]
 
 [tool.mypy]
-# mypy_path = "integration_tests,clients/python/src"
-mypy_path = "integration_tests"
+mypy_path = "integration_tests,clients/python/src"
 explicit_package_bases = true
 # minimal strictness settings
 check_untyped_defs = true
@@ -54,6 +53,7 @@ disallow_untyped_defs = true
 # begin: missing 3rd party stubs
 [[tool.mypy.overrides]]
 module = [
+    ".conftest",
     "redis.*",
     "rediscluster.*",
     "confluent_kafka.*",
