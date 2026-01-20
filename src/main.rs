@@ -66,6 +66,9 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
+
+    ::metrics::gauge!("taskbroker.workers").set(0);
+
     let store = Arc::new(
         InflightActivationStore::new(
             &config.db_path,

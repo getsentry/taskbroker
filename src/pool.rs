@@ -66,6 +66,8 @@ impl WorkerPool {
                 // Remove any existing entry with this address first
                 clients.retain(|c| c.address != address);
                 clients.push(client);
+
+                metrics::gauge!("taskbroker.workers").set(1);
             }
 
             Err(e) => {
