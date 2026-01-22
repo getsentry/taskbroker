@@ -30,6 +30,7 @@ use taskbroker::kafka::{
 };
 use taskbroker::logging;
 use taskbroker::metrics;
+use taskbroker::pprof_server;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::inflight_activation::{
@@ -260,6 +261,40 @@ async fn main() -> Result<(), Error> {
         vec![]
     };
 
+    // Pprof server (conditionally enabled)
+    let pprof_task = if config.pprof_enabled {
+        let pprof_config = config.clone();
+        info!(
+            "Starting pprof server on {}:{}",
+            pprof_config.pprof_addr, pprof_config.pprof_port
+        );
+
+        Some(tokio::spawn(async move {
+            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+
+            select! {
+                biased;
+
+                res = pprof_server::start_pprof_server(
+                    pprof_config.pprof_addr.clone(),
+                    pprof_config.pprof_port
+                ) => {
+                    match res {
+                        Ok(()) => Ok(()),
+                        Err(e) => Err(anyhow!("pprof server failed: {:?}", e)),
+                    }
+                }
+
+                _ = guard.wait() => {
+                    info!("Cancellation token received, shutting down pprof server");
+                    Ok(())
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
     let mut departure = elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
@@ -269,6 +304,11 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task))
         .on_completion(log_task_completion("grpc_server", grpc_task));
+
+    // Register pprof task if enabled
+    if let Some(task) = pprof_task {
+        departure = departure.on_completion(log_task_completion("pprof_server", task));
+    }
 
     // Register each pusher thread
     for (i, handle) in pusher_tasks.into_iter().enumerate() {

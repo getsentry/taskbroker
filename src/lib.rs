@@ -7,6 +7,7 @@ pub mod kafka;
 pub mod logging;
 pub mod metrics;
 pub mod pool;
+pub mod pprof_server;
 pub mod runtime_config;
 pub mod store;
 pub mod task_pusher;

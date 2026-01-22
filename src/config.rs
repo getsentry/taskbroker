@@ -223,6 +223,15 @@ pub struct Config {
 
     /// Number of parallel task pusher threads to spawn in push mode.
     pub push_threads: usize,
+
+    /// Enable pprof profiling server.
+    pub pprof_enabled: bool,
+
+    /// The hostname to bind the pprof HTTP server to.
+    pub pprof_addr: String,
+
+    /// The port to bind the pprof HTTP server to.
+    pub pprof_port: u16,
 }
 
 impl Default for Config {
@@ -291,6 +300,9 @@ impl Default for Config {
             worker_endpoint: "http://127.0.0.1:50052".into(),
             push_mode: true,
             push_threads: 1,
+            pprof_enabled: false,
+            pprof_addr: "0.0.0.0".to_owned(),
+            pprof_port: 6060,
         }
     }
 }
