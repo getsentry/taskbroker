@@ -51,7 +51,7 @@ class TimedeltaSchedule(Schedule):
         self._delta = delta
         if delta.microseconds:
             raise ValueError("microseconds are not supported")
-        if delta.total_seconds() < 0:
+        if delta.total_seconds() < 1:
             raise ValueError("interval must be at least one second")
 
     def monitor_interval(self) -> tuple[int, MonitorConfigScheduleUnit]:
