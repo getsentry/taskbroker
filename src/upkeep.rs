@@ -464,8 +464,8 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
         .retry_state
         .and_then(|retry_state| retry_state.delay_on_retry);
 
-    if new_activation.retry_state.is_some() {
-        new_activation.retry_state.as_mut().unwrap().attempts += 1;
+    if let Some(retry_state) = new_activation.retry_state.as_mut() {
+        retry_state.attempts += 1;
     }
 
     new_activation
