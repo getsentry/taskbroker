@@ -3,6 +3,10 @@ setup:
 	@test -n "$$CI" || devenv sync
 .PHONY: setup
 
+python-venv: ## Build Python virtual environment
+	uv sync --all-packages --all-groups
+.PHONY: python-venv
+
 # Builds
 
 build: ## Build all features without debug symbols
@@ -37,6 +41,10 @@ format: ## Run autofix mode for formatting and lint
 unit-test: ## Run unit tests
 	cargo test
 .PHONY: unit-test
+
+python-test: ## Run Python client tests
+	cd clients/python && uv run pytest --cov=src/taskbroker_client --cov-report=xml --cov-report=term
+.PHONY: python-test
 
 reset-kafka: setup ## Reset kafka
 	devservices down
