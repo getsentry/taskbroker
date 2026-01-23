@@ -7,6 +7,7 @@ use sentry_protos::taskbroker::v1::{
     TaskActivation, TaskActivationStatus,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, instrument};
@@ -18,6 +19,8 @@ pub struct TaskbrokerServer {
     pub store: Arc<InflightActivationStore>,
     pub pool: Arc<WorkerPool>,
     pub push_mode: bool,
+    pub completed_tasks: AtomicU64,
+    pub ready_emitted: AtomicBool,
 }
 
 #[tonic::async_trait]
@@ -129,6 +132,16 @@ impl ConsumerService for TaskbrokerServer {
                 "Unable to update status of {id:?} to {status:?}"
             )));
         }
+
+        // Track completed tasks and emit ready metric after 100 completions
+        if !self.ready_emitted.load(Ordering::Relaxed) {
+            let new_count = self.completed_tasks.fetch_add(1, Ordering::Relaxed) + 1;
+            if new_count == 500 {
+                self.ready_emitted.store(true, Ordering::Relaxed);
+                ::metrics::gauge!("ready").set(1);
+            }
+        }
+
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
         let Some(FetchNextTask { ref namespace }) = request.get_ref().fetch_next_task else {

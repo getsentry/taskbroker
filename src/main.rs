@@ -67,7 +67,7 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
-    ::metrics::gauge!("taskbroker.workers").set(0);
+    ::metrics::gauge!("ready").set(0);
 
     let store = Arc::new(
         InflightActivationStore::new(
@@ -205,6 +205,8 @@ async fn main() -> Result<(), Error> {
                     store: grpc_store,
                     pool: grpc_pool,
                     push_mode: grpc_config.push_mode,
+                    completed_tasks: std::sync::atomic::AtomicU64::new(0),
+                    ready_emitted: std::sync::atomic::AtomicBool::new(false),
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);

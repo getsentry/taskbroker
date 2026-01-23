@@ -1,5 +1,6 @@
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{FetchNextTask, GetTaskRequest, SetTaskStatusRequest};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use tonic::{Code, Request};
 
 use crate::grpc::server::TaskbrokerServer;
@@ -15,6 +16,8 @@ async fn test_get_task() {
         store,
         pool,
         push_mode: false,
+        completed_tasks: AtomicU64::new(0),
+        ready_emitted: AtomicBool::new(false),
     };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
@@ -34,6 +37,8 @@ async fn test_set_task_status() {
         store,
         pool,
         push_mode: false,
+        completed_tasks: AtomicU64::new(0),
+        ready_emitted: AtomicBool::new(false),
     };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -56,6 +61,8 @@ async fn test_set_task_status_invalid() {
         store,
         pool,
         push_mode: false,
+        completed_tasks: AtomicU64::new(0),
+        ready_emitted: AtomicBool::new(false),
     };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -85,6 +92,8 @@ async fn test_get_task_success() {
         store,
         pool,
         push_mode: false,
+        completed_tasks: AtomicU64::new(0),
+        ready_emitted: AtomicBool::new(false),
     };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
@@ -108,6 +117,8 @@ async fn test_set_task_status_success() {
         store,
         pool,
         push_mode: false,
+        completed_tasks: AtomicU64::new(0),
+        ready_emitted: AtomicBool::new(false),
     };
 
     let request = GetTaskRequest { namespace: None };
