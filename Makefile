@@ -4,6 +4,7 @@ setup:
 .PHONY: setup
 
 python-venv: ## Build Python virtual environment
+	python -m venv .venv
 	uv sync --all-packages --all-groups
 .PHONY: python-venv
 
