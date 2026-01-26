@@ -145,6 +145,11 @@ jobs:
           cache-dependency-path: uv.lock
           install-cmd: uv sync --all-packages --all-groups --frozen --active
 
+      - name: Start devservices
+        if: steps.changes.outputs.python == 'true'
+        run: |
+          devservices up --mode=client
+
       - name: Run pytest with coverage
         if: steps.changes.outputs.python == 'true'
         run: make python-test
