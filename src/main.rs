@@ -1,4 +1,4 @@
-use anyhow::{Error, anyhow};
+use anyhow::Error;
 use chrono::Utc;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
@@ -9,16 +9,10 @@ use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
-use tonic::transport::Server;
 use tracing::{debug, error, info, warn};
 
-use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
-
-use taskbroker::SERVICE_NAME;
 use taskbroker::config::Config;
-use taskbroker::grpc::auth_middleware::AuthLayer;
-use taskbroker::grpc::metrics_middleware::MetricsLayer;
-use taskbroker::grpc::server::TaskbrokerServer;
+
 use taskbroker::kafka::{
     admin::create_missing_topics,
     consumer::start_consumer,
@@ -34,7 +28,6 @@ use taskbroker::store::inflight_activation::{
     InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
 };
 use taskbroker::{Args, get_version};
-use tonic_health::ServingStatus;
 
 async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -90,13 +83,6 @@ async fn main() -> Result<(), Error> {
     // Get startup time after migrations and vacuum
     let startup_time = Utc::now();
 
-    // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
-    // of the application.
-    let (health_reporter, health_service) = tonic_health::server::health_reporter();
-    health_reporter
-        .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-        .await;
-
     // Upkeep loop
     let upkeep_task = tokio::spawn({
         let upkeep_store = store.clone();
@@ -108,7 +94,6 @@ async fn main() -> Result<(), Error> {
                 upkeep_store,
                 startup_time,
                 runtime_config_manager.clone(),
-                health_reporter.clone(),
             )
             .await?;
             Ok(())
@@ -177,61 +162,12 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // GRPC server
-    let grpc_server_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
-        async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
-                .parse()
-                .expect("Failed to parse address");
-
-            let layers = tower::ServiceBuilder::new()
-                .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&grpc_config))
-                .into_inner();
-
-            let server = Server::builder()
-                .layer(layers)
-                .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store: grpc_store,
-                }))
-                .add_service(health_service.clone())
-                .serve(addr);
-
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            info!("GRPC server listening on {}", addr);
-            select! {
-                biased;
-
-                res = server => {
-                    info!("GRPC server task failed, shutting down");
-
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    match res {
-                        Ok(()) => Ok(()),
-                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
-                    }
-                }
-                _ = guard.wait() => {
-                    info!("Cancellation token received, shutting down GRPC server");
-
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok(())
-                }
-            }
-        }
-    });
-
     elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
-        .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task))
         .await;
