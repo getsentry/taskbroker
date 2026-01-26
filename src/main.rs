@@ -195,6 +195,8 @@ async fn main() -> Result<(), Error> {
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
+                    completed_tasks: std::sync::atomic::AtomicU64::new(0),
+                    ready_emitted: std::sync::atomic::AtomicBool::new(false),
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);

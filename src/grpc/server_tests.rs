@@ -12,7 +12,11 @@ use crate::test_utils::{create_test_store, make_activations};
 #[tokio::test]
 async fn test_get_task() {
     let store = create_test_store().await;
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = GetTaskRequest {
         namespace: None,
         application: None,
@@ -28,7 +32,11 @@ async fn test_get_task() {
 #[allow(deprecated)]
 async fn test_set_task_status() {
     let store = create_test_store().await;
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 5, // Complete
@@ -44,7 +52,11 @@ async fn test_set_task_status() {
 #[allow(deprecated)]
 async fn test_set_task_status_invalid() {
     let store = create_test_store().await;
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 1, // Invalid
@@ -67,7 +79,11 @@ async fn test_get_task_success() {
     let activations = make_activations(1);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = GetTaskRequest {
         namespace: None,
         application: None,
@@ -93,7 +109,11 @@ async fn test_get_task_with_application_success() {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = GetTaskRequest {
         namespace: None,
         application: Some("hammers".into()),
@@ -116,7 +136,11 @@ async fn test_get_task_with_namespace_requires_application() {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = GetTaskRequest {
         namespace: Some(namespace),
         application: None,
@@ -135,7 +159,11 @@ async fn test_set_task_status_success() {
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
 
     let request = GetTaskRequest {
         namespace: None,
@@ -177,7 +205,11 @@ async fn test_set_task_status_with_application() {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
@@ -211,7 +243,11 @@ async fn test_set_task_status_with_application_no_match() {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     // Request a task from an application without any activations.
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
@@ -236,7 +272,11 @@ async fn test_set_task_status_with_namespace_requires_application() {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer {
+        store,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
+    };
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
