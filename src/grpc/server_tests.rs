@@ -13,6 +13,8 @@ async fn test_get_task() {
     let service = TaskbrokerServer {
         store,
         push_mode: false,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
     };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
@@ -29,8 +31,9 @@ async fn test_set_task_status() {
 
     let service = TaskbrokerServer {
         store,
-
         push_mode: false,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
     };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -50,8 +53,9 @@ async fn test_set_task_status_invalid() {
 
     let service = TaskbrokerServer {
         store,
-
         push_mode: false,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
     };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
@@ -79,6 +83,8 @@ async fn test_get_task_success() {
     let service = TaskbrokerServer {
         store,
         push_mode: false,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
     };
     let request = GetTaskRequest { namespace: None };
     let response = service.get_task(Request::new(request)).await;
@@ -100,6 +106,8 @@ async fn test_set_task_status_success() {
     let service = TaskbrokerServer {
         store,
         push_mode: false,
+        completed_tasks: std::sync::atomic::AtomicU64::new(0),
+        ready_emitted: std::sync::atomic::AtomicBool::new(false),
     };
 
     let request = GetTaskRequest { namespace: None };
