@@ -15,11 +15,13 @@ use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
     migrate::MigrateDatabase,
     pool::{PoolConnection, PoolOptions},
+    postgres::PgQueryResult,
     sqlite::{
         SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
         SqliteRow, SqliteSynchronous,
     },
 };
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::{str::FromStr, time::Instant};
 use tracing::{instrument, warn};
 
@@ -37,6 +39,36 @@ pub enum InflightActivationStatus {
     Retry,
     Complete,
     Delay,
+}
+
+impl Display for InflightActivationStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl FromStr for InflightActivationStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "Unspecified" {
+            Ok(InflightActivationStatus::Unspecified)
+        } else if s == "Pending" {
+            Ok(InflightActivationStatus::Pending)
+        } else if s == "Processing" {
+            Ok(InflightActivationStatus::Processing)
+        } else if s == "Failure" {
+            Ok(InflightActivationStatus::Failure)
+        } else if s == "Retry" {
+            Ok(InflightActivationStatus::Retry)
+        } else if s == "Complete" {
+            Ok(InflightActivationStatus::Complete)
+        } else if s == "Delay" {
+            Ok(InflightActivationStatus::Delay)
+        } else {
+            Err(format!("Unknown inflight activation status string: {}", s))
+        }
+    }
 }
 
 impl InflightActivationStatus {
@@ -118,7 +150,7 @@ pub struct InflightActivation {
     /// When an activation is moved from pending -> processing a result is expected
     /// in this many seconds.
     #[builder(default = 0)]
-    pub processing_deadline_duration: u32,
+    pub processing_deadline_duration: i32,
 
     /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
     #[builder(default = None, setter(strip_option))]
@@ -170,31 +202,39 @@ impl From<SqliteQueryResult> for QueryResult {
     }
 }
 
+impl From<PgQueryResult> for QueryResult {
+    fn from(value: PgQueryResult) -> Self {
+        Self {
+            rows_affected: value.rows_affected(),
+        }
+    }
+}
+
 pub struct FailedTasksForwarder {
     pub to_discard: Vec<(String, Vec<u8>)>,
     pub to_deadletter: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Debug, FromRow)]
-struct TableRow {
-    id: String,
-    activation: Vec<u8>,
-    partition: i32,
-    offset: i64,
-    added_at: DateTime<Utc>,
-    received_at: DateTime<Utc>,
-    processing_attempts: i32,
-    expires_at: Option<DateTime<Utc>>,
-    delay_until: Option<DateTime<Utc>>,
-    processing_deadline_duration: u32,
-    processing_deadline: Option<DateTime<Utc>>,
-    status: InflightActivationStatus,
-    at_most_once: bool,
-    application: String,
-    namespace: String,
-    taskname: String,
+pub struct TableRow {
+    pub id: String,
+    pub activation: Vec<u8>,
+    pub partition: i32,
+    pub offset: i64,
+    pub added_at: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub processing_attempts: i32,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub delay_until: Option<DateTime<Utc>>,
+    pub processing_deadline_duration: i32,
+    pub processing_deadline: Option<DateTime<Utc>>,
+    pub status: String,
+    pub at_most_once: bool,
+    pub application: String,
+    pub namespace: String,
+    pub taskname: String,
     #[sqlx(try_from = "i32")]
-    on_attempts_exceeded: OnAttemptsExceeded,
+    pub on_attempts_exceeded: OnAttemptsExceeded,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -213,7 +253,7 @@ impl TryFrom<InflightActivation> for TableRow {
             delay_until: value.delay_until,
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
-            status: value.status,
+            status: value.status.to_string(),
             at_most_once: value.at_most_once,
             application: value.application,
             namespace: value.namespace,
@@ -228,7 +268,7 @@ impl From<TableRow> for InflightActivation {
         Self {
             id: value.id,
             activation: value.activation,
-            status: value.status,
+            status: InflightActivationStatus::from_str(&value.status).unwrap(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -317,7 +357,25 @@ pub trait InflightActivationStore: Send + Sync {
         &self,
         application: Option<&str>,
         namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error>;
+    ) -> Result<Option<InflightActivation>, Error> {
+        // Convert single namespace to vector for internal use
+        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+
+        // If a namespace filter is used, an application must also be used.
+        if namespaces.is_some() && application.is_none() {
+            warn!(
+                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+            );
+            return Ok(None);
+        }
+        let result = self
+            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
+            .await?;
+        if result.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(result[0].clone()))
+    }
 
     /// Get pending activations from specified namespaces
     async fn get_pending_activations_from_namespaces(
@@ -331,7 +389,10 @@ pub trait InflightActivationStore: Send + Sync {
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
 
     /// Count activations with Pending status
-    async fn count_pending_activations(&self) -> Result<usize, Error>;
+    async fn count_pending_activations(&self) -> Result<usize, Error> {
+        self.count_by_status(InflightActivationStatus::Pending)
+            .await
+    }
 
     /// Count activations by status
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
@@ -385,6 +446,11 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Remove killswitched tasks
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error>;
+
+    /// Remove the database, used only in tests
+    async fn remove_db(&self) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub struct SqliteActivationStore {
@@ -681,6 +747,7 @@ impl InflightActivationStore for SqliteActivationStore {
             .into_iter()
             .map(TableRow::try_from)
             .collect::<Result<Vec<TableRow>, _>>()?;
+
         let query = query_builder
             .push_values(rows, |mut b, row| {
                 b.push_bind(row.id);
@@ -731,31 +798,6 @@ impl InflightActivationStore for SqliteActivationStore {
         metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
 
         meta_result
-    }
-
-    #[instrument(skip_all)]
-    async fn get_pending_activation(
-        &self,
-        application: Option<&str>,
-        namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
-        // Convert single namespace to vector for internal use
-        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
-
-        // If a namespace filter is used, an application must also be used.
-        if namespaces.is_some() && application.is_none() {
-            warn!(
-                "Received request for namespaced task without application. namespaces = {namespaces:?}"
-            );
-            return Ok(None);
-        }
-        let result = self
-            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
-            .await?;
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result[0].clone()))
     }
 
     /// Get a pending activation from specified namespaces
@@ -858,12 +900,6 @@ impl InflightActivationStore for SqliteActivationStore {
             // If we couldn't find a row, there is no latency.
             0.0
         }
-    }
-
-    #[instrument(skip_all)]
-    async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(InflightActivationStatus::Pending)
-            .await
     }
 
     #[instrument(skip_all)]
