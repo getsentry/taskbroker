@@ -724,6 +724,7 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        warn!("assign_partitions: {:?}", partitions);
         Ok(())
     }
 
