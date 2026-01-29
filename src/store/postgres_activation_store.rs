@@ -7,11 +7,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sqlx::{
-    Pool, Postgres, QueryBuilder, Row,
+    Pool, Postgres, QueryBuilder,
     pool::PoolConnection,
-    postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow},
+    postgres::{PgConnectOptions, PgPool, PgPoolOptions},
 };
-use std::collections::HashMap;
 use std::sync::RwLock;
 use std::{str::FromStr, time::Instant};
 use tracing::instrument;
