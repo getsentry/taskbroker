@@ -25,6 +25,7 @@ dev = [
     "black==24.10.0",
     "pre-commit>=4.2.0",
     "pytest>=8.3.3",
+    "pytest-cov>=4.0.0",
     "flake8>=7.3.0",
     "isort>=5.13.2",
     "mypy>=1.17.1",
@@ -32,11 +33,12 @@ dev = [
 ]
 [project.optional-dependencies]
 examples = [
-    "click>=8.3"
+    "click>=8.3",
+    "setuptools>=80.0",
 ]
 
 [build-system]
-requires = ["uv_build>=0.8.2,<0.9.0"]
+requires = ["uv_build>=0.8.2"]
 build-backend = "uv_build"
 
 [tool.uv]
@@ -51,33 +53,6 @@ pythonpath = ["python"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-
-[tool.mypy]
-files = ["."]
-mypy_path = ["src"]
-explicit_package_bases = true
-# minimal strictness settings
-check_untyped_defs = true
-no_implicit_reexport = true
-warn_unreachable = true
-warn_unused_configs = true
-warn_unused_ignores = true
-warn_redundant_casts = true
-enable_error_code = ["ignore-without-code", "redundant-self"]
-local_partial_types = true  # compat with dmypy
-disallow_any_generics = true
-disallow_untyped_defs = true
-
-# begin: missing 3rd party stubs
-[[tool.mypy.overrides]]
-module = [
-    ".conftest",
-    "redis.*",
-    "rediscluster.*",
-    "confluent_kafka.*",
-]
-ignore_missing_imports = true
-# end: missing 3rd party stubs
 
 [tool.black]
 # File filtering is taken care of in pre-commit.

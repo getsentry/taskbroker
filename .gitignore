@@ -2,6 +2,7 @@
 
 # Editors
 .DS_Store
+.claude
 
 # Sqlite artifacts
 *.sqlite
@@ -13,6 +14,8 @@
 **/.pytest_cache/
 **/integration_tests/.tests_output/
 **/.venv
+clients/python/.coverage*
+clients/python/coverage.xml
 
 .VERSION
 VERSION
