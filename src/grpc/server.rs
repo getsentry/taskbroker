@@ -65,6 +65,8 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<SetTaskStatusRequest>,
     ) -> Result<Response<SetTaskStatusResponse>, Status> {
+        println!("Set task status...");
+
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 

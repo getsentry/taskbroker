@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "sys_platform == 'darwin' or sys_platform == 'linux'",
@@ -552,10 +552,10 @@ http2 = [
 
 [[package]]
 name = "setuptools"
-version = "78.1.1"
+version = "80.10.2"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/setuptools-78.1.1-py3-none-any.whl", hash = "sha256:c3a9c4211ff4c309edb8b8c4f1cbfa7ae324c4ba9f91ff254e3d305b9fd54561" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/setuptools-80.10.2-py3-none-any.whl", hash = "sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173" },
 ]
 
 [[package]]
@@ -646,6 +646,7 @@ dependencies = [
 [package.optional-dependencies]
 examples = [
     { name = "click", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "setuptools", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
@@ -675,6 +676,7 @@ requires-dist = [
     { name = "sentry-arroyo", specifier = ">=2.33.1" },
     { name = "sentry-protos", specifier = ">=0.4.11" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
+    { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
     { name = "types-protobuf", specifier = ">=6.30.2.20250703" },
     { name = "zstandard", specifier = ">=0.18.0" },
 ]

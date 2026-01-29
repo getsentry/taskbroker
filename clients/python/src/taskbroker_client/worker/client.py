@@ -250,7 +250,9 @@ class TaskbrokerClient:
         self._num_tasks_before_rebalance -= 1
         return self._cur_host, self._host_to_stubs[self._cur_host]
 
-    def get_task(self, namespace: str | None = None) -> InflightTaskActivation | None:
+    def get_task(
+        self, namespace: str | None = None, application: str | None = None
+    ) -> InflightTaskActivation | None:
         """
         Fetch a pending task.
 
@@ -259,7 +261,7 @@ class TaskbrokerClient:
         """
         self._emit_health_check()
 
-        request = GetTaskRequest(namespace=namespace)
+        request = GetTaskRequest(namespace=namespace, application=application)
         try:
             host, stub = self._get_cur_stub()
             with self._metrics.timer("taskworker.get_task.rpc", tags={"host": host}):

@@ -34,6 +34,8 @@ pub fn new(
         let namespace = activation.namespace.clone();
         let taskname = activation.taskname.clone();
 
+        println!("Task activation ingested - application: {}", application);
+
         metrics::histogram!(
             "consumer.message.payload_size_bytes",
             "namespace" => namespace.clone(),

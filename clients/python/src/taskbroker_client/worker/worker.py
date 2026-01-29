@@ -51,6 +51,7 @@ class TaskWorker:
         app_module: str,
         broker_hosts: list[str],
         max_child_task_count: int | None = None,
+        application: str | None = None,
         namespace: str | None = None,
         concurrency: int = 1,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
@@ -65,6 +66,7 @@ class TaskWorker:
         self.options = kwargs
         self._app_module = app_module
         self._max_child_task_count = max_child_task_count
+        self._application = application
         self._namespace = namespace
         self._concurrency = concurrency
         app = import_app(app_module)
@@ -269,7 +271,7 @@ class TaskWorker:
         if fetch:
             fetch_next = None
             if not self._child_tasks.full():
-                fetch_next = FetchNextTask(namespace=self._namespace)
+                fetch_next = FetchNextTask(namespace=self._namespace, application=self._application)
 
             next = self._send_update_task(result, fetch_next)
             if next:
@@ -377,7 +379,7 @@ class TaskWorker:
         # Use the shutdown_event as a sleep mechanism
         self._shutdown_event.wait(self._gettask_backoff_seconds)
         try:
-            activation = self.client.get_task(self._namespace)
+            activation = self.client.get_task(self._namespace, self._application)
         except grpc.RpcError as e:
             logger.info(
                 "taskworker.fetch_task.failed",
