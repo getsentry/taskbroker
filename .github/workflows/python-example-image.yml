@@ -1,6 +1,3 @@
----
-name: Python Example Docker Image
-
 on:
   pull_request:
     paths:
