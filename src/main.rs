@@ -162,6 +162,7 @@ async fn main() -> Result<(), Error> {
             start_consumer(
                 &[&consumer_config.kafka_topic],
                 &consumer_config.kafka_consumer_config(),
+                consumer_store.clone(),
                 processing_strategy!({
                     err:
                         OsStreamWriter::new(
