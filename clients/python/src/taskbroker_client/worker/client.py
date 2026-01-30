@@ -131,6 +131,7 @@ class TaskbrokerClient:
     def __init__(
         self,
         hosts: list[str],
+        application: str,
         metrics: MetricsBackend,
         max_tasks_before_rebalance: int = DEFAULT_REBALANCE_AFTER,
         max_consecutive_unavailable_errors: int = DEFAULT_CONSECUTIVE_UNAVAILABLE_ERRORS,
@@ -140,6 +141,7 @@ class TaskbrokerClient:
         grpc_config: str | None = None,
     ) -> None:
         assert len(hosts) > 0, "You must provide at least one RPC host to connect to"
+        self._application = application
         self._hosts = hosts
         self._rpc_secret = rpc_secret
         self._metrics = metrics
@@ -259,7 +261,7 @@ class TaskbrokerClient:
         """
         self._emit_health_check()
 
-        request = GetTaskRequest(namespace=namespace)
+        request = GetTaskRequest(application=self._application, namespace=namespace)
         try:
             host, stub = self._get_cur_stub()
             with self._metrics.timer("taskworker.get_task.rpc", tags={"host": host}):
@@ -299,6 +301,8 @@ class TaskbrokerClient:
         The return value is the next task that should be executed.
         """
         self._emit_health_check()
+        if fetch_next_task is not None:
+            fetch_next_task.application = self._application
 
         self._metrics.incr(
             "taskworker.client.fetch_next", tags={"next": fetch_next_task is not None}

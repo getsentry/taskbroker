@@ -71,6 +71,7 @@ class TaskWorker:
 
         self.client = TaskbrokerClient(
             hosts=broker_hosts,
+            application=app.name,
             metrics=app.metrics,
             max_tasks_before_rebalance=rebalance_after,
             health_check_settings=(
