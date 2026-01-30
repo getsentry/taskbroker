@@ -24,6 +24,7 @@ class TaskbrokerApp:
         metrics_class: str | MetricsBackend = "taskbroker_client.metrics.NoOpMetricsBackend",
         at_most_once_store: AtMostOnceStore | None = None,
     ) -> None:
+        self.name = name
         self.metrics = self._build_metrics(metrics_class)
         self._config = {
             "rpc_secret": None,
