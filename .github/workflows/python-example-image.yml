@@ -10,6 +10,7 @@ on:
 
 jobs:
   build:
+    name: 'Build example app image'
     runs-on: ubuntu-24.04
     name: build-python-example
     permissions:
