@@ -29,7 +29,7 @@ use crate::{
 /// on the inflight store
 pub async fn upkeep(
     config: Arc<Config>,
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     health_reporter: HealthReporter,
@@ -110,7 +110,7 @@ impl UpkeepResults {
 )]
 pub async fn do_upkeep(
     config: Arc<Config>,
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
     producer: Arc<FutureProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
@@ -282,7 +282,7 @@ pub async fn do_upkeep(
             .record(remove_killswitched_start.elapsed());
     }
 
-    // 12. Forward tasks from demoted namespaces to "long" namespace
+    // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
     let forward_cluster = runtime_config
         .demoted_topic_cluster
@@ -304,7 +304,7 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations_from_namespaces(Some(&demoted_namespaces), None)
+            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -464,8 +464,8 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
         .retry_state
         .and_then(|retry_state| retry_state.delay_on_retry);
 
-    if new_activation.retry_state.is_some() {
-        new_activation.retry_state.as_mut().unwrap().attempts += 1;
+    if let Some(retry_state) = new_activation.retry_state.as_mut() {
+        retry_state.attempts += 1;
     }
 
     new_activation
@@ -481,7 +481,7 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
-    mut health_reporter: HealthReporter,
+    health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
     if config.health_check_killswitched {
@@ -510,6 +510,7 @@ mod tests {
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use prost::Message;
     use prost_types::Timestamp;
+    use rstest::rstest;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
     use std::sync::Arc;
     use std::time::Duration;
@@ -520,27 +521,14 @@ mod tests {
     use crate::{
         config::Config,
         runtime_config::RuntimeConfigManager,
-        store::inflight_activation::{
-            InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        },
+        store::inflight_activation::InflightActivationStatus,
         test_utils::{
             StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
-            create_producer, generate_temp_filename, make_activations, replace_retry_state,
-            reset_topic,
+            create_integration_config_with_topic, create_producer, create_test_store,
+            make_activations, replace_retry_state, reset_topic,
         },
         upkeep::{create_retry_activation, do_upkeep},
     };
-
-    async fn create_inflight_store() -> Arc<InflightActivationStore> {
-        let url = generate_temp_filename();
-        let config = create_integration_config();
-
-        Arc::new(
-            InflightActivationStore::new(&url, InflightActivationStoreConfig::from_config(&config))
-                .await
-                .unwrap(),
-        )
-    }
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
@@ -624,14 +612,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_activation_is_appended_to_kafka() {
-        let config = create_integration_config();
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
+        let config = create_integration_config_with_topic(format!("taskbroker-test-{}", adapter));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let mut records = make_activations(2);
 
@@ -705,10 +696,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_processing_deadline_retains_future_deadline() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_processing_deadline_retains_future_deadline(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now();
@@ -740,10 +734,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_processing_deadline_skip_past_deadline_after_startup() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_processing_deadline_skip_past_deadline_after_startup(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
 
         let mut batch = make_activations(2);
@@ -784,17 +781,20 @@ mod tests {
                 processing: 1,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
         assert_eq!(result_context.processing_deadline_reset, 0);
     }
 
     #[tokio::test]
-    async fn test_processing_deadline_updates_past_deadline() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_processing_deadline_updates_past_deadline(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now();
@@ -804,12 +804,20 @@ mod tests {
         batch[1].status = InflightActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
+        batch[1].processing_attempts = 0;
         assert!(store.store(batch.clone()).await.is_ok());
 
         // Should start off with one in processing
         assert_eq!(
             store
                 .count_by_status(InflightActivationStatus::Processing)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .count_by_status(InflightActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
@@ -833,16 +841,19 @@ mod tests {
                 pending: 2,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }
 
     #[tokio::test]
-    async fn test_processing_deadline_discard_at_most_once() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_processing_deadline_discard_at_most_once(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now();
@@ -883,16 +894,19 @@ mod tests {
                 pending: 1,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }
 
     #[tokio::test]
-    async fn test_processing_attempts_exceeded_discard() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_processing_attempts_exceeded_discard(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -940,12 +954,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_at_remove_failed_publish_to_kafka() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
         let config = create_integration_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -991,10 +1008,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_failed_discard() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_remove_failed_discard(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -1032,10 +1052,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_expired_discard() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_expired_discard(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -1099,10 +1122,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delay_elapsed() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_delay_elapsed(#[case] adapter: &str) {
         let config = create_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -1149,14 +1175,20 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_pending_activation(None)
+                .get_pending_activation(None, None)
                 .await
                 .unwrap()
                 .unwrap()
                 .id,
             "id_0",
         );
-        assert!(store.get_pending_activation(None).await.unwrap().is_none());
+        assert!(
+            store
+                .get_pending_activation(None, None)
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         sleep(Duration::from_secs(2)).await;
         let result_context = do_upkeep(
@@ -1178,7 +1210,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .get_pending_activation(None)
+                .get_pending_activation(None, None)
                 .await
                 .unwrap()
                 .unwrap()
@@ -1188,7 +1220,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_forward_demoted_namespaces() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_forward_demoted_namespaces(#[case] adapter: &str) {
         // Create runtime config with demoted namespaces
         let config = create_config();
         let test_yaml = r#"
@@ -1202,7 +1237,7 @@ demoted_namespaces:
         fs::write(test_path, test_yaml).await.unwrap();
         let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
         let producer = create_producer(config.clone());
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
 
@@ -1239,11 +1274,14 @@ demoted_namespaces:
             2,
             "two tasks should be marked as complete"
         );
-        fs::remove_file(test_path).await.unwrap();
+        let _ = fs::remove_file(test_path).await;
     }
 
     #[tokio::test]
-    async fn test_remove_killswitched() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_remove_killswitched(#[case] adapter: &str) {
         let config = create_config();
         let test_yaml = r#"
 drop_task_killswitch:
@@ -1256,7 +1294,7 @@ demoted_namespaces:
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
         let producer = create_producer(config.clone());
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
 
@@ -1287,11 +1325,14 @@ demoted_namespaces:
             3
         );
 
-        fs::remove_file(test_path).await.unwrap();
+        let _ = fs::remove_file(test_path).await;
     }
 
     #[tokio::test]
-    async fn test_full_vacuum_on_upkeep() {
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
         let raw_config = Config {
             full_vacuum_on_start: true,
             ..Default::default()
@@ -1299,7 +1340,7 @@ demoted_namespaces:
         let config = Arc::new(raw_config);
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let store = create_inflight_store().await;
+        let store = create_test_store(adapter).await;
         let producer = create_producer(config.clone());
         let start_time = Utc::now() - Duration::from_secs(90);
         let mut last_vacuum = Instant::now() - Duration::from_secs(60);
@@ -1322,7 +1363,7 @@ demoted_namespaces:
                 pending: 2,
                 ..StatusCount::default()
             },
-            &store,
+            store.as_ref(),
         )
         .await;
     }

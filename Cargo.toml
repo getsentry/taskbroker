@@ -10,9 +10,11 @@ debug = 1
 
 [dependencies]
 anyhow = "1.0.92"
+async-trait = "0.1"
 bytes = "1.10.0"
 chrono = { version = "0.4.26" }
 clap = { version = "4.5.20", features = ["derive"] }
+derive_builder = "0.20.2"
 elegant-departure = { version = "0.3.1", features = ["tokio"] }
 figment = { version = "0.10.19", features = ["env", "yaml", "test"] }
 futures = "0.3.31"
@@ -39,16 +41,16 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "tracing",
     "logs"
 ] }
-sentry_protos = "0.2.0"
+sentry_protos = "0.4.11"
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
-sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
+sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono", "postgres"] }
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }
 tokio-util = "0.7.12"
-tonic = "0.12"
-tonic-health = "0.12.3"
+tonic = "0.13"
+tonic-health = "0.13"
 tower = "0.5.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = [
@@ -60,6 +62,7 @@ uuid = { version = "1.11.0", features = ["v4"] }
 
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio"] }
+rstest = "0.23"
 
 [[bench]]
 name = "store_bench"

@@ -1,0 +1,65 @@
+[project]
+name = "taskbroker-client"
+version = "0.1.0"
+description = "Taskbroker python client and worker runtime"
+readme = "README.md"
+dependencies = [
+    "sentry-arroyo>=2.33.1",
+    "sentry-sdk[http2]>=2.43.0",
+    "sentry-protos>=0.4.11",
+    "confluent_kafka>=2.3.0",
+    "cronsim>=2.6",
+    "grpcio==1.66.1",
+    "orjson>=3.10.10",
+    "protobuf>=5.28.3",
+    "types-protobuf>=6.30.2.20250703",
+    "redis>=3.4.1",
+    "redis-py-cluster>=2.1.0",
+    "zstandard>=0.18.0",
+]
+
+[dependency-groups]
+dev = [
+    "devservices>=1.2.1",
+    "sentry-devenv>=1.22.2",
+    "black==24.10.0",
+    "pre-commit>=4.2.0",
+    "pytest>=8.3.3",
+    "pytest-cov>=4.0.0",
+    "flake8>=7.3.0",
+    "isort>=5.13.2",
+    "mypy>=1.17.1",
+    "time-machine>=2.16.0",
+]
+[project.optional-dependencies]
+examples = [
+    "click>=8.3",
+    "setuptools>=80.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.2"]
+build-backend = "uv_build"
+
+[tool.uv]
+environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+url = "https://pypi.devinfra.sentry.io/simple"
+default = true
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.black]
+# File filtering is taken care of in pre-commit.
+line-length = 100
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+lines_between_sections = 1

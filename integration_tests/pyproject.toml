@@ -1,0 +1,71 @@
+[project]
+name = "taskbroker-integration-tests"
+# we only have this here to make uv happy
+# we use uv for dependency management, not packaging
+version = "0.0.0"
+
+[dependency-groups]
+dev = [
+    "black==24.10.0",
+    "devservices>=1.2.1",
+    "pre-commit>=4.2.0",
+    "pytest>=8.3.3",
+    "sentry-devenv>=1.22.2",
+    "confluent_kafka>=2.3.0",
+    "grpcio==1.66.1",
+    "orjson>=3.10.10",
+    "protobuf>=5.28.3",
+    "pyyaml>=6.0.2",
+    "sentry-protos>=0.2.0",
+    "flake8>=7.3.0",
+    "isort>=5.13.2",
+    "mypy>=1.17.1",
+    "types-pyyaml>=6.0.12.20241230",
+    "types-protobuf>=6.30.2.20250703",
+]
+
+[tool.uv]
+environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
+
+[[tool.uv.index]]
+url = "https://pypi.devinfra.sentry.io/simple"
+default = true
+
+[tool.pytest.ini_options]
+pythonpath = ["integration_tests"]
+testpaths = ["."]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+
+[tool.mypy]
+mypy_path = "integration_tests"
+explicit_package_bases = true
+# minimal strictness settings
+check_untyped_defs = true
+no_implicit_reexport = true
+warn_unreachable = true
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+enable_error_code = ["ignore-without-code", "redundant-self"]
+local_partial_types = true  # compat with dmypy
+disallow_any_generics = true
+disallow_untyped_defs = true
+
+# begin: missing 3rd party stubs
+[[tool.mypy.overrides]]
+module = [
+    "confluent_kafka.*",
+]
+ignore_missing_imports = true
+# end: missing 3rd party stubs
+
+[tool.black]
+# File filtering is taken care of in pre-commit.
+line-length = 100
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 100
+lines_between_sections = 1

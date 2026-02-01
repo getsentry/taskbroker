@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::SERVICE_NAME;
-use taskbroker::config::Config;
+use taskbroker::config::{Config, DatabaseAdapter};
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
@@ -31,7 +31,10 @@ use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::inflight_activation::{
-    InflightActivationStore, InflightActivationStoreConfig,
+    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
+};
+use taskbroker::store::postgres_activation_store::{
+    PostgresActivationStore, PostgresActivationStoreConfig,
 };
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
@@ -62,13 +65,20 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
-    let store = Arc::new(
-        InflightActivationStore::new(
-            &config.db_path,
-            InflightActivationStoreConfig::from_config(&config),
-        )
-        .await?,
-    );
+
+    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
+        DatabaseAdapter::Sqlite => Arc::new(
+            SqliteActivationStore::new(
+                &config.db_path,
+                InflightActivationStoreConfig::from_config(&config),
+            )
+            .await?,
+        ),
+        DatabaseAdapter::Postgres => Arc::new(
+            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
+                .await?,
+        ),
+    };
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
@@ -80,6 +90,7 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
     }
+
     if config.full_vacuum_on_start {
         info!("Running full vacuum on database");
         match store.full_vacuum_db().await {
@@ -92,7 +103,7 @@ async fn main() -> Result<(), Error> {
 
     // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
     // of the application.
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter
         .set_service_status(SERVICE_NAME, ServingStatus::Serving)
         .await;
