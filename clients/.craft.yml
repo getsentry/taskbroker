@@ -1,0 +1,12 @@
+changelogPolicy: auto
+preReleaseCommand: ../scripts/bump-version-clients.sh
+
+targets:
+  - name: github
+  - name: pypi
+  - name: sentry-pypi
+    internalPypiRepo: getsentry/pypi
+
+requireNames:
+  - /.*taskbroker_client.*whl$/
+  - /.*taskbroker_client.*tar\.gz$/
