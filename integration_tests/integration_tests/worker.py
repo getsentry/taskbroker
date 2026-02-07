@@ -1,17 +1,17 @@
-import grpc
-import time
-import random
 import logging
+import random
+import time
 
+import grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
-    TaskActivation,
-    FetchNextTask,
-    GetTaskRequest,
-    SetTaskStatusRequest,
-    TaskActivationStatus,
     TASK_ACTIVATION_STATUS_COMPLETE,
     TASK_ACTIVATION_STATUS_FAILURE,
     TASK_ACTIVATION_STATUS_RETRY,
+    FetchNextTask,
+    GetTaskRequest,
+    SetTaskStatusRequest,
+    TaskActivation,
+    TaskActivationStatus,
 )
 from sentry_protos.taskbroker.v1.taskbroker_pb2_grpc import ConsumerServiceStub
 

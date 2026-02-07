@@ -1,4 +1,4 @@
-minVersion: "0.27.2"
+minVersion: "2.19.0"
 changelogPolicy: auto
 artifactProvider:
   name: none
@@ -6,18 +6,11 @@ statusProvider:
   name: github
   config:
     contexts:
-      - 'build-arm64'
-      - 'build-amd64'
-      - 'assemble-taskbroker-image'
+    - 'build-arm64'
+    - 'build-amd64'
+    - 'assemble-taskbroker-image'
 preReleaseCommand: ""
 targets:
-  - id: release
-    name: docker
-    source: ghcr.io/getsentry/taskbroker
-    target: getsentry/taskbroker
-  - id: latest
-    name: docker
-    source: ghcr.io/getsentry/taskbroker
-    target: getsentry/taskbroker
-    targetFormat: '{{{target}}}:latest'
-  - name: github
+- name: github
+versioning:
+  policy: calver

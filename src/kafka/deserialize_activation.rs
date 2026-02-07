@@ -30,6 +30,7 @@ pub fn new(
         };
 
         let activation = TaskActivation::decode(payload)?;
+        let application = activation.application.unwrap_or("".into());
         let namespace = activation.namespace.clone();
         let taskname = activation.taskname.clone();
 
@@ -86,11 +87,12 @@ pub fn new(
             added_at: Utc::now(),
             received_at: activation_time,
             processing_deadline: None,
-            processing_deadline_duration: activation.processing_deadline_duration as u32,
+            processing_deadline_duration: activation.processing_deadline_duration as i32,
             processing_attempts: 0,
             expires_at,
             delay_until,
             at_most_once,
+            application,
             namespace,
             taskname,
             on_attempts_exceeded,
@@ -123,6 +125,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -167,6 +170,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -212,6 +216,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -257,6 +262,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
@@ -303,6 +309,7 @@ mod tests {
         #[allow(deprecated)]
         let activation = TaskActivation {
             id: "id_0".into(),
+            application: Some("sentry".to_string()),
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),

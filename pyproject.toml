@@ -3,6 +3,7 @@ name = "taskbroker"
 # we only have this here to make uv happy
 # we use uv for dependency management, not packaging
 version = "0.0.0"
+requires-python = ">=3.11"
 
 [dependency-groups]
 dev = [
@@ -31,14 +32,11 @@ environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
 url = "https://pypi.devinfra.sentry.io/simple"
 default = true
 
-[tool.pytest.ini_options]
-pythonpath = ["python"]
-testpaths = ["python/integration_tests"]
-python_files = ["test_*.py"]
-python_functions = ["test_*"]
+[tool.uv.workspace]
+members = ["integration_tests", "clients/python"]
 
 [tool.mypy]
-mypy_path = "python"
+mypy_path = "integration_tests,clients/python/src"
 explicit_package_bases = true
 # minimal strictness settings
 check_untyped_defs = true
@@ -55,6 +53,9 @@ disallow_untyped_defs = true
 # begin: missing 3rd party stubs
 [[tool.mypy.overrides]]
 module = [
+    ".conftest",
+    "redis.*",
+    "rediscluster.*",
     "confluent_kafka.*",
 ]
 ignore_missing_imports = true

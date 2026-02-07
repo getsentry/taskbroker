@@ -19,12 +19,12 @@ pub struct TaskPusher {
     config: Arc<Config>,
 
     /// Inflight activation store.
-    store: Arc<InflightActivationStore>,
+    store: Arc<dyn InflightActivationStore>,
 }
 
 impl TaskPusher {
     /// Create a new `TaskPusher` instance.
-    pub async fn new(store: Arc<InflightActivationStore>, config: Arc<Config>) -> Self {
+    pub async fn new(store: Arc<dyn InflightActivationStore>, config: Arc<Config>) -> Self {
         let worker = WorkerClient::new(config.worker_endpoint.clone())
             .await
             .unwrap();
@@ -65,7 +65,7 @@ impl TaskPusher {
         debug!("Getting the next task...");
 
         // Use atomic get-and-mark instead of peek + mark
-        match self.store.get_pending_activation(None).await {
+        match self.store.get_pending_activation(None, None).await {
             Ok(Some(inflight)) => {
                 let id = inflight.id.clone();
                 debug!("Atomically fetched and marked task {id} as processing");

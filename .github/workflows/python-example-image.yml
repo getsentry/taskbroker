@@ -1,0 +1,33 @@
+on:
+  pull_request:
+    paths:
+      - 'clients/python/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'clients/python/**'
+
+jobs:
+  build:
+    name: 'Build example app image'
+    runs-on: ubuntu-24.04
+    name: build-python-example
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build and push Python example image
+        uses: getsentry/action-build-and-push-images@a53f146fc1ea3cb404f2dcf7378f5b60dd98d3ca
+        with:
+          image_name: 'taskbroker-python-example'
+          platforms: linux/${{ matrix.platform }}
+          dockerfile_path: './clients/python/Dockerfile.example'
+          dockerfile_context: './clients/python'
+          ghcr: true
+          publish_on_pr: true
+          google_ar: false
+          tag_nightly: false
+          tag_latest: false
