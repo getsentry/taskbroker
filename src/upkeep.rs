@@ -264,6 +264,22 @@ pub async fn do_upkeep(
     metrics::histogram!("upkeep.handle_failed_tasks").record(handle_failed_tasks_start.elapsed());
 
     // 10. Cleanup completed tasks
+    // Emit task-count metrics before flush (so before/after are comparable)
+    let (pending_before, processing_before, delay_before, completed_before) = join!(
+        store.count_by_status(InflightActivationStatus::Pending),
+        store.count_by_status(InflightActivationStatus::Processing),
+        store.count_by_status(InflightActivationStatus::Delay),
+        store.count_by_status(InflightActivationStatus::Complete),
+    );
+    metrics::gauge!("upkeep.current_pending_tasks", "phase" => "before")
+        .set(pending_before.unwrap_or(0) as f64);
+    metrics::gauge!("upkeep.current_processing_tasks", "phase" => "before")
+        .set(processing_before.unwrap_or(0) as f64);
+    metrics::gauge!("upkeep.current_delayed_tasks", "phase" => "before")
+        .set(delay_before.unwrap_or(0) as f64);
+    metrics::gauge!("upkeep.current_completed_tasks", "phase" => "before")
+        .set(completed_before.unwrap_or(0) as f64);
+
     let remove_completed_start = Instant::now();
     if let Ok(count) = store.remove_completed().await {
         result_context.completed = count;
@@ -370,10 +386,19 @@ pub async fn do_upkeep(
     }
 
     let now = Utc::now();
-    let (pending_count, processing_count, delay_count, max_lag, db_file_meta, wal_file_meta) = join!(
+    let (
+        pending_count,
+        processing_count,
+        delay_count,
+        completed_count_after,
+        max_lag,
+        db_file_meta,
+        wal_file_meta,
+    ) = join!(
         store.count_by_status(InflightActivationStatus::Pending),
         store.count_by_status(InflightActivationStatus::Processing),
         store.count_by_status(InflightActivationStatus::Delay),
+        store.count_by_status(InflightActivationStatus::Complete),
         store.pending_activation_max_lag(&now),
         fs::metadata(config.db_path.clone()),
         fs::metadata(config.db_path.clone() + "-wal")
@@ -432,10 +457,15 @@ pub async fn do_upkeep(
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
-    // State of inflight tasks
-    metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
-    metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
-    metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
+    // State of inflight tasks (after flush)
+    metrics::gauge!("upkeep.current_pending_tasks", "phase" => "after")
+        .set(result_context.pending as f64);
+    metrics::gauge!("upkeep.current_processing_tasks", "phase" => "after")
+        .set(result_context.processing as f64);
+    metrics::gauge!("upkeep.current_delayed_tasks", "phase" => "after")
+        .set(result_context.delay as f64);
+    metrics::gauge!("upkeep.current_completed_tasks", "phase" => "after")
+        .set(completed_count_after.unwrap_or(0) as f64);
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
     if let Ok(db_file_meta) = db_file_meta {

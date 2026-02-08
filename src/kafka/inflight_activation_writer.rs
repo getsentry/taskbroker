@@ -80,6 +80,7 @@ impl Reducer for InflightActivationWriter {
             self.batch.take();
             return Ok(Some(()));
         }
+        let flush_start = Instant::now();
         // Check if writing the batch would exceed the limits
         let exceeded_pending_limit = self
             .store
@@ -162,6 +163,8 @@ impl Reducer for InflightActivationWriter {
 
                 metrics::histogram!("consumer.inflight_activation_writer.write_to_store")
                     .record(write_to_store_start.elapsed());
+                metrics::histogram!("consumer.inflight_activation_writer.flush_total")
+                    .record(flush_start.elapsed());
                 metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
                     .record(lag.num_seconds() as f64);
                 metrics::counter!("consumer.inflight_activation_writer.stored")
