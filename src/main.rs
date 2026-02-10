@@ -31,9 +31,11 @@ use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
+use taskbroker::store::inflight_activation::InflightActivationStore;
 use taskbroker::store::inflight_activation::{
-    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
+    InflightActivationStoreConfig, SqliteActivationStore,
 };
+use taskbroker::store::map_activation_store::{MapActivationStore, MapActivationStoreConfig};
 use taskbroker::store::postgres_activation_store::{
     PostgresActivationStore, PostgresActivationStoreConfig,
 };
@@ -79,6 +81,9 @@ async fn main() -> Result<(), Error> {
             PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
                 .await?,
         ),
+        DatabaseAdapter::Map => Arc::new(MapActivationStore::new(
+            MapActivationStoreConfig::from_config(&config),
+        )),
     };
 
     // If this is an environment where the topics might not exist, check and create them.
