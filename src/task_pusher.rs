@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use prost::Message;
@@ -62,6 +62,9 @@ impl TaskPusher {
 
     /// Grab the next pending task from the store and atomically mark it as processing.
     async fn process_next_task(&mut self) {
+        let start = Instant::now();
+        metrics::counter!("task_pusher.process_next_task.runs").increment(1);
+
         debug!("Getting the next task...");
 
         // Use atomic get-and-mark instead of peek + mark
@@ -76,22 +79,29 @@ impl TaskPusher {
                 } else {
                     debug!("Task {id} was sent to load balancer!");
                 }
+                metrics::histogram!("task_pusher.process_next_task.duration")
+                    .record(start.elapsed());
             }
 
             Ok(None) => {
                 debug!("No pending tasks, sleeping briefly");
                 sleep(milliseconds(100)).await;
+                metrics::histogram!("task_pusher.process_next_task.duration")
+                    .record(start.elapsed());
             }
 
             Err(e) => {
                 error!("Failed to fetch pending activation - {:?}", e);
                 sleep(milliseconds(100)).await;
+                metrics::histogram!("task_pusher.process_next_task.duration")
+                    .record(start.elapsed());
             }
         }
     }
 
     /// Decode task activation and push it to a worker.
     async fn handle_task_push(&mut self, inflight: InflightActivation) -> Result<()> {
+        let start = Instant::now();
         let task_id = inflight.id.clone();
 
         let activation = TaskActivation::decode(&inflight.activation as &[u8]).map_err(|e| {
@@ -99,7 +109,9 @@ impl TaskPusher {
             e
         })?;
 
-        self.push_to_worker(activation, &task_id).await
+        let result = self.push_to_worker(activation, &task_id).await;
+        metrics::histogram!("task_pusher.handle_task_push.duration").record(start.elapsed());
+        result
     }
 
     /// Build an RPC request and send it to the load balancer (fire-and-forget).

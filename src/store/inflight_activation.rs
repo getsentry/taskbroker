@@ -358,6 +358,7 @@ pub trait InflightActivationStore: Send + Sync {
         application: Option<&str>,
         namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
+        let start = Instant::now();
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
 
@@ -366,15 +367,20 @@ pub trait InflightActivationStore: Send + Sync {
             warn!(
                 "Received request for namespaced task without application. namespaces = {namespaces:?}"
             );
+            metrics::histogram!("task_pusher.get_pending_activation.duration")
+                .record(start.elapsed());
             return Ok(None);
         }
         let result = self
             .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
             .await?;
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result[0].clone()))
+        let out = if result.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(result[0].clone()))
+        };
+        metrics::histogram!("task_pusher.get_pending_activation.duration").record(start.elapsed());
+        out
     }
 
     /// Get pending activations from specified namespaces
