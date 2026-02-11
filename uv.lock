@@ -391,12 +391,12 @@ wheels = [
 
 [[package]]
 name = "protobuf"
-version = "5.29.5"
+version = "5.29.6"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/protobuf-5.29.5-cp38-abi3-macosx_10_9_universal2.whl", hash = "sha256:e38c5add5a311f2a6eb0340716ef9b039c1dfa428b28f25a7838ac329204a671" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/protobuf-5.29.5-cp38-abi3-manylinux2014_aarch64.whl", hash = "sha256:fa18533a299d7ab6c55a238bf8629311439995f2e7eca5caaff08663606e9015" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/protobuf-5.29.5-cp38-abi3-manylinux2014_x86_64.whl", hash = "sha256:63848923da3325e1bf7e9003d680ce6e14b07e55d0473253a690c3a8b8fd6e61" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/protobuf-5.29.6-cp38-abi3-macosx_10_9_universal2.whl", hash = "sha256:b5a169e664b4057183a34bdc424540e86eea47560f3c123a0d64de4e137f9269" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/protobuf-5.29.6-cp38-abi3-manylinux2014_aarch64.whl", hash = "sha256:a8866b2cff111f0f863c1b3b9e7572dc7eaea23a7fae27f6fc613304046483e6" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/protobuf-5.29.6-cp38-abi3-manylinux2014_x86_64.whl", hash = "sha256:e3387f44798ac1106af0233c04fb8abf543772ff241169946f698b3a9a3d3ab9" },
 ]
 
 [[package]]
@@ -552,10 +552,10 @@ http2 = [
 
 [[package]]
 name = "setuptools"
-version = "78.1.1"
+version = "80.10.2"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/setuptools-78.1.1-py3-none-any.whl", hash = "sha256:c3a9c4211ff4c309edb8b8c4f1cbfa7ae324c4ba9f91ff254e3d305b9fd54561" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/setuptools-80.10.2-py3-none-any.whl", hash = "sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173" },
 ]
 
 [[package]]
@@ -646,6 +646,7 @@ dependencies = [
 [package.optional-dependencies]
 examples = [
     { name = "click", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "setuptools", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
@@ -675,6 +676,7 @@ requires-dist = [
     { name = "sentry-arroyo", specifier = ">=2.33.1" },
     { name = "sentry-protos", specifier = ">=0.4.11" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
+    { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
     { name = "types-protobuf", specifier = ">=6.30.2.20250703" },
     { name = "zstandard", specifier = ">=0.18.0" },
 ]
