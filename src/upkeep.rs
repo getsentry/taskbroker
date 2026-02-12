@@ -32,7 +32,7 @@ pub async fn upkeep(
     store: Arc<dyn InflightActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    health_reporter: HealthReporter,
+    // health_reporter: HealthReporter,
 ) -> Result<(), anyhow::Error> {
     let kafka_config = config.kafka_producer_config();
     let producer: Arc<FutureProducer> = Arc::new(
@@ -57,7 +57,7 @@ pub async fn upkeep(
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
                 ).await;
-                last_run = check_health(last_run, &config, health_reporter.clone()).await;
+                last_run = check_health(last_run, &config, /* health_reporter.clone() */).await;
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
@@ -481,26 +481,26 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
-    health_reporter: HealthReporter,
+    // health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
     if config.health_check_killswitched {
         metrics::counter!("upkeep.health", "status" => "killswitched").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
+        // health_reporter
+        //     .set_service_status(SERVICE_NAME, ServingStatus::Serving)
+        //     .await;
         return now;
     }
     if now - last_run > Duration::from_millis(config.upkeep_unhealthy_interval_ms) {
         metrics::counter!("upkeep.health", "status" => "unhealthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::NotServing)
-            .await;
+        // health_reporter
+        //     .set_service_status(SERVICE_NAME, ServingStatus::NotServing)
+        //     .await;
     } else {
         metrics::counter!("upkeep.health", "status" => "healthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
+        // health_reporter
+        //     .set_service_status(SERVICE_NAME, ServingStatus::Serving)
+        //     .await;
     }
     now
 }

@@ -109,10 +109,10 @@ async fn main() -> Result<(), Error> {
 
     // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
     // of the application.
-    let (health_reporter, health_service) = tonic_health::server::health_reporter();
-    health_reporter
-        .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-        .await;
+    // let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    // health_reporter
+    //     .set_service_status(SERVICE_NAME, ServingStatus::Serving)
+    //     .await;
 
     // Upkeep loop
     let upkeep_task = tokio::spawn({
@@ -125,7 +125,7 @@ async fn main() -> Result<(), Error> {
                 upkeep_store,
                 startup_time,
                 runtime_config_manager.clone(),
-                health_reporter.clone(),
+                // health_reporter.clone(),
             )
             .await?;
             Ok(())
@@ -194,57 +194,57 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    let grpc_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
+    // let grpc_task = tokio::spawn({
+    //     let grpc_store = store.clone();
+    //     let grpc_config = config.clone();
 
-        async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
-                .parse()
-                .expect("Failed to parse address");
+    //     async move {
+    //         let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
+    //             .parse()
+    //             .expect("Failed to parse address");
 
-            let layers = tower::ServiceBuilder::new()
-                .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&grpc_config))
-                .into_inner();
+    //         let layers = tower::ServiceBuilder::new()
+    //             .layer(MetricsLayer::default())
+    //             .layer(AuthLayer::new(&grpc_config))
+    //             .into_inner();
 
-            let server = Server::builder()
-                .layer(layers)
-                .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store: grpc_store,
-                    push_mode: grpc_config.push_mode,
-                }))
-                .add_service(health_service.clone())
-                .serve(addr);
+    //         let server = Server::builder()
+    //             .layer(layers)
+    //             .add_service(ConsumerServiceServer::new(TaskbrokerServer {
+    //                 store: grpc_store,
+    //                 push_mode: grpc_config.push_mode,
+    //             }))
+    //             .add_service(health_service.clone())
+    //             .serve(addr);
 
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+    //         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
 
-            info!("GRPC server listening on {}", addr);
+    //         info!("GRPC server listening on {}", addr);
 
-            select! {
-                biased;
+    //         select! {
+    //             biased;
 
-                res = server => {
-                    info!("GRPC server task failed, shutting down");
+    //             res = server => {
+    //                 info!("GRPC server task failed, shutting down");
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    match res {
-                        Ok(()) => Ok(()),
-                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
-                    }
-                }
+    //                 // Wait for any running requests to drain
+    //                 tokio::time::sleep(Duration::from_secs(5)).await;
+    //                 match res {
+    //                     Ok(()) => Ok(()),
+    //                     Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+    //                 }
+    //             }
 
-                _ = guard.wait() => {
-                    info!("Cancellation token received, shutting down GRPC server");
+    //             _ = guard.wait() => {
+    //                 info!("Cancellation token received, shutting down GRPC server");
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok(())
-                }
-            }
-        }
-    });
+    //                 // Wait for any running requests to drain
+    //                 tokio::time::sleep(Duration::from_secs(5)).await;
+    //                 Ok(())
+    //             }
+    //         }
+    //     }
+    // });
 
     // Push task loop (conditionally enabled)
     let pusher_tasks = if config.push_mode {
@@ -274,8 +274,8 @@ async fn main() -> Result<(), Error> {
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task))
-        .on_completion(log_task_completion("grpc_server", grpc_task));
+        .on_completion(log_task_completion("maintenance_task", maintenance_task));
+    // .on_completion(log_task_completion("grpc_server", grpc_task));
 
     // Register each pusher thread
     for (i, handle) in pusher_tasks.into_iter().enumerate() {

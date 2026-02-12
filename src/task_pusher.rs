@@ -1,14 +1,18 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use prost::Message;
+use sentry_protos::taskbroker::v1::TaskActivationStatus;
 use sentry_protos::{taskbroker::v1::TaskActivation, taskworker::v1::PushTaskRequest};
 use tokio::time::sleep;
-use tracing::{debug, error, info};
+use tonic::Status;
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
+use crate::store::inflight_activation::{
+    InflightActivation, InflightActivationStatus, InflightActivationStore,
+};
 use crate::worker_client::WorkerClient;
 
 pub struct TaskPusher {
@@ -119,17 +123,47 @@ impl TaskPusher {
     async fn push_to_worker(&mut self, activation: TaskActivation, task_id: &str) -> Result<()> {
         let request = PushTaskRequest {
             task: Some(activation),
-            callback_url: format!(
-                "{}:{}",
-                self.config.default_metrics_tags["host"], self.config.grpc_port
-            ),
+            broker: self
+                .config
+                .default_metrics_tags
+                .get("host")
+                .cloned()
+                .unwrap_or("ANY".into()),
         };
 
-        let result = self.worker.submit(request).await;
+        let result = self.worker.push_task(request).await;
 
         match result {
-            Ok(()) => {
+            Ok(response) => {
                 debug!("Successfully sent task {task_id} to load balancer");
+
+                match (response.id, response.status) {
+                    (Some(id), Some(status)) => {
+                        let status: InflightActivationStatus =
+                            TaskActivationStatus::try_from(status)
+                                .map_err(|e| anyhow!("Unable to deserialize status - {e:?}"))?
+                                .into();
+
+                        let update_result = self.store.set_status(&id, status).await;
+                        if let Err(e) = update_result {
+                            error!(
+                                ?id,
+                                ?status,
+                                "Unable to update status of activation - {:?}",
+                                e,
+                            );
+
+                            return Err(anyhow!("Unable to update status of {id:?} to {status:?}"));
+                        }
+                    }
+
+                    (Some(_), None) | (None, Some(_)) => {
+                        warn!("Either received task ID without status or status without task ID!")
+                    }
+
+                    _ => {}
+                }
+
                 Ok(())
             }
 
