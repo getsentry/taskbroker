@@ -1,3 +1,5 @@
+name: Release client libraries
+
 on:
   workflow_dispatch:
     inputs:
