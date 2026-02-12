@@ -5,6 +5,7 @@ use std::{sync::Arc, time::Duration};
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::store::map_activation_store::{MapActivationStore, MapActivationStoreConfig};
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -78,6 +79,9 @@ async fn main() -> Result<(), Error> {
             PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
                 .await?,
         ),
+        DatabaseAdapter::Map => Arc::new(MapActivationStore::new(
+            MapActivationStoreConfig::from_config(&config),
+        )),
     };
 
     // If this is an environment where the topics might not exist, check and create them.

@@ -16,6 +16,8 @@ pub enum DatabaseAdapter {
 
     /// PostgreSQL database adapter
     Postgres,
+
+    Map,
 }
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
