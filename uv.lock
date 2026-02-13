@@ -190,15 +190,21 @@ wheels = [
 
 [[package]]
 name = "grpcio"
-version = "1.66.1"
+version = "1.75.1"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.66.1-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:8a1e224ce6f740dbb6b24c58f885422deebd7eb724aff0671a847f8951857c26" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.66.1-cp311-cp311-manylinux_2_17_aarch64.whl", hash = "sha256:a66fe4dc35d2330c185cfbb42959f57ad36f257e0cc4557d11d9f0a3f14311df" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.66.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:4573608e23f7e091acfbe3e84ac2045680b69751d8d67685ffa193a4429fedb1" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.66.1-cp312-cp312-macosx_10_9_universal2.whl", hash = "sha256:fdb14bad0835914f325349ed34a51940bc2ad965142eb3090081593c6e347be9" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.66.1-cp312-cp312-manylinux_2_17_aarch64.whl", hash = "sha256:f03a5884c56256e08fd9e262e11b5cfacf1af96e2ce78dc095d2c41ccae2c80d" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.66.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:84ca1be089fb4446490dd1135828bd42a7c7f8421e74fa581611f7afdf7ab761" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp311-cp311-macosx_11_0_universal2.whl", hash = "sha256:6a4996a2c8accc37976dc142d5991adf60733e223e5c9a2219e157dc6a8fd3a2" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:b1ea1bbe77ecbc1be00af2769f4ae4a88ce93be57a4f3eebd91087898ed749f9" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0049a7bf547dafaeeb1db17079ce79596c298bfe308fc084d023c8907a845b9a" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:8775036efe4ad2085975531d221535329f5dac99b6c2a854a995456098f99546" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:bb658f703468d7fbb5dcc4037c65391b7dc34f808ac46ed9136c24fc5eeb041d" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:7d4fa6ccc3ec2e68a04f7b883d354d7fea22a34c44ce535a2f0c0049cf626ddf" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:5b8f381eadcd6ecaa143a21e9e80a26424c76a0a9b3d546febe6648f3a36a5ac" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:5bf4001d3293e3414d0cf99ff9b1139106e57c3a66dfff0c5f60b2a6286ec133" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0ee119f4f88d9f75414217823d21d75bfe0e6ed40135b0cbbfc6376bc9f7757d" },
 ]
 
 [[package]]
@@ -610,7 +616,7 @@ dev = [
     { name = "confluent-kafka", specifier = ">=2.3.0" },
     { name = "devservices", specifier = ">=1.2.1" },
     { name = "flake8", specifier = ">=7.3.0" },
-    { name = "grpcio", specifier = "==1.66.1" },
+    { name = "grpcio", specifier = ">=1.67.0" },
     { name = "isort", specifier = ">=5.13.2" },
     { name = "mypy", specifier = ">=1.17.1" },
     { name = "orjson", specifier = ">=3.10.10" },
@@ -668,7 +674,7 @@ requires-dist = [
     { name = "click", marker = "extra == 'examples'", specifier = ">=8.3" },
     { name = "confluent-kafka", specifier = ">=2.3.0" },
     { name = "cronsim", specifier = ">=2.6" },
-    { name = "grpcio", specifier = "==1.66.1" },
+    { name = "grpcio", specifier = ">=1.67.0" },
     { name = "orjson", specifier = ">=3.10.10" },
     { name = "protobuf", specifier = ">=5.28.3" },
     { name = "redis", specifier = ">=3.4.1" },
@@ -729,7 +735,7 @@ dev = [
     { name = "confluent-kafka", specifier = ">=2.3.0" },
     { name = "devservices", specifier = ">=1.2.1" },
     { name = "flake8", specifier = ">=7.3.0" },
-    { name = "grpcio", specifier = "==1.66.1" },
+    { name = "grpcio", specifier = ">=1.67.0" },
     { name = "isort", specifier = ">=5.13.2" },
     { name = "mypy", specifier = ">=1.17.1" },
     { name = "orjson", specifier = ">=3.10.10" },
