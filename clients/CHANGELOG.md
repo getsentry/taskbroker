@@ -1,4 +1,10 @@
 # Changelog
+## 0.1.2
+
+### Bug Fixes 🐛
+
+- Relax grpc constraint by @markstory in [#554](https://github.com/getsentry/taskbroker/pull/554)
+
 ## 0.1.1
 
 ### New Features ✨
