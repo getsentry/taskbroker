@@ -3,7 +3,8 @@
 [![codecov](https://codecov.io/gh/getsentry/taskbroker/graph/badge.svg?token=RFA2pVkzhl)](https://codecov.io/gh/getsentry/taskbroker)
 
 Taskbroker provides a Kafka consumer, RPC interface, and inflight task storage
-that form the core engine of asynchronous task execution at Sentry.
+that form the core engine of asynchronous task execution at Sentry. This repository
+also contains client libraries for python.
 
 ## High level overview
 
@@ -93,3 +94,13 @@ make style
 # Fix formatting and lint issues
 make format
 ```
+
+## Python Client
+
+See the [python client README](./clients/python/README.md) for more information.
+
+### Releasing clients
+
+1. Use the [release client libraries workflow](https://github.com/getsentry/taskbroker/actions/workflows/release-client.yml)
+2. Choose 'Run workflow' and enter a version number in.
+3. This will use craft + getsentry/publish to add packages to both internal and public pypi.
