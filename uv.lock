@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "sys_platform == 'darwin' or sys_platform == 'linux'",
@@ -626,7 +626,7 @@ dev = [
 
 [[package]]
 name = "taskbroker-client"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "clients/python" }
 dependencies = [
     { name = "confluent-kafka", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
