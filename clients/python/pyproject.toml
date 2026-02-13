@@ -9,7 +9,7 @@ dependencies = [
     "sentry-protos>=0.4.11",
     "confluent_kafka>=2.3.0",
     "cronsim>=2.6",
-    "grpcio==1.66.1",
+    "grpcio>=1.67.0",
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
     "types-protobuf>=6.30.2.20250703",
