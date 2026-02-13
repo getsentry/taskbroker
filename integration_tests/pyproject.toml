@@ -12,7 +12,7 @@ dev = [
     "pytest>=8.3.3",
     "sentry-devenv>=1.22.2",
     "confluent_kafka>=2.3.0",
-    "grpcio==1.66.1",
+    "grpcio>=1.67.0",
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
     "pyyaml>=6.0.2",
