@@ -8,6 +8,7 @@ repos:
     - id: check-symlinks
     - id: end-of-file-fixer
       exclude_types: [svg]
+      exclude: "^clients/CHANGELOG.md"
     - id: trailing-whitespace
       exclude_types: [svg]
     - id: check-added-large-files
