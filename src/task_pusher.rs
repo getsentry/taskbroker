@@ -51,7 +51,7 @@ impl TaskPusher {
 
                 _ = async {
                     debug!("About to process next task...");
-                    self.process_next_task().await;
+                    self.get_next_task().await;
                 } => {}
             }
         }
@@ -61,7 +61,7 @@ impl TaskPusher {
     }
 
     /// Grab the next pending task from the store and atomically mark it as processing.
-    async fn process_next_task(&mut self) {
+    async fn get_next_task(&mut self) {
         let start = Instant::now();
         metrics::counter!("task_pusher.process_next_task.runs").increment(1);
 
@@ -73,14 +73,22 @@ impl TaskPusher {
                 let id = inflight.id.clone();
                 debug!("Atomically fetched and marked task {id} as processing");
 
-                if let Err(e) = self.handle_task_push(inflight).await {
-                    // Task is already marked as processing, so `processing_deadline` will handle retry
-                    error!("Pushing task {id} resulted in error - {:?}", e);
-                } else {
-                    debug!("Task {id} was sent to load balancer!");
-                }
-                metrics::histogram!("task_pusher.process_next_task.duration")
-                    .record(start.elapsed());
+                let worker = self.worker.clone();
+                let callback_url = format!(
+                    "{}:{}",
+                    self.config.default_metrics_tags["host"], self.config.grpc_port
+                );
+
+                tokio::spawn(async move {
+                    if let Err(e) = push_task(worker, callback_url, inflight).await {
+                        // Task is already marked as processing, so `processing_deadline` will handle retry
+                        error!("Pushing task {id} resulted in error - {:?}", e);
+                    } else {
+                        debug!("Task {id} was sent to load balancer!");
+                    }
+                });
+
+                metrics::histogram!("task_pusher.get_next_task.duration").record(start.elapsed());
             }
 
             Ok(None) => {
@@ -98,47 +106,41 @@ impl TaskPusher {
             }
         }
     }
+}
 
-    /// Decode task activation and push it to a worker.
-    async fn handle_task_push(&mut self, inflight: InflightActivation) -> Result<()> {
-        let start = Instant::now();
-        let task_id = inflight.id.clone();
+/// Decode task activation and push it to a worker.
+async fn push_task(
+    mut worker: WorkerClient,
+    callback_url: String,
+    inflight: InflightActivation,
+) -> Result<()> {
+    let start = Instant::now();
+    let task_id = inflight.id.clone();
 
-        let activation = TaskActivation::decode(&inflight.activation as &[u8]).map_err(|e| {
-            error!("Failed to decode activation {task_id} - {:?}", e);
-            e
-        })?;
+    let activation = TaskActivation::decode(&inflight.activation as &[u8]).map_err(|e| {
+        error!("Failed to decode activation {task_id} - {:?}", e);
+        e
+    })?;
 
-        let result = self.push_to_worker(activation, &task_id).await;
-        metrics::histogram!("task_pusher.handle_task_push.duration").record(start.elapsed());
-        result
-    }
+    let request = PushTaskRequest {
+        task: Some(activation),
+        callback_url,
+    };
 
-    /// Build an RPC request and send it to the load balancer (fire-and-forget).
-    /// The task has already been marked as processing before this call.
-    async fn push_to_worker(&mut self, activation: TaskActivation, task_id: &str) -> Result<()> {
-        let request = PushTaskRequest {
-            task: Some(activation),
-            callback_url: format!(
-                "{}:{}",
-                self.config.default_metrics_tags["host"], self.config.grpc_port
-            ),
-        };
-
-        let result = self.worker.submit(request).await;
-
-        match result {
-            Ok(()) => {
-                debug!("Successfully sent task {task_id} to load balancer");
-                Ok(())
-            }
-
-            Err(e) => {
-                error!("Could not push task {task_id} to load balancer - {:?}", e);
-                Err(e)
-            }
+    let result = match worker.submit(request).await {
+        Ok(()) => {
+            debug!("Successfully sent task {task_id} to load balancer");
+            Ok(())
         }
-    }
+
+        Err(e) => {
+            error!("Could not push task {task_id} to load balancer - {:?}", e);
+            Err(e)
+        }
+    };
+
+    metrics::histogram!("task_pusher.push_task.duration").record(start.elapsed());
+    result
 }
 
 #[inline]

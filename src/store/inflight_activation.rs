@@ -877,8 +877,8 @@ impl InflightActivationStore for SqliteActivationStore {
     #[instrument(skip_all)]
     async fn get_pending_activation(
         &self,
-        namespace: Option<&str>,
         application: Option<&str>,
+        namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);

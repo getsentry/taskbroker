@@ -4,6 +4,7 @@ use tonic::transport::Channel;
 use tracing::{info, warn};
 
 /// Client for communicating with the worker service (through a load balancer).
+#[derive(Debug, Clone)]
 pub struct WorkerClient {
     /// The RPC client connection.
     connection: WorkerServiceClient<Channel>,

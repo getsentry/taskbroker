@@ -33,10 +33,18 @@ impl ConsumerService for TaskbrokerServer {
         let start_time = Instant::now();
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
+
+        debug!(
+            "get_task for application={:?}, namespace={:?}",
+            application, namespace
+        );
+
         let inflight = self
             .store
             .get_pending_activation(application.as_deref(), namespace.as_deref())
             .await;
+
+        debug!("Inflight is {:?}", inflight);
 
         match inflight {
             Ok(Some(inflight)) => {
