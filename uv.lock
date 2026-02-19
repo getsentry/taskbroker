@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "sys_platform == 'darwin' or sys_platform == 'linux'",
@@ -217,14 +217,14 @@ wheels = [
 
 [[package]]
 name = "h2"
-version = "4.2.0"
+version = "4.3.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "hpack", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "hyperframe", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/h2-4.2.0-py3-none-any.whl", hash = "sha256:479a53ad425bb29af087f3458a61d30780bc818e4ebcf01f0b536ba916462ed0" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/h2-4.3.0-py3-none-any.whl", hash = "sha256:c438f029a25f7945c69e0ccf0fb951dc3f73a5f6412981daee861431b70e2bdd" },
 ]
 
 [[package]]
