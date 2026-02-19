@@ -6,6 +6,7 @@ use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
 use taskbroker::upkeep::upkeep;
+use tokio::runtime::Runtime;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -151,8 +152,19 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    let consumer_runtime_threads = std::env::var("TOKIO_WORKER_THREADS")
+        .unwrap_or("0".to_string())
+        .parse()
+        .unwrap_or(0);
+    let mut consumer_builder = tokio::runtime::Builder::new_multi_thread();
+    consumer_builder.thread_name("consumer-worker");
+    if consumer_runtime_threads > 0 {
+        consumer_builder.worker_threads(consumer_runtime_threads);
+    }
+    let consumer_runtime = consumer_builder.build().unwrap();
+
     // Consumer from kafka
-    let consumer_task = tokio::spawn({
+    let consumer_task = consumer_runtime.spawn({
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
@@ -189,7 +201,18 @@ async fn main() -> Result<(), Error> {
     });
 
     // GRPC server
-    let grpc_server_task = tokio::spawn({
+    let server_runtime_threads = std::env::var("TOKIO_WORKER_THREADS")
+        .unwrap_or("0".to_string())
+        .parse()
+        .unwrap_or(0);
+    let mut server_builder = tokio::runtime::Builder::new_multi_thread();
+    server_builder.thread_name("server-worker");
+    if server_runtime_threads > 0 {
+        server_builder.worker_threads(server_runtime_threads);
+    }
+    let server_runtime = server_builder.build().unwrap();
+
+    let grpc_server_task = server_runtime.spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
         async move {
