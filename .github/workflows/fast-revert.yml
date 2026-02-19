@@ -38,11 +38,17 @@ jobs:
           token: ${{ steps.token.outputs.token }}
 
       - name: comment on failure
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_REPO_ID: ${{ github.event.repository.id }}
+          PR_NUMBER: ${{ github.event.number || github.event.inputs.pr }}
         run: |
           curl \
               --silent \
               -X POST \
-              -H 'Authorization: token ${{ steps.token.outputs.token }}' \
-              -d'{"body": "revert failed (conflict? already reverted?) -- [check the logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"}' \
-              https://api.github.com/repositories/${{ github.event.repository.id }}/issues/${{ github.event.number || github.event.inputs.pr }}/comments
+              -H "Authorization: token $GH_TOKEN" \
+              -d"{\"body\": \"revert failed (conflict? already reverted?) -- [check the logs](https://github.com/$GH_REPOSITORY/actions/runs/$GH_RUN_ID)\"}" \
+              "https://api.github.com/repositories/$GH_REPO_ID/issues/$PR_NUMBER/comments"
         if: failure()
