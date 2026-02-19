@@ -250,6 +250,12 @@ pub struct Config {
 
     /// Number of parallel task pusher threads to spawn in push mode.
     pub push_threads: usize,
+
+    /// Number of dedicated worker connections per pusher thread (each has its own gRPC channel).
+    pub push_worker_connections: usize,
+
+    /// Bounded channel buffer capacity per push worker.
+    pub push_channel_capacity: usize,
 }
 
 impl Default for Config {
@@ -322,6 +328,8 @@ impl Default for Config {
             worker_endpoint: "http://127.0.0.1:50052".into(),
             push_mode: true,
             push_threads: 1,
+            push_worker_connections: 8,
+            push_channel_capacity: 64,
         }
     }
 }

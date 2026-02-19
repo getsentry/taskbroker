@@ -257,7 +257,7 @@ async fn main() -> Result<(), Error> {
 
                 tokio::spawn(async move {
                     info!("Starting task pusher thread {}", i);
-                    let pusher = TaskPusher::new(store, config).await;
+                    let pusher = TaskPusher::new(store, config);
                     pusher.start().await
                 })
             })
