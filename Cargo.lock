@@ -3158,6 +3158,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "tokio",
+ "tokio-metrics",
  "tokio-stream",
  "tokio-util",
  "tonic",
@@ -3322,6 +3323,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "tokio-metrics"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12c48227f311eaa0b0ae5860089860509d7249e0e5da8f7a5d17f4808a1ad387"
+dependencies = [
+ "futures-util",
+ "metrics",
+ "pin-project-lite",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

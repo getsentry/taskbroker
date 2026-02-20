@@ -63,11 +63,14 @@ async fn main() -> Result<(), Error> {
     let runtime_config_manager =
         Arc::new(RuntimeConfigManager::new(config.runtime_config_path.clone()).await);
 
-    println!("taskbroker starting");
+    println!("taskbroker startingg");
     println!("version: {}", get_version().trim());
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
+
+    // Report Tokio runtime metrics to the same StatsD/Datadog pipeline via metrics-rs.
+    tokio::task::spawn(tokio_metrics::RuntimeMetricsReporterBuilder::default().describe_and_run());
 
     let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(

@@ -29,7 +29,7 @@ COPY ./src ./src
 
 # Build the main binary
 RUN rm ./target/release/deps/taskbroker*
-RUN cargo build --release
+RUN RUSTFLAGS="--cfg tokio_unstable" cargo build --release
 
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 

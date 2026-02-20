@@ -1,3 +1,7 @@
+[build]
+# Enable Tokio unstable metrics so tokio-metrics reports additional runtime metrics to Datadog.
+rustflags = ["--cfg", "tokio_unstable"]
+
 [env]
 # Workaround for https://github.com/confluentinc/librdkafka/pull/5012
 CMAKE_POLICY_VERSION_MINIMUM = "3.10"
