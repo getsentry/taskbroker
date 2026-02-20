@@ -1,13 +1,17 @@
+import datetime
 import importlib
 from collections.abc import Iterable
 from typing import Any
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
+from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE
 from taskbroker_client.imports import import_string
 from taskbroker_client.metrics import MetricsBackend
-from taskbroker_client.registry import TaskRegistry
+from taskbroker_client.registry import TaskNamespace, TaskRegistry
+from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
+from taskbroker_client.task import Task
 from taskbroker_client.types import AtMostOnceStore, ProducerFactory
 
 
@@ -71,6 +75,39 @@ class TaskbrokerApp:
         for key, value in config.items():
             if key in self._config:
                 self._config[key] = value
+
+    def create_namespace(
+        self,
+        name: str,
+        *,
+        retry: Retry | None = None,
+        expires: int | datetime.timedelta | None = None,
+        processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
+        app_feature: str | None = None,
+    ) -> TaskNamespace:
+        """
+        Create a task namespace.
+
+        Namespaces are mapped onto topics through the configured router allowing
+        infrastructure to be scaled based on a region's requirements.
+
+        Namespaces can define default behavior for tasks defined within a namespace.
+        """
+        return self._taskregistry.create_namespace(
+            name=name,
+            retry=retry,
+            expires=expires,
+            processing_deadline_duration=processing_deadline_duration,
+            app_feature=app_feature,
+        )
+
+    def get_task(self, namespace: str, task: str) -> Task[Any, Any]:
+        """Fetch a task by namespace and name."""
+        return self._taskregistry.get(namespace).get(task)
+
+    def get_namespace(self, namespace: str) -> TaskNamespace:
+        """Fetch a task by namespace and name."""
+        return self._taskregistry.get(namespace)
 
     def set_modules(self, modules: Iterable[str]) -> None:
         """

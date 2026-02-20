@@ -101,18 +101,18 @@ def child_process(
     """
     app = import_app(app_module)
     app.load_modules()
-    taskregistry = app.taskregistry
     metrics = app.metrics
 
     def _get_known_task(activation: TaskActivation) -> Task[Any, Any] | None:
-        if not taskregistry.contains(activation.namespace):
+        try:
+            namespace = app.get_namespace(activation.namespace)
+        except KeyError:
             logger.error(
                 "taskworker.invalid_namespace",
                 extra={"namespace": activation.namespace, "taskname": activation.taskname},
             )
             return None
 
-        namespace = taskregistry.get(activation.namespace)
         if not namespace.contains(activation.taskname):
             logger.error(
                 "taskworker.invalid_taskname",
@@ -421,7 +421,7 @@ def child_process(
             },
         )
 
-        namespace = taskregistry.get(activation.namespace)
+        namespace = app.get_namespace(activation.namespace)
         metrics.incr(
             "taskworker.cogs.usage",
             value=int(execution_duration * 1000),
