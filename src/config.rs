@@ -238,6 +238,12 @@ pub struct Config {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
+
+    /// The number of worker threads to use for the consumer runtime.
+    pub consumer_runtime_threads: usize,
+
+    /// The number of worker threads to use for the server runtime.
+    pub server_runtime_threads: usize,
 }
 
 impl Default for Config {
@@ -307,6 +313,8 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            consumer_runtime_threads: 0,
+            server_runtime_threads: 0,
         }
     }
 }
