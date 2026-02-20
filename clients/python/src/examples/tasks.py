@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 # Create a namespace and register tasks
-exampletasks = app.taskregistry.create_namespace("examples")
+exampletasks = app.create_namespace("examples")
 
 
 @exampletasks.register(name="examples.simple_task")
