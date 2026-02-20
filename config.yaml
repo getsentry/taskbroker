@@ -1,6 +1,7 @@
 kafka_topic: "taskworker"
 push_mode: true
-push_threads: 8
+push_threads: 32
+database_adapter: "fake"
 default_metrics_tags:
   host: "127.0.0.1"
 log_filter: "debug,sqlx=debug,librdkafka=warn,h2=off"

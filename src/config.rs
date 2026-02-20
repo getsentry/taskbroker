@@ -19,6 +19,9 @@ pub enum DatabaseAdapter {
 
     /// In-memory key-value store
     Map,
+
+    /// Fake store for performance testing; no persistence, returns dummy tasks
+    Fake,
 }
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]

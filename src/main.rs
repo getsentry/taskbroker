@@ -31,6 +31,7 @@ use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
+use taskbroker::store::fake_activation_store::FakeActivationStore;
 use taskbroker::store::inflight_activation::InflightActivationStore;
 use taskbroker::store::inflight_activation::{
     InflightActivationStoreConfig, SqliteActivationStore,
@@ -84,6 +85,7 @@ async fn main() -> Result<(), Error> {
         DatabaseAdapter::Map => Arc::new(MapActivationStore::new(
             MapActivationStoreConfig::from_config(&config),
         )),
+        DatabaseAdapter::Fake => Arc::new(FakeActivationStore::new()),
     };
 
     // If this is an environment where the topics might not exist, check and create them.
