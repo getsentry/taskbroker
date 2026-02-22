@@ -9,6 +9,7 @@ edition = "2024"
 debug = 1
 
 [dependencies]
+sea-query = "1.0.0-rc.1"
 anyhow = "1.0.92"
 async-trait = "0.1"
 bytes = "1.10.0"

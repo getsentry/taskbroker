@@ -10,6 +10,7 @@ use libsqlite3_sys::{
     SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
     SQLITE_OK, sqlite3_db_status,
 };
+use sea_query::{Alias, Expr, ExprTrait, Query};
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::{
     ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
@@ -26,6 +27,7 @@ use std::{str::FromStr, time::Instant};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
+use crate::store::query;
 
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
@@ -813,6 +815,17 @@ impl InflightActivationStore for SqliteActivationStore {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
+
+        let mut inner_select = Query::select()
+            .column(Alias::new("id"))
+            .from(Alias::new("inflight_taskactivations"))
+            .and_where(query::column!("n").eq(1))
+            .and_where(
+                query::column!(",")
+                    .is_null()
+                    .or(expr_col!("n").gt(now.timestamp())),
+            );
+
         let mut query_builder = QueryBuilder::new(format!(
             "UPDATE inflight_taskactivations
             SET
