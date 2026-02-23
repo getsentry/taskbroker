@@ -81,17 +81,20 @@ impl TaskPusher {
                     self.config.default_metrics_tags["host"], self.config.grpc_port
                 );
 
-                if let Err(e) = push_task(worker, callback_url, inflight).await {
-                    // Task is already marked as processing, so `processing_deadline` will handle retry
-                    error!("Pushing task {id} resulted in error - {:?}", e);
+                let store = self.store.clone();
 
-                    let _ = self
-                        .store
-                        .set_status(&id, InflightActivationStatus::Pending)
-                        .await;
-                } else {
-                    debug!("Task {id} was sent to load balancer!");
-                }
+                tokio::spawn(async move {
+                    if let Err(e) = push_task(worker, callback_url, inflight).await {
+                        error!("Pushing task {id} resulted in error - {:?}", e);
+
+                        // Revert status back to pending so that it can be tried again
+                        let _ = store
+                            .set_status(&id, InflightActivationStatus::Pending)
+                            .await;
+                    } else {
+                        debug!("Task {id} was sent to load balancer!");
+                    }
+                });
 
                 metrics::histogram!("task_pusher.get_next_task.duration").record(start.elapsed());
             }
