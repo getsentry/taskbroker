@@ -250,6 +250,12 @@ pub struct Config {
 
     /// Number of parallel task pusher threads to spawn in push mode.
     pub push_threads: usize,
+
+    /// The number of worker threads to use for the consumer runtime.
+    pub consumer_worker_threads: usize,
+
+    /// The number of worker threads to use for the server runtime.
+    pub server_worker_threads: usize,
 }
 
 impl Default for Config {
@@ -322,6 +328,8 @@ impl Default for Config {
             worker_endpoint: "http://127.0.0.1:50052".into(),
             push_mode: true,
             push_threads: 1,
+            consumer_worker_threads: 2,
+            server_worker_threads: 2,
         }
     }
 }

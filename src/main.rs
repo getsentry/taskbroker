@@ -161,7 +161,14 @@ async fn main() -> Result<(), Error> {
     });
 
     // Consumer from kafka
-    let consumer_task = tokio::spawn({
+    let consumer_runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("consumer-worker")
+        .worker_threads(config.consumer_worker_threads)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let consumer_task = consumer_runtime.spawn({
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
@@ -197,7 +204,14 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    let grpc_task = tokio::spawn({
+    let grpc_runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_name("grpc-worker")
+        .worker_threads(config.server_worker_threads)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let grpc_task = grpc_runtime.spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
 
