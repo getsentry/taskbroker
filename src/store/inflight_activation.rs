@@ -1179,19 +1179,27 @@ impl InflightActivationStore for SqliteActivationStore {
         }
 
         if !forwarder.to_discard.is_empty() {
-            let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
-            query_builder
-                .push("SET status = ")
-                .push_bind(InflightActivationStatus::Complete)
-                .push(" WHERE id IN (");
+            let placeholders = forwarder
+                .to_discard
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(", ");
 
-            let mut separated = query_builder.separated(", ");
-            for (id, _body) in forwarder.to_discard.iter() {
-                separated.push_bind(id);
+            let sql = format!(
+                "
+                UPDATE inflight_taskactivations
+                SET status = ?
+                WHERE id in ({placeholders})"
+            );
+
+            let mut query = sqlx::query::<Sqlite>(&sql).bind(InflightActivationStatus::Complete);
+
+            for (id, _) in forwarder.to_discard.iter() {
+                query = query.bind(id);
             }
-            separated.push_unseparated(")");
 
-            query_builder.build().execute(&mut *atomic).await?;
+            query.execute(&mut *atomic).await?;
         }
 
         atomic.commit().await?;
