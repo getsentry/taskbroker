@@ -8,7 +8,9 @@ use tokio::time::sleep;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
+use crate::store::inflight_activation::{
+    InflightActivation, InflightActivationStatus, InflightActivationStore,
+};
 use crate::worker_client::WorkerClient;
 
 pub struct TaskPusher {
@@ -82,6 +84,11 @@ impl TaskPusher {
                 if let Err(e) = push_task(worker, callback_url, inflight).await {
                     // Task is already marked as processing, so `processing_deadline` will handle retry
                     error!("Pushing task {id} resulted in error - {:?}", e);
+
+                    let _ = self
+                        .store
+                        .set_status(&id, InflightActivationStatus::Pending)
+                        .await;
                 } else {
                     debug!("Task {id} was sent to load balancer!");
                 }
