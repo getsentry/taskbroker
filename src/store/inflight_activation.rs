@@ -1189,7 +1189,7 @@ impl InflightActivationStore for SqliteActivationStore {
             let sql = format!(
                 "UPDATE inflight_taskactivations
                  SET status = ?
-                 WHERE id in ({placeholders})"
+                 WHERE id IN ({placeholders})"
             );
 
             let mut query = sqlx::query::<Sqlite>(&sql).bind(InflightActivationStatus::Complete);
@@ -1209,19 +1209,22 @@ impl InflightActivationStore for SqliteActivationStore {
     /// Mark a collection of tasks as complete by id
     #[instrument(skip_all)]
     async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
-        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
-        query_builder
-            .push("SET status = ")
-            .push_bind(InflightActivationStatus::Complete)
-            .push(" WHERE id IN (");
+        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
 
-        let mut separated = query_builder.separated(", ");
-        for id in ids.iter() {
-            separated.push_bind(id);
+        let sql = format!(
+            "UPDATE inflight_taskactivations
+             SET status = ?
+             WHERE id IN ({placeholders})"
+        );
+
+        let mut query = sqlx::query::<Sqlite>(&sql).bind(InflightActivationStatus::Complete);
+
+        for id in ids {
+            query = query.bind(id);
         }
-        separated.push_unseparated(")");
+
         let mut conn = self.acquire_write_conn_metric("mark_completed").await?;
-        let result = query_builder.build().execute(&mut *conn).await?;
+        let result = query.execute(&mut *conn).await?;
 
         Ok(result.rows_affected())
     }
