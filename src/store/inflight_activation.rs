@@ -1187,10 +1187,9 @@ impl InflightActivationStore for SqliteActivationStore {
                 .join(", ");
 
             let sql = format!(
-                "
-                UPDATE inflight_taskactivations
-                SET status = ?
-                WHERE id in ({placeholders})"
+                "UPDATE inflight_taskactivations
+                 SET status = ?
+                 WHERE id in ({placeholders})"
             );
 
             let mut query = sqlx::query::<Sqlite>(&sql).bind(InflightActivationStatus::Complete);
