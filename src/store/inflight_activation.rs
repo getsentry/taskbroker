@@ -819,9 +819,9 @@ impl InflightActivationStore for SqliteActivationStore {
             .unwrap_or_default();
 
         let namespace_filter = namespaces
-            .filter(|n| !n.is_empty())
-            .map(|n| n.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
-            .map(|n| format!(" AND namespace IN ({n})"))
+            .filter(|ns| !ns.is_empty())
+            .map(|ns| ns.iter().map(|_| "?").collect::<Vec<_>>().join(", "))
+            .map(|placeholders| format!(" AND namespace IN ({placeholders})"))
             .unwrap_or_default();
 
         let limit_clause = limit.map(|_| " LIMIT ?").unwrap_or_default();
