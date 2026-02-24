@@ -587,6 +587,105 @@ async fn test_set_activation_status(#[case] adapter: &str) {
 
 #[tokio::test]
 #[rstest]
+#[case::postgres("postgres")]
+async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let mut batch = make_activations(2);
+    batch[1].partition = 1;
+    assert!(store.store(batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+
+    assert!(
+        store
+            .set_status("id_0", InflightActivationStatus::Failure)
+            .await
+            .is_ok()
+    );
+    assert_counts(
+        StatusCount {
+            failure: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+
+    assert!(
+        store
+            .set_status("id_0", InflightActivationStatus::Pending)
+            .await
+            .is_ok()
+    );
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    assert!(
+        store
+            .set_status("id_0", InflightActivationStatus::Failure)
+            .await
+            .is_ok()
+    );
+    assert!(
+        store
+            .set_status("id_1", InflightActivationStatus::Failure)
+            .await
+            .is_ok()
+    );
+    // The broker can update the status of an activation in a different partition, but
+    // it still should not be counted in its upkeep.
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            failure: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    assert!(
+        store
+            .get_pending_activation(None, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let result = store
+        .set_status("not_there", InflightActivationStatus::Complete)
+        .await;
+    assert!(result.is_ok(), "no query error");
+
+    let activation = result.unwrap();
+    assert!(activation.is_none(), "no activation found");
+
+    let result = store
+        .set_status("id_0", InflightActivationStatus::Complete)
+        .await;
+    assert!(result.is_ok(), "no query error");
+
+    let result_opt = result.unwrap();
+    assert!(result_opt.is_some(), "activation should be returned");
+    let inflight = result_opt.unwrap();
+    assert_eq!(inflight.id, "id_0");
+    assert_eq!(inflight.status, InflightActivationStatus::Complete);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
 async fn test_set_processing_deadline(#[case] adapter: &str) {
