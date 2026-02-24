@@ -760,12 +760,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
                 b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
                 b.push_bind(row.processing_deadline_duration);
-                if let Some(deadline) = row.processing_deadline {
-                    b.push_bind(deadline.timestamp());
-                } else {
-                    // Add a literal null
-                    b.push("null");
-                }
+                b.push_bind(row.processing_deadline.map(|t| t.timestamp())); // None turns into NULL
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
                 b.push_bind(row.application);
@@ -847,7 +842,7 @@ impl InflightActivationStore for SqliteActivationStore {
         );
 
         // Bind values in the same order they appear in the query
-        let mut query = sqlx::query_as::<_, TableRow>(&sql)
+        let mut query = sqlx::query_as::<Sqlite, TableRow>(&sql)
             .bind(InflightActivationStatus::Processing)
             .bind(InflightActivationStatus::Pending)
             .bind(now.timestamp());
@@ -1245,18 +1240,29 @@ impl InflightActivationStore for SqliteActivationStore {
     /// Remove killswitched tasks.
     #[instrument(skip_all)]
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
-        let mut query_builder =
-            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE taskname IN (");
-        let mut separated = query_builder.separated(", ");
-        for taskname in killswitched_tasks.iter() {
-            separated.push_bind(taskname);
+        let placeholders = killswitched_tasks
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "DELETE FROM inflight_taskactivations
+             WHERE taskname IN ({placeholders})"
+        );
+
+        let mut query = sqlx::query::<Sqlite>(&sql);
+
+        for taskname in killswitched_tasks {
+            query = query.bind(taskname);
         }
-        separated.push_unseparated(")");
+
         let mut conn = self
             .acquire_write_conn_metric("remove_killswitched")
             .await?;
-        let query = query_builder.build().execute(&mut *conn).await?;
 
-        Ok(query.rows_affected())
+        let result = query.execute(&mut *conn).await?;
+
+        Ok(result.rows_affected())
     }
 }
