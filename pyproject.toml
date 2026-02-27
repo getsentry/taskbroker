@@ -22,7 +22,7 @@ dev = [
     "isort>=5.13.2",
     "mypy>=1.17.1",
     "types-pyyaml>=6.0.12.20241230",
-    "types-protobuf>=5.27.0.20240626",
+    "types-protobuf>=5.27.0.20240626,<6.0.0",
 ]
 
 [tool.uv]
