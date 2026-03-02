@@ -151,8 +151,21 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    let tokio_worker_threads = std::env::var("TOKIO_WORKER_THREADS")
+        .unwrap_or("0".to_string())
+        .parse()
+        .unwrap_or(0);
+    let mut consumer_builder = tokio::runtime::Builder::new_multi_thread();
+    consumer_builder.thread_name("consumer-worker");
+    if config.consumer_runtime_threads > 0 {
+        consumer_builder.worker_threads(config.consumer_runtime_threads);
+    } else if tokio_worker_threads > 0 {
+        consumer_builder.worker_threads(tokio_worker_threads);
+    }
+    let consumer_runtime = consumer_builder.enable_all().build().unwrap();
+
     // Consumer from kafka
-    let consumer_task = tokio::spawn({
+    let consumer_task = consumer_runtime.spawn({
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
@@ -189,7 +202,16 @@ async fn main() -> Result<(), Error> {
     });
 
     // GRPC server
-    let grpc_server_task = tokio::spawn({
+    let mut server_builder = tokio::runtime::Builder::new_multi_thread();
+    server_builder.thread_name("server-worker");
+    if config.server_runtime_threads > 0 {
+        server_builder.worker_threads(config.server_runtime_threads);
+    } else if tokio_worker_threads > 0 {
+        server_builder.worker_threads(tokio_worker_threads);
+    }
+    let server_runtime = server_builder.enable_all().build().unwrap();
+
+    let grpc_server_task = server_runtime.spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
         async move {
