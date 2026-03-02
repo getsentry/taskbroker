@@ -1,4 +1,8 @@
 # Changelog
+## 0.1.4
+
+- No documented changes.
+
 ## 0.1.3
 
 - chore(client) Move types-protobuf to dev deps and fix version by @markstory in [#563](https://github.com/getsentry/taskbroker/pull/563)
