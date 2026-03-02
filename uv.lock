@@ -626,7 +626,7 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "sentry-devenv", specifier = ">=1.22.2" },
     { name = "sentry-protos", specifier = ">=0.2.0" },
-    { name = "types-protobuf", specifier = ">=6.30.2.20250703" },
+    { name = "types-protobuf", specifier = ">=5.27.0.20240626" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20241230" },
 ]
 
@@ -645,7 +645,6 @@ dependencies = [
     { name = "sentry-arroyo", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-protos", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-sdk", extra = ["http2"], marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "types-protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "zstandard", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 
@@ -667,6 +666,7 @@ dev = [
     { name = "pytest-cov", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-devenv", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "time-machine", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "types-protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 
 [package.metadata]
@@ -683,7 +683,6 @@ requires-dist = [
     { name = "sentry-protos", specifier = ">=0.4.11" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
-    { name = "types-protobuf", specifier = ">=6.30.2.20250703" },
     { name = "zstandard", specifier = ">=0.18.0" },
 ]
 provides-extras = ["examples"]
@@ -700,6 +699,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "sentry-devenv", specifier = ">=1.22.2" },
     { name = "time-machine", specifier = ">=2.16.0" },
+    { name = "types-protobuf", specifier = ">=5.27.0.20240626,<6.0.0" },
 ]
 
 [[package]]
@@ -745,7 +745,7 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "sentry-devenv", specifier = ">=1.22.2" },
     { name = "sentry-protos", specifier = ">=0.2.0" },
-    { name = "types-protobuf", specifier = ">=6.30.2.20250703" },
+    { name = "types-protobuf", specifier = ">=5.27.0.20240626,<6.0.0" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20241230" },
 ]
 
@@ -788,14 +788,15 @@ wheels = [
     { url = "https://pypi.devinfra.sentry.io/wheels/tomli-2.2.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:286f0ca2ffeeb5b9bd4fcc8d6c330534323ec51b2f52da063b11c502da16f30c" },
     { url = "https://pypi.devinfra.sentry.io/wheels/tomli-2.2.1-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a92ef1a44547e894e2a17d24e7557a5e85a9e1d0048b0b5e7541f76c5032cb13" },
     { url = "https://pypi.devinfra.sentry.io/wheels/tomli-2.2.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9316dc65bed1684c9a98ee68759ceaed29d229e985297003e494aa825ebb0281" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/tomli-2.2.1-py3-none-any.whl", hash = "sha256:cb55c73c5f4408779d0cf3eef9f762b9c9f147a77de7b258bef0a5628adc85cc" },
 ]
 
 [[package]]
 name = "types-protobuf"
-version = "6.30.2.20250703"
+version = "5.27.0.20240626"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/types_protobuf-6.30.2.20250703-py3-none-any.whl", hash = "sha256:fa5aff9036e9ef432d703abbdd801b436a249b6802e4df5ef74513e272434e57" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/types_protobuf-5.27.0.20240626-py3-none-any.whl", hash = "sha256:688e8f7e8d9295db26bc560df01fb731b27a25b77cbe4c1ce945647f7024f5c1" },
 ]
 
 [[package]]
