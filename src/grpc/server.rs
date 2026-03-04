@@ -31,7 +31,8 @@ impl ConsumerService for TaskbrokerServer {
         }
 
         let start_time = Instant::now();
-        let application = &request.get_ref().application;
+        // let application = &request.get_ref().application;
+        let application: Option<String> = None;
         let namespace = &request.get_ref().namespace;
 
         debug!(

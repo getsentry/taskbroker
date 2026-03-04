@@ -250,6 +250,10 @@ pub struct Config {
 
     /// Number of parallel task pusher threads to spawn in push mode.
     pub push_threads: usize,
+
+    /// Number of pending activations to fetch per batch in push mode.
+    /// Each activation is still sent to a pusher task one by one.
+    pub push_batch_size: usize,
 }
 
 impl Default for Config {
@@ -322,6 +326,7 @@ impl Default for Config {
             worker_endpoint: "http://127.0.0.1:50052".into(),
             push_mode: true,
             push_threads: 1,
+            push_batch_size: 1,
         }
     }
 }

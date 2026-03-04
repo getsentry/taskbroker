@@ -1,6 +1,8 @@
 kafka_topic: "taskworker"
 push_mode: true
 push_threads: 8
+# Activations to fetch per batch; each is still pushed in its own task.
+# push_batch_size: 16
 default_metrics_tags:
   host: "127.0.0.1"
 log_filter: "debug,sqlx=debug,librdkafka=warn,h2=off"

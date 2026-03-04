@@ -67,39 +67,52 @@ impl TaskPusher {
         let start = Instant::now();
         metrics::counter!("task_pusher.process_next_task.runs").increment(1);
 
-        debug!("Getting the next task...");
+        debug!("Getting the next batch of tasks...");
 
-        // Use atomic get-and-mark instead of peek + mark
-        match self.store.get_pending_activation(None, None).await {
-            Ok(Some(inflight)) => {
-                let id = inflight.id.clone();
-                debug!("Atomically fetched and marked task {id} as processing");
+        let batch_size = self.config.push_batch_size.max(1) as i32;
 
-                let worker = self.worker.clone();
+        // Use atomic get-and-mark for a batch of pending activations
+        match self
+            .store
+            .get_pending_activations_from_namespaces(None, None, Some(batch_size))
+            .await
+        {
+            Ok(activations) if !activations.is_empty() => {
+                debug!(
+                    "Atomically fetched and marked {} task(s) as processing",
+                    activations.len()
+                );
+
                 let callback_url = format!(
                     "{}:{}",
                     self.config.default_metrics_tags["host"], self.config.grpc_port
                 );
-
                 let store = self.store.clone();
 
-                tokio::spawn(async move {
-                    if let Err(e) = push_task(worker, callback_url, inflight).await {
-                        error!("Pushing task {id} resulted in error - {:?}", e);
+                for inflight in activations {
+                    let id = inflight.id.clone();
+                    let worker = self.worker.clone();
+                    let callback_url = callback_url.clone();
+                    let store = store.clone();
 
-                        // Revert status back to pending so that it can be tried again
-                        let _ = store
-                            .set_status(&id, InflightActivationStatus::Pending)
-                            .await;
-                    } else {
-                        debug!("Task {id} was sent to load balancer!");
-                    }
-                });
+                    tokio::spawn(async move {
+                        if let Err(e) = push_task(worker, callback_url, inflight).await {
+                            error!("Pushing task {id} resulted in error - {:?}", e);
+
+                            // Revert status back to pending so that it can be tried again
+                            let _ = store
+                                .set_status(&id, InflightActivationStatus::Pending)
+                                .await;
+                        } else {
+                            debug!("Task {id} was sent to load balancer!");
+                        }
+                    });
+                }
 
                 metrics::histogram!("task_pusher.get_next_task.duration").record(start.elapsed());
             }
 
-            Ok(None) => {
+            Ok(_) => {
                 debug!("No pending tasks, sleeping briefly");
                 sleep(milliseconds(100)).await;
                 metrics::histogram!("task_pusher.process_next_task.duration")
@@ -107,7 +120,7 @@ impl TaskPusher {
             }
 
             Err(e) => {
-                error!("Failed to fetch pending activation - {:?}", e);
+                error!("Failed to fetch pending activations - {:?}", e);
                 sleep(milliseconds(100)).await;
                 metrics::histogram!("task_pusher.process_next_task.duration")
                     .record(start.elapsed());
