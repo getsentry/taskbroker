@@ -259,6 +259,10 @@ pub struct Config {
 
     /// Bounded channel buffer capacity per push worker.
     pub push_channel_capacity: usize,
+
+    /// Number of pending activations to fetch per batch in push mode.
+    /// Each activation is still sent to a pusher task one by one.
+    pub push_batch_size: usize,
 }
 
 impl Default for Config {
@@ -333,6 +337,7 @@ impl Default for Config {
             push_threads: 1,
             push_worker_connections: 8,
             push_channel_capacity: 64,
+            push_batch_size: 1,
         }
     }
 }

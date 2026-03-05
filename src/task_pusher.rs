@@ -102,35 +102,48 @@ impl TaskPusher {
         Ok(())
     }
 
-    /// Grab the next pending task from the store and atomically mark it as processing.
+    /// Grab the next batch of pending tasks from the store and atomically mark them as processing.
     async fn get_next_task(&mut self) {
         let start = Instant::now();
         metrics::counter!("task_pusher.process_next_task.runs").increment(1);
 
-        debug!("Getting the next task...");
+        let batch_size = self.config.push_batch_size.max(1) as i32;
+        debug!("Getting the next batch of up to {} tasks...", batch_size);
 
-        // Use atomic get-and-mark instead of peek + mark
-        match self.store.get_pending_activation(None, None).await {
-            Ok(Some(inflight)) => {
-                let id = inflight.id.clone();
-                debug!("Atomically fetched and marked task {id} as processing");
+        match self
+            .store
+            .get_pending_activations_from_namespaces(None, None, Some(batch_size))
+            .await
+        {
+            Ok(activations) if !activations.is_empty() => {
+                debug!(
+                    "Atomically fetched and marked {} tasks as processing",
+                    activations.len()
+                );
 
                 let callback_url = format!(
                     "{}:{}",
                     self.config.default_metrics_tags["host"], self.config.grpc_port
                 );
-                let idx = self.next_sender_index % self.senders.len();
-                self.next_sender_index = self.next_sender_index.wrapping_add(1);
 
-                if let Err(e) = self.senders[idx].send((callback_url, inflight)).await {
-                    // Channel closed (workers shut down)
-                    error!("Failed to send task {id} to push worker - {:?}", e);
+                for inflight in activations {
+                    let id = inflight.id.clone();
+                    let idx = self.next_sender_index % self.senders.len();
+                    self.next_sender_index = self.next_sender_index.wrapping_add(1);
+
+                    if let Err(e) = self.senders[idx]
+                        .send((callback_url.clone(), inflight))
+                        .await
+                    {
+                        // Channel closed (workers shut down)
+                        error!("Failed to send task {id} to push worker - {:?}", e);
+                    }
                 }
 
                 metrics::histogram!("task_pusher.get_next_task.duration").record(start.elapsed());
             }
 
-            Ok(None) => {
+            Ok(_) => {
                 debug!("No pending tasks, sleeping briefly");
                 sleep(milliseconds(100)).await;
                 metrics::histogram!("task_pusher.process_next_task.duration")
@@ -138,7 +151,7 @@ impl TaskPusher {
             }
 
             Err(e) => {
-                error!("Failed to fetch pending activation - {:?}", e);
+                error!("Failed to fetch pending activations - {:?}", e);
                 sleep(milliseconds(100)).await;
                 metrics::histogram!("task_pusher.process_next_task.duration")
                     .record(start.elapsed());
