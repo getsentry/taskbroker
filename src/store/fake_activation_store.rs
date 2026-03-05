@@ -50,6 +50,7 @@ impl FakeActivationStore {
             processing_deadline: None,
             on_attempts_exceeded: sentry_protos::taskbroker::v1::OnAttemptsExceeded::Discard,
             at_most_once: false,
+            bucket: InflightActivation::bucket_from_id(&id),
         }
     }
 
@@ -110,6 +111,7 @@ impl InflightActivationStore for FakeActivationStore {
         _application: Option<&str>,
         _namespaces: Option<&[String]>,
         limit: Option<i32>,
+        _bucket_range: (i16, i16),
     ) -> Result<Vec<InflightActivation>, Error> {
         let n = limit.unwrap_or(1).max(0).min(1) as usize;
         Ok((0..n).map(|_| self.dummy_task()).collect())

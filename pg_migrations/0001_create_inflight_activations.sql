@@ -16,5 +16,11 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     application TEXT NOT NULL,
     namespace TEXT NOT NULL,
     taskname TEXT NOT NULL,
-    on_attempts_exceeded INTEGER NOT NULL DEFAULT 1
+    on_attempts_exceeded INTEGER NOT NULL DEFAULT 1,
+    bucket SMALLINT NOT NULL
 );
+
+-- CREATE INDEX idx_inflight_taskactivations_bucket ON inflight_taskactivations USING btree (bucket);
+
+CREATE INDEX idx_taskactivations_claim
+  ON inflight_taskactivations (status, bucket, added_at);

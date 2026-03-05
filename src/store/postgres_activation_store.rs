@@ -171,7 +171,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -212,7 +213,8 @@ impl InflightActivationStore for PostgresActivationStore {
                     application,
                     namespace,
                     taskname,
-                    on_attempts_exceeded
+                    on_attempts_exceeded,
+                    bucket
                 )
             ",
         );
@@ -244,6 +246,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -260,10 +263,12 @@ impl InflightActivationStore for PostgresActivationStore {
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket_range: (i16, i16),
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
+        let (min_bucket, max_bucket) = bucket_range;
         let mut query_builder = QueryBuilder::new(
             "WITH selected_activations AS (
                 SELECT id
@@ -274,6 +279,10 @@ impl InflightActivationStore for PostgresActivationStore {
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
         query_builder.push_bind(now);
         query_builder.push(")");
+        query_builder.push(" AND bucket >= ");
+        query_builder.push_bind(min_bucket);
+        query_builder.push(" AND bucket <= ");
+        query_builder.push_bind(max_bucket);
 
         // Handle application & namespace filtering
         if let Some(value) = application {
@@ -374,7 +383,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             AND (expires_at IS NULL OR expires_at > $2)
@@ -503,7 +513,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             ",

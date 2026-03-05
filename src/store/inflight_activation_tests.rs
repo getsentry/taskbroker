@@ -254,7 +254,7 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     // Get activation from multiple namespaces (should get oldest)
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), None)
+        .get_pending_activations_from_namespaces(None, Some(&namespaces), None, (0, 255))
         .await
         .unwrap();
 
@@ -290,7 +290,12 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2))
+        .get_pending_activations_from_namespaces(
+            None,
+            Some(namespaces).as_deref(),
+            Some(2),
+            (0, 255),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1688,7 +1693,8 @@ async fn test_migrations() {
                 processing_deadline_duration,
                 processing_deadline,
                 status,
-                at_most_once
+                at_most_once,
+                bucket
             )
         ",
     );
@@ -1711,6 +1717,7 @@ async fn test_migrations() {
             }
             b.push_bind(row.status);
             b.push_bind(row.at_most_once);
+            b.push_bind(row.bucket);
         })
         .push(" ON CONFLICT(id) DO NOTHING")
         .build();

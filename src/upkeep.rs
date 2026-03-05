@@ -304,7 +304,12 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None)
+            .get_pending_activations_from_namespaces(
+                None,
+                Some(&demoted_namespaces),
+                None,
+                (0, 255),
+            )
             .await
         {
             // Produce tasks to Kafka with updated namespace

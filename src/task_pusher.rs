@@ -15,6 +15,9 @@ use crate::worker_client::WorkerClient;
 /// Message sent to a push worker: (callback_url, inflight).
 type PushMessage = (String, InflightActivation);
 
+/// Number of buckets (0..BUCKET_COUNT). Used to partition work across push threads.
+const BUCKET_COUNT: i16 = 256;
+
 pub struct TaskPusher {
     /// Senders to push workers (round-robin). Each worker has its own gRPC connection.
     senders: Vec<mpsc::Sender<PushMessage>>,
@@ -30,11 +33,19 @@ pub struct TaskPusher {
 
     /// Receivers (moved into worker tasks in start()).
     receivers: Vec<mpsc::Receiver<PushMessage>>,
+
+    /// This pusher only fetches activations with bucket in [min, max] (inclusive).
+    bucket_range: (i16, i16),
 }
 
 impl TaskPusher {
     /// Create a new `TaskPusher` instance with a pool of worker channels (one connection per worker, created in start()).
-    pub fn new(store: Arc<dyn InflightActivationStore>, config: Arc<Config>) -> Self {
+    /// This pusher only fetches pending activations with bucket in [bucket_range.0, bucket_range.1] (inclusive).
+    pub fn new(
+        store: Arc<dyn InflightActivationStore>,
+        config: Arc<Config>,
+        bucket_range: (i16, i16),
+    ) -> Self {
         let n = config.push_worker_connections;
         let mut senders = Vec::with_capacity(n);
         let mut receivers = Vec::with_capacity(n);
@@ -50,7 +61,20 @@ impl TaskPusher {
             config,
             store,
             receivers,
+            bucket_range,
         }
+    }
+
+    /// Bucket range for push thread index `thread_index` out of `push_threads` (0..push_threads).
+    /// Each thread gets a contiguous range of size 256 / push_threads (e.g. 4 threads -> 0-63, 64-127, 128-191, 192-255).
+    pub fn bucket_range_for_thread(thread_index: usize, push_threads: usize) -> (i16, i16) {
+        if push_threads == 0 {
+            return (0, BUCKET_COUNT - 1);
+        }
+        let buckets_per_thread = (BUCKET_COUNT as usize) / push_threads;
+        let min = (thread_index * buckets_per_thread) as i16;
+        let max = ((thread_index + 1) * buckets_per_thread - 1) as i16;
+        (min, max)
     }
 
     /// Start the worker pool and push task loop.
@@ -112,14 +136,26 @@ impl TaskPusher {
 
         match self
             .store
-            .get_pending_activations_from_namespaces(None, None, Some(batch_size))
+            .get_pending_activations_from_namespaces(
+                None,
+                None,
+                Some(batch_size),
+                self.bucket_range,
+            )
             .await
         {
             Ok(activations) if !activations.is_empty() => {
+                let records_fetched = activations.len();
                 debug!(
                     "Atomically fetched and marked {} tasks as processing",
-                    activations.len()
+                    records_fetched
                 );
+
+                metrics::histogram!("task_pusher.batch.records_fetched")
+                    .record(records_fetched as f64);
+
+                metrics::histogram!("task_pusher.batch.records_requested")
+                    .record(batch_size as f64);
 
                 let callback_url = format!(
                     "{}:{}",

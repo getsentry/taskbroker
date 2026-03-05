@@ -185,10 +185,12 @@ impl InflightActivationBuilder {
 
         self.activation = Some(activation.encode_to_vec());
 
-        match self._build() {
-            Ok(activation) => activation,
+        let mut activation = match self._build() {
+            Ok(a) => a,
             Err(e) => panic!("Failed to build InflightActivation - {}", e),
-        }
+        };
+        activation.bucket = InflightActivation::bucket_from_id(&activation.id);
+        activation
     }
 }
 

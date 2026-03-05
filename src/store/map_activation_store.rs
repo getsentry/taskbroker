@@ -89,9 +89,11 @@ impl InflightActivationStore for MapActivationStore {
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket_range: (i16, i16),
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
         let grace_sec = self.config.processing_deadline_grace_sec;
+        let (min_bucket, max_bucket) = bucket_range;
 
         let mut guard = self
             .map
@@ -105,6 +107,8 @@ impl InflightActivationStore for MapActivationStore {
                     && (a.expires_at.is_none() || a.expires_at.unwrap() > now)
                     && application.map_or(true, |app| app == a.application)
                     && namespaces.map_or(true, |ns| ns.is_empty() || ns.contains(&a.namespace))
+                    && a.bucket >= min_bucket
+                    && a.bucket <= max_bucket
             })
             .map(|(id, a)| (id.clone(), a.added_at, a.processing_deadline_duration))
             .collect();

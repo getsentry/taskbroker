@@ -1,7 +1,0 @@
-
-drop_task_killswitch:
-  -
-demoted_namespaces:
-  - bad_namespace
-demoted_topic_cluster: 0.0.0.0:9092
-demoted_topic: taskworker-demoted

@@ -256,10 +256,14 @@ async fn main() -> Result<(), Error> {
             .map(|i| {
                 let store = store.clone();
                 let config = config.clone();
+                let bucket_range = TaskPusher::bucket_range_for_thread(i, config.push_threads);
 
                 tokio::spawn(async move {
-                    info!("Starting task pusher thread {}", i);
-                    let pusher = TaskPusher::new(store, config);
+                    info!(
+                        "Starting task pusher thread {} (buckets {}-{})",
+                        i, bucket_range.0, bucket_range.1
+                    );
+                    let pusher = TaskPusher::new(store, config, bucket_range);
                     pusher.start().await
                 })
             })

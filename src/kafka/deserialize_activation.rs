@@ -96,6 +96,7 @@ pub fn new(
             namespace,
             taskname,
             on_attempts_exceeded,
+            bucket: InflightActivation::bucket_from_id(&activation.id),
         })
     }
 }
