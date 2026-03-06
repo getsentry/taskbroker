@@ -84,6 +84,10 @@ impl Default for FakeActivationStore {
 
 #[async_trait]
 impl InflightActivationStore for FakeActivationStore {
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn vacuum_db(&self) -> Result<(), Error> {
         Ok(())
     }

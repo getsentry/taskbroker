@@ -45,6 +45,10 @@ impl MapActivationStore {
 
 #[async_trait]
 impl InflightActivationStore for MapActivationStore {
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn vacuum_db(&self) -> Result<(), Error> {
         Ok(())
     }

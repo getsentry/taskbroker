@@ -367,6 +367,8 @@ pub trait InflightActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
 
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
+
     /// Get a single pending activation, optionally filtered by namespace
     async fn get_pending_activation(
         &self,
@@ -662,6 +664,11 @@ impl SqliteActivationStore {
 
 #[async_trait]
 impl InflightActivationStore for SqliteActivationStore {
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        warn!("assign_partitions: {:?}", partitions);
+        Ok(())
+    }
+
     /// Trigger incremental vacuum to reclaim free pages in the database.
     /// Depending on config data, will either vacuum a set number of
     /// pages or attempt to reclaim all free pages.

@@ -24,3 +24,5 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
 
 CREATE INDEX idx_taskactivations_claim
   ON inflight_taskactivations (status, bucket, added_at);
+
+CREATE INDEX idx_activation_partition ON inflight_taskactivations (partition);
