@@ -20,26 +20,72 @@ pub async fn create_postgres_pool(
     url: &str,
     database_name: &str,
 ) -> Result<(Pool<Postgres>, Pool<Postgres>), Error> {
-    let conn_str = url.to_owned() + "/" + database_name;
+    let conn_opts = build_pg_connect_options(url, database_name)?;
     let read_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts.clone())
         .await?;
 
     let write_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts)
         .await?;
     Ok((read_pool, write_pool))
 }
 
 pub async fn create_default_postgres_pool(url: &str) -> Result<Pool<Postgres>, Error> {
-    let conn_str = url.to_owned() + "/postgres";
+    let conn_opts = build_pg_connect_options(url, "postgres")?;
     let default_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts)
         .await?;
     Ok(default_pool)
+}
+
+fn build_pg_connect_options(url: &str, database_name: &str) -> Result<PgConnectOptions, Error> {
+    Ok(PgConnectOptions::from_str(url)?.database(database_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_pg_connect_options;
+    use sqlx::postgres::PgSslMode;
+
+    #[test]
+    fn test_connect_opts_plain_url() {
+        let pg_url = "postgresql://user:pass@localhost:5432";
+        let custom_db_name = "my-custom-db";
+        let opts = build_pg_connect_options(pg_url, custom_db_name).unwrap();
+        assert_eq!(opts.get_database(), Some(custom_db_name));
+        assert_eq!(opts.get_host(), "localhost");
+        assert_eq!(opts.get_port(), 5432);
+    }
+
+    #[test]
+    fn test_connect_opts_preserves_sslmode_query_param() {
+        let pg_url_with_query = "postgresql://user:pass@localhost:5432?sslmode=require";
+        let custom_db_name = "my-custom-db";
+        let opts = build_pg_connect_options(pg_url_with_query, custom_db_name).unwrap();
+        assert_eq!(opts.get_database(), Some(custom_db_name));
+        assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
+    }
+
+    #[test]
+    fn test_connect_opts_overrides_existing_db_in_url() {
+        let pg_url_with_existing_db = "postgresql://user:pass@localhost:5432/olddb-in-path";
+        let new_db_name = "newdb";
+        let opts = build_pg_connect_options(pg_url_with_existing_db, new_db_name).unwrap();
+        assert_eq!(opts.get_database(), Some(new_db_name));
+    }
+
+    #[test]
+    fn test_connect_opts_overrides_db_and_preserves_tls() {
+        let pg_url_with_existing_db_and_tls = "postgresql://user:pass@localhost:5432/olddb?sslmode=verify-ca";
+        let new_db_name = "newdb";
+        let opts = build_pg_connect_options(pg_url_with_existing_db_and_tls, new_db_name).unwrap();
+        assert_eq!(opts.get_database(), Some("newdb"));
+        assert!(matches!(opts.get_ssl_mode(), PgSslMode::VerifyCa));
+    }
 }
 
 pub struct PostgresActivationStoreConfig {
