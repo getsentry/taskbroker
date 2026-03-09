@@ -30,7 +30,7 @@ jobs:
           build_args: TASKBROKER_GIT_REVISION=${{ github.sha }}
           ghcr: true
           tag_suffix: -${{ matrix.platform }}
-          publish_on_pr: true
+          publish_on_pr: ${{ github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' }}
           google_ar: false
           tag_nightly: false
           tag_latest: false
