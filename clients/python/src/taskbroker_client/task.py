@@ -256,3 +256,18 @@ class Task(Generic[P, R]):
         if not retry:
             return False
         return retry.should_retry(state, exc)
+
+
+class ExternalTask(Task[P, R]):
+    """
+    A task stub for tasks defined in another application.
+
+    ExternalTask instances can be dispatched to Kafka via delay() or apply_async(),
+    but cannot be called directly. They route to the target application's topic.
+    """
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        raise ValueError(
+            f"External tasks cannot be called locally. "
+            f"Use delay() or apply_async() to dispatch '{self.name}' to the target application."
+        )
