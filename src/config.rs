@@ -263,6 +263,12 @@ pub struct Config {
     /// Number of pending activations to fetch per batch in push mode.
     /// Each activation is still sent to a pusher task one by one.
     pub push_batch_size: usize,
+
+    /// Max number of status updates to buffer before flushing (push mode).
+    pub push_status_batch_size: usize,
+
+    /// Max time in ms before buffered status updates are flushed to the store (push mode).
+    pub push_status_flush_interval_ms: u64,
 }
 
 impl Default for Config {
@@ -338,6 +344,8 @@ impl Default for Config {
             push_worker_connections: 8,
             push_channel_capacity: 64,
             push_batch_size: 1,
+            push_status_batch_size: 500,
+            push_status_flush_interval_ms: 1000,
         }
     }
 }

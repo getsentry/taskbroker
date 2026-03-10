@@ -238,6 +238,24 @@ impl InflightActivationStore for MapActivationStore {
     }
 
     #[instrument(skip_all)]
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<(), Error> {
+        let mut guard = self
+            .map
+            .write()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?;
+        for id in ids {
+            if let Some(a) = guard.get_mut(id) {
+                a.status = status;
+            }
+        }
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
     async fn set_processing_deadline(
         &self,
         id: &str,

@@ -149,6 +149,14 @@ impl InflightActivationStore for FakeActivationStore {
         Ok(None)
     }
 
+    async fn set_status_batch(
+        &self,
+        _ids: &[String],
+        _status: InflightActivationStatus,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn set_processing_deadline(
         &self,
         _id: &str,

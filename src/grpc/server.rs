@@ -7,6 +7,7 @@ use sentry_protos::taskbroker::v1::{
 };
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
@@ -15,6 +16,8 @@ use tracing::{debug, error, instrument};
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
     pub push_mode: bool,
+    /// When set (push mode), status updates are sent here for batching instead of applied immediately.
+    pub status_tx: Option<mpsc::Sender<(String, InflightActivationStatus)>>,
 }
 
 #[tonic::async_trait]
@@ -102,6 +105,14 @@ impl ConsumerService for TaskbrokerServer {
         }
 
         debug!("Status of task {id} set to {:?}", status);
+
+        if let Some(ref tx) = self.status_tx {
+            tx.send((id, status))
+                .await
+                .map_err(|_| Status::internal("status update channel closed"))?;
+            metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        }
 
         let update_result = self.store.set_status(&id, status).await;
         if let Err(e) = update_result {

@@ -20,6 +20,7 @@ use taskbroker::config::{Config, DatabaseAdapter};
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
+use taskbroker::grpc::status_flusher;
 use taskbroker::kafka::{
     admin::create_missing_topics,
     consumer::start_consumer,
@@ -141,14 +142,23 @@ async fn main() -> Result<(), Error> {
         let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
         timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
+        debug!(
+            "Setting maintenace (vacuum) to run every {} milliseconds",
+            config.maintenance_task_interval_ms
+        );
+
         async move {
             loop {
                 select! {
                     _ = timer.tick() => {
+                        info!("Preparing to vacuum...");
+
                         match maintenance_store.vacuum_db().await {
-                            Ok(_) => debug!("ran maintenance vacuum"),
-                            Err(err) => warn!("failed to run maintenance vacuum {:?}", err),
+                            Ok(_) => info!("vacuum succeeded"),
+                            Err(err) => warn!("vacuum failed - {:?}", err),
                         }
+
+                        info!("Done vacuuming!");
                     },
                     _ = guard.wait() => {
                         break;
@@ -197,9 +207,22 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    let (status_tx, flusher_handle) = if config.push_mode {
+        let (tx, rx) = tokio::sync::mpsc::channel(config.push_status_batch_size);
+        let flusher_store = store.clone();
+        let flusher_config = config.clone();
+        let handle = tokio::spawn(async move {
+            status_flusher::run_status_flusher(rx, flusher_store, flusher_config).await;
+        });
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     let grpc_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+        let grpc_status_tx = status_tx.clone();
 
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
@@ -216,6 +239,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                     push_mode: grpc_config.push_mode,
+                    status_tx: grpc_status_tx,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -293,6 +317,15 @@ async fn main() -> Result<(), Error> {
                 Ok(Ok(())) => info!("Task {} completed", task_name),
                 Ok(Err(e)) => error!("Task {} failed - {:?}", task_name, e),
                 Err(e) => error!("Task {} panicked - {:?}", task_name, e),
+            }
+        });
+    }
+
+    if let Some(handle) = flusher_handle {
+        departure = departure.on_completion(async move {
+            match handle.await {
+                Ok(()) => info!("Status flusher completed"),
+                Err(e) => error!("Status flusher panicked: {:?}", e),
             }
         });
     }

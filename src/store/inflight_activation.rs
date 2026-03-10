@@ -30,7 +30,7 @@ use crate::config::Config;
 
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Type)]
 pub enum InflightActivationStatus {
     /// Unused but necessary to align with sentry-protos
     Unspecified,
@@ -440,6 +440,13 @@ pub trait InflightActivationStore: Send + Sync {
         id: &str,
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error>;
+
+    /// Update the status of multiple activations in one batch.
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<(), Error>;
 
     /// Set the processing deadline for a specific activation
     async fn set_processing_deadline(
@@ -1084,6 +1091,29 @@ impl InflightActivationStore for SqliteActivationStore {
         };
 
         Ok(Some(row.into()))
+    }
+
+    #[instrument(skip_all)]
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<(), Error> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+        let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "UPDATE inflight_taskactivations SET status = ?1 WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut q = sqlx::query(&sql).bind(status);
+        for id in ids {
+            q = q.bind(id);
+        }
+        q.execute(&mut *conn).await?;
+        Ok(())
     }
 
     #[instrument(skip_all)]

@@ -13,7 +13,7 @@ use sqlx::{
 };
 use std::sync::RwLock;
 use std::{str::FromStr, time::Instant};
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use crate::config::Config;
 
@@ -159,13 +159,21 @@ impl InflightActivationStore for PostgresActivationStore {
     /// pages or attempt to reclaim all free pages.
     #[instrument(skip_all)]
     async fn vacuum_db(&self) -> Result<(), Error> {
-        // TODO: Remove
+        let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
+        sqlx::query("VACUUM ANALYZE inflight_taskactivations")
+            .execute(&mut *conn)
+            .await?;
         Ok(())
     }
 
     /// Perform a full vacuum on the database.
+    /// VACUUM FULL rewrites the table and reclaims disk space; it exclusively locks the table.
+    #[instrument(skip_all)]
     async fn full_vacuum_db(&self) -> Result<(), Error> {
-        // TODO: Remove
+        let mut conn = self.acquire_write_conn_metric("full_vacuum_db").await?;
+        sqlx::query("VACUUM FULL ANALYZE inflight_taskactivations")
+            .execute(&mut *conn)
+            .await?;
         Ok(())
     }
 
@@ -510,6 +518,24 @@ impl InflightActivationStore for PostgresActivationStore {
         };
 
         Ok(Some(row.into()))
+    }
+
+    #[instrument(skip_all)]
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<(), Error> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+        sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
+            .bind(status.to_string())
+            .bind(ids)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     #[instrument(skip_all)]
