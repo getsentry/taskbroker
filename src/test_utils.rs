@@ -257,13 +257,17 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore
             .await
             .unwrap(),
         ) as Arc<dyn InflightActivationStore>,
-        "postgres" => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
-                &create_integration_config(),
-            ))
-            .await
-            .unwrap(),
-        ) as Arc<dyn InflightActivationStore>,
+        "postgres" => {
+            let store = Arc::new(
+                PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
+                    &create_integration_config(),
+                ))
+                .await
+                .unwrap(),
+            ) as Arc<dyn InflightActivationStore>;
+            store.assign_partitions(vec![0]).unwrap();
+            store
+        }
         _ => panic!("Invalid adapter: {}", adapter),
     }
 }
