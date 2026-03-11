@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -36,6 +36,23 @@ def test_external_task_raises_on_direct_call() -> None:
 
     with pytest.raises(ValueError, match="External tasks cannot be called locally"):
         do_something(1)
+
+
+def test_external_task_always_eager() -> None:
+    ns = make_external_namespace()
+
+    @ns.register(name="do_something")
+    def do_something(x: int) -> None:
+        pass
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        with pytest.raises(ValueError, match="External tasks cannot be called locally"):
+            do_something(1)
+
+        with pytest.raises(
+            ValueError, match="External tasks cannot be called within an ALWAYS_EAGER block"
+        ):
+            do_something.delay(1)
 
 
 def test_external_task_signature_type_preserved() -> None:
