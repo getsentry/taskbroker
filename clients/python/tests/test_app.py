@@ -81,6 +81,53 @@ def test_create_namespace() -> None:
         app.get_namespace("invalid")
 
 
+def test_create_external_namespace() -> None:
+    class ExternalRouter(TaskRouter):
+        def route_namespace(self, name: str) -> str:
+            if name == "other:test":
+                return "other-test"
+            if name == "ext:test":
+                return "ext-test"
+            if name == "test":
+                return "tester"
+            raise ValueError(f"unknown namespace {name}")
+
+    app = TaskbrokerApp(
+        name="acme", producer_factory=producer_factory, router_class=ExternalRouter()
+    )
+
+    ns = app.create_namespace("test")
+    assert ns.application == "acme"
+    assert ns.name == "test"
+    assert ns.topic == "tester"
+
+    ext = app.create_external_namespace(application="ext", name="test")
+    assert ext.application == "ext"
+    assert ext.name == "test"
+    assert ext.topic == "ext-test"
+
+    retry = Retry(times=3)
+    other = app.create_external_namespace(
+        application="other",
+        name="test",
+        retry=retry,
+        expires=60 * 10,
+        processing_deadline_duration=60,
+    )
+    assert other.default_retry == retry
+    assert other.default_processing_deadline_duration == 60
+    assert other.default_expires == 60 * 10
+    assert other.name == "test"
+    assert other.application == "other"
+    assert other.topic == "other-test"
+
+    # external namespaces are stored separately from in-app namespaces
+    # and from each other.
+    assert app.taskregistry.get_external("ext", "test") == ext
+    assert app.taskregistry.get_external("other", "test") == other
+    assert app.taskregistry.get("test") == ns
+
+
 def test_get_task() -> None:
     app = TaskbrokerApp(name="acme", producer_factory=producer_factory, router_class=StubRouter())
     ns = app.create_namespace(name="tests")

@@ -8,7 +8,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE
 from taskbroker_client.imports import import_string
 from taskbroker_client.metrics import MetricsBackend
-from taskbroker_client.registry import TaskNamespace, TaskRegistry
+from taskbroker_client.registry import ExternalNamespace, TaskNamespace, TaskRegistry
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import Task
@@ -99,6 +99,30 @@ class TaskbrokerApp:
             expires=expires,
             processing_deadline_duration=processing_deadline_duration,
             app_feature=app_feature,
+        )
+
+    def create_external_namespace(
+        self,
+        name: str,
+        application: str,
+        *,
+        retry: Retry | None = None,
+        expires: int | datetime.timedelta | None = None,
+        processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
+    ) -> ExternalNamespace:
+        """
+        Create a namespace for tasks belonging to an external (target) application.
+
+        Tasks registered in external namespaces are routed using the host application's
+        task router. When routing is required for an external namespace the namespace
+        name sent to the router will be in the form of `{application}:{namespace_name}`
+        """
+        return self._taskregistry.create_external_namespace(
+            name=name,
+            application=application,
+            retry=retry,
+            expires=expires,
+            processing_deadline_duration=processing_deadline_duration,
         )
 
     def get_task(self, namespace: str, task: str) -> Task[Any, Any]:
