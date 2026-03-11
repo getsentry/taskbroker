@@ -1,4 +1,10 @@
 # Changelog
+## 0.1.5
+
+### New Features ✨
+
+- Add simpler API for creating external tasks by @markstory in [#570](https://github.com/getsentry/taskbroker/pull/570)
+
 ## 0.1.4
 
 - No documented changes.
