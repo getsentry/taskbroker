@@ -252,7 +252,9 @@ class ExternalNamespace(TaskNamespace):
         """
 
         def wrapped(func: Callable[P, R]) -> ExternalTask[P, R]:
-            task_retry = retry or self.default_retry
+            task_retry = retry
+            if not at_most_once:
+                task_retry = retry or self.default_retry
             task: ExternalTask[P, R] = ExternalTask(
                 name=name,
                 func=func,

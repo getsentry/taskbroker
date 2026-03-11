@@ -149,6 +149,30 @@ def test_external_namespace_inherits_defaults() -> None:
     assert my_task.retry == retry
 
 
+def test_external_namespace_no_retry_for_at_most_once() -> None:
+    retry = Retry(times=3)
+    ns = ExternalNamespace(
+        name="process",
+        application="launchpad",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=retry,
+        expires=300,
+        processing_deadline_duration=60,
+    )
+
+    @ns.register(name="my_task", at_most_once=True)
+    def my_task() -> None:
+        pass
+
+    activation = my_task.create_activation([], {})
+    assert activation.expires == 300
+    assert activation.processing_deadline_duration == 60
+    assert my_task.retry is None, "at_most_once tasks do not have retries"
+    assert my_task.at_most_once is True
+
+
 def test_external_namespace_register_overrides_defaults() -> None:
     override_retry = Retry(times=1)
     ns = ExternalNamespace(
