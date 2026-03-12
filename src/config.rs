@@ -219,6 +219,9 @@ pub struct Config {
     /// (reclaiming free pages) are executed
     pub maintenance_task_interval_ms: u64,
 
+    /// Whether to run the periodic maintenance (vacuum) task.
+    pub do_maintenance: bool,
+
     /// The maximum number of seconds a task can be delayed until.
     /// Tasks delayed greater than this duration are capped.
     pub max_delayed_task_allowed_sec: u64,
@@ -331,6 +334,7 @@ impl Default for Config {
             health_check_killswitched: false,
             upkeep_deadline_reset_skip_after_startup_sec: 60,
             maintenance_task_interval_ms: 6000,
+            do_maintenance: true,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
             vacuum_page_count: None,

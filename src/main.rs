@@ -135,39 +135,44 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Maintenance task loop
-    let maintenance_task = tokio::spawn({
-        let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-        let maintenance_store = store.clone();
-        let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
-        timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
-
+    // Maintenance task loop (conditionally enabled)
+    let maintenance_task = if config.do_maintenance {
         debug!(
-            "Setting maintenace (vacuum) to run every {} milliseconds",
+            "Setting maintenance (vacuum) to run every {} milliseconds",
             config.maintenance_task_interval_ms
         );
+        Some(tokio::spawn({
+            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+            let maintenance_store = store.clone();
+            let mut timer =
+                time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
+            timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
-        async move {
-            loop {
-                select! {
-                    _ = timer.tick() => {
-                        info!("Preparing to vacuum...");
+            async move {
+                loop {
+                    select! {
+                        _ = timer.tick() => {
+                            info!("Preparing to vacuum...");
 
-                        match maintenance_store.vacuum_db().await {
-                            Ok(_) => info!("vacuum succeeded"),
-                            Err(err) => warn!("vacuum failed - {:?}", err),
+                            match maintenance_store.vacuum_db().await {
+                                Ok(_) => info!("vacuum succeeded"),
+                                Err(err) => warn!("vacuum failed - {:?}", err),
+                            }
+
+                            info!("Done vacuuming!");
+                        },
+                        _ = guard.wait() => {
+                            break;
                         }
-
-                        info!("Done vacuuming!");
-                    },
-                    _ = guard.wait() => {
-                        break;
                     }
                 }
+                Ok(())
             }
-            Ok(())
-        }
-    });
+        }))
+    } else {
+        debug!("Maintenance (vacuum) task disabled by config");
+        None
+    };
 
     // Consumer from kafka
     let consumer_task = tokio::spawn({
@@ -305,8 +310,11 @@ async fn main() -> Result<(), Error> {
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task))
         .on_completion(log_task_completion("grpc_server", grpc_task));
+
+    if let Some(handle) = maintenance_task {
+        departure = departure.on_completion(log_task_completion("maintenance_task", handle));
+    }
 
     // Register each pusher thread
     for (i, handle) in pusher_tasks.into_iter().enumerate() {
