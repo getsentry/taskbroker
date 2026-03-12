@@ -146,6 +146,9 @@ pub struct Config {
     /// The name of the postgres database to use for the inflight activation store.
     pub pg_database_name: String,
 
+    /// The PostgreSQL table name for inflight task activations.
+    pub pg_table_name: String,
+
     /// The path to the sqlite database
     pub db_path: String,
 
@@ -285,6 +288,7 @@ impl Default for Config {
             run_migrations: false,
             pg_url: "postgres://postgres:password@sentry-postgres-1:5432/".to_owned(),
             pg_database_name: "default".to_owned(),
+            pg_table_name: "inflight_taskactivations".to_owned(),
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
