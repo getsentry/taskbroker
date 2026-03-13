@@ -10,8 +10,6 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DISCARD,
 )
 
-# from django.test.utils import override_settings
-# from sentry.conf.types.kafka_definition import Topic
 from taskbroker_client.constants import MAX_PARAMETER_BYTES_BEFORE_COMPRESSION, CompressionType
 from taskbroker_client.metrics import NoOpMetricsBackend
 from taskbroker_client.registry import TaskNamespace, TaskRegistry

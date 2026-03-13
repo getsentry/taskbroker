@@ -16,28 +16,32 @@ use tracing::instrument;
 
 use crate::config::Config;
 
+pub fn build_pg_connect_options(url: &str, database_name: &str) -> Result<PgConnectOptions, Error> {
+    Ok(PgConnectOptions::from_str(url)?.database(database_name))
+}
+
 pub async fn create_postgres_pool(
     url: &str,
     database_name: &str,
 ) -> Result<(Pool<Postgres>, Pool<Postgres>), Error> {
-    let conn_str = url.to_owned() + "/" + database_name;
+    let conn_opts = build_pg_connect_options(url, database_name)?;
     let read_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts.clone())
         .await?;
 
     let write_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts)
         .await?;
     Ok((read_pool, write_pool))
 }
 
 pub async fn create_default_postgres_pool(url: &str) -> Result<Pool<Postgres>, Error> {
-    let conn_str = url.to_owned() + "/postgres";
+    let conn_opts = build_pg_connect_options(url, "postgres")?;
     let default_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts)
         .await?;
     Ok(default_pool)
 }

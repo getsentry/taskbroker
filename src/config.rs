@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 use figment::{
     Figment, Metadata, Profile, Provider,
     providers::{Env, Format, Yaml},
