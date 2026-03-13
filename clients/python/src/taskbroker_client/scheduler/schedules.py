@@ -12,7 +12,7 @@ from taskbroker_client.scheduler.config import crontab
 if TYPE_CHECKING:
     from sentry_sdk._types import MonitorConfigScheduleUnit
 
-logger = logging.getLogger("taskworker.scheduler")
+logger = logging.getLogger("taskbrokerclient.scheduler")
 
 
 class Schedule(metaclass=abc.ABCMeta):
