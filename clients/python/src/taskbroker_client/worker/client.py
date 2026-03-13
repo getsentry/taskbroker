@@ -27,7 +27,7 @@ from taskbroker_client.constants import (
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 
-logger = logging.getLogger("sentry.taskworker.client")
+logger = logging.getLogger("taskbrokerclient.worker")
 
 MAX_ACTIVATION_SIZE = 1024 * 1024 * 10
 """Max payload size we will process."""

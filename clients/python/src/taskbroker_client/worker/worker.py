@@ -30,7 +30,7 @@ from taskbroker_client.worker.client import (
 )
 from taskbroker_client.worker.workerchild import child_process
 
-logger = logging.getLogger("sentry.taskworker.worker")
+logger = logging.getLogger("taskbrokerclient.worker")
 
 
 class TaskWorker:
