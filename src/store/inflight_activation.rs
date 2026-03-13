@@ -418,10 +418,6 @@ pub trait InflightActivationStore: Send + Sync {
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
 
-    async fn peek_pending_activation(&self) -> Result<Option<InflightActivation>, Error>;
-
-    async fn mark_as_processing_if_pending(&self, id: &str) -> Result<bool, Error>;
-
     /// Count activations with Pending status
     async fn count_pending_activations(&self) -> Result<usize, Error> {
         self.count_by_status(InflightActivationStatus::Pending)
@@ -847,72 +843,6 @@ impl InflightActivationStore for SqliteActivationStore {
         metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
 
         meta_result
-    }
-
-    #[instrument(skip_all)]
-    async fn peek_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
-        let now = Utc::now();
-
-        let row_result: Option<TableRow> = sqlx::query_as(
-            "
-            SELECT id,
-                activation,
-                partition,
-                offset,
-                added_at,
-                received_at,
-                processing_attempts,
-                expires_at,
-                delay_until,
-                processing_deadline_duration,
-                processing_deadline,
-                status,
-                at_most_once,
-                application,
-                namespace,
-                taskname,
-                on_attempts_exceeded,
-                bucket
-            FROM inflight_taskactivations
-            WHERE status = $1
-            AND (expires_at IS NULL OR expires_at > $2)
-            ORDER BY added_at
-            LIMIT 1
-            ",
-        )
-        .bind(InflightActivationStatus::Pending)
-        .bind(now.timestamp())
-        .fetch_optional(&self.read_pool)
-        .await?;
-
-        Ok(row_result.map(|row| row.into()))
-    }
-
-    #[instrument(skip_all)]
-    async fn mark_as_processing_if_pending(&self, id: &str) -> Result<bool, Error> {
-        let grace_period = self.config.processing_deadline_grace_sec;
-        let mut conn = self
-            .acquire_write_conn_metric("mark_as_processing_if_pending")
-            .await?;
-
-        let result: Option<TableRow> = sqlx::query_as(&format!(
-            "UPDATE inflight_taskactivations
-            SET
-                processing_deadline = unixepoch(
-                    'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
-                ),
-                status = $1
-            WHERE id = $2
-            AND status = $3
-            RETURNING *"
-        ))
-        .bind(InflightActivationStatus::Processing)
-        .bind(id)
-        .bind(InflightActivationStatus::Pending)
-        .fetch_optional(&mut *conn)
-        .await?;
-
-        Ok(result.is_some())
     }
 
     #[instrument(skip_all)]

@@ -165,44 +165,6 @@ impl InflightActivationStore for MapActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn peek_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
-        let now = Utc::now();
-        let guard = self
-            .map
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?;
-        let out = guard
-            .values()
-            .filter(|a| {
-                a.status == InflightActivationStatus::Pending
-                    && (a.expires_at.is_none() || a.expires_at.unwrap() > now)
-            })
-            .min_by_key(|a| a.added_at)
-            .cloned();
-        Ok(out)
-    }
-
-    #[instrument(skip_all)]
-    async fn mark_as_processing_if_pending(&self, id: &str) -> Result<bool, Error> {
-        let grace_sec = self.config.processing_deadline_grace_sec;
-        let mut guard = self
-            .map
-            .write()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?;
-        let a = match guard.get_mut(id) {
-            Some(a) if a.status == InflightActivationStatus::Pending => a,
-            _ => return Ok(false),
-        };
-        a.status = InflightActivationStatus::Processing;
-        a.processing_deadline = Some(
-            Utc::now()
-                + Duration::seconds(a.processing_deadline_duration as i64)
-                + Duration::seconds(grace_sec as i64),
-        );
-        Ok(true)
-    }
-
-    #[instrument(skip_all)]
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
         let guard = self
             .map

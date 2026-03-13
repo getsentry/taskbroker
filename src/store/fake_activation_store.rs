@@ -125,14 +125,6 @@ impl InflightActivationStore for FakeActivationStore {
         0.0
     }
 
-    async fn peek_pending_activation(&self) -> Result<Option<InflightActivation>, Error> {
-        Ok(Some(self.dummy_task()))
-    }
-
-    async fn mark_as_processing_if_pending(&self, _id: &str) -> Result<bool, Error> {
-        Ok(true)
-    }
-
     async fn count_by_status(&self, _status: InflightActivationStatus) -> Result<usize, Error> {
         Ok(0)
     }
