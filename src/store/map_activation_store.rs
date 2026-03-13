@@ -256,6 +256,21 @@ impl InflightActivationStore for MapActivationStore {
     }
 
     #[instrument(skip_all)]
+    async fn delete_activations_by_id(&self, ids: &[String]) -> Result<u64, Error> {
+        let mut guard = self
+            .map
+            .write()
+            .map_err(|e| anyhow::anyhow!("lock poisoned: {}", e))?;
+        let mut count = 0u64;
+        for id in ids {
+            if guard.remove(id).is_some() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    #[instrument(skip_all)]
     async fn set_processing_deadline(
         &self,
         id: &str,

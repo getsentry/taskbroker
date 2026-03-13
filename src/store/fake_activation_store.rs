@@ -169,6 +169,10 @@ impl InflightActivationStore for FakeActivationStore {
         Ok(())
     }
 
+    async fn delete_activations_by_id(&self, ids: &[String]) -> Result<u64, Error> {
+        Ok(ids.len() as u64)
+    }
+
     async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         Ok(vec![])
     }

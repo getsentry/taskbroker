@@ -458,6 +458,9 @@ pub trait InflightActivationStore: Send + Sync {
     /// Delete an activation by id
     async fn delete_activation(&self, id: &str) -> Result<(), Error>;
 
+    /// Delete activations by id (e.g. worker-reported complete). Returns count deleted.
+    async fn delete_activations_by_id(&self, ids: &[String]) -> Result<u64, Error>;
+
     /// Get all activations with status Retry
     async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error>;
 
@@ -1141,6 +1144,27 @@ impl InflightActivationStore for SqliteActivationStore {
             .execute(&mut *conn)
             .await?;
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn delete_activations_by_id(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        let mut conn = self
+            .acquire_write_conn_metric("delete_activations_by_id")
+            .await?;
+        let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+        let sql = format!(
+            "DELETE FROM inflight_taskactivations WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut q = sqlx::query(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        let result = q.execute(&mut *conn).await?;
+        Ok(result.rows_affected())
     }
 
     #[instrument(skip_all)]

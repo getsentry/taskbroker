@@ -71,7 +71,15 @@ async fn flush_buffer(store: &Arc<dyn InflightActivationStore>, buffer: &mut Vec
     }
 
     for (status, ids) in by_status {
-        if let Err(e) = store.set_status_batch(&ids, status).await {
+        let result = if status == InflightActivationStatus::Complete {
+            store.delete_activations_by_id(&ids).await
+        } else {
+            store
+                .set_status_batch(&ids, status)
+                .await
+                .map(|()| ids.len() as u64)
+        };
+        if let Err(e) = result {
             error!(
                 ?status,
                 count = ids.len(),
