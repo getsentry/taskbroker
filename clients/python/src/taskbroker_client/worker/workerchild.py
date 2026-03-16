@@ -32,7 +32,7 @@ from taskbroker_client.state import clear_current_task, current_task, set_curren
 from taskbroker_client.task import Task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 
-logger = logging.getLogger("sentry.taskworker.worker")
+logger = logging.getLogger(__name__)
 
 
 class ProcessingDeadlineExceeded(BaseException):
