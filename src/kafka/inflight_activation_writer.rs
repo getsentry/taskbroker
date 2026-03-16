@@ -81,35 +81,20 @@ impl Reducer for InflightActivationWriter {
             return Ok(Some(()));
         }
         let flush_start = Instant::now();
-        // Check if writing the batch would exceed the limits
-        let exceeded_pending_limit = self
+        // Check if writing the batch would exceed the limits (single round-trip where supported)
+        let include_db_size = self.config.db_max_size.is_some();
+        let info = self
             .store
-            .count_pending_activations()
+            .backpressure_info(include_db_size)
             .await
-            .expect("Error communicating with activation store")
-            + batch.len()
-            > self.config.max_pending_activations;
-        let exceeded_delay_limit = self
-            .store
-            .count_by_status(InflightActivationStatus::Delay)
-            .await
-            .expect("Error communicating with activation store")
-            + batch.len()
-            > self.config.max_delay_activations;
-        let exceeded_processing_limit = self
-            .store
-            .count_by_status(InflightActivationStatus::Processing)
-            .await
-            .expect("Error communicating with activation store")
-            >= self.config.max_processing_activations;
-        let exceeded_db_size = if let Some(db_max_size) = self.config.db_max_size {
-            self.store
-                .db_size()
-                .await
-                .expect("Error getting database size")
-                >= db_max_size
-        } else {
-            false
+            .expect("Error communicating with activation store");
+        let exceeded_pending_limit =
+            info.pending + batch.len() > self.config.max_pending_activations;
+        let exceeded_delay_limit = info.delay + batch.len() > self.config.max_delay_activations;
+        let exceeded_processing_limit = info.processing >= self.config.max_processing_activations;
+        let exceeded_db_size = match (self.config.db_max_size, info.db_size) {
+            (Some(max), Some(size)) => size >= max,
+            _ => false,
         };
 
         // Check if the entire batch is either pending or delay

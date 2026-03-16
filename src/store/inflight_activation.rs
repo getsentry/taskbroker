@@ -222,6 +222,17 @@ impl From<PgQueryResult> for QueryResult {
     }
 }
 
+/// Counts used by the activation writer to decide whether to apply backpressure.
+/// Fetched in a single round-trip where the store supports it.
+#[derive(Clone, Copy, Debug)]
+pub struct BackpressureInfo {
+    pub pending: usize,
+    pub delay: usize,
+    pub processing: usize,
+    /// Database size in bytes, if requested.
+    pub db_size: Option<u64>,
+}
+
 pub struct FailedTasksForwarder {
     pub to_discard: Vec<(String, Vec<u8>)>,
     pub to_deadletter: Vec<(String, Vec<u8>)>,
@@ -430,6 +441,29 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Count activations by status
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
+
+    /// Return counts needed for writer backpressure (and optionally db size) in one call.
+    /// Default implementation uses separate count/db_size calls; stores may override with a single query.
+    async fn backpressure_info(&self, include_db_size: bool) -> Result<BackpressureInfo, Error> {
+        let pending = self.count_pending_activations().await?;
+        let delay = self
+            .count_by_status(InflightActivationStatus::Delay)
+            .await?;
+        let processing = self
+            .count_by_status(InflightActivationStatus::Processing)
+            .await?;
+        let db_size = if include_db_size {
+            Some(self.db_size().await?)
+        } else {
+            None
+        };
+        Ok(BackpressureInfo {
+            pending,
+            delay,
+            processing,
+            db_size,
+        })
+    }
 
     /// Count all activations
     async fn count(&self) -> Result<usize, Error>;

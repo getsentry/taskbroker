@@ -1,6 +1,6 @@
 use crate::store::inflight_activation::{
-    FailedTasksForwarder, InflightActivation, InflightActivationStatus, InflightActivationStore,
-    QueryResult, TableRow,
+    BackpressureInfo, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
+    InflightActivationStore, QueryResult, TableRow,
 };
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -187,6 +187,46 @@ impl InflightActivationStore for PostgresActivationStore {
             return Ok(0);
         }
         Ok(row_result.0 as u64)
+    }
+
+    #[instrument(skip_all)]
+    async fn backpressure_info(&self, include_db_size: bool) -> Result<BackpressureInfo, Error> {
+        let mut query_builder = QueryBuilder::new(
+            "SELECT COUNT(*) FILTER (WHERE status = 'Pending') as pending, \
+             COUNT(*) FILTER (WHERE status = 'Delay') as delay, \
+             COUNT(*) FILTER (WHERE status = 'Processing') as processing",
+        );
+        if include_db_size {
+            query_builder.push(", (SELECT pg_database_size(");
+            query_builder.push_bind(&self.config.pg_database_name);
+            query_builder.push(")) as db_size");
+        }
+        query_builder.push(" FROM inflight_taskactivations ");
+        self.add_partition_condition(&mut query_builder, true);
+
+        if include_db_size {
+            let row: (i64, i64, i64, i64) = query_builder
+                .build_query_as()
+                .fetch_one(&self.read_pool)
+                .await?;
+            Ok(BackpressureInfo {
+                pending: row.0 as usize,
+                delay: row.1 as usize,
+                processing: row.2 as usize,
+                db_size: Some(row.3.max(0) as u64),
+            })
+        } else {
+            let row: (i64, i64, i64) = query_builder
+                .build_query_as()
+                .fetch_one(&self.read_pool)
+                .await?;
+            Ok(BackpressureInfo {
+                pending: row.0 as usize,
+                delay: row.1 as usize,
+                processing: row.2 as usize,
+                db_size: None,
+            })
+        }
     }
 
     /// Get an activation by id. Primarily used for testing
