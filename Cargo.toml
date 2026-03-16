@@ -26,8 +26,8 @@ http-body-util = "0.1.2"
 libsqlite3-sys = "0.30.1"
 metrics = "0.24.0"
 metrics-exporter-statsd = "0.9.0"
-prost = "0.13"
-prost-types = "0.13.3"
+prost = "0.14"
+prost-types = "0.14"
 rand = "0.8.5"
 rdkafka = { version = "0.37.0", features = ["cmake-build", "ssl"] }
 sentry = { version = "0.41.0", default-features = false, features = [
@@ -41,7 +41,7 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "tracing",
     "logs"
 ] }
-sentry_protos = "0.4.11"
+sentry_protos = { git = "https://github.com/getsentry/sentry-protos", branch = "george/push-taskbroker/create-worker-service" }
 serde = "1.0.214"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
@@ -49,8 +49,8 @@ sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono", "po
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }
 tokio-util = "0.7.12"
-tonic = "0.13"
-tonic-health = "0.13"
+tonic = "0.14"
+tonic-health = "0.14"
 tower = "0.5.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = [

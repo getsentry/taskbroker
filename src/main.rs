@@ -2,6 +2,7 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::dispatch::TaskDispatcher;
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
@@ -39,16 +40,16 @@ use taskbroker::store::postgres_activation_store::{
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
 
-async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
+async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {
         Ok(Ok(())) => {
-            info!("Task {} completed", name);
+            info!("Task {} completed", name.as_ref());
         }
         Ok(Err(e)) => {
-            error!("Task {} failed: {:?}", name, e);
+            error!("Task {} failed: {:?}", name.as_ref(), e);
         }
         Err(e) => {
-            error!("Task {} panicked: {:?}", name, e);
+            error!("Task {} panicked: {:?}", name.as_ref(), e);
         }
     }
 }
@@ -190,22 +191,24 @@ async fn main() -> Result<(), Error> {
 
     // GRPC server
     let grpc_server_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
+        let store = store.clone();
+        let config = config.clone();
+
         async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
+            let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
 
             let layers = tower::ServiceBuilder::new()
                 .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&grpc_config))
+                .layer(AuthLayer::new(&config))
                 .into_inner();
 
             let server = Server::builder()
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store: grpc_store,
+                    store,
+                    config,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -236,7 +239,27 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    elegant_departure::tokio::depart()
+    // Activation dispatchers
+    let dispatchers = if config.push_mode {
+        info!("Running in PUSH mode");
+
+        (0..config.dispatchers)
+            .map(|_| {
+                let store = store.clone();
+                let config = config.clone();
+
+                tokio::spawn(async move {
+                    let dispatcher = TaskDispatcher::new(config, store);
+                    dispatcher.start().await
+                })
+            })
+            .collect()
+    } else {
+        info!("Running in PULL mode");
+        vec![]
+    };
+
+    let mut departure = elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
         .on_signal(SignalKind::hangup())
@@ -244,8 +267,13 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task))
-        .await;
+        .on_completion(log_task_completion("maintenance_task", maintenance_task));
+
+    // Register each activation dispatch task
+    for (i, handle) in dispatchers.into_iter().enumerate() {
+        let task_name = format!("activation_dispatcher_{}", i);
+        departure = departure.on_completion(log_task_completion(task_name, handle));
+    }
 
     Ok(())
 }

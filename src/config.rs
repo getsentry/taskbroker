@@ -239,6 +239,21 @@ pub struct Config {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
+
+    /// Run the taskbroker in push mode (as opposed to pull mode).
+    pub push_mode: bool,
+
+    /// The number of concurrent dispatchers to run.
+    pub dispatchers: usize,
+
+    /// The number of concurrent pushers each dispatcher should run.
+    pub pushers: usize,
+
+    /// The size of the push queue.
+    pub push_queue_size: usize,
+
+    /// The worker service endpoint.
+    pub worker_endpoint: String,
 }
 
 impl Default for Config {
@@ -308,6 +323,11 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            push_mode: false,
+            dispatchers: 1,
+            pushers: 1,
+            push_queue_size: 1,
+            worker_endpoint: "http://127.0.0.1:50052".into(),
         }
     }
 }

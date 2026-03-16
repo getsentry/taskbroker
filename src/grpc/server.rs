@@ -9,11 +9,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
+use crate::config::Config;
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
+    pub config: Arc<Config>,
 }
 
 #[tonic::async_trait]
@@ -23,6 +25,12 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
+        if self.config.push_mode {
+            return Err(Status::permission_denied(
+                "Cannot call while broker is in PUSH mode",
+            ));
+        }
+
         let start_time = Instant::now();
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
