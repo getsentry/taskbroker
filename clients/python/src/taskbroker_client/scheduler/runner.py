@@ -17,7 +17,7 @@ from taskbroker_client.scheduler.config import ScheduleConfig, crontab
 from taskbroker_client.scheduler.schedules import CrontabSchedule, Schedule, TimedeltaSchedule
 from taskbroker_client.task import Task
 
-logger = logging.getLogger("taskbrokerclient.scheduler")
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sentry_sdk._types import MonitorConfig

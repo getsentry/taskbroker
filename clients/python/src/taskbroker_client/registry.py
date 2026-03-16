@@ -19,7 +19,7 @@ from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import ExternalTask, P, R, Task
 from taskbroker_client.types import ProducerFactory
 
-logger = logging.getLogger("taskbrokerclient.registry")
+logger = logging.getLogger(__name__)
 
 ProducerFuture = futures.Future[BrokerValue[KafkaPayload]]
 

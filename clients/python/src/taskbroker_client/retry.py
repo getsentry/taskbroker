@@ -13,7 +13,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 
 from taskbroker_client.state import current_task
 
-logger = logging.getLogger("taskbrokerclient.retry")
+logger = logging.getLogger(__name__)
 
 
 class RetryTaskError(Exception):
