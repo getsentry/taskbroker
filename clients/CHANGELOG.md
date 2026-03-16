@@ -1,4 +1,8 @@
 # Changelog
+## 0.1.6
+
+- fix(client) Align logger names with package name by @markstory in [#572](https://github.com/getsentry/taskbroker/pull/572)
+
 ## 0.1.5
 
 ### New Features ✨
