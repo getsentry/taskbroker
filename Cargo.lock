@@ -2542,7 +2542,7 @@ dependencies = [
 [[package]]
 name = "sentry_protos"
 version = "0.8.4"
-source = "git+https://github.com/getsentry/sentry-protos?branch=george%2Fpush-taskbroker%2Fcreate-worker-service#f4cd3043b043c2f42e069104c3704177e1696504"
+source = "git+https://github.com/getsentry/sentry-protos#7873851032c697925dd7e532b6ad9888911f93b8"
 dependencies = [
  "prost",
  "prost-types",
