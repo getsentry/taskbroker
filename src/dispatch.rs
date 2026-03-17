@@ -78,6 +78,8 @@ impl TaskDispatcher {
         info!("Starting {n} push loops...");
 
         let endpoint = self.config.worker_endpoint.clone();
+        let callback_url = format!("{}:{}", self.config.grpc_addr, self.config.grpc_port);
+
         let receivers = std::mem::take(&mut self.receivers);
 
         // Collect pusher handles so we can wait on them if shutdown is initiated
@@ -86,6 +88,7 @@ impl TaskDispatcher {
         // Initialize each push loop
         for mut rx in receivers.into_iter() {
             let endpoint = endpoint.clone();
+            let callback_url = callback_url.clone();
 
             let handle = tokio::spawn(async move {
                 let mut worker = match WorkerServiceClient::connect(endpoint).await {
@@ -102,7 +105,7 @@ impl TaskDispatcher {
                     let id = activation.id.clone();
 
                     // Try to push activation to the worker service
-                    if let Err(e) = push_task(&mut worker, activation).await {
+                    if let Err(e) = push_task(&mut worker, activation, callback_url.clone()).await {
                         error!("Pushing activation {id} resulted in error - {:?}", e);
                     } else {
                         debug!("Activation {id} was sent to worker!");
@@ -185,6 +188,7 @@ impl TaskDispatcher {
 async fn push_task(
     worker: &mut WorkerServiceClient<Channel>,
     activation: InflightActivation,
+    callback_url: String,
 ) -> Result<()> {
     let start = Instant::now();
     let id = activation.id.clone();
@@ -192,7 +196,10 @@ async fn push_task(
     // Try to decode activation (if it fails, we will see the error where `push_task` is called)
     let task = TaskActivation::decode(&activation.activation as &[u8])?;
 
-    let request = PushTaskRequest { task: Some(task) };
+    let request = PushTaskRequest {
+        task: Some(task),
+        callback_url,
+    };
 
     let result = match worker.push_task(request).await {
         Ok(_) => {
