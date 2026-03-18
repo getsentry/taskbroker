@@ -252,6 +252,9 @@ pub struct Config {
     /// The size of the push queue.
     pub push_queue_size: usize,
 
+    /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
+    pub push_timeout_ms: u64,
+
     /// The worker service endpoint.
     pub worker_endpoint: String,
 
@@ -333,6 +336,7 @@ impl Default for Config {
             fetch_threads: 1,
             push_threads: 1,
             push_queue_size: 1,
+            push_timeout_ms: 5000,
             worker_endpoint: "http://127.0.0.1:50052".into(),
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,

@@ -196,7 +196,7 @@ async fn main() -> Result<(), Error> {
         let config = config.clone();
 
         async move {
-            let addr = format!("0.0.0.0:{}", config.grpc_port)
+            let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
 
