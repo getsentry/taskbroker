@@ -46,11 +46,11 @@ impl TaskPusher {
         config: Arc<Config>,
         bucket_range: (i16, i16),
     ) -> Self {
-        let n = config.push_worker_connections;
+        let n = config.push_threads;
         let mut senders = Vec::with_capacity(n);
         let mut receivers = Vec::with_capacity(n);
         for _ in 0..n {
-            let (tx, rx) = mpsc::channel(config.push_channel_capacity);
+            let (tx, rx) = mpsc::channel(config.push_queue_size);
             senders.push(tx);
             receivers.push(rx);
         }

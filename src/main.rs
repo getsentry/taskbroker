@@ -2,9 +2,11 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::fetch::FetchPool;
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::push::PushPool;
 use taskbroker::task_pusher::TaskPusher;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
@@ -141,6 +143,7 @@ async fn main() -> Result<(), Error> {
             "Setting maintenance (vacuum) to run every {} milliseconds",
             config.maintenance_task_interval_ms
         );
+
         Some(tokio::spawn({
             let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
             let maintenance_store = store.clone();
@@ -230,7 +233,7 @@ async fn main() -> Result<(), Error> {
         let grpc_status_tx = status_tx.clone();
 
         async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
+            let addr = format!("0.0.0.0:{}", grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
 
@@ -278,29 +281,22 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Push task loop (conditionally enabled)
-    let pusher_tasks = if config.push_mode {
-        info!("Running in PUSH mode with {} threads", config.push_threads);
+    // Initialize push and fetch pools
+    let push_pool = Arc::new(PushPool::new(config.clone()));
+    let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
-        (0..config.push_threads)
-            .map(|i| {
-                let store = store.clone();
-                let config = config.clone();
-                let bucket_range = TaskPusher::bucket_range_for_thread(i, config.push_threads);
-
-                tokio::spawn(async move {
-                    info!(
-                        "Starting task pusher thread {} (buckets {}-{})",
-                        i, bucket_range.0, bucket_range.1
-                    );
-                    let pusher = TaskPusher::new(store, config, bucket_range);
-                    pusher.start().await
-                })
-            })
-            .collect()
+    // Initialize push threads
+    let push_task = if config.push_mode {
+        Some(tokio::spawn(async move { push_pool.start().await }))
     } else {
-        info!("Running in PULL mode");
-        vec![]
+        None
+    };
+
+    // Initialize fetch threads
+    let fetch_task = if config.push_mode {
+        Some(tokio::spawn(async move { fetch_pool.start().await }))
+    } else {
+        None
     };
 
     let mut departure = elegant_departure::tokio::depart()
@@ -312,21 +308,16 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("grpc_server", grpc_task));
 
-    if let Some(handle) = maintenance_task {
-        departure = departure.on_completion(log_task_completion("maintenance_task", handle));
+    if let Some(task) = maintenance_task {
+        departure = departure.on_completion(log_task_completion("maintenance_task", task));
     }
 
-    // Register each pusher thread
-    for (i, handle) in pusher_tasks.into_iter().enumerate() {
-        departure = departure.on_completion(async move {
-            let task_name = format!("task_pusher_{}", i);
+    if let Some(task) = push_task {
+        departure = departure.on_completion(log_task_completion("push_task", task));
+    }
 
-            match handle.await {
-                Ok(Ok(())) => info!("Task {} completed", task_name),
-                Ok(Err(e)) => error!("Task {} failed - {:?}", task_name, e),
-                Err(e) => error!("Task {} panicked - {:?}", task_name, e),
-            }
-        });
+    if let Some(task) = fetch_task {
+        departure = departure.on_completion(log_task_completion("fetch_task", task));
     }
 
     if let Some(handle) = flusher_handle {

@@ -255,13 +255,13 @@ pub struct Config {
     pub push_mode: bool,
 
     /// Number of parallel task pusher threads to spawn in push mode.
-    pub push_threads: usize,
+    pub fetch_threads: usize,
 
     /// Number of dedicated worker connections per pusher thread (each has its own gRPC channel).
-    pub push_worker_connections: usize,
+    pub push_threads: usize,
 
     /// Bounded channel buffer capacity per push worker.
-    pub push_channel_capacity: usize,
+    pub push_queue_size: usize,
 
     /// Number of pending activations to fetch per batch in push mode.
     /// Each activation is still sent to a pusher task one by one.
@@ -344,11 +344,11 @@ impl Default for Config {
             enable_sqlite_status_metrics: true,
             worker_endpoint: "http://127.0.0.1:50052".into(),
             push_mode: true,
+            fetch_threads: 1,
             push_threads: 1,
-            push_worker_connections: 8,
-            push_channel_capacity: 64,
+            push_queue_size: 64,
             push_batch_size: 1,
-            push_status_batch_size: 500,
+            push_status_batch_size: 512,
             push_status_flush_interval_ms: 1000,
         }
     }
