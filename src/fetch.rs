@@ -145,6 +145,7 @@ mod tests {
     };
     use crate::test_utils::make_activations;
 
+    #[allow(clippy::large_enum_variant)]
     enum MockPendingResult {
         Some(InflightActivation),
         None,

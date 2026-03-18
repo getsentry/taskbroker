@@ -157,7 +157,7 @@ async fn push_task<W: WorkerClient + Send>(
 
         Err(e) => {
             error!("Could not push activation {id} to worker service - {:?}", e);
-            Err(e.into())
+            Err(e)
         }
     };
 
