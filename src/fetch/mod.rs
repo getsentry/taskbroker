@@ -78,7 +78,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             //  Instead of returning when `fetch_activation` fails, we just try again
                             match fetch_activation(store.clone(), pusher.clone()).await {
                                 Ok(false) | Err(_) => {
-                                    // Found no pending activations OR there is an issue with the store, wait some time before trying again
+                                    // Found no pending activations OR there is an issue with the store OR submitting to push pool failed
                                     sleep(Duration::from_millis(fetch_wait_ms)).await;
                                 }
 
@@ -130,6 +130,8 @@ pub async fn fetch_activation<T: TaskPusher>(
                 {
                     error!("Failed to change task {id} back to pending - {e:?}");
                 }
+
+                return Err(e);
             }
 
             true
