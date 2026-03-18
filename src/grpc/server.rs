@@ -106,6 +106,10 @@ impl ConsumerService for TaskbrokerServer {
         }
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
+        if self.config.push_mode {
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        }
+
         let Some(FetchNextTask {
             ref namespace,
             ref application,
