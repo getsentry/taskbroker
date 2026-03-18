@@ -246,6 +246,9 @@ pub struct Config {
     /// The number of concurrent dispatchers to run.
     pub fetch_threads: usize,
 
+    /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
+    pub fetch_wait_ms: u64,
+
     /// The number of concurrent pushers each dispatcher should run.
     pub push_threads: usize,
 
@@ -334,6 +337,7 @@ impl Default for Config {
             enable_sqlite_status_metrics: true,
             push_mode: false,
             fetch_threads: 1,
+            fetch_wait_ms: 100,
             push_threads: 1,
             push_queue_size: 1,
             push_timeout_ms: 5000,

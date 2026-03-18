@@ -56,6 +56,8 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
 
     /// Spawn `config.fetch_threads` asynchronous tasks, each of which repeatedly moves pending activations from the store to the push pool until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
+        let fetch_wait_ms = self.config.fetch_wait_ms;
+
         let mut fetch_pool = helpers::spawn_pool(self.config.fetch_threads, |_| {
             let store = self.store.clone();
             let pusher = self.pusher.clone();
@@ -74,9 +76,15 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             debug!("About to fetch next activation...");
 
                             //  Instead of returning when `fetch_activation` fails, we just try again
-                            if let Ok(false) = fetch_activation(store.clone(), pusher.clone()).await {
-                                // Found no pending activations, wait for some to appear
-                                sleep(Duration::from_millis(100)).await;
+                            match fetch_activation(store.clone(), pusher.clone()).await {
+                                Ok(false) | Err(_) => {
+                                    // Found no pending activations OR there is an issue with the store, wait some time before trying again
+                                    sleep(Duration::from_millis(fetch_wait_ms)).await;
+                                }
+
+                                Ok(true) => {
+                                    // Fetched pending activation successfully, so nothing else needs to be done
+                                }
                             }
                         } => {}
                     }

@@ -13,7 +13,9 @@ use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::helpers;
-use crate::store::inflight_activation::InflightActivation;
+use crate::store::inflight_activation::{
+    InflightActivation, InflightActivationStatus, InflightActivationStore,
+};
 
 /// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
 #[async_trait]
@@ -38,27 +40,33 @@ pub struct PushPool {
     /// The receiving end of a channel that accepts task activations.
     receiver: Receiver<InflightActivation>,
 
+    /// Inflight activation store (used to set status back to pending on push failure).
+    store: Arc<dyn InflightActivationStore>,
+
     /// Taskbroker configuration.
     config: Arc<Config>,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(store: Arc<dyn InflightActivationStore>, config: Arc<Config>) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
             sender,
             receiver,
+            store,
             config,
         }
     }
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
+        let store = self.store.clone();
         let mut push_pool = helpers::spawn_pool(self.config.push_threads, |_| {
             let endpoint = self.config.worker_endpoint.clone();
             let receiver = self.receiver.clone();
+            let store = store.clone();
 
             let guard = get_shutdown_guard().shutdown_on_drop();
 
@@ -96,7 +104,16 @@ impl PushPool {
 
                             match push_task(&mut worker, activation, callback_url.clone()).await {
                                 Ok(_) => debug!("Activation {id} was sent to worker!"),
-                                Err(e) => error!("Pushing activation {id} resulted in error - {:?}", e)
+                                Err(e) => {
+                                    error!("Pushing activation {id} resulted in error - {:?}", e);
+
+                                    if let Err(e) = store
+                                        .set_status(&id, InflightActivationStatus::Pending)
+                                        .await
+                                    {
+                                        error!("Failed to change task {id} back to pending - {e:?}");
+                                    }
+                                }
                             };
                         }
                     }
@@ -108,7 +125,15 @@ impl PushPool {
 
                     match push_task(&mut worker, activation, callback_url.clone()).await {
                         Ok(_) => debug!("Activation {id} was sent to worker!"),
-                        Err(e) => error!("Pushing activation {id} resulted in error - {:?}", e),
+                        Err(e) => {
+                            error!("Pushing activation {id} resulted in error - {:?}", e);
+                            if let Err(e) = store
+                                .set_status(&id, InflightActivationStatus::Pending)
+                                .await
+                            {
+                                error!("Failed to change task {id} back to pending - {e:?}");
+                            }
+                        }
                     };
                 }
             }
