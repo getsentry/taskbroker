@@ -254,6 +254,12 @@ pub struct Config {
 
     /// The worker service endpoint.
     pub worker_endpoint: String,
+
+    /// The hostname used to construct `callback_url` for task push requests.
+    pub callback_addr: String,
+
+    /// The port used to construct `callback_url` for task push requests.
+    pub callback_port: u32,
 }
 
 impl Default for Config {
@@ -328,6 +334,8 @@ impl Default for Config {
             push_threads: 1,
             push_queue_size: 1,
             worker_endpoint: "http://127.0.0.1:50052".into(),
+            callback_addr: "0.0.0.0".into(),
+            callback_port: 50051,
         }
     }
 }
@@ -728,6 +736,50 @@ mod tests {
                 producer_config.get("ssl.key.location").unwrap(),
                 "/etc/ssl/taskbroker/private.key"
             );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_default_push_callback_fields() {
+        let config = Config::default();
+        assert_eq!(config.callback_addr, "0.0.0.0");
+        assert_eq!(config.callback_port, 50051);
+    }
+
+    #[test]
+    fn test_from_args_push_callback_fields_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_CALLBACK_ADDR", "127.0.0.1");
+            jail.set_env("TASKBROKER_CALLBACK_PORT", "51000");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.callback_addr, "127.0.0.1");
+            assert_eq!(config.callback_port, 51000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_args_push_callback_fields_from_config_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+                callback_addr: 10.0.0.1
+                callback_port: 52000
+            "#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.callback_addr, "10.0.0.1");
+            assert_eq!(config.callback_port, 52000);
 
             Ok(())
         });
