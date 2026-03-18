@@ -10,8 +10,9 @@ use tracing::{debug, error, info};
 use crate::config::Config;
 use crate::helpers;
 use crate::push::PushPool;
-use crate::store::inflight_activation::InflightActivation;
-use crate::store::inflight_activation::InflightActivationStore;
+use crate::store::inflight_activation::{
+    InflightActivation, InflightActivationStatus, InflightActivationStore,
+};
 
 /// Thin interface for the push pool. It mostly serves to enable proper unit testing, but it also decouples fetch logic from push logic even further.
 #[async_trait]
@@ -111,10 +112,16 @@ pub async fn fetch_activation<T: TaskPusher>(
             let id = activation.id.clone();
             debug!("Atomically fetched and marked task {id} as processing");
 
-            // Times out after `config.push_timeout_ms` milliseconds
             if let Err(e) = pusher.push_task(activation).await {
-                // Do not return `Err` because the fetch itself succeeded
-                error!("Failed to submit task {id} to push pool - {:?}", e);
+                error!("Failed to submit task {id} to push pool - {e:?}");
+
+                // Change status back to pending
+                if let Err(e) = store
+                    .set_status(&id, InflightActivationStatus::Pending)
+                    .await
+                {
+                    error!("Failed to change task {id} back to pending - {e:?}");
+                }
             }
 
             true

@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::config::Config;
 use crate::grpc::server::TaskbrokerServer;
 use prost::Message;
 use rstest::rstest;
@@ -8,6 +11,27 @@ use sentry_protos::taskbroker::v1::{
 use tonic::{Code, Request};
 
 use crate::test_utils::{create_config, create_test_store, make_activations};
+
+#[tokio::test]
+async fn test_get_task_push_mode_returns_permission_denied() {
+    let store = create_test_store("sqlite").await;
+    let config = Arc::new(Config {
+        push_mode: true,
+        ..Config::default()
+    });
+
+    let service = TaskbrokerServer { store, config };
+    let request = GetTaskRequest {
+        namespace: None,
+        application: None,
+    };
+    let response = service.get_task(Request::new(request)).await;
+
+    assert!(response.is_err());
+    let e = response.unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    assert_eq!(e.message(), "Cannot call while broker is in PUSH mode");
+}
 
 #[tokio::test]
 #[rstest]
