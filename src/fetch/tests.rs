@@ -213,22 +213,24 @@ async fn fetch_activation_submits_when_pending_exists() {
 }
 
 #[tokio::test]
-async fn fetch_activation_logs_submit_error_but_does_not_fail() {
+async fn fetch_activation_logs_submit_error_and_returns_err() {
     let activation = make_activations(1).remove(0);
     let store: Arc<dyn InflightActivationStore> =
         Arc::new(MockStore::new(MockPendingResult::Some(activation)));
     let pusher = Arc::new(MockTaskPusher::new(true));
 
-    let found = fetch_activation(store, pusher.clone())
-        .await
-        .expect("fetch should succeed");
+    let result = fetch_activation(store, pusher.clone()).await;
     assert!(
-        found,
-        "should return true when activation was found even if push fails"
+        result.is_err(),
+        "should return error when push fails (after reverting status to pending)"
     );
 
     let pushed = pusher.pushed_ids.lock().await;
-    assert_eq!(pushed.len(), 1, "should attempt one push even if it fails");
+    assert_eq!(
+        pushed.len(),
+        1,
+        "should attempt one push before returning error"
+    );
 }
 
 #[tokio::test]
