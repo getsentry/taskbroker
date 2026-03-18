@@ -2,11 +2,12 @@ use clap::Parser;
 use std::fs;
 
 pub mod config;
-pub mod dispatch;
+pub mod fetch;
 pub mod grpc;
 pub mod kafka;
 pub mod logging;
 pub mod metrics;
+pub mod push;
 pub mod runtime_config;
 pub mod store;
 pub mod test_utils;

@@ -2,10 +2,11 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
-use taskbroker::dispatch::TaskDispatcher;
+use taskbroker::fetch::FetchPool;
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::push::PushPool;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -239,24 +240,22 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Activation dispatchers
-    let dispatchers = if config.push_mode {
-        info!("Running in PUSH mode");
+    // Initialize push and fetch pools
+    let push_pool = Arc::new(PushPool::new(config.clone()));
+    let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
-        (0..config.dispatchers)
-            .map(|_| {
-                let store = store.clone();
-                let config = config.clone();
-
-                tokio::spawn(async move {
-                    let dispatcher = TaskDispatcher::new(config, store);
-                    dispatcher.start().await
-                })
-            })
-            .collect()
+    // Initialize push threads
+    let push_task = if config.push_mode {
+        Some(tokio::spawn(async move { push_pool.start().await }))
     } else {
-        info!("Running in PULL mode");
-        vec![]
+        None
+    };
+
+    // Initialize fetch threads
+    let fetch_task = if config.push_mode {
+        Some(tokio::spawn(async move { fetch_pool.start().await }))
+    } else {
+        None
     };
 
     let mut departure = elegant_departure::tokio::depart()
@@ -269,11 +268,14 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task));
 
-    // Register each activation dispatch task
-    for (i, handle) in dispatchers.into_iter().enumerate() {
-        let task_name = format!("activation_dispatcher_{}", i);
-        departure = departure.on_completion(log_task_completion(task_name, handle));
+    if let Some(task) = push_task {
+        departure = departure.on_completion(log_task_completion("push_task", task));
     }
 
+    if let Some(task) = fetch_task {
+        departure = departure.on_completion(log_task_completion("fetch_task", task));
+    }
+
+    departure.await;
     Ok(())
 }

@@ -244,10 +244,10 @@ pub struct Config {
     pub push_mode: bool,
 
     /// The number of concurrent dispatchers to run.
-    pub dispatchers: usize,
+    pub fetch_threads: usize,
 
     /// The number of concurrent pushers each dispatcher should run.
-    pub pushers: usize,
+    pub push_threads: usize,
 
     /// The size of the push queue.
     pub push_queue_size: usize,
@@ -324,8 +324,8 @@ impl Default for Config {
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
             push_mode: false,
-            dispatchers: 1,
-            pushers: 1,
+            fetch_threads: 1,
+            push_threads: 1,
             push_queue_size: 1,
             worker_endpoint: "http://127.0.0.1:50052".into(),
         }
