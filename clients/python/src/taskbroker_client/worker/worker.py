@@ -186,7 +186,10 @@ class TaskWorker:
                 server.wait_for_termination()
 
             except KeyboardInterrupt:
-                server.stop(grace=5)
+                # This may be triggered before the server is initialized
+                if server:
+                    server.stop(grace=5)
+
                 self.shutdown()
         else:
             try:
