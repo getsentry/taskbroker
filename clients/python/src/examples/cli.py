@@ -74,11 +74,18 @@ def scheduler() -> None:
     default=2,
 )
 @click.option(
-    "--push-mode",
-    help="Whether to run in PUSH or PULL mode.",
-    default=False,
+    "--push-mode", help="Whether to run in PUSH or PULL mode.", default=False, is_flag=True
 )
-def worker(rpc_host: str, concurrency: int, push_mode: bool) -> None:
+@click.option(
+    "--grpc-port", help="Whether to run in PUSH or PULL mode.", default=False, is_flag=True
+)
+@click.option(
+    "--grpc-port",
+    help="Port for the gRPC server to listen on.",
+    default=50052,
+    type=int,
+)
+def worker(rpc_host: str, concurrency: int, push_mode: bool, grpc_port: int) -> None:
     from taskbroker_client.worker import TaskWorker
 
     click.echo("Starting worker")
@@ -93,6 +100,7 @@ def worker(rpc_host: str, concurrency: int, push_mode: bool) -> None:
         processing_pool_name="examples",
         process_type="forkserver",
         push_mode=push_mode,
+        grpc_port=grpc_port,
     )
     exitcode = worker.start()
     raise SystemExit(exitcode)

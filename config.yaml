@@ -1,0 +1,2 @@
+push_mode: true
+log_filter: "debug,sqlx=debug,librdkafka=warn,h2=off"
