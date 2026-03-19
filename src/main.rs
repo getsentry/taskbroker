@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::SERVICE_NAME;
-use taskbroker::config::{Config, DatabaseAdapter};
+use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
@@ -245,14 +245,14 @@ async fn main() -> Result<(), Error> {
     let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
     // Initialize push threads
-    let push_task = if config.push_mode {
+    let push_task = if config.delivery_mode == DeliveryMode::Push {
         Some(tokio::spawn(async move { push_pool.start().await }))
     } else {
         None
     };
 
     // Initialize fetch threads
-    let fetch_task = if config.push_mode {
+    let fetch_task = if config.delivery_mode == DeliveryMode::Push {
         Some(tokio::spawn(async move { fetch_pool.start().await }))
     } else {
         None

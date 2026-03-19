@@ -12,7 +12,6 @@ use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::helpers;
 use crate::store::inflight_activation::InflightActivation;
 
 /// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
@@ -56,7 +55,7 @@ impl PushPool {
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
-        let mut push_pool = helpers::spawn_pool(self.config.push_threads, |_| {
+        let mut push_pool = crate::tokio::spawn_pool(self.config.push_threads, |_| {
             let endpoint = self.config.worker_endpoint.clone();
             let receiver = self.receiver.clone();
 

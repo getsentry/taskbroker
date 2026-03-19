@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
-use crate::config::Config;
+use crate::config::{Config, DeliveryMode};
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{error, instrument};
 
@@ -25,7 +25,7 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
-        if self.config.push_mode {
+        if self.config.delivery_mode == DeliveryMode::Push {
             return Err(Status::permission_denied(
                 "Cannot call while broker is in PUSH mode",
             ));
@@ -106,7 +106,7 @@ impl ConsumerService for TaskbrokerServer {
         }
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
-        if self.config.push_mode {
+        if self.config.delivery_mode == DeliveryMode::Push {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 

@@ -4,7 +4,6 @@ use std::fs;
 pub mod config;
 pub mod fetch;
 pub mod grpc;
-pub mod helpers;
 pub mod kafka;
 pub mod logging;
 pub mod metrics;
@@ -12,6 +11,7 @@ pub mod push;
 pub mod runtime_config;
 pub mod store;
 pub mod test_utils;
+pub mod tokio;
 pub mod upkeep;
 
 /// Name of the grpc service.

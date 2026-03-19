@@ -19,6 +19,17 @@ pub enum DatabaseAdapter {
     Postgres,
 }
 
+/// How the taskbroker delivers tasks to workers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeliveryMode {
+    /// Workers pull tasks from the broker.
+    Pull,
+
+    /// Broker pushes tasks to workers.
+    Push,
+}
+
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
     /// The sentry DSN to use for error reporting.
@@ -240,8 +251,8 @@ pub struct Config {
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
 
-    /// Run the taskbroker in push mode (as opposed to pull mode).
-    pub push_mode: bool,
+    /// How to deliver tasks to workers: "push" or "pull".
+    pub delivery_mode: DeliveryMode,
 
     /// The number of concurrent dispatchers to run.
     pub fetch_threads: usize,
@@ -335,7 +346,7 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
-            push_mode: false,
+            delivery_mode: DeliveryMode::Pull,
             fetch_threads: 1,
             fetch_wait_ms: 100,
             push_threads: 1,
@@ -458,7 +469,7 @@ impl Provider for Config {
 mod tests {
     use std::{borrow::Cow, collections::BTreeMap};
 
-    use super::{Config, DatabaseAdapter};
+    use super::{Config, DatabaseAdapter, DeliveryMode};
     use crate::{Args, logging::LogFormat};
     use figment::Jail;
 
@@ -744,6 +755,40 @@ mod tests {
                 producer_config.get("ssl.key.location").unwrap(),
                 "/etc/ssl/taskbroker/private.key"
             );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_default_delivery_mode() {
+        let config = Config::default();
+        assert_eq!(config.delivery_mode, DeliveryMode::Pull);
+    }
+
+    #[test]
+    fn test_from_args_delivery_mode_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_DELIVERY_MODE", "push");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.delivery_mode, DeliveryMode::Push);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_args_delivery_mode_from_config_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", "delivery_mode: push")?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.delivery_mode, DeliveryMode::Push);
 
             Ok(())
         });

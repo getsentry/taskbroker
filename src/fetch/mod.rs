@@ -8,7 +8,6 @@ use tonic::async_trait;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::helpers;
 use crate::push::PushPool;
 use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
 
@@ -56,7 +55,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
     pub async fn start(&self) -> Result<()> {
         let fetch_wait_ms = self.config.fetch_wait_ms;
 
-        let mut fetch_pool = helpers::spawn_pool(self.config.fetch_threads, |_| {
+        let mut fetch_pool = crate::tokio::spawn_pool(self.config.fetch_threads, |_| {
             let store = self.store.clone();
             let pusher = self.pusher.clone();
 

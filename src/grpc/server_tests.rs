@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::config::Config;
+use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::TaskbrokerServer;
 use prost::Message;
 use rstest::rstest;
@@ -16,7 +16,7 @@ use crate::test_utils::{create_config, create_test_store, make_activations};
 async fn test_get_task_push_mode_returns_permission_denied() {
     let store = create_test_store("sqlite").await;
     let config = Arc::new(Config {
-        push_mode: true,
+        delivery_mode: DeliveryMode::Push,
         ..Config::default()
     });
 
