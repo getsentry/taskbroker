@@ -277,6 +277,12 @@ pub struct Config {
 
     /// The port used to construct `callback_url` for task push requests.
     pub callback_port: u32,
+
+    /// Application filter for push mode. When set, only pending activations for this application are considered.
+    pub application: Option<String>,
+
+    /// List of namespaces for push mode. When set, application must also be set (store requirement).
+    pub namespaces: Option<Vec<String>>,
 }
 
 impl Default for Config {
@@ -355,6 +361,8 @@ impl Default for Config {
             worker_endpoint: "http://127.0.0.1:50052".into(),
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
+            application: None,
+            namespaces: None,
         }
     }
 }
@@ -833,6 +841,51 @@ mod tests {
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.callback_addr, "10.0.0.1");
             assert_eq!(config.callback_port, 52000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_default_application_and_namespaces() {
+        let config = Config::default();
+        assert_eq!(config.application, None);
+        assert_eq!(config.namespaces, None);
+    }
+
+    #[test]
+    fn test_from_args_application_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_APPLICATION", "getsentry");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.application.as_deref(), Some("getsentry"));
+            assert_eq!(config.namespaces, None);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_args_application_and_namespaces_from_config_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+                application: getsentry
+                namespaces:
+                  - ns1
+                  - ns2
+            "#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.application.as_deref(), Some("getsentry"));
+            assert_eq!(config.namespaces, Some(vec!["ns1".into(), "ns2".into()]));
 
             Ok(())
         });

@@ -58,6 +58,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
         let mut fetch_pool = crate::tokio::spawn_pool(self.config.fetch_threads, |_| {
             let store = self.store.clone();
             let pusher = self.pusher.clone();
+            let config = self.config.clone();
 
             let guard = get_shutdown_guard().shutdown_on_drop();
 
@@ -73,7 +74,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             debug!("About to fetch next activation...");
 
                             //  Instead of returning when `fetch_activation` fails, we just try again
-                            match fetch_activation(store.clone(), pusher.clone()).await {
+                            match fetch_activation(store.clone(), pusher.clone(), config.clone()).await {
                                 Ok(false) | Err(_) => {
                                     // Found no pending activations OR there is an issue with the store OR submitting to push pool failed
                                     sleep(Duration::from_millis(fetch_wait_ms)).await;
@@ -106,15 +107,26 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
 pub async fn fetch_activation<T: TaskPusher>(
     store: Arc<dyn InflightActivationStore>,
     pusher: Arc<T>,
+    config: Arc<Config>,
 ) -> Result<bool> {
     let start = Instant::now();
     metrics::counter!("fetch.fetch_activation.calls").increment(1);
 
     debug!("Fetching next pending activation...");
 
-    let found = match store.get_pending_activation(None, None).await {
-        Ok(Some(activation)) => {
+    let result = store
+        .get_pending_activations_from_namespaces(
+            config.application.as_deref(),
+            config.namespaces.as_deref(),
+            Some(1),
+        )
+        .await;
+
+    let found = match result {
+        Ok(activations) if !activations.is_empty() => {
+            let activation = activations.into_iter().next().unwrap();
             let id = activation.id.clone();
+
             debug!("Atomically fetched and marked task {id} as processing");
 
             if let Err(e) = pusher.push_task(activation).await {

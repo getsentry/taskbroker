@@ -25,10 +25,10 @@ enum MockPendingResult {
 
 /// Fake store for testing.
 struct MockStore {
-    /// How should all calls to `get_pending_activation` respond?
+    /// How should all calls to `get_pending_activations_from_namespaces` respond?
     pending_result: MockPendingResult,
 
-    /// How many calls to `get_pending_activation` have been performed?
+    /// How many calls to `get_pending_activations_from_namespaces` have been performed?
     pending_calls: AtomicUsize,
 }
 
@@ -69,12 +69,7 @@ impl InflightActivationStore for MockStore {
         _application: Option<&str>,
         _namespace: Option<&str>,
     ) -> Result<Option<InflightActivation>, Error> {
-        self.pending_calls.fetch_add(1, Ordering::SeqCst);
-        match &self.pending_result {
-            MockPendingResult::Some(activation) => Ok(Some(activation.clone())),
-            MockPendingResult::None => Ok(None),
-            MockPendingResult::Err => Err(anyhow!("mock store error")),
-        }
+        unimplemented!()
     }
 
     async fn get_pending_activations_from_namespaces(
@@ -83,7 +78,13 @@ impl InflightActivationStore for MockStore {
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
     ) -> Result<Vec<InflightActivation>, Error> {
-        unimplemented!()
+        self.pending_calls.fetch_add(1, Ordering::SeqCst);
+
+        match &self.pending_result {
+            MockPendingResult::Some(activation) => Ok(vec![activation.clone()]),
+            MockPendingResult::None => Ok(vec![]),
+            MockPendingResult::Err => Err(anyhow!("mock store error")),
+        }
     }
 
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
@@ -199,7 +200,8 @@ async fn fetch_activation_submits_when_pending_exists() {
         Arc::new(MockStore::new(MockPendingResult::Some(activation.clone())));
     let pusher = Arc::new(MockTaskPusher::new(false));
 
-    let found = fetch_activation(store, pusher.clone())
+    let config = Arc::new(Config::default());
+    let found = fetch_activation(store, pusher.clone(), config)
         .await
         .expect("fetch should succeed");
     assert!(
@@ -219,7 +221,8 @@ async fn fetch_activation_logs_submit_error_and_returns_err() {
         Arc::new(MockStore::new(MockPendingResult::Some(activation)));
     let pusher = Arc::new(MockTaskPusher::new(true));
 
-    let result = fetch_activation(store, pusher.clone()).await;
+    let config = Arc::new(Config::default());
+    let result = fetch_activation(store, pusher.clone(), config).await;
     assert!(
         result.is_err(),
         "should return error when push fails (after reverting status to pending)"
@@ -238,7 +241,8 @@ async fn fetch_activation_no_pending_returns_false() {
     let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::new(MockPendingResult::None));
     let pusher = Arc::new(MockTaskPusher::new(false));
 
-    let found = fetch_activation(store, pusher.clone())
+    let config = Arc::new(Config::default());
+    let found = fetch_activation(store, pusher.clone(), config)
         .await
         .expect("fetch should succeed");
     assert!(!found, "should return false when no activation is pending");
@@ -255,7 +259,8 @@ async fn fetch_activation_store_error_returns_false() {
     let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::new(MockPendingResult::Err));
     let pusher = Arc::new(MockTaskPusher::new(false));
 
-    let result = fetch_activation(store, pusher.clone()).await;
+    let config = Arc::new(Config::default());
+    let result = fetch_activation(store, pusher.clone(), config).await;
     assert!(
         result.is_err(),
         "should return error when pending activation lookup fails"
