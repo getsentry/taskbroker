@@ -251,15 +251,12 @@ class TaskWorker:
         try:
             self._metrics.gauge("taskworker.child_tasks.size", self._child_tasks.qsize())
         except Exception as e:
-            # `qsize` does not work on all machines
+            # 'qsize' does not work on macOS
             logger.warning(f"Could not report size of child tasks queue - {e}")
 
         start_time = time.monotonic()
         try:
-            if timeout is None:
-                self._child_tasks.put(inflight)
-            else:
-                self._child_tasks.put(inflight, timeout=timeout)
+            self._child_tasks.put(inflight, timeout=timeout)
         except queue.Full:
             self._metrics.incr(
                 "taskworker.worker.push_task.busy",
