@@ -241,7 +241,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(store.clone(), config.clone()));
+    let push_pool = Arc::new(PushPool::new(config.clone()));
     let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
     // Initialize push threads
