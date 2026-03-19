@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "sys_platform == 'darwin' or sys_platform == 'linux'",
@@ -546,7 +546,7 @@ wheels = [
 
 [[package]]
 name = "sentry-protos"
-version = "0.4.11"
+version = "0.8.6"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "grpc-stubs", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -554,7 +554,7 @@ dependencies = [
     { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_protos-0.4.11-py3-none-any.whl", hash = "sha256:d60709cd9989679fbe1ca1a9a02393a3af59292da333905d5b28beaa04220352" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_protos-0.8.6-py3-none-any.whl", hash = "sha256:bffd32fae9df928a1d4fc519c1ff02fa3ba8fac7bf8ba0ea6495b1eb353575ef" },
 ]
 
 [[package]]
@@ -698,7 +698,7 @@ requires-dist = [
     { name = "redis", specifier = ">=3.4.1" },
     { name = "redis-py-cluster", specifier = ">=2.1.0" },
     { name = "sentry-arroyo", specifier = ">=2.33.1" },
-    { name = "sentry-protos", specifier = ">=0.4.11" },
+    { name = "sentry-protos", specifier = ">=0.8.5" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
     { name = "zstandard", specifier = ">=0.18.0" },

@@ -139,12 +139,16 @@ class TaskbrokerClient:
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
+        push_mode: bool = False,
+        grpc_port: int = 50052,
     ) -> None:
         assert len(hosts) > 0, "You must provide at least one RPC host to connect to"
         self._application = application
         self._hosts = hosts
         self._rpc_secret = rpc_secret
         self._metrics = metrics
+        self._push_mode = push_mode
+        self._grpc_port = grpc_port
 
         self._grpc_options: list[tuple[str, Any]] = [
             ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)
@@ -157,6 +161,7 @@ class TaskbrokerClient:
         )
 
         self._cur_host = random.choice(self._hosts)
+        self._host_to_stubs_lock = threading.Lock()
         self._host_to_stubs: dict[str, ConsumerServiceStub] = {
             self._cur_host: self._connect_to_host(self._cur_host)
         }
@@ -199,6 +204,12 @@ class TaskbrokerClient:
             secrets = orjson.loads(self._rpc_secret)
             channel = grpc.intercept_channel(channel, RequestSignatureInterceptor(secrets))
         return ConsumerServiceStub(channel)
+
+    def _get_stub(self, host: str) -> ConsumerServiceStub:
+        with self._host_to_stubs_lock:
+            if host not in self._host_to_stubs:
+                self._host_to_stubs[host] = self._connect_to_host(host)
+            return self._host_to_stubs[host]
 
     def _check_consecutive_unavailable_errors(self) -> None:
         if self._num_consecutive_unavailable_errors >= self._max_consecutive_unavailable_errors:
@@ -324,10 +335,11 @@ class TaskbrokerClient:
                     f"Host: {processing_result.host} is temporarily unavailable"
                 )
 
+            stub = self._get_stub(processing_result.host)
             with self._metrics.timer(
                 "taskworker.update_task.rpc", tags={"host": processing_result.host}
             ):
-                response = self._host_to_stubs[processing_result.host].SetTaskStatus(request)
+                response = stub.SetTaskStatus(request)
         except grpc.RpcError as err:
             self._metrics.incr(
                 "taskworker.client.rpc_error",

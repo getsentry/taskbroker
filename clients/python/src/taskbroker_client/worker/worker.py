@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any
 
 import grpc
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import FetchNextTask
+from sentry_protos.taskbroker.v1 import taskbroker_pb2_grpc
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    FetchNextTask,
+    PushTaskRequest,
+    PushTaskResponse,
+)
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import (
@@ -31,6 +36,34 @@ from taskbroker_client.worker.client import (
 from taskbroker_client.worker.workerchild import child_process
 
 logger = logging.getLogger(__name__)
+
+
+class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
+    """
+    gRPC servicer that receives task activations pushed from the broker
+    """
+
+    def __init__(self, worker: TaskWorker) -> None:
+        self.worker = worker
+
+    def PushTask(
+        self,
+        request: PushTaskRequest,
+        context: grpc.ServicerContext,
+    ) -> PushTaskResponse:
+        """Handle incoming task activation."""
+        # Create `InflightTaskActivation` from the pushed task
+        inflight = InflightTaskActivation(
+            activation=request.task,
+            host=request.callback_url,
+            receive_timestamp=time.monotonic(),
+        )
+
+        # Push the task to the worker queue (wait at most 5 seconds)
+        if not self.worker.push_task(inflight, timeout=5):
+            context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy")
+
+        return PushTaskResponse()
 
 
 class TaskWorker:
@@ -60,6 +93,8 @@ class TaskWorker:
         process_type: str = "spawn",
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
+        push_mode: bool = False,
+        grpc_port: int = 50052,
         **kwargs: dict[str, Any],
     ) -> None:
         self.options = kwargs
@@ -68,6 +103,11 @@ class TaskWorker:
         self._namespace = namespace
         self._concurrency = concurrency
         app = import_app(app_module)
+
+        if push_mode:
+            logger.info("Running in PUSH mode")
+        else:
+            logger.info("Running in PULL mode")
 
         self.client = TaskbrokerClient(
             hosts=broker_hosts,
@@ -81,6 +121,8 @@ class TaskWorker:
             ),
             rpc_secret=app.config["rpc_secret"],
             grpc_config=app.config["grpc_config"],
+            push_mode=push_mode,
+            grpc_port=grpc_port,
         )
         self._metrics = app.metrics
 
@@ -110,12 +152,13 @@ class TaskWorker:
 
         self._processing_pool_name: str = processing_pool_name or "unknown"
 
+        self._push_mode = push_mode
+        self._grpc_port = grpc_port
+
     def start(self) -> int:
         """
-        Run the worker main loop
-
-        Once started a Worker will loop until it is killed, or
-        completes its max_task_count when it shuts down.
+        When in PULL mode, this starts a loop that runs until the worker completes its `max_task_count` or it is killed.
+        When in PUSH mode, this starts the worker gRPC server.
         """
         self.start_result_thread()
         self.start_spawn_children_thread()
@@ -128,12 +171,32 @@ class TaskWorker:
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
-        try:
-            while True:
-                self.run_once()
-        except KeyboardInterrupt:
-            self.shutdown()
-            raise
+        if self._push_mode:
+            try:
+                # Start gRPC server
+                server = grpc.server(ThreadPoolExecutor(max_workers=self._concurrency))
+                taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
+                    WorkerServicer(self), server
+                )
+                server.add_insecure_port(f"[::]:{self._grpc_port}")
+                server.start()
+                logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
+
+                # Wait for shutdown signal
+                server.wait_for_termination()
+
+            except KeyboardInterrupt:
+                server.stop(grace=5)
+                self.shutdown()
+        else:
+            try:
+                while True:
+                    self.run_once()
+            except KeyboardInterrupt:
+                self.shutdown()
+                raise
+
+        return 0
 
     def run_once(self) -> None:
         """Access point for tests to run a single worker loop"""
@@ -171,6 +234,39 @@ class TaskWorker:
                 break
 
         logger.info("taskworker.worker.shutdown.complete")
+
+    def push_task(self, inflight: InflightTaskActivation, timeout: float | None = None) -> bool:
+        """
+        Push a task to child tasks queue.
+
+        When timeout is `None`, blocks until the queue has space. When timeout is
+        set (e.g. 5.0), waits at most that many seconds and returns `False` if the
+        queue is still full (worker busy).
+        """
+        try:
+            self._metrics.gauge("taskworker.child_tasks.size", self._child_tasks.qsize())
+        except Exception as e:
+            # `qsize` does not work on all machines
+            logger.warning(f"Could not report size of child tasks queue - {e}")
+
+        start_time = time.monotonic()
+        try:
+            if timeout is None:
+                self._child_tasks.put(inflight)
+            else:
+                self._child_tasks.put(inflight, timeout=timeout)
+        except queue.Full:
+            self._metrics.incr(
+                "taskworker.worker.push_task.busy",
+                tags={"processing_pool": self._processing_pool_name},
+            )
+            return False
+        self._metrics.distribution(
+            "taskworker.worker.child_task.put.duration",
+            time.monotonic() - start_time,
+            tags={"processing_pool": self._processing_pool_name},
+        )
+        return True
 
     def _add_task(self) -> bool:
         """
