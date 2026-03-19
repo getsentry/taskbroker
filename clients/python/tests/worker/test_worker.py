@@ -325,7 +325,7 @@ class TestTaskWorker(TestCase):
             mock.ANY,
             tags={"processing_pool": "unknown"},
         )
-        mock_queue.put.assert_called_once_with(SIMPLE_TASK)
+        mock_queue.put.assert_called_once_with(SIMPLE_TASK, timeout=None)
 
     def test_push_task_success_with_timeout(self) -> None:
         taskworker = TaskWorker(
@@ -384,7 +384,7 @@ class TestTaskWorker(TestCase):
         result = taskworker.push_task(SIMPLE_TASK, timeout=None)
 
         self.assertTrue(result)
-        mock_queue.put.assert_called_once_with(SIMPLE_TASK)
+        mock_queue.put.assert_called_once_with(SIMPLE_TASK, timeout=None)
         mock_metrics.distribution.assert_called_once()
 
     def test_run_once_current_task_state(self) -> None:
