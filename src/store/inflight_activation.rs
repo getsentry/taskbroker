@@ -27,6 +27,8 @@ use tracing::{instrument, warn};
 
 use crate::config::Config;
 
+pub type BucketRange = (i16, i16);
+
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
@@ -173,6 +175,10 @@ pub struct InflightActivation {
     /// are exceeded.
     #[builder(default = false)]
     pub at_most_once: bool,
+
+    /// Bucket derived from activation ID (UUID as number % 256). Set once on ingestion.
+    #[builder(setter(skip), default = "0")]
+    pub bucket: i16,
 }
 
 impl InflightActivation {
@@ -235,6 +241,7 @@ pub struct TableRow {
     pub taskname: String,
     #[sqlx(try_from = "i32")]
     pub on_attempts_exceeded: OnAttemptsExceeded,
+    pub bucket: i16,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -259,6 +266,7 @@ impl TryFrom<InflightActivation> for TableRow {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
         })
     }
 }
@@ -283,6 +291,7 @@ impl From<TableRow> for InflightActivation {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
         }
     }
 }
@@ -369,7 +378,12 @@ pub trait InflightActivationStore: Send + Sync {
             return Ok(None);
         }
         let result = self
-            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
+            .get_pending_activations_from_namespaces(
+                application,
+                namespaces.as_deref(),
+                Some(1),
+                None,
+            )
             .await?;
         if result.is_empty() {
             return Ok(None);
@@ -383,6 +397,7 @@ pub trait InflightActivationStore: Send + Sync {
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error>;
 
     /// Get the age of the oldest pending activation in seconds
@@ -698,7 +713,8 @@ impl InflightActivationStore for SqliteActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -739,7 +755,8 @@ impl InflightActivationStore for SqliteActivationStore {
                     application,
                     namespace,
                     taskname,
-                    on_attempts_exceeded
+                    on_attempts_exceeded,
+                    bucket
                 )
             ",
         );
@@ -772,6 +789,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -809,6 +827,7 @@ impl InflightActivationStore for SqliteActivationStore {
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        _bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
@@ -989,7 +1008,8 @@ impl InflightActivationStore for SqliteActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             ",

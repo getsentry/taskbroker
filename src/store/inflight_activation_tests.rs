@@ -293,7 +293,7 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     // Get activation from multiple namespaces (should get oldest)
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), None)
+        .get_pending_activations_from_namespaces(None, Some(&namespaces), None, None)
         .await
         .unwrap();
 
@@ -329,7 +329,7 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2))
+        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2), None)
         .await
         .unwrap();
     assert_eq!(
