@@ -172,6 +172,8 @@ class TaskWorker:
         signal.signal(signal.SIGTERM, signal_handler)
 
         if self._push_mode:
+            server = None
+
             try:
                 # Start gRPC server
                 server = grpc.server(ThreadPoolExecutor(max_workers=self._concurrency))
