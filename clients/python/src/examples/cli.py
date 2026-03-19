@@ -77,9 +77,6 @@ def scheduler() -> None:
     "--push-mode", help="Whether to run in PUSH or PULL mode.", default=False, is_flag=True
 )
 @click.option(
-    "--grpc-port", help="Whether to run in PUSH or PULL mode.", default=False, is_flag=True
-)
-@click.option(
     "--grpc-port",
     help="Port for the gRPC server to listen on.",
     default=50052,
