@@ -1,4 +1,8 @@
 # Changelog
+## 0.1.7
+
+- feat(client) Make the ProducerFactory depend on a protocol by @markstory in [#578](https://github.com/getsentry/taskbroker/pull/578)
+
 ## 0.1.6
 
 - fix(client) Align logger names with package name by @markstory in [#572](https://github.com/getsentry/taskbroker/pull/572)
