@@ -7,7 +7,7 @@ from concurrent import futures
 from typing import Any
 
 import sentry_sdk
-from arroyo.backends.kafka import KafkaPayload, KafkaProducer
+from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
@@ -17,7 +17,7 @@ from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import ExternalTask, P, R, Task
-from taskbroker_client.types import ProducerFactory
+from taskbroker_client.types import ProducerFactory, ProducerProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class TaskNamespace:
         self.default_processing_deadline_duration = processing_deadline_duration  # seconds
         self.app_feature = app_feature or name
         self._registered_tasks: dict[str, Task[Any, Any]] = {}
-        self._producers: dict[str, KafkaProducer] = {}
+        self._producers: dict[str, ProducerProtocol] = {}
         self._producer_factory = producer_factory
         self.metrics = metrics
 
@@ -191,7 +191,7 @@ class TaskNamespace:
             except Exception:
                 logger.exception("Failed to wait for delivery")
 
-    def _producer(self, topic: str) -> KafkaProducer:
+    def _producer(self, topic: str) -> ProducerProtocol:
         if topic not in self._producers:
             self._producers[topic] = self._producer_factory(topic)
         return self._producers[topic]
