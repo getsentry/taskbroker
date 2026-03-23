@@ -358,7 +358,7 @@ pub trait InflightActivationStore: Send + Sync {
         application: Option<&str>,
         namespaces: Option<&[String]>,
     ) -> Result<Option<InflightActivation>, Error> {
-        if namespaces.is_some_and(|ns| !ns.is_empty()) && application.is_none() {
+        if namespaces.is_some() && application.is_none() {
             warn!(
                 ?namespaces,
                 "Received request for namespaced task without application"
