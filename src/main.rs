@@ -192,24 +192,24 @@ async fn main() -> Result<(), Error> {
 
     // GRPC server
     let grpc_server_task = tokio::spawn({
-        let store = store.clone();
-        let config = config.clone();
+        let grpc_store = store.clone();
+        let grpc_config = config.clone();
 
         async move {
-            let addr = format!("{}:{}", config.grpc_addr, config.grpc_port)
+            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
                 .expect("Failed to parse address");
 
             let layers = tower::ServiceBuilder::new()
                 .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&config))
+                .layer(AuthLayer::new(&grpc_config))
                 .into_inner();
 
             let server = Server::builder()
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store,
-                    config,
+                    store: grpc_store,
+                    config: grpc_config,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);

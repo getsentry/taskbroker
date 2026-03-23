@@ -802,7 +802,7 @@ impl InflightActivationStore for SqliteActivationStore {
 
     /// Claim pending activations from specified namespaces (moves them to processing).
     /// If namespaces is `None`, gets from any namespace.
-    /// If namespaces is `Some(...)` and not empty, restricts to those namespaces.
+    /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
     async fn get_pending_activations(
         &self,
