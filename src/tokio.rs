@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use tokio::task::JoinSet;
 
 /// Spawns `max(n, 1)` tasks, each running the future produced by `f` with the task's index.
@@ -16,4 +18,16 @@ where
     }
 
     join_set
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_pool_spawns_one_worker_when_n_is_zero() {
+        let mut set = spawn_pool(0, |i| async move { i });
+        assert_eq!(set.join_next().await.unwrap().unwrap(), 0);
+        assert!(set.join_next().await.is_none());
+    }
 }

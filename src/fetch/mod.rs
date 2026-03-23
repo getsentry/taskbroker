@@ -5,22 +5,22 @@ use anyhow::Result;
 use elegant_departure::get_shutdown_guard;
 use tokio::time::sleep;
 use tonic::async_trait;
-use tracing::{debug, error, info};
+use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::PushPool;
+use crate::push::{PushError, PushPool};
 use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
 
 /// Thin interface for the push pool. It mostly serves to enable proper unit testing, but it also decouples fetch logic from push logic even further.
 #[async_trait]
 pub trait TaskPusher {
     /// Push a single task to the worker service.
-    async fn push_task(&self, activation: InflightActivation) -> Result<()>;
+    async fn push_task(&self, activation: InflightActivation) -> Result<(), PushError>;
 }
 
 #[async_trait]
 impl TaskPusher for PushPool {
-    async fn push_task(&self, activation: InflightActivation) -> Result<()> {
+    async fn push_task(&self, activation: InflightActivation) -> Result<(), PushError> {
         self.submit(activation).await
     }
 }
@@ -71,18 +71,65 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                         }
 
                         _ = async {
-                            debug!("About to fetch next activation...");
+                            debug!("Fetching next pending activation...");
+                            metrics::counter!("fetch.loop.count").increment(1);
 
-                            //  Instead of returning when `fetch_activation` fails, we just try again
-                            match fetch_activation(store.clone(), pusher.clone(), config.clone()).await {
-                                Ok(false) | Err(_) => {
-                                    // Found no pending activations OR there is an issue with the store OR submitting to push pool failed
-                                    sleep(Duration::from_millis(fetch_wait_ms)).await;
+                            let start = Instant::now();
+                            let mut backoff = false;
+
+                            let application = config.application.as_deref();
+                            let namespaces = config.namespaces.as_deref();
+
+                            match store.get_pending_activation(application, namespaces).await {
+                                Ok(Some(activation)) => {
+                                    let id = activation.id.clone();
+
+                                    debug!(
+                                        task_id = %id,
+                                        "Fetched and marked task as processing"
+                                    );
+
+                                    if let Err(e) = pusher.push_task(activation).await {
+                                        match e {
+                                            PushError::Timeout => warn!(
+                                                task_id = %id,
+                                                "Submit to push pool timed out after milliseconds",
+                                            ),
+
+                                            PushError::Channel(e) => warn!(
+                                                task_id = %id,
+                                                error = ?e,
+                                                "Submit to push pool failed due to channel error",
+                                            )
+                                        }
+
+                                        backoff = true;
+                                    }
                                 }
 
-                                Ok(true) => {
-                                    // Fetched pending activation successfully, so nothing else needs to be done
+                                Ok(None) => {
+                                    debug!("No pending activations");
+
+                                    // Wait for pending activations to appear
+                                    backoff = true;
                                 }
+
+                                Err(e) => {
+                                    warn!(
+                                        error = ?e,
+                                        "Store failed while fetching task"
+                                    );
+
+                                    // Store may be down, wait before trying again
+                                    backoff = true;
+                                }
+                            };
+
+                            metrics::histogram!("fetch.loop.duration")
+                                .record(start.elapsed());
+
+                            if backoff {
+                                sleep(Duration::from_millis(fetch_wait_ms)).await;
                             }
                         } => {}
                     }
@@ -98,59 +145,6 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
 
         Ok(())
     }
-}
-
-/// Grab the next pending activation from the store, mark it as processing, and send to push channel. Return...
-/// - `Ok(true)` if an activation was found
-/// - `Ok(false)` if none pending
-/// - `Err` if fetching failed.
-pub async fn fetch_activation<T: TaskPusher>(
-    store: Arc<dyn InflightActivationStore>,
-    pusher: Arc<T>,
-    config: Arc<Config>,
-) -> Result<bool> {
-    let start = Instant::now();
-    metrics::counter!("fetch.fetch_activation.calls").increment(1);
-
-    debug!("Fetching next pending activation...");
-
-    let result = store
-        .get_pending_activations_from_namespaces(
-            config.application.as_deref(),
-            config.namespaces.as_deref(),
-            Some(1),
-        )
-        .await;
-
-    let found = match result {
-        Ok(activations) if !activations.is_empty() => {
-            let activation = activations.into_iter().next().unwrap();
-            let id = activation.id.clone();
-
-            debug!("Atomically fetched and marked task {id} as processing");
-
-            if let Err(e) = pusher.push_task(activation).await {
-                // Once processing deadline expires, status will be set back to pending
-                error!("Failed to submit task {id} to push pool - {e:?}");
-                return Err(e);
-            }
-
-            true
-        }
-
-        Ok(_) => {
-            debug!("No pending activations");
-            false
-        }
-
-        Err(e) => {
-            error!("Failed to fetch pending activation - {:?}", e);
-            return Err(e);
-        }
-    };
-
-    metrics::histogram!("fetch.fetch_activation.duration").record(start.elapsed());
-    Ok(found)
 }
 
 #[cfg(test)]

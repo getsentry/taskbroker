@@ -352,33 +352,33 @@ pub trait InflightActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
 
-    /// Get a single pending activation, optionally filtered by namespace
+    /// Get a single pending activation, optionally filtered by namespaces.
     async fn get_pending_activation(
         &self,
         application: Option<&str>,
-        namespace: Option<&str>,
+        namespaces: Option<&[String]>,
     ) -> Result<Option<InflightActivation>, Error> {
-        // Convert single namespace to vector for internal use
-        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
-
-        // If a namespace filter is used, an application must also be used.
-        if namespaces.is_some() && application.is_none() {
+        if namespaces.is_some_and(|ns| !ns.is_empty()) && application.is_none() {
             warn!(
-                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+                ?namespaces,
+                "Received request for namespaced task without application"
             );
             return Ok(None);
         }
-        let result = self
-            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
+
+        let results = self
+            .get_pending_activations(application, namespaces, Some(1))
             .await?;
-        if result.is_empty() {
+
+        if results.is_empty() {
             return Ok(None);
         }
-        Ok(Some(result[0].clone()))
+
+        Ok(Some(results[0].clone()))
     }
 
-    /// Get pending activations from specified namespaces
-    async fn get_pending_activations_from_namespaces(
+    /// Claim pending activations (moves them to processing), optionally filtered by application and namespaces.
+    async fn get_pending_activations(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
@@ -800,11 +800,11 @@ impl InflightActivationStore for SqliteActivationStore {
         meta_result
     }
 
-    /// Get a pending activation from specified namespaces
-    /// If namespaces is None, gets from any namespace
-    /// If namespaces is Some(&[...]), gets from those namespaces
+    /// Claim pending activations from specified namespaces (moves them to processing).
+    /// If namespaces is `None`, gets from any namespace.
+    /// If namespaces is `Some(...)` and not empty, restricts to those namespaces.
     #[instrument(skip_all)]
-    async fn get_pending_activations_from_namespaces(
+    async fn get_pending_activations(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,

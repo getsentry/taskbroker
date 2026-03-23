@@ -32,11 +32,14 @@ impl ConsumerService for TaskbrokerServer {
         }
 
         let start_time = Instant::now();
+
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
+        let namespaces = namespace.as_ref().map(std::slice::from_ref);
+
         let inflight = self
             .store
-            .get_pending_activation(application.as_deref(), namespace.as_deref())
+            .get_pending_activation(application.as_deref(), namespaces)
             .await;
 
         match inflight {
@@ -119,9 +122,10 @@ impl ConsumerService for TaskbrokerServer {
         };
 
         let start_time = Instant::now();
+        let namespaces = namespace.as_ref().map(std::slice::from_ref);
         let res = match self
             .store
-            .get_pending_activation(application.as_deref(), namespace.as_deref())
+            .get_pending_activation(application.as_deref(), namespaces)
             .await
         {
             Err(e) => {

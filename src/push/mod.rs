@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use elegant_departure::get_shutdown_guard;
-use flume::{Receiver, Sender};
+use flume::{Receiver, SendError, Sender};
 use prost::Message;
 use sentry_protos::taskbroker::v1::worker_service_client::WorkerServiceClient;
 use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
@@ -13,6 +13,17 @@ use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::store::inflight_activation::InflightActivation;
+
+/// Error returned when enqueueing an activation for the push workers fails.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+pub enum PushError {
+    /// The bounded queue stayed full until `push_timeout_ms` elapsed.
+    Timeout,
+
+    /// Channel disconnected (no receivers) or another failure.
+    Channel(SendError<InflightActivation>),
+}
 
 /// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
 #[async_trait]
@@ -94,10 +105,14 @@ impl PushPool {
                             let id = activation.id.clone();
 
                             match push_task(&mut worker, activation, callback_url.clone()).await {
-                                Ok(_) => debug!("Activation {id} was sent to worker!"),
+                                Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
 
                                 // Once processing deadline expires, status will be set back to pending
-                                Err(e) => error!("Pushing activation {id} resulted in error - {:?}", e)
+                                Err(e) => error!(
+                                    task_id = %id,
+                                    error = ?e,
+                                    "Failed to send activation to worker"
+                                )
                             };
                         }
                     }
@@ -108,10 +123,14 @@ impl PushPool {
                     let id = activation.id.clone();
 
                     match push_task(&mut worker, activation, callback_url.clone()).await {
-                        Ok(_) => debug!("Activation {id} was sent to worker!"),
+                        Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
 
                         // Once processing deadline expires, status will be set back to pending
-                        Err(e) => error!("Pushing activation {id} resulted in error - {:?}", e),
+                        Err(e) => error!(
+                            task_id = %id,
+                            error = ?e,
+                            "Failed to send activation to worker"
+                        ),
                     };
                 }
             }
@@ -127,19 +146,18 @@ impl PushPool {
     }
 
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_timeout_ms` milliseconds.
-    pub async fn submit(&self, activation: InflightActivation) -> Result<()> {
+    pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_timeout_ms);
 
-        tokio::time::timeout(duration, self.sender.send_async(activation))
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "failed to submit to push pool within {} milliseconds",
-                    self.config.push_timeout_ms
-                )
-            })??;
+        match tokio::time::timeout(duration, self.sender.send_async(activation)).await {
+            Ok(Ok(())) => Ok(()),
 
-        Ok(())
+            // The channel has a problem
+            Ok(Err(e)) => Err(PushError::Channel(e)),
+
+            // The channel was full so the send timed out
+            Err(_elapsed) => Err(PushError::Timeout),
+        }
     }
 }
 
@@ -150,7 +168,6 @@ async fn push_task<W: WorkerClient + Send>(
     callback_url: String,
 ) -> Result<()> {
     let start = Instant::now();
-    let id = activation.id.clone();
 
     // Try to decode activation (if it fails, we will see the error where `push_task` is called)
     let task = TaskActivation::decode(&activation.activation as &[u8])?;
@@ -160,17 +177,7 @@ async fn push_task<W: WorkerClient + Send>(
         callback_url,
     };
 
-    let result = match worker.send(request).await {
-        Ok(_) => {
-            debug!("Successfully sent activation {id} to worker service!");
-            Ok(())
-        }
-
-        Err(e) => {
-            error!("Could not push activation {id} to worker service - {:?}", e);
-            Err(e)
-        }
-    };
+    let result = worker.send(request).await;
 
     metrics::histogram!("push.push_task.duration").record(start.elapsed());
     result
