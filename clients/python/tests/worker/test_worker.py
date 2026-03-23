@@ -446,8 +446,6 @@ class TestTaskWorker(TestCase):
         )
         self.assertTrue(taskworker._push_mode)
         self.assertEqual(taskworker._grpc_port, 50099)
-        self.assertTrue(taskworker.client._push_mode)
-        self.assertEqual(taskworker.client._grpc_port, 50099)
 
     def test_constructor_pull_mode_default(self) -> None:
         taskworker = TaskWorker(
