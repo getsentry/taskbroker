@@ -184,12 +184,14 @@ class TaskWorker:
                 server.start()
                 logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
 
-                # Wait for shutdown signal
-                server.wait_for_termination()
+                try:
+                    server.wait_for_termination()
+                except KeyboardInterrupt:
+                    # Signals are converted to KeyboardInterrupt, swallow for exit code 0
+                    pass
 
-            except KeyboardInterrupt:
-                # This may be triggered before the server is initialized
-                if server:
+            finally:
+                if server is not None:
                     server.stop(grace=5)
 
                 self.shutdown()

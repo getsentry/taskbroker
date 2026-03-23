@@ -257,11 +257,10 @@ class TaskbrokerClient:
                 tags={"reason": "max_tasks_reached"},
             )
 
-        if self._cur_host not in self._host_to_stubs:
-            self._host_to_stubs[self._cur_host] = self._connect_to_host(self._cur_host)
+        stub = self._get_stub(self._cur_host)
 
         self._num_tasks_before_rebalance -= 1
-        return self._cur_host, self._host_to_stubs[self._cur_host]
+        return self._cur_host, stub
 
     def get_task(self, namespace: str | None = None) -> InflightTaskActivation | None:
         """
