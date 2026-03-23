@@ -139,16 +139,12 @@ class TaskbrokerClient:
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
-        push_mode: bool = False,
-        grpc_port: int = 50052,
     ) -> None:
         assert len(hosts) > 0, "You must provide at least one RPC host to connect to"
         self._application = application
         self._hosts = hosts
         self._rpc_secret = rpc_secret
         self._metrics = metrics
-        self._push_mode = push_mode
-        self._grpc_port = grpc_port
 
         self._grpc_options: list[tuple[str, Any]] = [
             ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)

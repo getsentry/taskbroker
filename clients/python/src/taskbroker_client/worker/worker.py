@@ -121,8 +121,6 @@ class TaskWorker:
             ),
             rpc_secret=app.config["rpc_secret"],
             grpc_config=app.config["grpc_config"],
-            push_mode=push_mode,
-            grpc_port=grpc_port,
         )
         self._metrics = app.metrics
 
