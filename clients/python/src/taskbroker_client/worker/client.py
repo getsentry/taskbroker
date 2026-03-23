@@ -147,8 +147,6 @@ class TaskbrokerClient:
         self._hosts = hosts
         self._rpc_secret = rpc_secret
         self._metrics = metrics
-        self._push_mode = push_mode
-        self._grpc_port = grpc_port
 
         self._grpc_options: list[tuple[str, Any]] = [
             ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)
