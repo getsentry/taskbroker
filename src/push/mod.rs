@@ -7,6 +7,7 @@ use flume::{Receiver, SendError, Sender};
 use prost::Message;
 use sentry_protos::taskbroker::v1::worker_service_client::WorkerServiceClient;
 use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
+use tokio::task::JoinSet;
 use tonic::async_trait;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
@@ -66,79 +67,94 @@ impl PushPool {
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
-        let mut push_pool = crate::tokio::spawn_pool(self.config.push_threads, |_| {
-            let endpoint = self.config.worker_endpoint.clone();
-            let receiver = self.receiver.clone();
+        let mut push_pool: JoinSet<Result<()>> = crate::tokio::spawn_pool(
+            self.config.push_threads,
+            |_| {
+                let endpoint = self.config.worker_endpoint.clone();
+                let receiver = self.receiver.clone();
 
-            let guard = get_shutdown_guard().shutdown_on_drop();
+                let guard = get_shutdown_guard().shutdown_on_drop();
 
-            let callback_url = format!(
-                "{}:{}",
-                self.config.callback_addr, self.config.callback_port
-            );
+                let callback_url = format!(
+                    "{}:{}",
+                    self.config.callback_addr, self.config.callback_port
+                );
 
-            async move {
-                let mut worker = match WorkerServiceClient::connect(endpoint).await {
-                    Ok(w) => w,
-                    Err(e) => {
-                        error!("Failed to connect to worker - {:?}", e);
-                        return;
-                    }
-                };
+                async move {
+                    let mut worker = match WorkerServiceClient::connect(endpoint).await {
+                        Ok(w) => w,
+                        Err(e) => {
+                            error!("Failed to connect to worker - {:?}", e);
 
-                loop {
-                    tokio::select! {
-                        _ = guard.wait() => {
-                            info!("Push worker received shutdown signal");
-                            break;
+                            // When we fail to connect, the taskbroker will shut down, but this may change in the future
+                            return Err(e.into());
                         }
-
-                        message = receiver.recv_async() => {
-                            let activation = match message {
-                                // Received activation from fetch thread
-                                Ok(a) => a,
-
-                                // Channel closed
-                                Err(_) => break
-                            };
-
-                            let id = activation.id.clone();
-
-                            match push_task(&mut worker, activation, callback_url.clone()).await {
-                                Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
-
-                                // Once processing deadline expires, status will be set back to pending
-                                Err(e) => error!(
-                                    task_id = %id,
-                                    error = ?e,
-                                    "Failed to send activation to worker"
-                                )
-                            };
-                        }
-                    }
-                }
-
-                // Drain channel before exiting
-                for activation in receiver.drain() {
-                    let id = activation.id.clone();
-
-                    match push_task(&mut worker, activation, callback_url.clone()).await {
-                        Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
-
-                        // Once processing deadline expires, status will be set back to pending
-                        Err(e) => error!(
-                            task_id = %id,
-                            error = ?e,
-                            "Failed to send activation to worker"
-                        ),
                     };
-                }
-            }
-        });
 
-        while let Some(res) = push_pool.join_next().await {
-            if let Err(e) = res {
-                return Err(e.into());
+                    loop {
+                        tokio::select! {
+                            _ = guard.wait() => {
+                                info!("Push worker received shutdown signal");
+                                break;
+                            }
+
+                            message = receiver.recv_async() => {
+                                let activation = match message {
+                                    // Received activation from fetch thread
+                                    Ok(a) => a,
+
+                                    // Channel closed
+                                    Err(_) => break
+                                };
+
+                                let id = activation.id.clone();
+
+                                match push_task(&mut worker, activation, callback_url.clone()).await {
+                                    Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
+
+                                    // Once processing deadline expires, status will be set back to pending
+                                    Err(e) => error!(
+                                        task_id = %id,
+                                        error = ?e,
+                                        "Failed to send activation to worker"
+                                    )
+                                };
+                            }
+                        }
+                    }
+
+                    // Drain channel before exiting
+                    for activation in receiver.drain() {
+                        let id = activation.id.clone();
+
+                        match push_task(&mut worker, activation, callback_url.clone()).await {
+                            Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
+
+                            // Once processing deadline expires, status will be set back to pending
+                            Err(e) => error!(
+                                task_id = %id,
+                                error = ?e,
+                                "Failed to send activation to worker"
+                            ),
+                        };
+                    }
+
+                    Ok(())
+                }
+            },
+        );
+
+        while let Some(result) = push_pool.join_next().await {
+            match result {
+                Ok(r) => {
+                    // Connection failed
+                    if let Err(e) = r {
+                        return Err(e);
+                    }
+                }
+
+                // Join failed
+                Err(e) => return Err(e.into()),
             }
         }
 
