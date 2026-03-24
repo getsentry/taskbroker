@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, List
 
 import grpc
 from sentry_protos.taskbroker.v1 import taskbroker_pb2_grpc
@@ -31,9 +31,17 @@ from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
+    RequestSignatureServerInterceptor,
     TaskbrokerClient,
+    parse_rpc_secret_list,
 )
 from taskbroker_client.worker.workerchild import child_process
+
+if TYPE_CHECKING:
+    ServerInterceptor = grpc.ServerInterceptor[Any, Any]
+else:
+    ServerInterceptor = grpc.ServerInterceptor
+
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +160,7 @@ class TaskWorker:
 
         self._push_mode = push_mode
         self._grpc_port = grpc_port
+        self._grpc_secrets = parse_rpc_secret_list(app.config["rpc_secret"])
 
     def start(self) -> int:
         """
@@ -174,7 +183,16 @@ class TaskWorker:
 
             try:
                 # Start gRPC server
-                server = grpc.server(ThreadPoolExecutor(max_workers=self._concurrency))
+                interceptors: List[ServerInterceptor] = []
+
+                if self._grpc_secrets:
+                    interceptors = [RequestSignatureServerInterceptor(self._grpc_secrets)]
+
+                server = grpc.server(
+                    ThreadPoolExecutor(max_workers=self._concurrency),
+                    interceptors=interceptors,
+                )
+
                 taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
                     WorkerServicer(self), server
                 )
@@ -252,7 +270,7 @@ class TaskWorker:
             self._metrics.gauge("taskworker.child_tasks.size", self._child_tasks.qsize())
         except Exception as e:
             # 'qsize' does not work on macOS
-            logger.warning(f"Could not report size of child tasks queue - {e}")
+            logger.debug("taskworker.child_tasks.size.error", extra={"error": e})
 
         start_time = time.monotonic()
         try:

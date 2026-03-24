@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence, Tuple, Union
 
 import grpc
 import orjson
@@ -26,6 +26,11 @@ from taskbroker_client.constants import (
 )
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+
+if TYPE_CHECKING:
+    ServerInterceptor = grpc.ServerInterceptor[Any, Any]
+else:
+    ServerInterceptor = grpc.ServerInterceptor
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,109 @@ class RequestSignatureInterceptor(InterceptorBase):
             client_call_details.credentials,
         )
         return continuation(call_details_with_meta, request)
+
+
+def parse_rpc_secret_list(rpc_secret: str | None) -> list[str] | None:
+    """
+    Parse the task app `rpc_secret` JSON array string into a list of secrets.
+    Returns `None` when unset, invalid, or empty (no authentication).
+    """
+    if not rpc_secret:
+        return None
+
+    # Try to parse the provided secret
+    parsed = orjson.loads(rpc_secret)
+
+    if not isinstance(parsed, list) or len(parsed) == 0:
+        # If the secret string is not a list with at least one element, it is invalid
+        return None
+
+    return [str(x) for x in parsed]
+
+
+# The `grpc` package defines this type in `grpc._typing` but does not export it for some reason
+type Metadata = Sequence[Tuple[str, Union[str, bytes]]]
+
+
+def grpc_metadata_get(metadata: Metadata, key: str) -> str | None:
+    """
+    First matching gRPC metadata value for `key` or `None` if not present.
+    """
+    # gRPC metadata keys are ASCII and compared case-insensitively
+    key = key.lower()
+
+    for k, v in metadata:
+        if k.lower() == key:
+            return v.decode("utf-8") if isinstance(v, bytes) else v
+
+    return None
+
+
+def verify_rpc_request_signature_hmac(
+    secrets: list[str],
+    method: str,
+    request_body: bytes,
+    signature_hex: str | None,
+) -> bool:
+    """
+    Verify the 'sentry-signature' metadata for a unary RPC body.
+    Uses the same signing contract as `RequestSignatureInterceptor` and the taskbroker.
+    """
+    if not secrets:
+        return True
+
+    if not signature_hex:
+        return False
+
+    try:
+        sig_bytes = bytes.fromhex(signature_hex)
+    except ValueError:
+        return False
+
+    signing_payload = method.encode("utf-8") + b":" + request_body
+
+    for secret in secrets:
+        expected = hmac.new(secret.encode("utf-8"), signing_payload, hashlib.sha256).digest()
+        if hmac.compare_digest(expected, sig_bytes):
+            return True
+
+    return False
+
+
+class RequestSignatureServerInterceptor(ServerInterceptor):
+    """
+    Enforces HMAC request signing on unary-unary RPCs like `WorkerService.PushTask`.
+    """
+
+    def __init__(self, secrets: list[str]) -> None:
+        self._secrets = secrets
+
+    def intercept_service(self, continuation: Any, handler_call_details: Any) -> Any:
+        handler = continuation(handler_call_details)
+        if handler is None or not self._secrets:
+            return handler
+
+        if handler.request_streaming or handler.response_streaming or handler.unary_unary is None:
+            return handler
+
+        method = handler_call_details.method
+        metadata = handler_call_details.invocation_metadata
+        original = handler.unary_unary
+
+        def unary_unary(request: Any, context: grpc.ServicerContext) -> Any:
+            signature = grpc_metadata_get(metadata, "sentry-signature")
+            body = request.SerializeToString()
+
+            if verify_rpc_request_signature_hmac(self._secrets, method, body, signature):
+                return original(request, context)
+
+            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Authentication failed")
+
+        return grpc.unary_unary_rpc_method_handler(
+            unary_unary,
+            request_deserializer=handler.request_deserializer,
+            response_serializer=handler.response_serializer,
+        )
 
 
 class HostTemporarilyUnavailable(Exception):
@@ -196,8 +304,8 @@ class TaskbrokerClient:
     def _connect_to_host(self, host: str) -> ConsumerServiceStub:
         logger.info("taskworker.client.connect", extra={"host": host})
         channel = grpc.insecure_channel(host, options=self._grpc_options)
-        if self._rpc_secret:
-            secrets = orjson.loads(self._rpc_secret)
+        secrets = parse_rpc_secret_list(self._rpc_secret)
+        if secrets:
             channel = grpc.intercept_channel(channel, RequestSignatureInterceptor(secrets))
         return ConsumerServiceStub(channel)
 

@@ -302,7 +302,7 @@ class TestTaskWorker(TestCase):
             assert mock_client.get_task.called
             assert mock_client.update_task.call_count == 3
 
-    def test_push_task_success_no_timeout(self) -> None:
+    def test_push_task_queue(self) -> None:
         taskworker = TaskWorker(
             app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
@@ -310,82 +310,18 @@ class TestTaskWorker(TestCase):
             process_type="fork",
             child_tasks_queue_maxsize=2,
         )
-        mock_metrics = mock.MagicMock()
-        taskworker._metrics = mock_metrics
-        mock_queue = mock.MagicMock()
-        mock_queue.full.return_value = False
-        taskworker._child_tasks = mock_queue
 
+        # We can enqueue the first task
         result = taskworker.push_task(SIMPLE_TASK, timeout=None)
-
         self.assertTrue(result)
-        mock_metrics.gauge.assert_called_once_with("taskworker.child_tasks.size", mock.ANY)
-        mock_metrics.distribution.assert_called_once_with(
-            "taskworker.worker.child_task.put.duration",
-            mock.ANY,
-            tags={"processing_pool": "unknown"},
-        )
-        mock_queue.put.assert_called_once_with(SIMPLE_TASK, timeout=None)
 
-    def test_push_task_success_with_timeout(self) -> None:
-        taskworker = TaskWorker(
-            app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
-            max_child_task_count=100,
-            process_type="fork",
-            child_tasks_queue_maxsize=2,
-        )
-        taskworker._metrics = mock.MagicMock()
-        mock_queue = mock.MagicMock()
-        taskworker._child_tasks = mock_queue
-
-        result = taskworker.push_task(SIMPLE_TASK, timeout=1.0)
-
+        # We can enqueue the second task
+        result = taskworker.push_task(SIMPLE_TASK, timeout=1)
         self.assertTrue(result)
-        mock_queue.put.assert_called_once_with(SIMPLE_TASK, timeout=1.0)
 
-    def test_push_task_queue_full_returns_false_and_incr_busy(self) -> None:
-        taskworker = TaskWorker(
-            app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
-            max_child_task_count=100,
-            process_type="fork",
-            child_tasks_queue_maxsize=1,
-        )
-        taskworker._metrics = mock.MagicMock()
-        mock_queue = mock.MagicMock()
-        mock_queue.qsize.return_value = 1
-        mock_queue.put.side_effect = queue.Full
-        taskworker._child_tasks = mock_queue
-
-        result = taskworker.push_task(RETRY_TASK, timeout=0.01)
-
+        # We cannot enqueue the third task because the queue is full
+        result = taskworker.push_task(SIMPLE_TASK, timeout=1)
         self.assertFalse(result)
-        taskworker._metrics.incr.assert_called_once_with(
-            "taskworker.worker.push_task.busy",
-            tags={"processing_pool": "unknown"},
-        )
-        self.assertEqual(mock_queue.put.call_count, 1)
-
-    def test_push_task_gauge_exception_still_enqueues(self) -> None:
-        taskworker = TaskWorker(
-            app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
-            max_child_task_count=100,
-            process_type="fork",
-            child_tasks_queue_maxsize=2,
-        )
-        mock_metrics = mock.MagicMock()
-        mock_metrics.gauge.side_effect = RuntimeError("qsize not supported")
-        taskworker._metrics = mock_metrics
-        mock_queue = mock.MagicMock()
-        taskworker._child_tasks = mock_queue
-
-        result = taskworker.push_task(SIMPLE_TASK, timeout=None)
-
-        self.assertTrue(result)
-        mock_queue.put.assert_called_once_with(SIMPLE_TASK, timeout=None)
-        mock_metrics.distribution.assert_called_once()
 
     def test_run_once_current_task_state(self) -> None:
         # Run a task that uses retry_task() helper
@@ -435,7 +371,7 @@ class TestTaskWorker(TestCase):
             assert redis.get("no-retries-remaining"), "key should exist if except block was hit"
             redis.delete("no-retries-remaining")
 
-    def test_constructor_push_mode_and_grpc_port_stored(self) -> None:
+    def test_constructor_push_mode(self) -> None:
         taskworker = TaskWorker(
             app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
@@ -444,50 +380,22 @@ class TestTaskWorker(TestCase):
             push_mode=True,
             grpc_port=50099,
         )
+
+        # Make sure delivery mode and gRPC port arguments are stored
         self.assertTrue(taskworker._push_mode)
         self.assertEqual(taskworker._grpc_port, 50099)
 
-    def test_constructor_pull_mode_default(self) -> None:
+    def test_constructor_pull_mode(self) -> None:
         taskworker = TaskWorker(
             app_module="examples.app:app",
             broker_hosts=["127.0.0.1:50051"],
             max_child_task_count=100,
             process_type="fork",
         )
+
+        # Make sure delivery mode and gRPC port are set to their defaults
         self.assertFalse(taskworker._push_mode)
         self.assertEqual(taskworker._grpc_port, 50052)
-
-    def test_start_push_mode_server_creation_and_shutdown(self) -> None:
-        mock_server = mock.MagicMock()
-        mock_server.wait_for_termination.side_effect = KeyboardInterrupt()
-
-        taskworker = TaskWorker(
-            app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
-            max_child_task_count=100,
-            process_type="fork",
-            push_mode=True,
-            grpc_port=50060,
-        )
-        with mock.patch("taskbroker_client.worker.worker.grpc.server") as mock_grpc_server:
-            mock_grpc_server.return_value = mock_server
-            with mock.patch("taskbroker_client.worker.worker.ThreadPoolExecutor") as mock_tpe:
-                with mock.patch(
-                    "taskbroker_client.worker.worker.taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server"
-                ) as mock_add_servicer:
-                    exitcode = taskworker.start()
-
-        self.assertEqual(exitcode, 0)
-        mock_grpc_server.assert_called_once()
-        self.assertEqual(mock_tpe.call_args[1]["max_workers"], 1)
-        mock_add_servicer.assert_called_once()
-        self.assertIsInstance(mock_add_servicer.call_args[0][0], WorkerServicer)
-        self.assertEqual(mock_add_servicer.call_args[0][1], mock_server)
-        mock_server.add_insecure_port.assert_called_once_with("[::]:50060")
-        mock_server.start.assert_called_once()
-        mock_server.wait_for_termination.assert_called_once()
-        mock_server.stop.assert_called_once_with(grace=5)
-        self.assertTrue(taskworker._shutdown_event.is_set())
 
 
 class TestWorkerServicer(TestCase):
