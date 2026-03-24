@@ -267,6 +267,9 @@ pub struct Config {
     pub push_queue_size: usize,
 
     /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
+    pub push_queue_timeout_ms: u64,
+
+    /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     pub push_timeout_ms: u64,
 
     /// The worker service endpoint.
@@ -357,7 +360,8 @@ impl Default for Config {
             fetch_wait_ms: 100,
             push_threads: 1,
             push_queue_size: 1,
-            push_timeout_ms: 5000,
+            push_queue_timeout_ms: 5000,
+            push_timeout_ms: 30000,
             worker_endpoint: "http://127.0.0.1:50052".into(),
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,

@@ -19,7 +19,7 @@ use crate::store::inflight_activation::InflightActivation;
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum PushError {
-    /// The bounded queue stayed full until `push_timeout_ms` elapsed.
+    /// The bounded queue stayed full until `push_queue_timeout_ms` elapsed.
     Timeout,
 
     /// Channel disconnected (no receivers) or another failure.
@@ -80,6 +80,8 @@ impl PushPool {
                     self.config.callback_addr, self.config.callback_port
                 );
 
+                let timeout = Duration::from_millis(self.config.push_timeout_ms);
+
                 async move {
                     let mut worker = match WorkerServiceClient::connect(endpoint).await {
                         Ok(w) => w,
@@ -108,8 +110,9 @@ impl PushPool {
                                 };
 
                                 let id = activation.id.clone();
+                                let callback_url = callback_url.clone();
 
-                                match push_task(&mut worker, activation, callback_url.clone()).await {
+                                match push_task(&mut worker, activation, callback_url, timeout).await {
                                     Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
 
                                     // Once processing deadline expires, status will be set back to pending
@@ -126,8 +129,9 @@ impl PushPool {
                     // Drain channel before exiting
                     for activation in receiver.drain() {
                         let id = activation.id.clone();
+                        let callback_url = callback_url.clone();
 
-                        match push_task(&mut worker, activation, callback_url.clone()).await {
+                        match push_task(&mut worker, activation, callback_url, timeout).await {
                             Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
 
                             // Once processing deadline expires, status will be set back to pending
@@ -148,9 +152,7 @@ impl PushPool {
             match result {
                 Ok(r) => {
                     // Connection failed
-                    if let Err(e) = r {
-                        return Err(e);
-                    }
+                    r?
                 }
 
                 // Join failed
@@ -161,9 +163,9 @@ impl PushPool {
         Ok(())
     }
 
-    /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_timeout_ms` milliseconds.
+    /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
     pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
-        let duration = Duration::from_millis(self.config.push_timeout_ms);
+        let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
 
         match tokio::time::timeout(duration, self.sender.send_async(activation)).await {
             Ok(Ok(())) => Ok(()),
@@ -182,6 +184,7 @@ async fn push_task<W: WorkerClient + Send>(
     worker: &mut W,
     activation: InflightActivation,
     callback_url: String,
+    timeout: Duration,
 ) -> Result<()> {
     let start = Instant::now();
 
@@ -193,7 +196,10 @@ async fn push_task<W: WorkerClient + Send>(
         callback_url,
     };
 
-    let result = worker.send(request).await;
+    let result = match tokio::time::timeout(timeout, worker.send(request)).await {
+        Ok(r) => r,
+        Err(e) => Err(e.into()),
+    };
 
     metrics::histogram!("push.push_task.duration").record(start.elapsed());
     result

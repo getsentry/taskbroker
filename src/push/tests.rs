@@ -48,7 +48,13 @@ async fn push_task_returns_ok_on_client_success() {
     let mut worker = MockWorkerClient::new(false);
     let callback_url = "taskbroker:50051".to_string();
 
-    let result = push_task(&mut worker, activation.clone(), callback_url.clone()).await;
+    let result = push_task(
+        &mut worker,
+        activation.clone(),
+        callback_url.clone(),
+        Duration::from_secs(5),
+    )
+    .await;
     assert!(result.is_ok(), "push_task should succeed");
     assert_eq!(worker.captured_requests.len(), 1);
 
@@ -66,7 +72,13 @@ async fn push_task_returns_err_on_invalid_payload() {
     activation.activation = vec![1, 2, 3, 4];
 
     let mut worker = MockWorkerClient::new(false);
-    let result = push_task(&mut worker, activation, "taskbroker:50051".to_string()).await;
+    let result = push_task(
+        &mut worker,
+        activation,
+        "taskbroker:50051".to_string(),
+        Duration::from_secs(5),
+    )
+    .await;
 
     assert!(result.is_err(), "invalid payload should fail decoding");
     assert!(
@@ -80,7 +92,13 @@ async fn push_task_propagates_client_error() {
     let activation = make_activations(1).remove(0);
     let mut worker = MockWorkerClient::new(true);
 
-    let result = push_task(&mut worker, activation, "taskbroker:50051".to_string()).await;
+    let result = push_task(
+        &mut worker,
+        activation,
+        "taskbroker:50051".to_string(),
+        Duration::from_secs(5),
+    )
+    .await;
     assert!(result.is_err(), "worker send errors should propagate");
     assert_eq!(worker.captured_requests.len(), 1);
 }
