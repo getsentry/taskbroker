@@ -10,6 +10,7 @@ import yaml
 
 from integration_tests.helpers import (
     TASKBROKER_BIN,
+    TASKBROKER_RESTART_PORT_DELAY_SEC,
     TESTS_OUTPUT_ROOT,
     TaskbrokerConfig,
     create_topic,
@@ -48,6 +49,13 @@ def manage_taskbroker(
                 assert return_code == 0
             except Exception:
                 process.kill()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+
+            if i < iterations - 1:
+                time.sleep(TASKBROKER_RESTART_PORT_DELAY_SEC)
 
 
 def test_tasks_written_once_during_rebalancing() -> None:

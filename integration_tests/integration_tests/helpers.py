@@ -18,6 +18,11 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
 TESTS_OUTPUT_ROOT = Path(__file__).parent.parent / ".tests_output"
+
+# After taskbroker exits, wait before starting another instance on the same gRPC port.
+# Rapid restart otherwise hits EADDRINUSE on slow CI runners.
+TASKBROKER_RESTART_PORT_DELAY_SEC = 1.0
+
 TEST_PRODUCER_CONFIG = {
     "bootstrap.servers": "127.0.0.1:9092",
     "broker.address.family": "v4",
