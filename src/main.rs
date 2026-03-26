@@ -2,9 +2,11 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use std::{sync::Arc, time::Duration};
+use taskbroker::fetch::FetchPool;
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::push::PushPool;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -15,7 +17,7 @@ use tracing::{debug, error, info, warn};
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::SERVICE_NAME;
-use taskbroker::config::{Config, DatabaseAdapter};
+use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
@@ -39,16 +41,16 @@ use taskbroker::store::postgres_activation_store::{
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
 
-async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
+async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {
         Ok(Ok(())) => {
-            info!("Task {} completed", name);
+            info!("Task {} completed", name.as_ref());
         }
         Ok(Err(e)) => {
-            error!("Task {} failed: {:?}", name, e);
+            error!("Task {} failed: {:?}", name.as_ref(), e);
         }
         Err(e) => {
-            error!("Task {} panicked: {:?}", name, e);
+            error!("Task {} panicked: {:?}", name.as_ref(), e);
         }
     }
 }
@@ -192,6 +194,7 @@ async fn main() -> Result<(), Error> {
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
                 .parse()
@@ -206,6 +209,7 @@ async fn main() -> Result<(), Error> {
                 .layer(layers)
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
+                    config: grpc_config,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -236,7 +240,25 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    elegant_departure::tokio::depart()
+    // Initialize push and fetch pools
+    let push_pool = Arc::new(PushPool::new(config.clone()));
+    let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
+
+    // Initialize push threads
+    let push_task = if config.delivery_mode == DeliveryMode::Push {
+        Some(tokio::spawn(async move { push_pool.start().await }))
+    } else {
+        None
+    };
+
+    // Initialize fetch threads
+    let fetch_task = if config.delivery_mode == DeliveryMode::Push {
+        Some(tokio::spawn(async move { fetch_pool.start().await }))
+    } else {
+        None
+    };
+
+    let mut departure = elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
         .on_signal(SignalKind::hangup())
@@ -244,8 +266,16 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task))
-        .await;
+        .on_completion(log_task_completion("maintenance_task", maintenance_task));
 
+    if let Some(task) = push_task {
+        departure = departure.on_completion(log_task_completion("push_task", task));
+    }
+
+    if let Some(task) = fetch_task {
+        departure = departure.on_completion(log_task_completion("fetch_task", task));
+    }
+
+    departure.await;
     Ok(())
 }

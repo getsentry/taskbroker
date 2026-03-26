@@ -232,7 +232,7 @@ async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
         join_set.spawn(async move {
             rx.recv().await.unwrap();
             store
-                .get_pending_activation(Some("sentry"), Some(&ns))
+                .get_pending_activation(Some("sentry"), Some(std::slice::from_ref(&ns)))
                 .await
                 .unwrap()
                 .unwrap()
@@ -263,9 +263,10 @@ async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
     batch[1].namespace = "other_namespace".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
+    let other_namespace = "other_namespace".to_string();
     // Get activation from other namespace
     let result = store
-        .get_pending_activation(Some("sentry"), Some("other_namespace"))
+        .get_pending_activation(Some("sentry"), Some(std::slice::from_ref(&other_namespace)))
         .await
         .unwrap()
         .unwrap();
@@ -293,7 +294,7 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     // Get activation from multiple namespaces (should get oldest)
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), None)
+        .get_pending_activations(None, Some(&namespaces), None)
         .await
         .unwrap();
 
@@ -320,8 +321,9 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
 
     // This is an invalid query as we don't want to allow clients
     // to fetch tasks from any application.
+    let other_namespace = "other_namespace".to_string();
     let opt = store
-        .get_pending_activation(None, Some("other_namespace"))
+        .get_pending_activation(None, Some(std::slice::from_ref(&other_namespace)))
         .await
         .unwrap();
     assert!(opt.is_none());
@@ -329,7 +331,7 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2))
+        .get_pending_activations(None, Some(&namespaces), Some(2))
         .await
         .unwrap();
     assert_eq!(
@@ -479,9 +481,10 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
     batch[2].namespace = "not-target".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
+    let target_ns = "target".to_string();
     // Get activation from a named application
     let result = store
-        .get_pending_activation(Some("hammers"), Some("target"))
+        .get_pending_activation(Some("hammers"), Some(std::slice::from_ref(&target_ns)))
         .await
         .unwrap()
         .unwrap();

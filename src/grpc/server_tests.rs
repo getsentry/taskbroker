@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::TaskbrokerServer;
 use prost::Message;
 use rstest::rstest;
@@ -7,7 +10,28 @@ use sentry_protos::taskbroker::v1::{
 };
 use tonic::{Code, Request};
 
-use crate::test_utils::{create_test_store, make_activations};
+use crate::test_utils::{create_config, create_test_store, make_activations};
+
+#[tokio::test]
+async fn test_get_task_push_mode_returns_permission_denied() {
+    let store = create_test_store("sqlite").await;
+    let config = Arc::new(Config {
+        delivery_mode: DeliveryMode::Push,
+        ..Config::default()
+    });
+
+    let service = TaskbrokerServer { store, config };
+    let request = GetTaskRequest {
+        namespace: None,
+        application: None,
+    };
+    let response = service.get_task(Request::new(request)).await;
+
+    assert!(response.is_err());
+    let e = response.unwrap_err();
+    assert_eq!(e.code(), Code::PermissionDenied);
+    assert_eq!(e.message(), "Cannot call while broker is in PUSH mode");
+}
 
 #[tokio::test]
 #[rstest]
@@ -15,7 +39,9 @@ use crate::test_utils::{create_test_store, make_activations};
 #[case::postgres("postgres")]
 async fn test_get_task(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+
+    let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest {
         namespace: None,
         application: None,
@@ -34,7 +60,9 @@ async fn test_get_task(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_set_task_status(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+
+    let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 5, // Complete
@@ -53,7 +81,9 @@ async fn test_set_task_status(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_set_task_status_invalid(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
-    let service = TaskbrokerServer { store };
+    let config = create_config();
+
+    let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 1, // Invalid
@@ -76,10 +106,12 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_get_task_success(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    let config = create_config();
+
     let activations = make_activations(1);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest {
         namespace: None,
         application: None,
@@ -99,6 +131,8 @@ async fn test_get_task_success(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_get_task_with_application_success(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    let config = create_config();
+
     let mut activations = make_activations(2);
 
     let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
@@ -108,7 +142,7 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest {
         namespace: None,
         application: Some("hammers".into()),
@@ -129,12 +163,14 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    let config = create_config();
+
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest {
         namespace: Some(namespace),
         application: None,
@@ -153,10 +189,12 @@ async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str
 #[allow(deprecated)]
 async fn test_set_task_status_success(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    let config = create_config();
+
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer { store, config };
 
     let request = GetTaskRequest {
         namespace: None,
@@ -192,6 +230,8 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_set_task_status_with_application(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    let config = create_config();
+
     let mut activations = make_activations(2);
 
     let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
@@ -201,7 +241,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
@@ -229,6 +269,8 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    let config = create_config();
+
     let mut activations = make_activations(2);
 
     let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
@@ -238,7 +280,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer { store, config };
     // Request a task from an application without any activations.
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
@@ -261,12 +303,14 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
 #[allow(deprecated)]
 async fn test_set_task_status_with_namespace_requires_application(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    let config = create_config();
+
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store };
+    let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
