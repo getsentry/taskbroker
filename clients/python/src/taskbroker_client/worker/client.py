@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional, Sequence, Tuple, Union
 
 import grpc
 import orjson
@@ -33,6 +33,10 @@ else:
     ServerInterceptor = grpc.ServerInterceptor
 
 logger = logging.getLogger(__name__)
+
+# gRPC runs the unary request deserializer and the servicer on the same thread for a given call
+# If HMAC verification fails inside a deserializer wrapper, raising turns into INTERNAL, so we set this flag and abort UNAUTHENTICATED from the servicer
+_RPC_SIGNATURE_AUTH_TLS = threading.local()
 
 MAX_ACTIVATION_SIZE = 1024 * 1024 * 10
 """Max payload size we will process."""
@@ -73,16 +77,18 @@ class ClientCallDetails(grpc.ClientCallDetails):
         self.credentials = credentials
 
 
-# Type alias based on grpc-stubs
-ContinuationType = Callable[[ClientCallDetails, Message], Any]
-
-
 if TYPE_CHECKING:
+    RpcMethodHandler = grpc.RpcMethodHandler[Any, Any]
     InterceptorBase = grpc.UnaryUnaryClientInterceptor[Message, Message]
     CallFuture = grpc.CallFuture[Message]
 else:
+    RpcMethodHandler = grpc.RpcMethodHandler
     InterceptorBase = grpc.UnaryUnaryClientInterceptor
     CallFuture = Any
+
+ClientContinuation = Callable[[ClientCallDetails, Message], Any]
+ServerContinuation = Callable[[grpc.HandlerCallDetails], Optional[RpcMethodHandler]]
+Metadata = Sequence[Tuple[str, Union[str, bytes]]]
 
 
 class RequestSignatureInterceptor(InterceptorBase):
@@ -91,7 +97,7 @@ class RequestSignatureInterceptor(InterceptorBase):
 
     def intercept_unary_unary(
         self,
-        continuation: ContinuationType,
+        continuation: ClientContinuation,
         client_call_details: grpc.ClientCallDetails,
         request: Message,
     ) -> CallFuture:
@@ -129,10 +135,6 @@ def parse_rpc_secret_list(rpc_secret: str | None) -> list[str] | None:
         return None
 
     return [str(x) for x in parsed]
-
-
-# The `grpc` package defines this type in `grpc._typing` but does not export it for some reason
-type Metadata = Sequence[Tuple[str, Union[str, bytes]]]
 
 
 def grpc_metadata_get(metadata: Metadata, key: str) -> str | None:
@@ -183,12 +185,16 @@ def verify_rpc_request_signature_hmac(
 class RequestSignatureServerInterceptor(ServerInterceptor):
     """
     Enforces HMAC request signing on unary-unary RPCs like `WorkerService.PushTask`.
+    Verification uses the raw request bytes from the wire (via a wrapped deserializer)
+    so it stays consistent across languages and map encodings.
     """
 
     def __init__(self, secrets: list[str]) -> None:
         self._secrets = secrets
 
-    def intercept_service(self, continuation: Any, handler_call_details: Any) -> Any:
+    def intercept_service(
+        self, continuation: ServerContinuation, handler_call_details: grpc.HandlerCallDetails
+    ) -> Any:
         handler = continuation(handler_call_details)
         if handler is None or not self._secrets:
             return handler
@@ -196,22 +202,35 @@ class RequestSignatureServerInterceptor(ServerInterceptor):
         if handler.request_streaming or handler.response_streaming or handler.unary_unary is None:
             return handler
 
+        inner_deserializer = handler.request_deserializer
+        if inner_deserializer is None:
+            return handler
+
         method = handler_call_details.method
         metadata = handler_call_details.invocation_metadata
+        signature = grpc_metadata_get(metadata, "sentry-signature")
         original = handler.unary_unary
 
+        def request_deserializer(serialized_request: bytes) -> Any:
+            _RPC_SIGNATURE_AUTH_TLS.failed = False
+
+            if not verify_rpc_request_signature_hmac(
+                self._secrets, method, serialized_request, signature
+            ):
+                _RPC_SIGNATURE_AUTH_TLS.failed = True
+                return inner_deserializer(b"")
+
+            return inner_deserializer(serialized_request)
+
         def unary_unary(request: Any, context: grpc.ServicerContext) -> Any:
-            signature = grpc_metadata_get(metadata, "sentry-signature")
-            body = request.SerializeToString()
+            if getattr(_RPC_SIGNATURE_AUTH_TLS, "failed", False):
+                context.abort(grpc.StatusCode.UNAUTHENTICATED, "Authentication failed")
 
-            if verify_rpc_request_signature_hmac(self._secrets, method, body, signature):
-                return original(request, context)
-
-            context.abort(grpc.StatusCode.UNAUTHENTICATED, "Authentication failed")
+            return original(request, context)
 
         return grpc.unary_unary_rpc_method_handler(
             unary_unary,
-            request_deserializer=handler.request_deserializer,
+            request_deserializer=request_deserializer,
             response_serializer=handler.response_serializer,
         )
 
