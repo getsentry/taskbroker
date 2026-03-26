@@ -15,6 +15,22 @@ class MetricsBackend(Protocol):
     """
 
     @abstractmethod
+    def gauge(
+        self,
+        key: str,
+        value: float,
+        instance: str | None = None,
+        tags: Tags | None = None,
+        sample_rate: float = 1,
+        unit: str | None = None,
+        stacklevel: int = 0,
+    ) -> None:
+        """
+        Records a gauge metric (a point-in-time value).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def incr(
         self,
         name: str,
@@ -70,6 +86,18 @@ class NoOpMetricsBackend(MetricsBackend):
     """
     Default metrics backend that does not record anything.
     """
+
+    def gauge(
+        self,
+        key: str,
+        value: float,
+        instance: str | None = None,
+        tags: Tags | None = None,
+        sample_rate: float = 1,
+        unit: str | None = None,
+        stacklevel: int = 0,
+    ) -> None:
+        pass
 
     def incr(
         self,
