@@ -51,6 +51,9 @@ pub struct Config {
     /// The statsd address to report metrics to.
     pub statsd_addr: String,
 
+    /// The dogstatsd metrics host.
+    pub metrics_host: String,
+
     /// Default tags to add to all metrics.
     pub default_metrics_tags: BTreeMap<String, String>,
 
@@ -294,12 +297,15 @@ impl Default for Config {
             sentry_dsn: None,
             sentry_env: None,
             traces_sample_rate: Some(0.0),
-            log_filter: "info,librdkafka=warn,h2=off".to_owned(),
+            log_filter:
+                "info,librdkafka=warn,h2=off,metrics_exporter_dogstatsd::forwarder::sync=off"
+                    .to_owned(),
             log_format: LogFormat::Text,
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
             grpc_shared_secret: vec![],
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
+            metrics_host: "".to_owned(),
             default_metrics_tags: Default::default(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
             kafka_consumer_group: "taskworker".to_owned(),
@@ -492,7 +498,10 @@ mod tests {
         };
         assert_eq!(config.sentry_dsn, None);
         assert_eq!(config.sentry_env, None);
-        assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
+        assert_eq!(
+            config.log_filter,
+            "info,librdkafka=warn,h2=off,metrics_exporter_dogstatsd::forwarder::sync=off"
+        );
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
         assert_eq!(config.kafka_topic, "taskworker");
