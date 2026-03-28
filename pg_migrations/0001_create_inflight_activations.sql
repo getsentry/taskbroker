@@ -1,3 +1,4 @@
+-- PostgreSQL equivalent of the inflight_taskactivations table
 CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     id TEXT NOT NULL PRIMARY KEY,
     activation BYTEA NOT NULL,
