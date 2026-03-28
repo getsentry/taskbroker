@@ -10,7 +10,7 @@ use tracing::{debug, error, instrument};
 use crate::{
     config::Config,
     store::inflight_activation::{
-        InflightActivation, InflightActivationStatus, InflightActivationStore,
+        DepthCounts, InflightActivation, InflightActivationStatus, InflightActivationStore,
     },
 };
 
@@ -80,27 +80,21 @@ impl Reducer for InflightActivationWriter {
             self.batch.take();
             return Ok(Some(()));
         }
+
         // Check if writing the batch would exceed the limits
-        let exceeded_pending_limit = self
+        let DepthCounts {
+            pending,
+            delay,
+            processing,
+        } = self
             .store
-            .count_pending_activations()
+            .count_depths()
             .await
-            .expect("Error communicating with activation store")
-            + batch.len()
-            > self.config.max_pending_activations;
-        let exceeded_delay_limit = self
-            .store
-            .count_by_status(InflightActivationStatus::Delay)
-            .await
-            .expect("Error communicating with activation store")
-            + batch.len()
-            > self.config.max_delay_activations;
-        let exceeded_processing_limit = self
-            .store
-            .count_by_status(InflightActivationStatus::Processing)
-            .await
-            .expect("Error communicating with activation store")
-            >= self.config.max_processing_activations;
+            .expect("Error communicating with activation store");
+
+        let exceeded_pending_limit = pending + batch.len() > self.config.max_pending_activations;
+        let exceeded_delay_limit = delay + batch.len() > self.config.max_delay_activations;
+        let exceeded_processing_limit = processing >= self.config.max_processing_activations;
         let exceeded_db_size = if let Some(db_max_size) = self.config.db_max_size {
             self.store
                 .db_size()

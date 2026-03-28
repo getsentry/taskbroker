@@ -1,6 +1,6 @@
 use crate::store::inflight_activation::{
-    FailedTasksForwarder, InflightActivation, InflightActivationStatus, InflightActivationStore,
-    QueryResult, TableRow,
+    DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
+    InflightActivationStore, QueryResult, TableRow,
 };
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -371,6 +371,28 @@ impl InflightActivationStore for PostgresActivationStore {
             .fetch_one(&self.read_pool)
             .await?;
         Ok(result.get::<i64, _>("count") as usize)
+    }
+
+    #[instrument(skip_all)]
+    async fn count_depths(&self) -> Result<DepthCounts, Error> {
+        let sql = "
+             SELECT COUNT(*) FILTER (WHERE status = $1) AS pending,
+                    COUNT(*) FILTER (WHERE status = $2) AS delay,
+                    COUNT(*) FILTER (WHERE status = $3) AS processing
+             FROM inflight_taskactivations";
+
+        let row: (i64, i64, i64) = sqlx::query_as(sql)
+            .bind(InflightActivationStatus::Pending.to_string())
+            .bind(InflightActivationStatus::Delay.to_string())
+            .bind(InflightActivationStatus::Processing.to_string())
+            .fetch_one(&self.read_pool)
+            .await?;
+
+        Ok(DepthCounts {
+            pending: row.0 as usize,
+            delay: row.1 as usize,
+            processing: row.2 as usize,
+        })
     }
 
     /// Update the status of a specific activation
