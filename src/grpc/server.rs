@@ -39,7 +39,7 @@ impl ConsumerService for TaskbrokerServer {
 
         let inflight = self
             .store
-            .get_pending_activation(application.as_deref(), namespaces)
+            .get_pending_activation(application.as_deref(), namespaces, None)
             .await;
 
         match inflight {
@@ -125,7 +125,7 @@ impl ConsumerService for TaskbrokerServer {
         let namespaces = namespace.as_ref().map(std::slice::from_ref);
         let res = match self
             .store
-            .get_pending_activation(application.as_deref(), namespaces)
+            .get_pending_activation(application.as_deref(), namespaces, None)
             .await
         {
             Err(e) => {

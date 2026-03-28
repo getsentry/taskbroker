@@ -254,7 +254,8 @@ pub struct Config {
     /// How to deliver tasks to workers: "push" or "pull".
     pub delivery_mode: DeliveryMode,
 
-    /// The number of concurrent dispatchers to run.
+    /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
+    /// If it's not a power of two or it's too large, it will be rounded to a valid nearby value.
     pub fetch_threads: usize,
 
     /// Time in milliseconds to wait between fetch attempts when no pending activation is found.

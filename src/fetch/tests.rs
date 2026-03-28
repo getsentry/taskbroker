@@ -9,8 +9,8 @@ use tonic::async_trait;
 use super::*;
 use crate::config::Config;
 use crate::push::PushError;
-use crate::store::inflight_activation::InflightActivation;
 use crate::store::inflight_activation::InflightActivationStore;
+use crate::store::inflight_activation::{BucketRange, InflightActivation};
 use crate::store::inflight_activation::{
     FailedTasksForwarder, InflightActivationStatus, QueryResult,
 };
@@ -74,6 +74,7 @@ impl InflightActivationStore for MockStore {
         &self,
         _application: Option<&str>,
         _namespaces: Option<&[String]>,
+        _bucket: Option<BucketRange>,
     ) -> Result<Option<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
@@ -87,6 +88,7 @@ impl InflightActivationStore for MockStore {
         _application: Option<&str>,
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
+        _bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
         unimplemented!()
     }
