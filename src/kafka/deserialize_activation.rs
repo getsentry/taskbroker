@@ -23,10 +23,10 @@ impl DeserializeActivationConfig {
     }
 }
 
-/// Use the UUID of an activation to determine its bucket (a value between 0 and 255, inclusive).
+/// Use the UUID of an activation to determine its bucket.
 pub fn bucket_from_id(id: &str) -> i16 {
     Uuid::parse_str(id)
-        .map(|u| (u.as_u128() % MAX_FETCH_THREADS) as i16)
+        .map(|u| (u.as_u128() % MAX_FETCH_THREADS as u128) as i16)
         .unwrap_or(0)
 }
 

@@ -18,6 +18,9 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 TASKBROKER_ROOT = Path(__file__).parent.parent.parent
 TASKBROKER_BIN = TASKBROKER_ROOT / "target/debug/taskbroker"
 TESTS_OUTPUT_ROOT = Path(__file__).parent.parent / ".tests_output"
+
+TASKBROKER_RESTART_PORT_DELAY_SEC = 1.0
+
 TEST_PRODUCER_CONFIG = {
     "bootstrap.servers": "127.0.0.1:9092",
     "broker.address.family": "v4",
@@ -212,7 +215,7 @@ def get_num_tasks_group_by_status(
 
 
 def get_available_ports(count: int) -> list[int]:
-    MIN = 49152
+    MIN = 50051
     MAX = 65535
     res = []
     for i in range(count):

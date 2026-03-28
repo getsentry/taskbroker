@@ -9,11 +9,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use tonic::{Request, Response, Status};
 
+use crate::config::{Config, DeliveryMode};
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
 use tracing::{error, instrument};
 
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
+    pub config: Arc<Config>,
 }
 
 #[tonic::async_trait]
@@ -23,12 +25,21 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<GetTaskRequest>,
     ) -> Result<Response<GetTaskResponse>, Status> {
+        if self.config.delivery_mode == DeliveryMode::Push {
+            return Err(Status::permission_denied(
+                "Cannot call while broker is in PUSH mode",
+            ));
+        }
+
         let start_time = Instant::now();
+
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
+        let namespaces = namespace.as_ref().map(std::slice::from_ref);
+
         let inflight = self
             .store
-            .get_pending_activation(application.as_deref(), namespace.as_deref())
+            .get_pending_activation(application.as_deref(), namespaces, None)
             .await;
 
         match inflight {
@@ -98,6 +109,10 @@ impl ConsumerService for TaskbrokerServer {
         }
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
+        if self.config.delivery_mode == DeliveryMode::Push {
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        }
+
         let Some(FetchNextTask {
             ref namespace,
             ref application,
@@ -107,9 +122,10 @@ impl ConsumerService for TaskbrokerServer {
         };
 
         let start_time = Instant::now();
+        let namespaces = namespace.as_ref().map(std::slice::from_ref);
         let res = match self
             .store
-            .get_pending_activation(application.as_deref(), namespace.as_deref())
+            .get_pending_activation(application.as_deref(), namespaces, None)
             .await
         {
             Err(e) => {

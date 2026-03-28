@@ -1,4 +1,6 @@
 import dataclasses
+import hashlib
+import hmac
 import random
 import string
 import time
@@ -17,6 +19,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     FetchNextTask,
     GetTaskRequest,
     GetTaskResponse,
+    PushTaskRequest,
     SetTaskStatusRequest,
     SetTaskStatusResponse,
     TaskActivation,
@@ -29,7 +32,10 @@ from taskbroker_client.worker.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
     TaskbrokerClient,
+    grpc_metadata_get,
     make_broker_hosts,
+    parse_rpc_secret_list,
+    verify_rpc_request_signature_hmac,
 )
 
 
@@ -286,6 +292,92 @@ def test_get_task_with_interceptor() -> None:
         assert result.host == "localhost-0:50051"
         assert result.activation.id
         assert result.activation.namespace == "testing"
+
+
+_PUSH_TASK_METHOD = "/sentry_protos.taskbroker.v1.WorkerService/PushTask"
+
+
+def _push_task_hmac(secret: bytes, body: bytes) -> str:
+    payload = _PUSH_TASK_METHOD.encode("utf-8") + b":" + body
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
+
+def test_verify_rpc_request_signature_hmac_empty_secrets_skips_check() -> None:
+    body = PushTaskRequest(
+        task=TaskActivation(
+            id="abc123",
+            namespace="testing",
+            taskname="do_thing",
+            parameters="",
+            headers={},
+            processing_deadline_duration=1,
+        ),
+        callback_url="taskbroker:50051",
+    ).SerializeToString()
+
+    # If the secrets list is empty, any signature is valid
+    assert verify_rpc_request_signature_hmac([], _PUSH_TASK_METHOD, body, None) is True
+    assert verify_rpc_request_signature_hmac([], _PUSH_TASK_METHOD, body, "deadbeef") is True
+
+
+def test_verify_rpc_request_signature_hmac_valid() -> None:
+    body = PushTaskRequest(
+        task=TaskActivation(
+            id="abc123",
+            namespace="testing",
+            taskname="do_thing",
+            parameters="",
+            headers={},
+            processing_deadline_duration=1,
+        ),
+        callback_url="taskbroker:50051",
+    ).SerializeToString()
+
+    # If 'correct' is one of the secrets, this signature should be valid
+    signature = _push_task_hmac(b"correct", body)
+    assert (
+        verify_rpc_request_signature_hmac(["correct", "other"], _PUSH_TASK_METHOD, body, signature)
+        is True
+    )
+
+
+def test_verify_rpc_request_signature_hmac_wrong_secret() -> None:
+    body = PushTaskRequest(callback_url="taskbroker:50051").SerializeToString()
+
+    # We should catch an invalid signature
+    signature = _push_task_hmac(b"expected", body)
+    assert verify_rpc_request_signature_hmac(["wrong"], _PUSH_TASK_METHOD, body, signature) is False
+
+
+def test_verify_rpc_request_signature_hmac_missing_signature() -> None:
+    # We should catch a missing signature when one is expected
+    body = PushTaskRequest(callback_url="taskbroker:50051").SerializeToString()
+    assert verify_rpc_request_signature_hmac(["s"], _PUSH_TASK_METHOD, body, None) is False
+
+
+def test_verify_rpc_request_signature_hmac_bad_hex() -> None:
+    # We should reject a signature with the wrong shape
+    body = PushTaskRequest(callback_url="taskbroker:50051").SerializeToString()
+    assert verify_rpc_request_signature_hmac(["s"], _PUSH_TASK_METHOD, body, "not-hex") is False
+
+
+def test_grpc_metadata_get() -> None:
+    # Make sure our 'grpc_metadata_get' helper works
+    md = (("Sentry-Signature", b"abc"), ("other", "v"))
+    assert grpc_metadata_get(md, "sentry-signature") == "abc"
+
+
+def test_parse_rpc_secret_list() -> None:
+    # Handle scenarios in which...
+    # - No input is provided
+    # - The input string is not a list
+    # - The input string is an empty list
+    assert parse_rpc_secret_list(None) is None
+    assert parse_rpc_secret_list("") is None
+    assert parse_rpc_secret_list("[]") is None
+
+    # Correctly parse a valid list of strings
+    assert parse_rpc_secret_list('["a","b"]') == ["a", "b"]
 
 
 def test_get_task_with_namespace() -> None:

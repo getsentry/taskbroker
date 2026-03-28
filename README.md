@@ -77,7 +77,7 @@ The test suite is composed of unit and integration tests in Rust, and end-to-end
 
 ```bash
 # Run unit/integration tests
-make test
+make unit-test
 
 # Run end-to-end tests
 make integration-test

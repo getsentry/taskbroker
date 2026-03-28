@@ -181,7 +181,7 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
     assert!(store.store(batch.clone()).await.is_ok());
 
     let result = store
-        .get_pending_activation(None, None)
+        .get_pending_activation(None, None, None)
         .await
         .unwrap()
         .unwrap();
@@ -202,6 +202,45 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let mut batch = make_activations(2);
+    batch[0].bucket = 10;
+    batch[1].bucket = 20;
+    assert!(store.store(batch).await.is_ok());
+
+    let first = store
+        .get_pending_activation(None, None, Some((15, 25)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.id, "id_1");
+    assert_eq!(first.bucket, 20);
+
+    let second = store
+        .get_pending_activation(None, None, Some((0, 15)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.id, "id_0");
+    assert_eq!(second.bucket, 10);
+
+    assert!(
+        store
+            .get_pending_activation(None, None, Some((15, 25)))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
     store.remove_db().await.unwrap();
 }
 
@@ -232,7 +271,7 @@ async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
         join_set.spawn(async move {
             rx.recv().await.unwrap();
             store
-                .get_pending_activation(Some("sentry"), Some(&ns))
+                .get_pending_activation(Some("sentry"), Some(std::slice::from_ref(&ns)), None)
                 .await
                 .unwrap()
                 .unwrap()
@@ -263,9 +302,14 @@ async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
     batch[1].namespace = "other_namespace".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
+    let other_namespace = "other_namespace".to_string();
     // Get activation from other namespace
     let result = store
-        .get_pending_activation(Some("sentry"), Some("other_namespace"))
+        .get_pending_activation(
+            Some("sentry"),
+            Some(std::slice::from_ref(&other_namespace)),
+            None,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -293,7 +337,7 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     // Get activation from multiple namespaces (should get oldest)
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), None, None)
+        .get_pending_activations(None, Some(&namespaces), None, None)
         .await
         .unwrap();
 
@@ -320,8 +364,9 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
 
     // This is an invalid query as we don't want to allow clients
     // to fetch tasks from any application.
+    let other_namespace = "other_namespace".to_string();
     let opt = store
-        .get_pending_activation(None, Some("other_namespace"))
+        .get_pending_activation(None, Some(std::slice::from_ref(&other_namespace)), None)
         .await
         .unwrap();
     assert!(opt.is_none());
@@ -329,7 +374,7 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2), None)
+        .get_pending_activations(None, Some(&namespaces), Some(2), None)
         .await
         .unwrap();
     assert_eq!(
@@ -360,7 +405,7 @@ async fn test_get_pending_activation_skip_expires(#[case] adapter: &str) {
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.get_pending_activation(None, None).await;
+    let result = store.get_pending_activation(None, None, None).await;
     assert!(result.is_ok());
     let res_option = result.unwrap();
     assert!(res_option.is_none());
@@ -390,7 +435,7 @@ async fn test_get_pending_activation_earliest(#[case] adapter: &str) {
     assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 
     let result = store
-        .get_pending_activation(None, None)
+        .get_pending_activation(None, None, None)
         .await
         .unwrap()
         .unwrap();
@@ -415,7 +460,7 @@ async fn test_get_pending_activation_fetches_application(#[case] adapter: &str) 
     // Getting an activation with no application filter should
     // include activations with application set.
     let result = store
-        .get_pending_activation(None, None)
+        .get_pending_activation(None, None, None)
         .await
         .unwrap()
         .unwrap();
@@ -439,7 +484,7 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
 
     // Get activation from a named application
     let result = store
-        .get_pending_activation(Some("hammers"), None)
+        .get_pending_activation(Some("hammers"), None, None)
         .await
         .unwrap()
         .unwrap();
@@ -449,7 +494,7 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
     assert_eq!(result.application, "hammers");
 
     let result_opt = store
-        .get_pending_activation(Some("hammers"), None)
+        .get_pending_activation(Some("hammers"), None, None)
         .await
         .unwrap();
     assert!(
@@ -457,7 +502,10 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
         "no pending activations in hammers left"
     );
 
-    let result_opt = store.get_pending_activation(None, None).await.unwrap();
+    let result_opt = store
+        .get_pending_activation(None, None, None)
+        .await
+        .unwrap();
     assert!(result_opt.is_some(), "one pending activation in '' left");
     store.remove_db().await.unwrap();
 }
@@ -479,9 +527,14 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
     batch[2].namespace = "not-target".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
+    let target_ns = "target".to_string();
     // Get activation from a named application
     let result = store
-        .get_pending_activation(Some("hammers"), Some("target"))
+        .get_pending_activation(
+            Some("hammers"),
+            Some(std::slice::from_ref(&target_ns)),
+            None,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -492,7 +545,7 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
     assert_eq!(result.namespace, "target");
 
     let result = store
-        .get_pending_activation(Some("hammers"), None)
+        .get_pending_activation(Some("hammers"), None, None)
         .await
         .unwrap()
         .unwrap();
@@ -597,7 +650,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .get_pending_activation(None, None)
+            .get_pending_activation(None, None, None)
             .await
             .unwrap()
             .is_none()

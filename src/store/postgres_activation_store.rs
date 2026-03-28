@@ -258,11 +258,11 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(query.execute(&mut *conn).await?.into())
     }
 
-    /// Get a pending activation from specified namespaces
-    /// If namespaces is None, gets from any namespace
-    /// If namespaces is Some(&[...]), gets from those namespaces
+    /// Claim pending activations from specified namespaces (moves them to processing).
+    /// If namespaces is `None`, gets from any namespace.
+    /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
-    async fn get_pending_activations_from_namespaces(
+    async fn get_pending_activations(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
