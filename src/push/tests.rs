@@ -31,7 +31,11 @@ impl MockWorkerClient {
 
 #[async_trait]
 impl WorkerClient for MockWorkerClient {
-    async fn send(&mut self, request: PushTaskRequest) -> Result<()> {
+    async fn send(
+        &mut self,
+        request: PushTaskRequest,
+        _grpc_shared_secret: &[String],
+    ) -> Result<()> {
         self.captured_requests.push(request);
 
         if self.should_fail {
@@ -53,6 +57,7 @@ async fn push_task_returns_ok_on_client_success() {
         activation.clone(),
         callback_url.clone(),
         Duration::from_secs(5),
+        &[],
     )
     .await;
     assert!(result.is_ok(), "push_task should succeed");
@@ -77,6 +82,7 @@ async fn push_task_returns_err_on_invalid_payload() {
         activation,
         "taskbroker:50051".to_string(),
         Duration::from_secs(5),
+        &[],
     )
     .await;
 
@@ -97,6 +103,7 @@ async fn push_task_propagates_client_error() {
         activation,
         "taskbroker:50051".to_string(),
         Duration::from_secs(5),
+        &[],
     )
     .await;
     assert!(result.is_err(), "worker send errors should propagate");
@@ -137,5 +144,14 @@ async fn push_pool_submit_backpressures_when_queue_full() {
     assert!(
         second_submit.is_err(),
         "second submit should block when queue is full"
+    );
+}
+
+#[test]
+fn sentry_signature_hex_matches_hmac_contract() {
+    let digest = sentry_signature_hex("super secret", "/test/path", b"hello");
+    assert_eq!(
+        digest,
+        "6408482d9e6d4975ada4c0302fda813c5718e571e6f9a2d6e2803cb48528044e"
     );
 }
