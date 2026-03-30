@@ -11,7 +11,8 @@ use crate::config::Config;
 use crate::push::{PushError, PushPool};
 use crate::store::inflight_activation::{BucketRange, InflightActivation, InflightActivationStore};
 
-// This should be a power of two.
+/// This value should be a power of two. If it decreases, some ranges will no longer be queried.
+/// That means the pending activation query will skip tasks within these ranges.
 pub const MAX_FETCH_THREADS: i16 = 256;
 
 /// Returns the largest positive divisor of [`MAX_FETCH_THREADS`] that is also a power of two.
