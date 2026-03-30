@@ -24,12 +24,14 @@ type Hmac256 = Hmac<Sha256>;
 #[derive(Debug, Clone, Default)]
 pub struct AuthLayer {
     pub shared_secret: Vec<String>,
+    pub auth_required: bool,
 }
 
 impl AuthLayer {
     pub fn new(config: &Config) -> Self {
         Self {
             shared_secret: config.grpc_shared_secret.clone(),
+            auth_required: config.grpc_auth_required,
         }
     }
 }
@@ -38,7 +40,7 @@ impl<Inner> Layer<Inner> for AuthLayer {
     type Service = AuthService<Inner>;
 
     fn layer(&self, service: Inner) -> Self::Service {
-        AuthService::new(self.shared_secret.clone(), service)
+        AuthService::new(self.shared_secret.clone(), self.auth_required, service)
     }
 }
 
@@ -46,12 +48,17 @@ impl<Inner> Layer<Inner> for AuthLayer {
 #[derive(Debug, Clone)]
 pub struct AuthService<Inner> {
     secret: Vec<String>,
+    auth_required: bool,
     inner: Inner,
 }
 
 impl<Inner> AuthService<Inner> {
-    pub fn new(secret: Vec<String>, inner: Inner) -> Self {
-        Self { secret, inner }
+    pub fn new(secret: Vec<String>, auth_required: bool, inner: Inner) -> Self {
+        Self {
+            secret,
+            auth_required,
+            inner,
+        }
     }
 }
 
@@ -73,6 +80,7 @@ where
 
     fn call(&mut self, req: http::Request<Body>) -> Self::Future {
         let secret = self.secret.clone();
+        let auth_required = self.auth_required;
         let mut inner = self.inner.clone();
         mem::swap(&mut inner, &mut self.inner);
 
@@ -82,7 +90,7 @@ where
             let (parts, body) = req.into_parts();
             let body_bytes = body.collect().await.unwrap().to_bytes();
 
-            match validate_signature(&secret, &parts, body_bytes) {
+            match validate_signature(&secret, auth_required, &parts, body_bytes) {
                 Ok(body) => {
                     // reconstruct a request with the bytes we read from the request.
                     let body = Body::new(Full::new(body));
@@ -103,6 +111,7 @@ where
 
 fn validate_signature(
     secret: &[String],
+    auth_required: bool,
     req_head: &http::request::Parts,
     req_body: Bytes,
 ) -> anyhow::Result<Bytes> {
@@ -115,9 +124,17 @@ fn validate_signature(
         return Ok(req_body);
     }
 
-    let signature = req_head
-        .headers
-        .get("sentry-signature")
+    let signature_header = req_head.headers.get("sentry-signature");
+
+    // When auth is not required and no signature header is present,
+    // allow the request through without validation. This enables a
+    // gradual rollout where the shared secret is deployed to the
+    // server before clients are configured.
+    if !auth_required && signature_header.is_none() {
+        return Ok(req_body);
+    }
+
+    let signature = signature_header
         .context("missing sentry-signature header")?
         .to_str()
         .unwrap_or_default();
@@ -173,20 +190,32 @@ mod tests {
             .unwrap();
         let (parts, body) = request.into_parts();
 
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
         assert!(res.is_ok());
     }
 
     #[test]
-    fn test_validate_signature_missing_header() {
+    fn test_validate_signature_missing_header_auth_required() {
         let secret: Vec<String> = vec!["super secret".into()];
         let request = Request::builder()
             .body(Bytes::from("request data"))
             .unwrap();
         let (parts, body) = request.into_parts();
 
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_validate_signature_missing_header_auth_not_required() {
+        let secret: Vec<String> = vec!["super secret".into()];
+        let request = Request::builder()
+            .body(Bytes::from("request data"))
+            .unwrap();
+        let (parts, body) = request.into_parts();
+
+        let res = validate_signature(&secret, false, &parts, body);
+        assert!(res.is_ok());
     }
 
     #[test]
@@ -198,7 +227,7 @@ mod tests {
             .body(Bytes::from("request data"))
             .unwrap();
         let (parts, body) = request.into_parts();
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
         assert!(res.is_ok());
     }
 
@@ -211,7 +240,22 @@ mod tests {
             .unwrap();
         let (parts, body) = request.into_parts();
 
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_validate_signature_empty_header_auth_not_required() {
+        // When a signature header IS present (even if empty), it should
+        // still be validated regardless of auth_required.
+        let secret: Vec<String> = vec!["super secret".into()];
+        let request = Request::builder()
+            .header("sentry-signature", "")
+            .body(Bytes::from("request data"))
+            .unwrap();
+        let (parts, body) = request.into_parts();
+
+        let res = validate_signature(&secret, false, &parts, body);
         assert!(res.is_err());
     }
 
@@ -224,7 +268,7 @@ mod tests {
             .unwrap();
         let (parts, body) = request.into_parts();
 
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
         assert!(res.is_err());
     }
 
@@ -240,7 +284,7 @@ mod tests {
             .unwrap();
         let (parts, body) = request.into_parts();
 
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
         assert!(res.is_err());
     }
 
@@ -260,7 +304,7 @@ mod tests {
             .unwrap();
         let (parts, body) = request.into_parts();
 
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
         assert!(res.is_ok());
 
         // Original body returned.
@@ -284,7 +328,7 @@ mod tests {
             .unwrap();
         let (parts, body) = request.into_parts();
 
-        let res = validate_signature(&secret, &parts, body);
+        let res = validate_signature(&secret, true, &parts, body);
         assert!(res.is_ok());
 
         // Original body returned.
@@ -319,6 +363,7 @@ mod tests {
         let secret = vec!["super secret".to_string()];
         let layer = AuthLayer {
             shared_secret: secret,
+            auth_required: true,
         };
         let mut service = layer.layer(tower::service_fn(|_req| async {
             let body = Body::empty();
@@ -359,6 +404,7 @@ mod tests {
         let secret = vec!["super secret".to_string()];
         let layer = AuthLayer {
             shared_secret: secret,
+            auth_required: true,
         };
         let mut service = layer.layer(tower::service_fn(|_req| async {
             let body = Body::empty();

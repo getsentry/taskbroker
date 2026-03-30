@@ -64,6 +64,14 @@ pub struct Config {
     /// We support a list of secrets to allow for key rotation.
     pub grpc_shared_secret: Vec<String>,
 
+    /// Whether gRPC authentication is enforced. When false (default),
+    /// requests without a sentry-signature header are allowed even when
+    /// grpc_shared_secret is configured, enabling a gradual rollout.
+    /// Requests that *do* include a signature are always validated.
+    /// Set to true once all clients have been configured with the
+    /// matching shared secret.
+    pub grpc_auth_required: bool,
+
     /// Comma separated list of kafka brokers to connect to
     pub kafka_cluster: String,
 
@@ -299,6 +307,7 @@ impl Default for Config {
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
             grpc_shared_secret: vec![],
+            grpc_auth_required: false,
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             default_metrics_tags: Default::default(),
             kafka_cluster: "127.0.0.1:9092".to_owned(),
