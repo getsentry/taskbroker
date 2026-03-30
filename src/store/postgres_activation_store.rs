@@ -1,5 +1,5 @@
 use crate::store::inflight_activation::{
-    DepthCounts, BucketRange, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
+    BucketRange, DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
     InflightActivationStore, QueryResult, TableRow,
 };
 use anyhow::{Error, anyhow};
