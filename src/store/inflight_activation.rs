@@ -28,6 +28,8 @@ use std::{str::FromStr, time::Instant};
 
 use crate::config::Config;
 
+pub type BucketRange = (i16, i16);
+
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
@@ -174,6 +176,10 @@ pub struct InflightActivation {
     /// are exceeded.
     #[builder(default = false)]
     pub at_most_once: bool,
+
+    /// Bucket derived from activation ID (UUID as number % 256). Set once on ingestion.
+    #[builder(setter(skip), default = "0")]
+    pub bucket: i16,
 }
 
 impl InflightActivation {
@@ -236,6 +242,7 @@ pub struct TableRow {
     pub taskname: String,
     #[sqlx(try_from = "i32")]
     pub on_attempts_exceeded: OnAttemptsExceeded,
+    pub bucket: i16,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -260,6 +267,7 @@ impl TryFrom<InflightActivation> for TableRow {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
         })
     }
 }
@@ -284,6 +292,7 @@ impl From<TableRow> for InflightActivation {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
         }
     }
 }
@@ -365,11 +374,12 @@ pub trait InflightActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
 
-    /// Get a single pending activation, optionally filtered by namespaces.
+    /// Get a single pending activation, optionally filtered by namespaces and bucket subrange.
     async fn get_pending_activation(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
+        bucket: Option<BucketRange>,
     ) -> Result<Option<InflightActivation>, Error> {
         if namespaces.is_some() && application.is_none() {
             warn!(
@@ -380,7 +390,7 @@ pub trait InflightActivationStore: Send + Sync {
         }
 
         let results = self
-            .get_pending_activations(application, namespaces, Some(1))
+            .get_pending_activations(application, namespaces, Some(1), bucket)
             .await?;
 
         if results.is_empty() {
@@ -396,6 +406,7 @@ pub trait InflightActivationStore: Send + Sync {
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error>;
 
     /// Get the age of the oldest pending activation in seconds
@@ -727,7 +738,8 @@ impl InflightActivationStore for SqliteActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -768,7 +780,8 @@ impl InflightActivationStore for SqliteActivationStore {
                     application,
                     namespace,
                     taskname,
-                    on_attempts_exceeded
+                    on_attempts_exceeded,
+                    bucket
                 )
             ",
         );
@@ -801,6 +814,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -838,6 +852,7 @@ impl InflightActivationStore for SqliteActivationStore {
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
@@ -877,6 +892,12 @@ impl InflightActivationStore for SqliteActivationStore {
                 separated.push_bind(namespace);
             }
             query_builder.push(")");
+        }
+        if let Some((min, max)) = bucket {
+            query_builder.push(" AND bucket >= ");
+            query_builder.push_bind(min);
+            query_builder.push(" AND bucket <= ");
+            query_builder.push_bind(max);
         }
         query_builder.push(" ORDER BY added_at");
         if let Some(limit) = limit {
@@ -1018,7 +1039,8 @@ impl InflightActivationStore for SqliteActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             ",

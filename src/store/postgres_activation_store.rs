@@ -1,5 +1,5 @@
 use crate::store::inflight_activation::{
-    DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
+    BucketRange, DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
     InflightActivationStore, QueryResult, TableRow,
 };
 use anyhow::{Error, anyhow};
@@ -175,7 +175,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -216,7 +217,8 @@ impl InflightActivationStore for PostgresActivationStore {
                     application,
                     namespace,
                     taskname,
-                    on_attempts_exceeded
+                    on_attempts_exceeded,
+                    bucket
                 )
             ",
         );
@@ -248,6 +250,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -264,11 +267,12 @@ impl InflightActivationStore for PostgresActivationStore {
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
-        let mut query_builder = QueryBuilder::new(
+        let mut query_builder = QueryBuilder::<Postgres>::new(
             "WITH selected_activations AS (
                 SELECT id
                 FROM inflight_taskactivations
@@ -294,6 +298,15 @@ impl InflightActivationStore for PostgresActivationStore {
             }
             query_builder.push(")");
         }
+
+        if let Some((min, max)) = bucket {
+            query_builder.push(" AND bucket >= ");
+            query_builder.push_bind(min);
+
+            query_builder.push(" AND bucket <= ");
+            query_builder.push_bind(max);
+        }
+
         query_builder.push(" ORDER BY added_at");
         if let Some(limit) = limit {
             query_builder.push(" LIMIT ");
@@ -465,7 +478,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             ",

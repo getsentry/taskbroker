@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use crate::config::Config;
+use crate::fetch::MAX_FETCH_THREADS;
 use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
@@ -8,6 +9,7 @@ use prost::Message as _;
 use rdkafka::{Message, message::OwnedMessage};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sentry_protos::taskbroker::v1::TaskActivation;
+use uuid::Uuid;
 
 pub struct DeserializeActivationConfig {
     pub max_delayed_allowed: u64,
@@ -19,6 +21,13 @@ impl DeserializeActivationConfig {
             max_delayed_allowed: config.max_delayed_task_allowed_sec,
         }
     }
+}
+
+/// Use the UUID of an activation to determine its bucket.
+pub fn bucket_from_id(id: &str) -> i16 {
+    Uuid::parse_str(id)
+        .map(|u| (u.as_u128() % MAX_FETCH_THREADS as u128) as i16)
+        .unwrap_or(0)
 }
 
 pub fn new(
@@ -78,6 +87,8 @@ pub fn new(
             .try_into()
             .unwrap();
 
+        let bucket = bucket_from_id(&activation.id);
+
         Ok(InflightActivation {
             id: activation.id.clone(),
             activation: payload.to_vec(),
@@ -96,6 +107,7 @@ pub fn new(
             namespace,
             taskname,
             on_attempts_exceeded,
+            bucket,
         })
     }
 }
