@@ -127,6 +127,75 @@ async fn test_store(#[case] adapter: &str) {
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
+async fn test_count_depths(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    // Check counts for an empty store
+    let pending = store
+        .count_by_status(InflightActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(InflightActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(InflightActivationStatus::Processing)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths().await.unwrap();
+
+    assert_eq!(depths.pending, pending);
+    assert_eq!(depths.delay, delay);
+    assert_eq!(depths.processing, processing);
+
+    // Check counts for a store with four activations with varying statuses
+    let batch = make_activations(4);
+    assert!(store.store(batch).await.is_ok());
+
+    store
+        .set_status("id_0", InflightActivationStatus::Processing)
+        .await
+        .unwrap();
+    store
+        .set_status("id_1", InflightActivationStatus::Delay)
+        .await
+        .unwrap();
+    store
+        .set_status("id_2", InflightActivationStatus::Complete)
+        .await
+        .unwrap();
+
+    let pending = store
+        .count_by_status(InflightActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(InflightActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(InflightActivationStatus::Processing)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths().await.unwrap();
+
+    assert_eq!(depths.pending, pending, "pending");
+    assert_eq!(depths.delay, delay, "delay");
+    assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(pending, 1);
+    assert_eq!(delay, 1);
+    assert_eq!(processing, 1);
+
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 async fn test_store_duplicate_id_in_batch(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 

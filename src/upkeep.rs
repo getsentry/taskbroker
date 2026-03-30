@@ -1,29 +1,24 @@
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use chrono::{DateTime, Timelike, Utc};
 use futures::{StreamExt, stream::FuturesUnordered};
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::error::KafkaError;
-use rdkafka::{
-    producer::{FutureProducer, FutureRecord},
-    util::Timeout,
-};
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
 use sentry_protos::taskbroker::v1::TaskActivation;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
 use tokio::{fs, join, select, time};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
 use tracing::{debug, error, info, instrument};
 use uuid::Uuid;
 
-use crate::{
-    SERVICE_NAME,
-    config::Config,
-    runtime_config::RuntimeConfigManager,
-    store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
-};
+use crate::SERVICE_NAME;
+use crate::config::Config;
+use crate::runtime_config::RuntimeConfigManager;
+use crate::store::inflight_activation::InflightActivationStore;
 
 /// The upkeep task that periodically performs upkeep
 /// on the inflight store
@@ -370,23 +365,17 @@ pub async fn do_upkeep(
     }
 
     let now = Utc::now();
-    let (pending_count, processing_count, delay_count, max_lag, db_file_meta, wal_file_meta) = join!(
-        store.count_by_status(InflightActivationStatus::Pending),
-        store.count_by_status(InflightActivationStatus::Processing),
-        store.count_by_status(InflightActivationStatus::Delay),
+    let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
+        store.count_depths(),
         store.pending_activation_max_lag(&now),
         fs::metadata(config.db_path.clone()),
         fs::metadata(config.db_path.clone() + "-wal")
     );
 
-    if let Ok(pending_count) = pending_count {
-        result_context.pending = pending_count as u32;
-    }
-    if let Ok(processing_count) = processing_count {
-        result_context.processing = processing_count as u32;
-    }
-    if let Ok(delay_count) = delay_count {
-        result_context.delay = delay_count as u32;
+    if let Ok(depths) = depth_counts {
+        result_context.pending = depths.pending as u32;
+        result_context.delay = depths.delay as u32;
+        result_context.processing = depths.processing as u32;
     }
 
     if !result_context.empty() {

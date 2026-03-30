@@ -11,19 +11,20 @@ use libsqlite3_sys::{
     SQLITE_OK, sqlite3_db_status,
 };
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
-use sqlx::{
-    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
-    migrate::MigrateDatabase,
-    pool::{PoolConnection, PoolOptions},
-    postgres::PgQueryResult,
-    sqlite::{
-        SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
-        SqliteRow, SqliteSynchronous,
-    },
+use tokio::join;
+use tracing::{instrument, warn};
+
+use sqlx::migrate::MigrateDatabase;
+use sqlx::pool::{PoolConnection, PoolOptions};
+use sqlx::postgres::PgQueryResult;
+use sqlx::sqlite::{
+    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
+    SqliteRow, SqliteSynchronous,
 };
+use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type};
+
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::{str::FromStr, time::Instant};
-use tracing::{instrument, warn};
 
 use crate::config::Config;
 
@@ -335,6 +336,18 @@ impl InflightActivationStoreConfig {
     }
 }
 
+/// Counts pending, delayed, and processing tasks for backpressure and upkeep.
+pub struct DepthCounts {
+    /// The number of pending tasks in the store.
+    pub pending: usize,
+
+    /// Number of delayed tasks in the store.
+    pub delay: usize,
+
+    /// The number of processing tasks in the store.
+    pub processing: usize,
+}
+
 #[async_trait]
 pub trait InflightActivationStore: Send + Sync {
     /// Trigger incremental vacuum to reclaim free pages in the database
@@ -399,6 +412,22 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Count all activations
     async fn count(&self) -> Result<usize, Error>;
+
+    /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
+    /// Default implementation uses separate calls, but stores may override with a single query.
+    async fn count_depths(&self) -> Result<DepthCounts, Error> {
+        let (pending, delay, processing) = join!(
+            self.count_by_status(InflightActivationStatus::Pending),
+            self.count_by_status(InflightActivationStatus::Delay),
+            self.count_by_status(InflightActivationStatus::Processing),
+        );
+
+        Ok(DepthCounts {
+            pending: pending?,
+            delay: delay?,
+            processing: processing?,
+        })
+    }
 
     /// Update the status of a specific activation
     async fn set_status(
