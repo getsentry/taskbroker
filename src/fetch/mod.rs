@@ -57,7 +57,7 @@ impl TaskPusher for PushPool {
     }
 }
 
-/// Wrapper around `config.fetch_threads` asynchronous tasks, each of which fetches a pending activation from the store, passes is to the push pool, and repeats.
+/// Wrapper around `config.fetch_threads` asynchronous tasks, each of which fetches batches of pending activations from the store, passes them to the push pool, and repeats.
 pub struct FetchPool<T: TaskPusher> {
     /// Inflight activation store.
     store: Arc<dyn InflightActivationStore>,
@@ -92,7 +92,9 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
             let store = self.store.clone();
             let pusher = self.pusher.clone();
             let config = self.config.clone();
-            let bucket_filter = Some(bucket_range_for_fetch_thread(thread_index, fetch_threads));
+
+            let limit = Some(config.fetch_batch_size.max(1));
+            let bucket = Some(bucket_range_for_fetch_thread(thread_index, fetch_threads));
 
             let guard = get_shutdown_guard().shutdown_on_drop();
 
@@ -105,7 +107,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                         }
 
                         _ = async {
-                            debug!("Fetching next pending activation...");
+                            debug!("Fetching next batch of pending activations...");
                             metrics::counter!("fetch.loop.count").increment(1);
 
                             let start = Instant::now();
@@ -115,46 +117,48 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             let namespaces = config.namespaces.as_deref();
 
                             match store
-                                .get_pending_activation(application, namespaces, bucket_filter)
+                                .get_pending_activations(application, namespaces, limit, bucket)
                                 .await
                             {
-                                Ok(Some(activation)) => {
-                                    let id = activation.id.clone();
-
-                                    debug!(
-                                        task_id = %id,
-                                        "Fetched and marked task as processing"
-                                    );
-
-                                    if let Err(e) = pusher.push_task(activation).await {
-                                        match e {
-                                            PushError::Timeout => warn!(
-                                                task_id = %id,
-                                                "Submit to push pool timed out after milliseconds",
-                                            ),
-
-                                            PushError::Channel(e) => warn!(
-                                                task_id = %id,
-                                                error = ?e,
-                                                "Submit to push pool failed due to channel error",
-                                            )
-                                        }
-
-                                        backoff = true;
-                                    }
-                                }
-
-                                Ok(None) => {
+                                Ok(activations) if activations.is_empty() => {
                                     debug!("No pending activations");
 
                                     // Wait for pending activations to appear
                                     backoff = true;
                                 }
 
+                                Ok(activations) => {
+                                    debug!("Fetched {} activations", activations.len());
+
+                                    for activation in activations {
+                                        let id = activation.id.clone();
+
+                                        if let Err(e) = pusher.push_task(activation).await {
+                                            match e {
+                                                PushError::Timeout => warn!(
+                                                    task_id = %id,
+                                                    "Submit to push pool timed out after {} milliseconds",
+                                                    config.push_queue_timeout_ms
+                                                ),
+
+                                                PushError::Channel(e) => warn!(
+                                                    task_id = %id,
+                                                    error = ?e,
+                                                    "Submit to push pool failed due to channel error",
+                                                )
+                                            }
+
+                                            backoff = true;
+                                        }
+                                    }
+
+
+                                }
+
                                 Err(e) => {
                                     warn!(
                                         error = ?e,
-                                        "Store failed while fetching task"
+                                        "Store failed while fetching tasks"
                                     );
 
                                     // Store may be down, wait before trying again

@@ -299,7 +299,7 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations(None, Some(&demoted_namespaces), None, None)
+            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None, None)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -1162,21 +1162,18 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(
-            store
-                .get_pending_activation(None, None, None)
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            "id_0",
-        );
+        let pending = store
+            .get_pending_activations(None, None, Some(1), None)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "id_0");
         assert!(
             store
-                .get_pending_activation(None, None, None)
+                .get_pending_activations(None, None, Some(1), None)
                 .await
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
 
         sleep(Duration::from_secs(2)).await;
@@ -1197,15 +1194,12 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(
-            store
-                .get_pending_activation(None, None, None)
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            "id_1",
-        );
+        let pending = store
+            .get_pending_activations(None, None, Some(1), None)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "id_1");
     }
 
     #[tokio::test]

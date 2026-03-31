@@ -262,7 +262,7 @@ impl InflightActivationStore for PostgresActivationStore {
     /// If namespaces is `None`, gets from any namespace.
     /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
-    async fn get_pending_activations(
+    async fn get_pending_activations_from_namespaces(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,

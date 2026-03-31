@@ -374,34 +374,33 @@ pub trait InflightActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
 
-    /// Get a single pending activation, optionally filtered by namespaces and bucket subrange.
-    async fn get_pending_activation(
+    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
+    /// If no limit is provided, all matching activations will be returned.
+    async fn get_pending_activations(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
+        limit: Option<i32>,
         bucket: Option<BucketRange>,
-    ) -> Result<Option<InflightActivation>, Error> {
+    ) -> Result<Vec<InflightActivation>, Error> {
         if namespaces.is_some() && application.is_none() {
             warn!(
                 ?namespaces,
                 "Received request for namespaced task without application"
             );
-            return Ok(None);
+
+            return Ok(vec![]);
         }
 
         let results = self
-            .get_pending_activations(application, namespaces, Some(1), bucket)
+            .get_pending_activations_from_namespaces(application, namespaces, limit, bucket)
             .await?;
 
-        if results.is_empty() {
-            return Ok(None);
-        }
-
-        Ok(Some(results[0].clone()))
+        Ok(results)
     }
 
     /// Claim pending activations (moves them to processing), optionally filtered by application and namespaces.
-    async fn get_pending_activations(
+    async fn get_pending_activations_from_namespaces(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
@@ -847,7 +846,7 @@ impl InflightActivationStore for SqliteActivationStore {
     /// If namespaces is `None`, gets from any namespace.
     /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
-    async fn get_pending_activations(
+    async fn get_pending_activations_from_namespaces(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
