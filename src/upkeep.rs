@@ -299,7 +299,7 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None, None)
+            .claim_activations(None, Some(&demoted_namespaces), None, None, true)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -1163,14 +1163,14 @@ mod tests {
             1
         );
         let pending = store
-            .get_pending_activations(None, None, Some(1), None)
+            .claim_activations(None, None, Some(1), None, true)
             .await
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "id_0");
         assert!(
             store
-                .get_pending_activations(None, None, Some(1), None)
+                .claim_activations(None, None, Some(1), None, true)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1195,7 +1195,7 @@ mod tests {
             1
         );
         let pending = store
-            .get_pending_activations(None, None, Some(1), None)
+            .claim_activations(None, None, Some(1), None, true)
             .await
             .unwrap();
         assert_eq!(pending.len(), 1);

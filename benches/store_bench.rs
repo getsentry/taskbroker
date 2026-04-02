@@ -58,16 +58,11 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
         join_set.spawn(async move {
             let mut num_activations_processed = 0;
 
-            while !store
-                .get_pending_activations(
-                    Some("sentry"),
-                    Some(std::slice::from_ref(&ns)),
-                    Some(1),
-                    None,
-                )
+            while store
+                .claim_activation_for_pull(Some("sentry"), Some(&ns))
                 .await
                 .unwrap()
-                .is_empty()
+                .is_none()
             {
                 num_activations_processed += 1;
             }

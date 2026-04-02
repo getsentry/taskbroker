@@ -108,6 +108,7 @@ pub fn new(
             taskname,
             on_attempts_exceeded,
             bucket,
+            sent: false,
         })
     }
 }

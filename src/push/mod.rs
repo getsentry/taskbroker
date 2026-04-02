@@ -16,7 +16,7 @@ use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::store::inflight_activation::InflightActivation;
+use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -88,26 +88,32 @@ pub struct PushPool {
 
     /// Taskbroker configuration.
     config: Arc<Config>,
+
+    /// Activation store, which we need for marking tasks as sent.
+    store: Arc<dyn InflightActivationStore>,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
             sender,
             receiver,
             config,
+            store,
         }
     }
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
+        let store = self.store.clone();
         let mut push_pool: JoinSet<Result<()>> =
             crate::tokio::spawn_pool(self.config.push_threads, |_| {
                 let endpoint = self.config.worker_endpoint.clone();
                 let receiver = self.receiver.clone();
+                let store = store.clone();
 
                 let guard = get_shutdown_guard().shutdown_on_drop();
 
@@ -158,7 +164,17 @@ impl PushPool {
                                 )
                                 .await
                                 {
-                                    Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
+                                    Ok(_) => {
+                                        debug!(task_id = %id, "Activation sent to worker");
+
+                                        if let Err(e) = store.mark_activation_sent(&id).await {
+                                            error!(
+                                                task_id = %id,
+                                                error = ?e,
+                                                "Failed to mark activation as sent after push"
+                                            );
+                                        }
+                                    }
 
                                     // Once processing deadline expires, status will be set back to pending
                                     Err(e) => error!(
@@ -185,7 +201,17 @@ impl PushPool {
                         )
                         .await
                         {
-                            Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
+                            Ok(_) => {
+                                debug!(task_id = %id, "Activation sent to worker");
+
+                                if let Err(e) = store.mark_activation_sent(&id).await {
+                                    error!(
+                                        task_id = %id,
+                                        error = ?e,
+                                        "Failed to mark activation as sent after push"
+                                    );
+                                }
+                            }
 
                             // Once processing deadline expires, status will be set back to pending
                             Err(e) => error!(

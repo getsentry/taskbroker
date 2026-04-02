@@ -16,5 +16,11 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     application TEXT NOT NULL,
     namespace TEXT NOT NULL,
     taskname TEXT NOT NULL,
-    on_attempts_exceeded INTEGER NOT NULL DEFAULT 1
+    on_attempts_exceeded INTEGER NOT NULL DEFAULT 1,
+    bucket SMALLINT NOT NULL DEFAULT 0,
+    sent BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+-- Supports pending claim queries (status, filters, ordering) including sent
+CREATE INDEX IF NOT EXISTS idx_inflight_taskactivations_claim
+ON inflight_taskactivations (status, bucket, sent);

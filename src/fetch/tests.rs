@@ -70,31 +70,29 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn get_pending_activations(
+    async fn claim_activations(
         &self,
         _application: Option<&str>,
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
+        mark_sent: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
         }
 
         Ok(match self.pending.lock().await.take() {
-            Some(a) => vec![a],
+            Some(mut a) => {
+                a.sent = mark_sent;
+                vec![a]
+            }
             None => vec![],
         })
     }
 
-    async fn get_pending_activations_from_namespaces(
-        &self,
-        _application: Option<&str>,
-        _namespaces: Option<&[String]>,
-        _limit: Option<i32>,
-        _bucket: Option<BucketRange>,
-    ) -> Result<Vec<InflightActivation>, Error> {
-        unimplemented!()
+    async fn mark_activation_sent(&self, _id: &str) -> Result<(), Error> {
+        Ok(())
     }
 
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
