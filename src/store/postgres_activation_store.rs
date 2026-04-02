@@ -59,7 +59,10 @@ pub struct PostgresActivationStoreConfig {
 impl PostgresActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            pg_url: config.pg_url.clone(),
+            pg_url: format!(
+                "postgres://{}:{}@{}:{}",
+                config.pg_username, config.pg_password, config.pg_host, config.pg_port
+            ),
             pg_database_name: config.pg_database_name.clone(),
             run_migrations: config.run_migrations,
             max_processing_attempts: config.max_processing_attempts,
