@@ -15,8 +15,9 @@ use crate::{
     store::postgres_activation_store::PostgresActivationStoreConfig,
     test_utils::{
         StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
-        create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
-        make_activations_with_namespace, replace_retry_state,
+        create_integration_config_with_ssl, create_test_store, generate_temp_filename,
+        generate_unique_namespace, make_activations, make_activations_with_namespace,
+        replace_retry_state,
     },
 };
 
@@ -73,7 +74,7 @@ async fn test_sqlite_create_db() {
 
 #[test]
 fn test_connect_opts_preserves_sslmode_query_param() {
-    let config = create_integration_config();
+    let config = create_integration_config_with_ssl();
     let opts = PostgresActivationStoreConfig::from_config(&config).pg_connection;
     assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
     assert_eq!(opts.get_host(), "localhost");

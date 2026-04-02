@@ -293,6 +293,25 @@ pub fn create_integration_config() -> Arc<Config> {
         pg_username: get_pg_username(),
         pg_password: get_pg_password(),
         pg_database_name: get_pg_database_name(),
+        run_migrations: true,
+        kafka_topic: "taskbroker-test".into(),
+        kafka_auto_offset_reset: "earliest".into(),
+        ..Config::default()
+    };
+
+    Arc::new(config)
+}
+
+/// Create a Config instance that uses SSL
+/// and earliest auto_offset_reset. This is intended to be combined
+/// with [`reset_topic`]
+pub fn create_integration_config_with_ssl() -> Arc<Config> {
+    let config = Config {
+        pg_host: get_pg_host(),
+        pg_port: get_pg_port(),
+        pg_username: get_pg_username(),
+        pg_password: get_pg_password(),
+        pg_database_name: get_pg_database_name(),
         pg_extra_query_params: Some("sslmode=require".to_string()),
         run_migrations: true,
         kafka_topic: "taskbroker-test".into(),
