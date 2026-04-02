@@ -50,8 +50,8 @@ impl ConsumerService for TaskbrokerServer {
             Ok(activations) if activations.len() > 1 => {
                 error!(
                     count = activations.len(),
-                    application = ?application.as_deref(),
-                    namespace = ?namespace.as_deref(),
+                    application = ?application,
+                    namespace = ?namespace,
                     "get_pending_activations returned more than one row despite limit of 1",
                 );
 
@@ -159,8 +159,8 @@ impl ConsumerService for TaskbrokerServer {
             Ok(activations) if activations.len() > 1 => {
                 error!(
                     count = activations.len(),
-                    application = ?application.as_deref(),
-                    namespace = ?namespace.as_deref(),
+                    application = ?application,
+                    namespace = ?namespace,
                     "get_pending_activations returned more than one row despite limit of 1",
                 );
 
