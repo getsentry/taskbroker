@@ -166,6 +166,10 @@ pub struct Config {
     /// The name of the postgres database to use for the inflight activation store.
     pub pg_database_name: String,
 
+    /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
+    /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
+    pub pg_extra_query_params: Option<String>,
+
     /// The path to the sqlite database
     pub db_path: String,
 
@@ -345,6 +349,7 @@ impl Default for Config {
             pg_username: "postgres".to_owned(),
             pg_password: "password".to_owned(),
             pg_database_name: "default".to_owned(),
+            pg_extra_query_params: None,
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
