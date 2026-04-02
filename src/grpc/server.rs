@@ -47,6 +47,17 @@ impl ConsumerService for TaskbrokerServer {
                 Err(Status::not_found("No pending activation"))
             }
 
+            Ok(activations) if activations.len() > 1 => {
+                error!(
+                    count = activations.len(),
+                    application = ?application.as_deref(),
+                    namespace = ?namespace.as_deref(),
+                    "get_pending_activations returned more than one row despite limit of 1",
+                );
+
+                Err(Status::internal("Unable to retrieve pending activation"))
+            }
+
             Ok(activations) => {
                 let inflight = &activations[0];
                 let now = Utc::now();
@@ -143,6 +154,17 @@ impl ConsumerService for TaskbrokerServer {
 
             Ok(activations) if activations.is_empty() => {
                 Err(Status::not_found("No pending activation"))
+            }
+
+            Ok(activations) if activations.len() > 1 => {
+                error!(
+                    count = activations.len(),
+                    application = ?application.as_deref(),
+                    namespace = ?namespace.as_deref(),
+                    "get_pending_activations returned more than one row despite limit of 1",
+                );
+
+                Err(Status::internal("Unable to fetch next task"))
             }
 
             Ok(activations) => {
