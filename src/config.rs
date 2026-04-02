@@ -261,6 +261,9 @@ pub struct Config {
     /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
     pub fetch_wait_ms: u64,
 
+    /// The number of activations to claim with a single fetch query.
+    pub fetch_batch_size: i32,
+
     /// The number of concurrent pushers each dispatcher should run.
     pub push_threads: usize,
 
@@ -359,6 +362,7 @@ impl Default for Config {
             delivery_mode: DeliveryMode::Pull,
             fetch_threads: 1,
             fetch_wait_ms: 100,
+            fetch_batch_size: 1,
             push_threads: 1,
             push_queue_size: 1,
             push_queue_timeout_ms: 5000,

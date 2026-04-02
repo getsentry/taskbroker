@@ -39,31 +39,50 @@ impl ConsumerService for TaskbrokerServer {
 
         let inflight = self
             .store
-            .get_pending_activation(application.as_deref(), namespaces, None)
+            .get_pending_activations(application.as_deref(), namespaces, Some(1), None)
             .await;
 
         match inflight {
-            Ok(Some(inflight)) => {
+            Ok(activations) if activations.is_empty() => {
+                Err(Status::not_found("No pending activation"))
+            }
+
+            Ok(activations) if activations.len() > 1 => {
+                error!(
+                    count = activations.len(),
+                    application = ?application,
+                    namespace = ?namespace,
+                    "get_pending_activations returned more than one row despite limit of 1",
+                );
+
+                Err(Status::internal("Unable to retrieve pending activation"))
+            }
+
+            Ok(activations) => {
+                let inflight = &activations[0];
                 let now = Utc::now();
+
                 if inflight.processing_attempts < 1 {
                     let received_to_gettask_latency = inflight.received_latency(now);
                     if received_to_gettask_latency > 0 {
                         metrics::histogram!(
                             "grpc_server.received_to_gettask.latency",
-                            "namespace" => inflight.namespace,
-                            "taskname" => inflight.taskname,
+                            "namespace" => inflight.namespace.clone(),
+                            "taskname" => inflight.taskname.clone(),
                         )
                         .record(received_to_gettask_latency as f64);
                     }
                 }
+
                 let resp = GetTaskResponse {
                     task: Some(TaskActivation::decode(&inflight.activation as &[u8]).unwrap()),
                 };
+
                 metrics::histogram!("grpc_server.get_task.duration").record(start_time.elapsed());
 
                 Ok(Response::new(resp))
             }
-            Ok(None) => Err(Status::not_found("No pending activation")),
+
             Err(e) => {
                 error!("Unable to retrieve pending activation: {:?}", e);
                 Err(Status::internal("Unable to retrieve pending activation"))
@@ -125,27 +144,45 @@ impl ConsumerService for TaskbrokerServer {
         let namespaces = namespace.as_ref().map(std::slice::from_ref);
         let res = match self
             .store
-            .get_pending_activation(application.as_deref(), namespaces, None)
+            .get_pending_activations(application.as_deref(), namespaces, Some(1), None)
             .await
         {
             Err(e) => {
                 error!("Unable to fetch next task: {:?}", e);
                 Err(Status::internal("Unable to fetch next task"))
             }
-            Ok(None) => Err(Status::not_found("No pending activation")),
-            Ok(Some(inflight)) => {
+
+            Ok(activations) if activations.is_empty() => {
+                Err(Status::not_found("No pending activation"))
+            }
+
+            Ok(activations) if activations.len() > 1 => {
+                error!(
+                    count = activations.len(),
+                    application = ?application,
+                    namespace = ?namespace,
+                    "get_pending_activations returned more than one row despite limit of 1",
+                );
+
+                Err(Status::internal("Unable to fetch next task"))
+            }
+
+            Ok(activations) => {
+                let inflight = &activations[0];
+
                 if inflight.processing_attempts < 1 {
                     let now = Utc::now();
                     let received_to_gettask_latency = inflight.received_latency(now);
                     if received_to_gettask_latency > 0 {
                         metrics::histogram!(
                             "grpc_server.received_to_gettask.latency",
-                            "namespace" => inflight.namespace,
-                            "taskname" => inflight.taskname,
+                            "namespace" => inflight.namespace.clone(),
+                            "taskname" => inflight.taskname.clone(),
                         )
                         .record(received_to_gettask_latency as f64);
                     }
                 }
+
                 Ok(Response::new(SetTaskStatusResponse {
                     task: Some(TaskActivation::decode(&inflight.activation as &[u8]).unwrap()),
                 }))
