@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 from typing import Callable, Protocol
 
@@ -5,6 +6,20 @@ from arroyo.backends.abstract import ProducerFuture
 from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation, TaskActivationStatus
+
+
+class ContextHook(Protocol):
+    """
+    Hook for propagating application context through task headers.
+
+    on_dispatch: called at task creation time to inject context into headers.
+    on_execute: called at task execution time, returns a context manager
+                that restores context from headers for the duration of the task.
+    """
+
+    def on_dispatch(self, headers: dict[str, str]) -> None: ...
+
+    def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]: ...
 
 
 class AtMostOnceStore(Protocol):
