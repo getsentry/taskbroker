@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
-from typing import Callable, Protocol
+from collections.abc import MutableMapping
+from typing import Any, Callable, Protocol
 
 from arroyo.backends.abstract import ProducerFuture
 from arroyo.backends.kafka import KafkaPayload
@@ -17,7 +18,7 @@ class ContextHook(Protocol):
                 that restores context from headers for the duration of the task.
     """
 
-    def on_dispatch(self, headers: dict[str, str]) -> None: ...
+    def on_dispatch(self, headers: MutableMapping[str, Any]) -> None: ...
 
     def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]: ...
 
