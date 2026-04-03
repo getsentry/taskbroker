@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
-use crate::store::inflight_activation::InflightActivationStore;
+use crate::store::inflight_activation::{InflightActivationStore, ProcessingDeadlineCounts};
 
 /// The upkeep task that periodically performs upkeep
 /// on the inflight store
@@ -67,7 +67,7 @@ pub async fn upkeep(
 #[derive(Debug)]
 pub struct UpkeepResults {
     retried: u64,
-    processing_deadline_reset: u64,
+    processing_deadline_reset: ProcessingDeadlineCounts,
     processing_attempts_exceeded: u64,
     delay_elapsed: u64,
     expired: u64,
@@ -85,7 +85,7 @@ pub struct UpkeepResults {
 impl UpkeepResults {
     fn empty(&self) -> bool {
         self.retried == 0
-            && self.processing_deadline_reset == 0
+            && self.processing_deadline_reset.total() == 0
             && self.processing_attempts_exceeded == 0
             && self.expired == 0
             && self.completed == 0
@@ -115,7 +115,7 @@ pub async fn do_upkeep(
     let upkeep_start = Instant::now();
     let mut result_context = UpkeepResults {
         retried: 0,
-        processing_deadline_reset: 0,
+        processing_deadline_reset: ProcessingDeadlineCounts::default(),
         processing_attempts_exceeded: 0,
         delay_elapsed: 0,
         expired: 0,
@@ -299,7 +299,7 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .claim_activations(None, Some(&demoted_namespaces), None, None, true)
+            .claim_activations(None, Some(&demoted_namespaces), None, None, false)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -379,11 +379,15 @@ pub async fn do_upkeep(
     }
 
     if !result_context.empty() {
+        let processing_deadline_reset = result_context.processing_deadline_reset;
+
         debug!(
             result_context.completed,
             result_context.deadlettered,
             result_context.discarded,
-            result_context.processing_deadline_reset,
+            processing_deadline_amo = processing_deadline_reset.at_most_once,
+            processing_deadline_non_amo_unsent = processing_deadline_reset.non_amo_unsent,
+            processing_deadline_non_amo_sent = processing_deadline_reset.non_amo_sent,
             result_context.processing_attempts_exceeded,
             result_context.expired,
             result_context.retried,
@@ -413,10 +417,27 @@ pub async fn do_upkeep(
         .increment(result_context.discarded);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_attempts_exceeded_as_failure")
         .increment(result_context.processing_attempts_exceeded);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_deadline_exceeded_as_failure")
-        .increment(result_context.processing_deadline_reset);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
         .increment(result_context.delay_elapsed);
+
+    // Processing deadlines
+    metrics::counter!(
+        "upkeep.cleanup_action",
+        "kind" => "mark_processing_deadline_amo_failure"
+    )
+    .increment(result_context.processing_deadline_reset.at_most_once);
+
+    metrics::counter!(
+        "upkeep.cleanup_action",
+        "kind" => "mark_processing_deadline_non_amo_unsent"
+    )
+    .increment(result_context.processing_deadline_reset.non_amo_unsent);
+
+    metrics::counter!(
+        "upkeep.cleanup_action",
+        "kind" => "mark_processing_deadline_non_amo_sent"
+    )
+    .increment(result_context.processing_deadline_reset.non_amo_sent);
 
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
@@ -510,7 +531,7 @@ mod tests {
     use crate::{
         config::Config,
         runtime_config::RuntimeConfigManager,
-        store::inflight_activation::InflightActivationStatus,
+        store::inflight_activation::{InflightActivationStatus, ProcessingDeadlineCounts},
         test_utils::{
             StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
             create_integration_config_with_topic, create_producer, create_test_store,
@@ -773,7 +794,7 @@ mod tests {
             store.as_ref(),
         )
         .await;
-        assert_eq!(result_context.processing_deadline_reset, 0);
+        assert_eq!(result_context.processing_deadline_reset.total(), 0);
     }
 
     #[tokio::test]
@@ -823,7 +844,14 @@ mod tests {
         .await;
 
         // 0 processing, 2 pending now
-        assert_eq!(result_context.processing_deadline_reset, 1);
+        assert_eq!(
+            result_context.processing_deadline_reset,
+            ProcessingDeadlineCounts {
+                at_most_once: 0,
+                non_amo_unsent: 1,
+                non_amo_sent: 0,
+            }
+        );
         assert_counts(
             StatusCount {
                 processing: 0,

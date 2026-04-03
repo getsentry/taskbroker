@@ -1,6 +1,6 @@
 use crate::store::inflight_activation::{
     BucketRange, DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
-    InflightActivationStore, QueryResult, TableRow,
+    InflightActivationStore, ProcessingDeadlineCounts, QueryResult, TableRow,
 };
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -521,60 +521,67 @@ impl InflightActivationStore for PostgresActivationStore {
 
     /// Update tasks that are in processing and have exceeded their processing deadline.
     #[instrument(skip_all)]
-    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
-        let most_once_result = sqlx::query(
+        // Idempotent tasks that fail their processing deadlines go directly to failure
+        let amo = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
+             SET processing_deadline = null,
+                 status = $1
+             WHERE processing_deadline < $2
+                 AND at_most_once = TRUE
+                 AND status = $3",
         )
         .bind(InflightActivationStatus::Failure.to_string())
         .bind(now)
         .bind(InflightActivationStatus::Processing.to_string())
         .execute(&mut *atomic)
-        .await;
+        .await?;
 
-        let mut processing_deadline_modified_rows = 0;
-        if let Ok(query_res) = most_once_result {
-            processing_deadline_modified_rows = query_res.rows_affected();
-        }
-
+        // Revert activations that weren't delivered back to 'pending' without consuming an attempt
         let unsent = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1, sent = FALSE
-            WHERE processing_deadline < $2 AND sent = FALSE AND status = $3",
+             SET processing_deadline = null,
+                 status = $1,
+                 sent = FALSE
+             WHERE processing_deadline < $2
+                 AND sent = FALSE
+                 AND at_most_once = FALSE
+                 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending.to_string())
         .bind(now)
         .bind(InflightActivationStatus::Processing.to_string())
         .execute(&mut *atomic)
-        .await;
+        .await?;
 
-        if let Ok(query_res) = unsent {
-            processing_deadline_modified_rows += query_res.rows_affected();
-        }
-
-        let result = sqlx::query(
+        // Revert activations that were delivered back to 'pending' AND consume an attempt
+        let sent = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1, sent = FALSE
-            WHERE processing_deadline < $2 AND sent = TRUE AND status = $3",
+             SET processing_deadline = null,
+                 status = $1,
+                 processing_attempts = processing_attempts + 1,
+                 sent = FALSE
+             WHERE processing_deadline < $2
+                 AND sent = TRUE
+                 AND at_most_once = FALSE
+                 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending.to_string())
         .bind(now)
         .bind(InflightActivationStatus::Processing.to_string())
         .execute(&mut *atomic)
-        .await;
+        .await?;
 
         atomic.commit().await?;
 
-        if let Ok(query_res) = result {
-            processing_deadline_modified_rows += query_res.rows_affected();
-            return Ok(processing_deadline_modified_rows);
-        }
-
-        Err(anyhow!("Could not update tasks past processing_deadline"))
+        Ok(ProcessingDeadlineCounts {
+            at_most_once: amo.rows_affected(),
+            non_amo_unsent: unsent.rows_affected(),
+            non_amo_sent: sent.rows_affected(),
+        })
     }
 
     /// Update tasks that have exceeded their max processing attempts.

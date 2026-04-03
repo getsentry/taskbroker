@@ -9,11 +9,11 @@ use tonic::async_trait;
 use super::*;
 use crate::config::Config;
 use crate::push::PushError;
-use crate::store::inflight_activation::InflightActivationStore;
 use crate::store::inflight_activation::{BucketRange, InflightActivation};
 use crate::store::inflight_activation::{
     FailedTasksForwarder, InflightActivationStatus, QueryResult,
 };
+use crate::store::inflight_activation::{InflightActivationStore, ProcessingDeadlineCounts};
 use crate::test_utils::make_activations;
 
 /// Store stub that returns one activation once OR is always empty OR always fails.
@@ -135,7 +135,7 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error> {
         unimplemented!()
     }
 

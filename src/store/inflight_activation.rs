@@ -186,6 +186,26 @@ pub struct InflightActivation {
     pub sent: bool,
 }
 
+/// Counts how many tasks were changed from 'processing' to 'pending' by `handle_processing_deadline`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProcessingDeadlineCounts {
+    /// The number of AMO tasks reverted.
+    pub at_most_once: u64,
+
+    /// The number of regular, unsent tasks reverted.
+    pub non_amo_unsent: u64,
+
+    /// The number of regular, sent tasks reverted.
+    pub non_amo_sent: u64,
+}
+
+impl ProcessingDeadlineCounts {
+    /// Count the total number of tasks that reached their processing deadline and were reverted to pending.
+    pub fn total(&self) -> u64 {
+        self.at_most_once + self.non_amo_unsent + self.non_amo_sent
+    }
+}
+
 impl InflightActivation {
     /// The number of milliseconds between an activation's received timestamp
     /// and the provided datetime
@@ -501,7 +521,7 @@ pub trait InflightActivationStore: Send + Sync {
     async fn clear(&self) -> Result<(), Error>;
 
     /// Update tasks that exceeded their processing deadline
-    async fn handle_processing_deadline(&self) -> Result<u64, Error>;
+    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error>;
 
     /// Update tasks that exceeded max processing attempts
     async fn handle_processing_attempts(&self) -> Result<u64, Error>;
@@ -1115,63 +1135,67 @@ impl InflightActivationStore for SqliteActivationStore {
 
     /// Update tasks that are in processing and have exceeded their processing deadline.
     #[instrument(skip_all)]
-    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
         // Idempotent tasks that fail their processing deadlines go directly to failure
-        let most_once_result = sqlx::query(
+        let amo = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
+             SET processing_deadline = null,
+                 status = $1
+             WHERE processing_deadline < $2
+                 AND at_most_once = TRUE
+                 AND status = $3",
         )
         .bind(InflightActivationStatus::Failure)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
         .execute(&mut *atomic)
-        .await;
+        .await?;
 
-        let mut processing_deadline_modified_rows = 0;
-        if let Ok(query_res) = most_once_result {
-            processing_deadline_modified_rows = query_res.rows_affected();
-        }
-
-        // Revert non-AMO activations that weren't delivered back to pending without consuming an attempt
+        // Revert activations that weren't delivered back to 'pending' without consuming an attempt
         let unsent = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1, sent = 0
-            WHERE processing_deadline < $2 AND sent = 0 AND status = $3",
+             SET processing_deadline = null,
+                 status = $1,
+                 sent = FALSE
+             WHERE processing_deadline < $2
+                 AND sent = FALSE
+                 AND at_most_once = FALSE
+                 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
         .execute(&mut *atomic)
-        .await;
-
-        if let Ok(query_res) = unsent {
-            processing_deadline_modified_rows += query_res.rows_affected();
-        }
+        .await?;
 
         // Revert activations that were delivered back to 'pending' AND consume an attempt
-        let result = sqlx::query(
+        let sent = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1, sent = 0
-            WHERE processing_deadline < $2 AND sent = 1 AND status = $3",
+             SET processing_deadline = null,
+                 status = $1,
+                 processing_attempts = processing_attempts + 1,
+                 sent = FALSE
+             WHERE processing_deadline < $2
+                 AND sent = TRUE
+                 AND at_most_once = FALSE
+                 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
         .execute(&mut *atomic)
-        .await;
+        .await?;
 
         atomic.commit().await?;
 
-        if let Ok(query_res) = result {
-            processing_deadline_modified_rows += query_res.rows_affected();
-            return Ok(processing_deadline_modified_rows);
-        }
-
-        Err(anyhow!("Could not update tasks past processing_deadline"))
+        Ok(ProcessingDeadlineCounts {
+            at_most_once: amo.rows_affected(),
+            non_amo_unsent: unsent.rows_affected(),
+            non_amo_sent: sent.rows_affected(),
+        })
     }
 
     /// Update tasks that have exceeded their max processing attempts.

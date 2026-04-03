@@ -62,7 +62,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
                 .claim_activation_for_pull(Some("sentry"), Some(&ns))
                 .await
                 .unwrap()
-                .is_none()
+                .is_some()
             {
                 num_activations_processed += 1;
             }

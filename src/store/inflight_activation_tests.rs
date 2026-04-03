@@ -10,7 +10,8 @@ use crate::{
     config::Config,
     store::inflight_activation::{
         InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
+        InflightActivationStoreConfig, ProcessingDeadlineCounts, QueryResult,
+        SqliteActivationStore, create_sqlite_pool,
     },
     store::postgres_activation_store::build_pg_connect_options,
     test_utils::{
@@ -966,7 +967,14 @@ async fn test_handle_processing_deadline(#[case] adapter: &str) {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 1);
+    assert_eq!(
+        count.unwrap(),
+        ProcessingDeadlineCounts {
+            at_most_once: 0,
+            non_amo_unsent: 0,
+            non_amo_sent: 1,
+        }
+    );
     assert_counts(
         StatusCount {
             pending: 2,
@@ -982,7 +990,7 @@ async fn test_handle_processing_deadline(#[case] adapter: &str) {
     // Run again to check early return
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 0);
+    assert_eq!(count.unwrap(), ProcessingDeadlineCounts::default());
     store.remove_db().await.unwrap();
 }
 
@@ -1011,7 +1019,14 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 1);
+    assert_eq!(
+        count.unwrap(),
+        ProcessingDeadlineCounts {
+            at_most_once: 0,
+            non_amo_unsent: 0,
+            non_amo_sent: 1,
+        }
+    );
     assert_counts(
         StatusCount {
             pending: 1,
@@ -1064,7 +1079,14 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 2);
+    assert_eq!(
+        count.unwrap(),
+        ProcessingDeadlineCounts {
+            at_most_once: 1,
+            non_amo_unsent: 0,
+            non_amo_sent: 1,
+        }
+    );
     assert_counts(
         StatusCount {
             pending: 1,
@@ -1115,7 +1137,14 @@ async fn test_handle_processing_deadline_discard_after(#[case] adapter: &str) {
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 1);
+    assert_eq!(
+        count.unwrap(),
+        ProcessingDeadlineCounts {
+            at_most_once: 0,
+            non_amo_unsent: 0,
+            non_amo_sent: 1,
+        }
+    );
     assert_counts(
         StatusCount {
             pending: 2,
@@ -1162,7 +1191,14 @@ async fn test_handle_processing_deadline_deadletter_after(#[case] adapter: &str)
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 1);
+    assert_eq!(
+        count.unwrap(),
+        ProcessingDeadlineCounts {
+            at_most_once: 0,
+            non_amo_unsent: 0,
+            non_amo_sent: 1,
+        }
+    );
     assert_counts(
         StatusCount {
             pending: 2,
@@ -1208,7 +1244,14 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
 
     let count = store.handle_processing_deadline().await;
     assert!(count.is_ok());
-    assert_eq!(count.unwrap(), 1);
+    assert_eq!(
+        count.unwrap(),
+        ProcessingDeadlineCounts {
+            at_most_once: 0,
+            non_amo_unsent: 0,
+            non_amo_sent: 1,
+        }
+    );
     assert_counts(
         StatusCount {
             processing: 0,
@@ -1233,7 +1276,14 @@ async fn test_handle_processing_deadline_unsent_no_attempt_increment(#[case] ada
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
     assert!(store.store(batch.clone()).await.is_ok());
     let count = store.handle_processing_deadline().await.unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(
+        count,
+        ProcessingDeadlineCounts {
+            at_most_once: 0,
+            non_amo_unsent: 1,
+            non_amo_sent: 0,
+        }
+    );
     let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
     assert_eq!(task.status, InflightActivationStatus::Pending);
     assert_eq!(task.processing_attempts, 0);
@@ -1254,7 +1304,14 @@ async fn test_handle_processing_deadline_at_most_once_unsent_failure(#[case] ada
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
     assert!(store.store(batch.clone()).await.is_ok());
     let count = store.handle_processing_deadline().await.unwrap();
-    assert_eq!(count, 1);
+    assert_eq!(
+        count,
+        ProcessingDeadlineCounts {
+            at_most_once: 1,
+            non_amo_unsent: 0,
+            non_amo_sent: 0,
+        }
+    );
     let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
     assert_eq!(task.status, InflightActivationStatus::Failure);
     assert!(!task.sent);
