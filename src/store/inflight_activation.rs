@@ -458,9 +458,11 @@ pub trait InflightActivationStore: Send + Sync {
             .await?;
 
         // If we are getting more than one task here, something is broken
-        assert!(rows.len() <= 1);
-
-        Ok(rows.pop())
+        if rows.len() > 1 {
+            Err(anyhow!("Found more than one row despite limit of one"))
+        } else {
+            Ok(rows.pop())
+        }
     }
 
     /// Record successful push.

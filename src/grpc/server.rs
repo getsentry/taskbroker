@@ -137,6 +137,7 @@ impl ConsumerService for TaskbrokerServer {
                 Err(Status::internal("Unable to fetch next task"))
             }
 
+            // If we return an error, the worker will place the result back in its internal queue and send the update again in the future, which is not desired
             Ok(None) => Ok(Response::new(SetTaskStatusResponse { task: None })),
 
             Ok(Some(inflight)) => {
