@@ -177,7 +177,7 @@ class TaskNamespace:
         )
         # We know this type is futures.Future, but cannot assert so,
         # because it is also mock.Mock in tests.
-        produce_future.add_done_callback(  # type:ignore[union-attr]
+        produce_future.add_done_callback(  # type: ignore[union-attr]
             lambda future: self._handle_produce_future(
                 future=future,
                 tags={
@@ -376,6 +376,7 @@ class TaskRegistry:
             retry=retry,
             expires=expires,
             processing_deadline_duration=processing_deadline_duration,
+            context_hooks=self._context_hooks,
         )
         self._external_namespaces[key] = namespace
         return namespace
