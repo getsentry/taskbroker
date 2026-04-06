@@ -2,8 +2,8 @@ import base64
 import contextlib
 import queue
 import time
-from multiprocessing import Event
 from collections.abc import MutableMapping
+from multiprocessing import Event
 from typing import Any
 from unittest import TestCase, mock
 
