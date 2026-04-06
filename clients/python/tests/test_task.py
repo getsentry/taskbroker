@@ -382,6 +382,8 @@ def test_create_activation_headers_monitor_config_treatment(task_namespace: Task
 class StubContextHook:
     """Test hook that writes/reads a simple key."""
 
+    last_executed: str
+
     def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
         headers["x-test-context"] = "dispatched"
 

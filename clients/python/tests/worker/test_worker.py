@@ -3,6 +3,7 @@ import contextlib
 import queue
 import time
 from multiprocessing import Event
+from collections.abc import MutableMapping
 from typing import Any
 from unittest import TestCase, mock
 
@@ -769,7 +770,7 @@ def test_child_process_context_hooks() -> None:
     executed_headers: list[dict[str, str]] = []
 
     class RecordingHook:
-        def on_dispatch(self, headers: dict[str, Any]) -> None:
+        def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
             pass
 
         def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
