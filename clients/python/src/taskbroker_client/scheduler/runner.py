@@ -36,10 +36,10 @@ class RunStorage:
         self._redis = redis
         self._metrics = metrics
 
-    def _make_key(self, taskname: str) -> str:
-        return f"tw:scheduler:{taskname}"
+    def _make_key(self, key: str) -> str:
+        return f"tw:scheduler:{key}"
 
-    def set(self, taskname: str, next_runtime: datetime) -> bool:
+    def set(self, key: str, next_runtime: datetime) -> bool:
         """
         Record a spawn time for a task.
         The next_runtime parameter indicates when the record should expire,
@@ -51,37 +51,49 @@ class RunStorage:
         # next_runtime & now could be the same second, and redis gets sad if ex=0
         duration = max(int((next_runtime - now).total_seconds()), 1)
 
-        result = self._redis.set(self._make_key(taskname), now.isoformat(), ex=duration, nx=True)
+        result = self._redis.set(self._make_key(key), now.isoformat(), ex=duration, nx=True)
         return bool(result)
 
-    def read(self, taskname: str) -> datetime | None:
+    def read(self, key: str) -> datetime | None:
         """
         Retrieve the last run time of a task
         Returns None if last run time has expired or is unknown.
         """
-        result = self._redis.get(self._make_key(taskname))
+        result = self._redis.get(self._make_key(key))
         if result:
             return datetime.fromisoformat(result)
 
-        self._metrics.incr(
-            "taskworker.scheduler.run_storage.read.miss", tags={"taskname": taskname}
-        )
+        self._metrics.incr("taskworker.scheduler.run_storage.read.miss", tags={"taskname": key})
         return None
 
-    def read_many(self, tasknames: list[str]) -> Mapping[str, datetime | None]:
+    def read_many(
+        self,
+        storage_keys: list[str],
+    ) -> Mapping[str, datetime | None]:
         """
-        Retreive last run times in bulk
+        Retrieve last run times in bulk.
+
+        storage_keys are the new-format keys including the schedule_id suffix
+        (e.g. "test:valid:300"). Falls back to the legacy key (derived by
+        stripping the suffix) when the new key has no data, allowing a seamless
+        first-deploy transition.
+
+        Returns a mapping keyed by storage_key.
         """
-        values = self._redis.mget([self._make_key(taskname) for taskname in tasknames])
-        run_times = {
-            taskname: datetime.fromisoformat(value) if value else None
-            for taskname, value in zip(tasknames, values)
-        }
+        legacy_keys = [sk.rsplit(":", 1)[0] for sk in storage_keys]
+
+        new_values = self._redis.mget([self._make_key(sk) for sk in storage_keys])
+        legacy_values = self._redis.mget([self._make_key(lk) for lk in legacy_keys])
+
+        run_times: dict[str, datetime | None] = {}
+        for storage_key, new_val, legacy_val in zip(storage_keys, new_values, legacy_values):
+            raw = new_val if new_val is not None else legacy_val
+            run_times[storage_key] = datetime.fromisoformat(raw) if raw else None
         return run_times
 
-    def delete(self, taskname: str) -> None:
+    def delete(self, key: str) -> None:
         """remove a task key - mostly for testing."""
-        self._redis.delete(self._make_key(taskname))
+        self._redis.delete(self._make_key(key))
 
 
 class ScheduleEntry:
@@ -111,6 +123,10 @@ class ScheduleEntry:
     @property
     def fullname(self) -> str:
         return self._task.fullname
+
+    @property
+    def storage_key(self) -> str:
+        return f"{self.fullname}:{self._schedule.schedule_id()}"
 
     @property
     def namespace(self) -> str:
@@ -237,7 +253,7 @@ class ScheduleRunner:
     def _try_spawn(self, entry: ScheduleEntry) -> None:
         now = datetime.now(tz=UTC)
         next_runtime = entry.runtime_after(now)
-        if self._run_storage.set(entry.fullname, next_runtime):
+        if self._run_storage.set(entry.storage_key, next_runtime):
             entry.delay_task()
             entry.set_last_run(now)
 
@@ -252,7 +268,7 @@ class ScheduleRunner:
             )
         else:
             # We were not able to set a key, load last run from storage.
-            run_state = self._run_storage.read(entry.fullname)
+            run_state = self._run_storage.read(entry.storage_key)
             entry.set_last_run(run_state)
 
             logger.info(
@@ -284,9 +300,9 @@ class ScheduleRunner:
         We synchronize each time the schedule set is modified and
         then incrementally as tasks spawn attempts are made.
         """
-        last_run_times = self._run_storage.read_many([item.fullname for item in self._entries])
+        last_run_times = self._run_storage.read_many([item.storage_key for item in self._entries])
         for item in self._entries:
-            last_run = last_run_times.get(item.fullname, None)
+            last_run = last_run_times.get(item.storage_key, None)
             item.set_last_run(last_run)
         logger.info(
             "taskworker.scheduler.load_last_run",
