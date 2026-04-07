@@ -80,13 +80,15 @@ impl Backoff {
             return;
         }
 
-        let _ = self
+        match self
             .wait_ms
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(self.decay_amount_ms))
-            });
-
-        metrics::gauge!("push.backoff.wait_ms").set(self.get() as f64);
+            }) {
+            Ok(old) => metrics::gauge!("push.backoff.wait_ms")
+                .set(old.saturating_sub(self.decay_amount_ms) as f64),
+            Err(current) => metrics::gauge!("push.backoff.wait_ms").set(current as f64),
+        }
     }
 }
 

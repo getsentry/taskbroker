@@ -117,6 +117,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             metrics::counter!("fetch.loop.count").increment(1);
 
                             let start = Instant::now();
+                            let mut sleep_duration = Duration::ZERO;
 
                             let application = config.application.as_deref();
                             let namespaces = config.namespaces.as_deref();
@@ -129,7 +130,10 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                     debug!("No pending activations");
 
                                     // Wait for pending activations to appear
-                                    sleep(Duration::from_millis(config.fetch_wait_ms)).await;
+                                    let wait = Duration::from_millis(config.fetch_wait_ms);
+                                    let sleep_start = Instant::now();
+                                    sleep(wait).await;
+                                    sleep_duration += sleep_start.elapsed();
                                 }
 
                                 Ok(activations) => {
@@ -139,7 +143,10 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                         let w = backoff.get();
 
                                         if w > 0 {
-                                            sleep(Duration::from_millis(w as u64)).await;
+                                            let wait = Duration::from_millis(w as u64);
+                                            let sleep_start = Instant::now();
+                                            sleep(wait).await;
+                                            sleep_duration += sleep_start.elapsed();
                                         }
 
                                         let id = activation.id.clone();
@@ -171,12 +178,15 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                     );
 
                                     // Store may be down, wait before trying again
-                                    sleep(Duration::from_millis(config.fetch_wait_ms)).await;
+                                    let wait = Duration::from_millis(config.fetch_wait_ms);
+                                    let sleep_start = Instant::now();
+                                    sleep(wait).await;
+                                    sleep_duration += sleep_start.elapsed();
                                 }
                             };
 
                             metrics::histogram!("fetch.loop.duration")
-                                .record(start.elapsed());
+                                .record(start.elapsed().saturating_sub(sleep_duration));
                         } => {}
                     }
                 }
