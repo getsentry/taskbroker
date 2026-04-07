@@ -76,7 +76,7 @@ impl InflightActivationStore for MockStore {
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
-        mark_sent: bool,
+        status: InflightActivationStatus,
     ) -> Result<Vec<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
@@ -84,7 +84,7 @@ impl InflightActivationStore for MockStore {
 
         Ok(match self.pending.lock().await.take() {
             Some(mut a) => {
-                a.sent = mark_sent;
+                a.status = status;
                 vec![a]
             }
             None => vec![],

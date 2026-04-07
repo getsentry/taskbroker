@@ -176,8 +176,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 namespace,
                 taskname,
                 on_attempts_exceeded,
-                bucket,
-                sent
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -219,8 +218,7 @@ impl InflightActivationStore for PostgresActivationStore {
                     namespace,
                     taskname,
                     on_attempts_exceeded,
-                    bucket,
-                    sent
+                    bucket
                 )
             ",
         );
@@ -253,7 +251,6 @@ impl InflightActivationStore for PostgresActivationStore {
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
                 b.push_bind(row.bucket);
-                b.push_bind(row.sent);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -268,7 +265,7 @@ impl InflightActivationStore for PostgresActivationStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        sent: bool,
+        status: InflightActivationStatus,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
@@ -320,9 +317,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
                 status = "
         ));
-        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
-        query_builder.push(", sent = ");
-        query_builder.push_bind(sent);
+        query_builder.push_bind(status.to_string());
         query_builder.push(" FROM selected_activations ");
         query_builder.push(" WHERE inflight_taskactivations.id = selected_activations.id");
         query_builder.push(" RETURNING *, kafka_offset AS offset");
@@ -342,10 +337,11 @@ impl InflightActivationStore for PostgresActivationStore {
             .acquire_write_conn_metric("mark_activation_sent")
             .await?;
         sqlx::query(
-            "UPDATE inflight_taskactivations SET sent = TRUE WHERE id = $1 AND status = $2",
+            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 AND status = $3",
         )
-        .bind(id)
         .bind(InflightActivationStatus::Processing.to_string())
+        .bind(id)
+        .bind(InflightActivationStatus::Sending.to_string())
         .execute(&mut *conn)
         .await?;
         Ok(())
@@ -495,8 +491,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 namespace,
                 taskname,
                 on_attempts_exceeded,
-                bucket,
-                sent
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             ",
@@ -532,11 +527,12 @@ impl InflightActivationStore for PostgresActivationStore {
                  status = $1
              WHERE processing_deadline < $2
                  AND at_most_once = TRUE
-                 AND status = $3",
+                 AND (status = $3 OR status = $4)",
         )
         .bind(InflightActivationStatus::Failure.to_string())
         .bind(now)
         .bind(InflightActivationStatus::Processing.to_string())
+        .bind(InflightActivationStatus::Sending.to_string())
         .execute(&mut *atomic)
         .await?;
 
@@ -544,16 +540,14 @@ impl InflightActivationStore for PostgresActivationStore {
         let unsent = sqlx::query(
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
-                 status = $1,
-                 sent = FALSE
+                 status = $1
              WHERE processing_deadline < $2
-                 AND sent = FALSE
                  AND at_most_once = FALSE
                  AND status = $3",
         )
         .bind(InflightActivationStatus::Pending.to_string())
         .bind(now)
-        .bind(InflightActivationStatus::Processing.to_string())
+        .bind(InflightActivationStatus::Sending.to_string())
         .execute(&mut *atomic)
         .await?;
 
@@ -562,10 +556,8 @@ impl InflightActivationStore for PostgresActivationStore {
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
                  status = $1,
-                 processing_attempts = processing_attempts + 1,
-                 sent = FALSE
+                 processing_attempts = processing_attempts + 1
              WHERE processing_deadline < $2
-                 AND sent = TRUE
                  AND at_most_once = FALSE
                  AND status = $3",
         )

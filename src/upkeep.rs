@@ -18,7 +18,9 @@ use uuid::Uuid;
 use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
-use crate::store::inflight_activation::{InflightActivationStore, ProcessingDeadlineCounts};
+use crate::store::inflight_activation::{
+    InflightActivationStatus, InflightActivationStore, ProcessingDeadlineCounts,
+};
 
 /// The upkeep task that periodically performs upkeep
 /// on the inflight store
@@ -299,7 +301,13 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .claim_activations(None, Some(&demoted_namespaces), None, None, false)
+            .claim_activations(
+                None,
+                Some(&demoted_namespaces),
+                None,
+                None,
+                InflightActivationStatus::Processing,
+            )
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -848,8 +856,8 @@ mod tests {
             result_context.processing_deadline_reset,
             ProcessingDeadlineCounts {
                 at_most_once: 0,
-                non_amo_unsent: 1,
-                non_amo_sent: 0,
+                non_amo_unsent: 0,
+                non_amo_sent: 1,
             }
         );
         assert_counts(
@@ -1191,14 +1199,26 @@ mod tests {
             1
         );
         let pending = store
-            .claim_activations(None, None, Some(1), None, true)
+            .claim_activations(
+                None,
+                None,
+                Some(1),
+                None,
+                InflightActivationStatus::Processing,
+            )
             .await
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "id_0");
         assert!(
             store
-                .claim_activations(None, None, Some(1), None, true)
+                .claim_activations(
+                    None,
+                    None,
+                    Some(1),
+                    None,
+                    InflightActivationStatus::Processing
+                )
                 .await
                 .unwrap()
                 .is_empty()
@@ -1223,7 +1243,13 @@ mod tests {
             1
         );
         let pending = store
-            .claim_activations(None, None, Some(1), None, true)
+            .claim_activations(
+                None,
+                None,
+                Some(1),
+                None,
+                InflightActivationStatus::Processing,
+            )
             .await
             .unwrap();
         assert_eq!(pending.len(), 1);

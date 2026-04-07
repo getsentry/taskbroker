@@ -37,6 +37,7 @@ pub enum InflightActivationStatus {
     /// Unused but necessary to align with sentry-protos
     Unspecified,
     Pending,
+    Sending,
     Processing,
     Failure,
     Retry,
@@ -58,6 +59,8 @@ impl FromStr for InflightActivationStatus {
             Ok(InflightActivationStatus::Unspecified)
         } else if s == "Pending" {
             Ok(InflightActivationStatus::Pending)
+        } else if s == "Sending" {
+            Ok(InflightActivationStatus::Sending)
         } else if s == "Processing" {
             Ok(InflightActivationStatus::Processing)
         } else if s == "Failure" {
@@ -180,10 +183,6 @@ pub struct InflightActivation {
     /// Bucket derived from activation ID (UUID as number % 256). Set once on ingestion.
     #[builder(setter(skip), default = "0")]
     pub bucket: i16,
-
-    /// True after successful push.
-    #[builder(default = false)]
-    pub sent: bool,
 }
 
 /// Counts how many tasks were changed from 'processing' to 'pending' by `handle_processing_deadline`.
@@ -267,7 +266,6 @@ pub struct TableRow {
     #[sqlx(try_from = "i32")]
     pub on_attempts_exceeded: OnAttemptsExceeded,
     pub bucket: i16,
-    pub sent: bool,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -293,7 +291,6 @@ impl TryFrom<InflightActivation> for TableRow {
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
             bucket: value.bucket,
-            sent: value.sent,
         })
     }
 }
@@ -319,7 +316,6 @@ impl From<TableRow> for InflightActivation {
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
             bucket: value.bucket,
-            sent: value.sent,
         }
     }
 }
@@ -401,7 +397,7 @@ pub trait InflightActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
 
-    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
+    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange, and update them to have status `status`.
     /// If no limit is provided, all matching activations will be returned.
     async fn claim_activations(
         &self,
@@ -409,10 +405,10 @@ pub trait InflightActivationStore: Send + Sync {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        sent: bool,
+        status: InflightActivationStatus,
     ) -> Result<Vec<InflightActivation>, Error>;
 
-    /// Claims `limit` activations within the `bucket` range. Column `sent` remains false until `mark_activation_sent` is called.
+    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Sending` until `mark_activation_sent` moves to `Processing`.
     async fn claim_activations_for_push(
         &self,
         application: Option<&str>,
@@ -430,8 +426,14 @@ pub trait InflightActivationStore: Send + Sync {
             return Ok(vec![]);
         }
 
-        self.claim_activations(application, namespaces, limit, bucket, false)
-            .await
+        self.claim_activations(
+            application,
+            namespaces,
+            limit,
+            bucket,
+            InflightActivationStatus::Sending,
+        )
+        .await
     }
 
     /// Claims `limit` activations with application `application` and namespace `namespace`.
@@ -454,7 +456,13 @@ pub trait InflightActivationStore: Send + Sync {
         }
 
         let mut rows = self
-            .claim_activations(application, namespaces.as_deref(), Some(1), None, true)
+            .claim_activations(
+                application,
+                namespaces.as_deref(),
+                Some(1),
+                None,
+                InflightActivationStatus::Processing,
+            )
             .await?;
 
         // If we are getting more than one task here, something is broken
@@ -798,8 +806,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 namespace,
                 taskname,
                 on_attempts_exceeded,
-                bucket,
-                sent
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -841,8 +848,7 @@ impl InflightActivationStore for SqliteActivationStore {
                     namespace,
                     taskname,
                     on_attempts_exceeded,
-                    bucket,
-                    sent
+                    bucket
                 )
             ",
         );
@@ -876,7 +882,6 @@ impl InflightActivationStore for SqliteActivationStore {
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
                 b.push_bind(row.bucket);
-                b.push_bind(row.sent);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -912,7 +917,7 @@ impl InflightActivationStore for SqliteActivationStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        sent: bool,
+        status: InflightActivationStatus,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
@@ -925,9 +930,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 ),
                 status = "
         ));
-        query_builder.push_bind(InflightActivationStatus::Processing);
-        query_builder.push(", sent = ");
-        query_builder.push_bind(sent);
+        query_builder.push_bind(status);
         query_builder.push(
             "
             WHERE id IN (
@@ -982,11 +985,14 @@ impl InflightActivationStore for SqliteActivationStore {
         let mut conn = self
             .acquire_write_conn_metric("mark_activation_sent")
             .await?;
-        sqlx::query("UPDATE inflight_taskactivations SET sent = 1 WHERE id = $1 AND status = $2")
-            .bind(id)
-            .bind(InflightActivationStatus::Processing)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query(
+            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Processing)
+        .bind(id)
+        .bind(InflightActivationStatus::Sending)
+        .execute(&mut *conn)
+        .await?;
         Ok(())
     }
 
@@ -1113,8 +1119,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 namespace,
                 taskname,
                 on_attempts_exceeded,
-                bucket,
-                sent
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             ",
@@ -1148,11 +1153,12 @@ impl InflightActivationStore for SqliteActivationStore {
                  status = $1
              WHERE processing_deadline < $2
                  AND at_most_once = TRUE
-                 AND status = $3",
+                 AND (status = $3 OR status = $4)",
         )
         .bind(InflightActivationStatus::Failure)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
+        .bind(InflightActivationStatus::Sending)
         .execute(&mut *atomic)
         .await?;
 
@@ -1160,16 +1166,14 @@ impl InflightActivationStore for SqliteActivationStore {
         let unsent = sqlx::query(
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
-                 status = $1,
-                 sent = FALSE
+                 status = $1
              WHERE processing_deadline < $2
-                 AND sent = FALSE
                  AND at_most_once = FALSE
                  AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
-        .bind(InflightActivationStatus::Processing)
+        .bind(InflightActivationStatus::Sending)
         .execute(&mut *atomic)
         .await?;
 
@@ -1178,10 +1182,8 @@ impl InflightActivationStore for SqliteActivationStore {
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
                  status = $1,
-                 processing_attempts = processing_attempts + 1,
-                 sent = FALSE
+                 processing_attempts = processing_attempts + 1
              WHERE processing_deadline < $2
-                 AND sent = TRUE
                  AND at_most_once = FALSE
                  AND status = $3",
         )

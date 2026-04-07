@@ -409,17 +409,23 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     // Use `claim_activations` so upkeep-style `None` application + namespaces is allowed (not `claim_activations_for_push`).
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .claim_activations(None, Some(&namespaces), None, None, false)
+        .claim_activations(
+            None,
+            Some(&namespaces),
+            None,
+            None,
+            InflightActivationStatus::Sending,
+        )
         .await
         .unwrap();
 
     assert_eq!(result.len(), 2);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
-    assert_eq!(result[1].status, InflightActivationStatus::Processing);
+    assert_eq!(result[1].status, InflightActivationStatus::Sending);
     assert_eq!(result[0].id, "id_1");
     assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Processing);
+    assert_eq!(result[0].status, InflightActivationStatus::Sending);
     store.remove_db().await.unwrap();
 }
 
@@ -445,7 +451,13 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .claim_activations(None, Some(&namespaces), Some(2), None, false)
+        .claim_activations(
+            None,
+            Some(&namespaces),
+            Some(2),
+            None,
+            InflightActivationStatus::Sending,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -636,13 +648,13 @@ async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
     assert_eq!(got.len(), N);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Processing)
+            .all(|a| a.status == InflightActivationStatus::Sending)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            processing: N,
+            sending: N,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -670,7 +682,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert_eq!(got.len(), X as usize);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Processing)
+            .all(|a| a.status == InflightActivationStatus::Sending)
     );
     assert_eq!(
         store.count_pending_activations().await.unwrap(),
@@ -679,7 +691,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert_counts(
         StatusCount {
             pending: N - X as usize,
-            processing: X as usize,
+            sending: X as usize,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -707,13 +719,13 @@ async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str)
     assert_eq!(got.len(), Y);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Processing)
+            .all(|a| a.status == InflightActivationStatus::Sending)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            processing: Y,
+            sending: Y,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -951,7 +963,6 @@ async fn test_handle_processing_deadline(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
-    batch[1].sent = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
     assert!(store.store(batch.clone()).await.is_ok());
@@ -1003,14 +1014,14 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[0].status = InflightActivationStatus::Processing;
-    batch[0].sent = true;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = InflightActivationStatus::Sending;
     batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
     assert!(store.store(batch).await.is_ok());
     assert_counts(
         StatusCount {
-            processing: 2,
+            processing: 1,
+            sending: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -1030,7 +1041,7 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     assert_counts(
         StatusCount {
             pending: 1,
-            processing: 1,
+            sending: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -1049,11 +1060,10 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
     // Both records are past processing deadlines
     let mut batch = make_activations(2);
     batch[0].status = InflightActivationStatus::Processing;
-    batch[0].sent = true;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
     batch[1].status = InflightActivationStatus::Processing;
-    batch[1].sent = true;
+
     replace_retry_state(
         &mut batch[1],
         Some(RetryState {
@@ -1111,7 +1121,6 @@ async fn test_handle_processing_deadline_discard_after(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
-    batch[1].sent = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -1165,7 +1174,6 @@ async fn test_handle_processing_deadline_deadletter_after(#[case] adapter: &str)
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
-    batch[1].sent = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -1219,7 +1227,6 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
 
     let mut batch = make_activations(2);
     batch[1].status = InflightActivationStatus::Processing;
-    batch[1].sent = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -1271,8 +1278,7 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
 async fn test_handle_processing_deadline_unsent_no_attempt_increment(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(1);
-    batch[0].status = InflightActivationStatus::Processing;
-    batch[0].sent = false;
+    batch[0].status = InflightActivationStatus::Sending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
     assert!(store.store(batch.clone()).await.is_ok());
     let count = store.handle_processing_deadline().await.unwrap();
@@ -1287,7 +1293,6 @@ async fn test_handle_processing_deadline_unsent_no_attempt_increment(#[case] ada
     let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
     assert_eq!(task.status, InflightActivationStatus::Pending);
     assert_eq!(task.processing_attempts, 0);
-    assert!(!task.sent);
     store.remove_db().await.unwrap();
 }
 
@@ -1298,8 +1303,7 @@ async fn test_handle_processing_deadline_unsent_no_attempt_increment(#[case] ada
 async fn test_handle_processing_deadline_at_most_once_unsent_failure(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(1);
-    batch[0].status = InflightActivationStatus::Processing;
-    batch[0].sent = false;
+    batch[0].status = InflightActivationStatus::Sending;
     batch[0].at_most_once = true;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
     assert!(store.store(batch.clone()).await.is_ok());
@@ -1314,7 +1318,6 @@ async fn test_handle_processing_deadline_at_most_once_unsent_failure(#[case] ada
     );
     let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
     assert_eq!(task.status, InflightActivationStatus::Failure);
-    assert!(!task.sent);
     store.remove_db().await.unwrap();
 }
 

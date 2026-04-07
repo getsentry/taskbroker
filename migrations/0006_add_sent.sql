@@ -1,1 +1,0 @@
-ALTER TABLE inflight_taskactivations ADD COLUMN sent INTEGER NOT NULL DEFAULT 0;

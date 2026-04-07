@@ -128,7 +128,6 @@ async fn test_get_task_success(#[case] adapter: &str) {
     assert!(task.id == "id_0");
 
     let row = store.get_by_id("id_0").await.unwrap().expect("claimed row");
-    assert!(row.sent);
     assert_eq!(row.status, InflightActivationStatus::Processing);
 }
 
