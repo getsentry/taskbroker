@@ -7,6 +7,7 @@ use tokio::time::{Duration, sleep};
 use tonic::async_trait;
 
 use super::*;
+use crate::backoff::Backoff;
 use crate::config::Config;
 use crate::push::PushError;
 use crate::store::inflight_activation::InflightActivationStore;
@@ -207,13 +208,17 @@ fn test_config() -> Arc<Config> {
     })
 }
 
+fn test_backoff() -> Arc<Backoff> {
+    Arc::new(Backoff::from_config(test_config().as_ref()))
+}
+
 #[tokio::test]
 async fn fetch_pool_delivers_activation_to_pusher() {
     let activation = make_activations(1).remove(0);
     let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::one(activation.clone()));
     let pusher = Arc::new(RecordingPusher::new(false));
 
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
+    let pool = FetchPool::new(store, test_config(), pusher.clone(), test_backoff());
     let handle = tokio::spawn(async move { pool.start().await });
 
     sleep(Duration::from_millis(200)).await;
@@ -228,7 +233,7 @@ async fn fetch_pool_calls_pusher_once_when_push_errors() {
     let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::one(activation));
     let pusher = Arc::new(RecordingPusher::new(true));
 
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
+    let pool = FetchPool::new(store, test_config(), pusher.clone(), test_backoff());
     let handle = tokio::spawn(async move { pool.start().await });
 
     sleep(Duration::from_millis(100)).await;
@@ -242,7 +247,7 @@ async fn fetch_pool_skips_pusher_when_store_errors() {
     let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::error());
     let pusher = Arc::new(RecordingPusher::new(false));
 
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
+    let pool = FetchPool::new(store, test_config(), pusher.clone(), test_backoff());
     let handle = tokio::spawn(async move { pool.start().await });
 
     sleep(Duration::from_millis(80)).await;
@@ -256,7 +261,7 @@ async fn fetch_pool_skips_pusher_when_no_pending() {
     let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::empty());
     let pusher = Arc::new(RecordingPusher::new(false));
 
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
+    let pool = FetchPool::new(store, test_config(), pusher.clone(), test_backoff());
     let handle = tokio::spawn(async move { pool.start().await });
 
     sleep(Duration::from_millis(80)).await;

@@ -7,6 +7,7 @@ use tokio::time::sleep;
 use tonic::async_trait;
 use tracing::{debug, info, warn};
 
+use crate::backoff::Backoff;
 use crate::config::Config;
 use crate::push::{PushError, PushPool};
 use crate::store::inflight_activation::{BucketRange, InflightActivation, InflightActivationStore};
@@ -67,6 +68,9 @@ pub struct FetchPool<T: TaskPusher> {
 
     /// Taskbroker configuration.
     config: Arc<Config>,
+
+    /// Shared backoff; fetch sleeps [`Backoff::get`] ms at the start of each iteration when non-zero.
+    backoff: Arc<Backoff>,
 }
 
 impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
@@ -75,23 +79,25 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
         store: Arc<dyn InflightActivationStore>,
         config: Arc<Config>,
         pusher: Arc<T>,
+        backoff: Arc<Backoff>,
     ) -> Self {
         Self {
             store,
             config,
             pusher,
+            backoff,
         }
     }
 
     /// Spawns one task per effective fetch thread ([`normalize_fetch_threads`]), each claiming pending work only in its bucket subrange.
     pub async fn start(&self) -> Result<()> {
-        let fetch_wait_ms = self.config.fetch_wait_ms;
         let fetch_threads = normalize_fetch_threads(self.config.fetch_threads);
 
         let mut fetch_pool = crate::tokio::spawn_pool(fetch_threads, |thread_index| {
             let store = self.store.clone();
             let pusher = self.pusher.clone();
             let config = self.config.clone();
+            let backoff = self.backoff.clone();
 
             let limit = Some(config.fetch_batch_size.max(1));
             let bucket = Some(bucket_range_for_fetch_thread(thread_index, fetch_threads));
@@ -111,7 +117,6 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             metrics::counter!("fetch.loop.count").increment(1);
 
                             let start = Instant::now();
-                            let mut backoff = false;
 
                             let application = config.application.as_deref();
                             let namespaces = config.namespaces.as_deref();
@@ -124,13 +129,19 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                     debug!("No pending activations");
 
                                     // Wait for pending activations to appear
-                                    backoff = true;
+                                    sleep(Duration::from_millis(config.fetch_wait_ms)).await;
                                 }
 
                                 Ok(activations) => {
                                     debug!("Fetched {} activations", activations.len());
 
                                     for activation in activations {
+                                        let w = backoff.get();
+
+                                        if w > 0 {
+                                            sleep(Duration::from_millis(w as u64)).await;
+                                        }
+
                                         let id = activation.id.clone();
 
                                         if let Err(e) = pusher.push_task(activation).await {
@@ -148,11 +159,9 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                                 )
                                             }
 
-                                            backoff = true;
+                                            backoff.increase();
                                         }
                                     }
-
-
                                 }
 
                                 Err(e) => {
@@ -162,16 +171,12 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                     );
 
                                     // Store may be down, wait before trying again
-                                    backoff = true;
+                                    sleep(Duration::from_millis(config.fetch_wait_ms)).await;
                                 }
                             };
 
                             metrics::histogram!("fetch.loop.duration")
                                 .record(start.elapsed());
-
-                            if backoff {
-                                sleep(Duration::from_millis(fetch_wait_ms)).await;
-                            }
                         } => {}
                     }
                 }
