@@ -31,7 +31,7 @@ class TaskbrokerApp:
     ) -> None:
         self.name = name
         self.metrics = self._build_metrics(metrics_class)
-        self.context_hooks: list[ContextHook] = context_hooks or []
+        self.context_hooks: list[ContextHook] = context_hooks if context_hooks is not None else []
         self._config = {
             "rpc_secret": None,
             "grpc_config": None,

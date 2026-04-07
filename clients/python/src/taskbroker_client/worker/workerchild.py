@@ -368,8 +368,15 @@ def child_process(
 
                 try:
                     with contextlib.ExitStack() as stack:
-                        for hook in context_hooks:
-                            stack.enter_context(hook.on_execute(headers))
+                        with metrics.timer(
+                            "taskworker.worker.context_rebuild.duration",
+                            tags={
+                                "namespace": activation.namespace,
+                                "taskname": activation.taskname,
+                            },
+                        ):
+                            for hook in context_hooks:
+                                stack.enter_context(hook.on_execute(headers))
                         task_func(*args, **kwargs)
                     transaction.set_status(SPANSTATUS.OK)
                 except Exception:
