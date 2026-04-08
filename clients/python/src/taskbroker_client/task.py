@@ -179,6 +179,9 @@ class Task(Generic[P, R]):
                 **headers,
             }
 
+        for hook in self._namespace.context_hooks:
+            hook.on_dispatch(headers)
+
         # Monitor config is patched in by the sentry_sdk
         # however, taskworkers do not support the nested object,
         # nor do they use it when creating checkins.

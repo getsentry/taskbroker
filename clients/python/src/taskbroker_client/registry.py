@@ -17,7 +17,7 @@ from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import ExternalTask, P, R, Task
-from taskbroker_client.types import ProducerFactory, ProducerProtocol
+from taskbroker_client.types import ContextHook, ProducerFactory, ProducerProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ class TaskNamespace:
         expires: int | datetime.timedelta | None = None,
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
+        context_hooks: list[ContextHook] | None = None,
     ):
         self.name = name
         self.application = application
@@ -50,6 +51,7 @@ class TaskNamespace:
         self.default_expires = expires  # seconds
         self.default_processing_deadline_duration = processing_deadline_duration  # seconds
         self.app_feature = app_feature or name
+        self.context_hooks: list[ContextHook] = context_hooks or []
         self._registered_tasks: dict[str, Task[Any, Any]] = {}
         self._producers: dict[str, ProducerProtocol] = {}
         self._producer_factory = producer_factory
@@ -175,7 +177,7 @@ class TaskNamespace:
         )
         # We know this type is futures.Future, but cannot assert so,
         # because it is also mock.Mock in tests.
-        produce_future.add_done_callback(  # type:ignore[union-attr]
+        produce_future.add_done_callback(  # type: ignore[union-attr]
             lambda future: self._handle_produce_future(
                 future=future,
                 tags={
@@ -289,6 +291,7 @@ class TaskRegistry:
         producer_factory: ProducerFactory,
         router: TaskRouter,
         metrics: MetricsBackend,
+        context_hooks: list[ContextHook] | None = None,
     ) -> None:
         self._application = application
         self._namespaces: dict[str, TaskNamespace] = {}
@@ -296,6 +299,7 @@ class TaskRegistry:
         self._producer_factory = producer_factory
         self._router = router
         self._metrics = metrics
+        self._context_hooks: list[ContextHook] = context_hooks or []
 
     def contains(self, name: str) -> bool:
         return name in self._namespaces
@@ -339,6 +343,7 @@ class TaskRegistry:
             expires=expires,
             processing_deadline_duration=processing_deadline_duration,
             app_feature=app_feature,
+            context_hooks=self._context_hooks,
         )
         self._namespaces[name] = namespace
 
@@ -371,6 +376,7 @@ class TaskRegistry:
             retry=retry,
             expires=expires,
             processing_deadline_duration=processing_deadline_duration,
+            context_hooks=self._context_hooks,
         )
         self._external_namespaces[key] = namespace
         return namespace
