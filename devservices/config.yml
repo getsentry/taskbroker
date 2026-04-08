@@ -38,8 +38,9 @@ services:
     environment:
       TASKBROKER_KAFKA_CLUSTER: "kafka-kafka-1:9093"
       TASKBROKER_CREATE_MISSING_TOPICS: "true"
+      TASKBROKER_GRPC_PORT: "50055"
     ports:
-      - 127.0.0.1:50051:50051
+      - 127.0.0.1:50055:50055
     networks:
       - devservices
     labels:
