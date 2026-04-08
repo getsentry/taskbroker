@@ -6,6 +6,7 @@ use tokio::time::{Duration, timeout};
 use tonic::async_trait;
 
 use super::*;
+use crate::backoff::Backoff;
 use crate::config::Config;
 use crate::test_utils::make_activations;
 
@@ -117,7 +118,10 @@ async fn push_pool_submit_enqueues_item() {
         ..Config::default()
     });
 
-    let pool = PushPool::new(config);
+    let pool = PushPool::new(
+        config.clone(),
+        Arc::new(Backoff::from_config(config.as_ref())),
+    );
     let activation = make_activations(1).remove(0);
 
     let result = pool.submit(activation).await;
@@ -131,7 +135,10 @@ async fn push_pool_submit_backpressures_when_queue_full() {
         ..Config::default()
     });
 
-    let pool = PushPool::new(config);
+    let pool = PushPool::new(
+        config.clone(),
+        Arc::new(Backoff::from_config(config.as_ref())),
+    );
 
     let first = make_activations(1).remove(0);
     let second = make_activations(1).remove(0);

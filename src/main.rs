@@ -1,7 +1,9 @@
 use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
+use elegant_departure::get_shutdown_guard;
 use std::{sync::Arc, time::Duration};
+use taskbroker::backoff::Backoff;
 use taskbroker::fetch::FetchPool;
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
@@ -130,7 +132,7 @@ async fn main() -> Result<(), Error> {
 
     // Maintenance task loop
     let maintenance_task = tokio::spawn({
-        let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+        let guard = get_shutdown_guard().shutdown_on_drop();
         let maintenance_store = store.clone();
         let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
         timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -214,7 +216,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(health_service.clone())
                 .serve(addr);
 
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+            let guard = get_shutdown_guard().shutdown_on_drop();
             info!("GRPC server listening on {}", addr);
             select! {
                 biased;
@@ -240,9 +242,39 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Global backoff mechanism for push mode
+    let backoff = Arc::new(Backoff::from_config(&config));
+
+    let backoff_decay_task = if config.delivery_mode == DeliveryMode::Push && backoff.decays() {
+        let backoff = backoff.clone();
+
+        Some(tokio::spawn(async move {
+            let guard = get_shutdown_guard().shutdown_on_drop();
+
+            let mut timer = time::interval(backoff.decay_interval());
+            timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+
+            loop {
+                select! {
+                    _ = timer.tick() => backoff.decay_tick(),
+                    _ = guard.wait() => break,
+                }
+            }
+
+            Ok(())
+        }))
+    } else {
+        None
+    };
+
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.clone()));
-    let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
+    let push_pool = Arc::new(PushPool::new(config.clone(), backoff.clone()));
+    let fetch_pool = FetchPool::new(
+        store.clone(),
+        config.clone(),
+        push_pool.clone(),
+        backoff.clone(),
+    );
 
     // Initialize push threads
     let push_task = if config.delivery_mode == DeliveryMode::Push {
@@ -274,6 +306,10 @@ async fn main() -> Result<(), Error> {
 
     if let Some(task) = fetch_task {
         departure = departure.on_completion(log_task_completion("fetch_task", task));
+    }
+
+    if let Some(task) = backoff_decay_task {
+        departure = departure.on_completion(log_task_completion("backoff_decay_task", task));
     }
 
     departure.await;

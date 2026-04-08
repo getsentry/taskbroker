@@ -15,6 +15,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
+use crate::backoff::Backoff;
 use crate::config::Config;
 use crate::store::inflight_activation::InflightActivation;
 
@@ -88,26 +89,33 @@ pub struct PushPool {
 
     /// Taskbroker configuration.
     config: Arc<Config>,
+
+    /// Shared backoff, which grows on submit/push failures.
+    backoff: Arc<Backoff>,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<Config>, backoff: Arc<Backoff>) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
             sender,
             receiver,
             config,
+            backoff,
         }
     }
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
+        let backoff = self.backoff.clone();
+
         let mut push_pool: JoinSet<Result<()>> =
             crate::tokio::spawn_pool(self.config.push_threads, |_| {
                 let endpoint = self.config.worker_endpoint.clone();
                 let receiver = self.receiver.clone();
+                let backoff = backoff.clone();
 
                 let guard = get_shutdown_guard().shutdown_on_drop();
 
@@ -161,11 +169,15 @@ impl PushPool {
                                     Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
 
                                     // Once processing deadline expires, status will be set back to pending
-                                    Err(e) => error!(
-                                        task_id = %id,
-                                        error = ?e,
-                                        "Failed to send activation to worker"
-                                    )
+                                    Err(e) => {
+                                        backoff.increase();
+
+                                        error!(
+                                            task_id = %id,
+                                            error = ?e,
+                                            "Failed to send activation to worker"
+                                        );
+                                    }
                                 };
                             }
                         }
@@ -188,11 +200,15 @@ impl PushPool {
                             Ok(_) => debug!(task_id = %id, "Activation sent to worker"),
 
                             // Once processing deadline expires, status will be set back to pending
-                            Err(e) => error!(
-                                task_id = %id,
-                                error = ?e,
-                                "Failed to send activation to worker"
-                            ),
+                            Err(e) => {
+                                backoff.increase();
+
+                                error!(
+                                    task_id = %id,
+                                    error = ?e,
+                                    "Failed to send activation to worker"
+                                );
+                            }
                         };
                     }
 

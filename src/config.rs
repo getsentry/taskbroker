@@ -303,6 +303,18 @@ pub struct Config {
 
     /// List of namespaces for push mode. When set, application must also be set (store requirement).
     pub namespaces: Option<Vec<String>>,
+
+    /// Maximum sleep for global backoff.
+    pub backoff_max_wait_ms: u32,
+
+    /// How much wait (ms) to add per backoff signal, like a submit or push failure.
+    pub backoff_increment_ms: u32,
+
+    /// How often the backoff wait decays (ms).
+    pub backoff_decay_interval_ms: u64,
+
+    /// How much wait (ms) to subtract each decay tick.
+    pub backoff_decay_amount_ms: u32,
 }
 
 impl Default for Config {
@@ -389,6 +401,10 @@ impl Default for Config {
             callback_port: 50051,
             application: None,
             namespaces: None,
+            backoff_max_wait_ms: 0,
+            backoff_increment_ms: 100,
+            backoff_decay_interval_ms: 1000,
+            backoff_decay_amount_ms: 100,
         }
     }
 }
