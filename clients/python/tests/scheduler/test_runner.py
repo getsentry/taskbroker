@@ -110,7 +110,7 @@ def test_schedulerunner_tick_one_task_time_remaining(
     )
     # Last run was two minutes ago.
     with freeze_time("2025-01-24 14:23:00 UTC"):
-        run_storage.set("test:valid", datetime(2025, 1, 24, 14, 28, 0, tzinfo=UTC))
+        run_storage.set("test:valid:300", datetime(2025, 1, 24, 14, 28, 0, tzinfo=UTC))
 
     namespace = task_app.taskregistry.get("test")
     with freeze_time("2025-01-24 14:25:00 UTC"), patch.object(namespace, "send_task") as mock_send:
@@ -118,7 +118,7 @@ def test_schedulerunner_tick_one_task_time_remaining(
         assert sleep_time == 180
         assert mock_send.call_count == 0
 
-    last_run = run_storage.read("test:valid")
+    last_run = run_storage.read("test:valid:300")
     assert last_run == datetime(2025, 1, 24, 14, 23, 0, tzinfo=UTC)
 
 
@@ -137,7 +137,7 @@ def test_schedulerunner_tick_one_task_spawned(
 
     # Last run was 5 minutes from the freeze_time below
     run_storage.read_many.return_value = {
-        "test:valid": datetime(2025, 1, 24, 14, 19, 55, tzinfo=UTC),
+        "test:valid:300": datetime(2025, 1, 24, 14, 19, 55, tzinfo=UTC),
     }
     run_storage.set.return_value = True
 
@@ -154,7 +154,9 @@ def test_schedulerunner_tick_one_task_spawned(
 
     assert run_storage.set.call_count == 1
     # set() is called with the correct next_run time
-    run_storage.set.assert_called_with("test:valid", datetime(2025, 1, 24, 14, 30, 0, tzinfo=UTC))
+    run_storage.set.assert_called_with(
+        "test:valid:300", datetime(2025, 1, 24, 14, 30, 0, tzinfo=UTC)
+    )
 
 
 @patch("taskbroker_client.scheduler.runner.capture_checkin")
@@ -173,7 +175,7 @@ def test_schedulerunner_tick_create_checkin(
 
     # Last run was 5 minutes from the freeze_time below
     run_storage.read_many.return_value = {
-        "test:valid": datetime(2025, 1, 24, 14, 19, 55, tzinfo=UTC),
+        "test:valid:300": datetime(2025, 1, 24, 14, 19, 55, tzinfo=UTC),
     }
     run_storage.set.return_value = True
     mock_capture_checkin.return_value = "checkin-id"
@@ -232,8 +234,8 @@ def test_schedulerunner_tick_key_exists_no_spawn(
 
     with freeze_time("2025-01-24 14:30:00 UTC"):
         # Set a key into run_storage to simulate another scheduler running
-        run_storage.delete("test:valid")
-        assert run_storage.set("test:valid", datetime.now(tz=UTC) + timedelta(minutes=2))
+        run_storage.delete("test:valid:300")
+        assert run_storage.set("test:valid:300", datetime.now(tz=UTC) + timedelta(minutes=2))
 
     # Our scheduler would wakeup and tick again.
     # The key exists in run_storage so we should not spawn a task.
@@ -293,7 +295,7 @@ def test_schedulerunner_tick_one_task_multiple_ticks_crontab(
             assert sleep_time == 60
 
         # Remove key to simulate expiration
-        run_storage.delete("test:valid")
+        run_storage.delete("test:valid:*/2_*_*_*_*")
         with freeze_time("2025-01-24 14:26:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 120
@@ -334,7 +336,7 @@ def test_schedulerunner_tick_multiple_tasks(
         assert mock_send.call_count == 2
 
         # Remove the redis key, as the ttl in redis doesn't respect freeze_time()
-        run_storage.delete("test:second")
+        run_storage.delete("test:second:120")
         with freeze_time("2025-01-24 14:27:01 UTC"):
             sleep_time = schedule_set.tick()
             # two minutes left on the 5 min task
@@ -371,7 +373,7 @@ def test_schedulerunner_tick_fast_and_slow(
         called = extract_sent_tasks(mock_send)
         assert called == ["valid"]
 
-        run_storage.delete("test:valid")
+        run_storage.delete("test:valid:30")
         with freeze_time("2025-01-24 14:25:30 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
@@ -379,7 +381,7 @@ def test_schedulerunner_tick_fast_and_slow(
         called = extract_sent_tasks(mock_send)
         assert called == ["valid", "valid"]
 
-        run_storage.delete("test:valid")
+        run_storage.delete("test:valid:30")
         with freeze_time("2025-01-24 14:26:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
@@ -387,7 +389,7 @@ def test_schedulerunner_tick_fast_and_slow(
         called = extract_sent_tasks(mock_send)
         assert called == ["valid", "valid", "second", "valid"]
 
-        run_storage.delete("test:valid")
+        run_storage.delete("test:valid:30")
         with freeze_time("2025-01-24 14:26:30 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
@@ -395,12 +397,12 @@ def test_schedulerunner_tick_fast_and_slow(
         called = extract_sent_tasks(mock_send)
         assert called == ["valid", "valid", "second", "valid", "valid"]
 
-        run_storage.delete("test:valid")
+        run_storage.delete("test:valid:30")
         with freeze_time("2025-01-24 14:27:00 UTC"):
             sleep_time = schedule_set.tick()
             assert sleep_time == 30
 
-        assert run_storage.read("test:valid")
+        assert run_storage.read("test:valid:30")
         called = extract_sent_tasks(mock_send)
         assert called == [
             "valid",
@@ -414,3 +416,72 @@ def test_schedulerunner_tick_fast_and_slow(
 
 def extract_sent_tasks(mock: Mock) -> list[str]:
     return [call[0][0].taskname for call in mock.call_args_list]
+
+
+def test_scheduleentry_storage_key(task_app: TaskbrokerApp) -> None:
+    run_storage = Mock(spec=RunStorage)
+    runner = ScheduleRunner(app=task_app, run_storage=run_storage)
+    runner.add("valid", {"task": "test:valid", "schedule": timedelta(minutes=5)})
+    entry = runner._entries[0]
+    assert entry.storage_key == "test:valid:300"
+    assert entry.fullname == "test:valid"
+
+    runner2 = ScheduleRunner(app=task_app, run_storage=run_storage)
+    runner2.add("valid", {"task": "test:valid", "schedule": crontab(minute="*/2")})
+    entry2 = runner2._entries[0]
+    assert entry2.storage_key == "test:valid:*/2_*_*_*_*"
+
+
+def test_schedulerunner_schedule_change_spawns_immediately(
+    task_app: TaskbrokerApp, run_storage: RunStorage
+) -> None:
+    """
+    When a schedule is changed, the old key (with a different schedule_id suffix)
+    should not block spawning. The task should run immediately on the new schedule.
+    """
+    # Simulate the old scheduler having stored state with a 3-hour schedule
+    old_storage_key = "test:valid:10800"  # 3 hours = 10800 seconds
+    with freeze_time("2025-01-24 12:00:00 UTC"):
+        # Old key with a 3h TTL would normally block for up to 3 more hours
+        run_storage.set(old_storage_key, datetime(2025, 1, 24, 15, 0, 0, tzinfo=UTC))
+
+    # New scheduler with a changed schedule (10 minutes = 600s)
+    schedule_set = ScheduleRunner(app=task_app, run_storage=run_storage)
+    schedule_set.add("valid", {"task": "test:valid", "schedule": timedelta(minutes=10)})
+
+    namespace = task_app.taskregistry.get("test")
+    with freeze_time("2025-01-24 14:25:00 UTC"), patch.object(namespace, "send_task") as mock_send:
+        sleep_time = schedule_set.tick()
+        # Task should spawn immediately — no last_run found under the new key
+        assert mock_send.call_count == 1
+        assert sleep_time == 600  # 10 minutes
+
+
+def test_runstorage_read_many_backwards_compat(run_storage: RunStorage) -> None:
+    """
+    read_many() should fall back to the legacy key (old format without schedule_id suffix)
+    when the new-format key has no data. When the new key exists it should take precedence.
+    """
+    with freeze_time("2025-01-24 14:25:00 UTC"):
+        now = datetime.now(tz=UTC)
+        # Write state under the old legacy key format (no schedule_id suffix)
+        run_storage._redis.set(
+            run_storage._make_key("test:valid"),
+            now.isoformat(),
+            ex=300,
+        )
+
+    # New-format key doesn't exist yet — should fall back to legacy value
+    result = run_storage.read_many(["test:valid:300"])
+    assert result["test:valid:300"] == now
+
+    # Once a new-format key is written, it wins over the legacy key
+    with freeze_time("2025-01-24 14:26:00 UTC"):
+        new_time = datetime.now(tz=UTC)
+        run_storage._redis.set(
+            run_storage._make_key("test:valid:300"),
+            new_time.isoformat(),
+            ex=300,
+        )
+    result2 = run_storage.read_many(["test:valid:300"])
+    assert result2["test:valid:300"] == new_time
