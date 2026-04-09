@@ -76,6 +76,7 @@ pub struct UpkeepResults {
     completed: u64,
     failed: u64,
     pending: u32,
+    sending: u32,
     processing: u32,
     delay: u32,
     deadlettered: u64,
@@ -124,6 +125,7 @@ pub async fn do_upkeep(
         completed: 0,
         failed: 0,
         pending: 0,
+        sending: 0,
         processing: 0,
         delay: 0,
         deadlettered: 0,
@@ -383,6 +385,7 @@ pub async fn do_upkeep(
     if let Ok(depths) = depth_counts {
         result_context.pending = depths.pending as u32;
         result_context.delay = depths.delay as u32;
+        result_context.sending = depths.sending as u32;
         result_context.processing = depths.processing as u32;
     }
 
@@ -400,6 +403,7 @@ pub async fn do_upkeep(
             result_context.expired,
             result_context.retried,
             result_context.pending,
+            result_context.sending,
             result_context.processing,
             result_context.delay,
             result_context.delay_elapsed,
@@ -452,6 +456,7 @@ pub async fn do_upkeep(
 
     // State of inflight tasks
     metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
+    metrics::gauge!("upkeep.current_sending_tasks").set(result_context.sending);
     metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
     metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
