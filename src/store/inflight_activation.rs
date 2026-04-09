@@ -990,7 +990,8 @@ impl InflightActivationStore for SqliteActivationStore {
         let mut conn = self
             .acquire_write_conn_metric("mark_activation_sent")
             .await?;
-        sqlx::query(
+
+        let result = sqlx::query(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 AND status = $3",
         )
         .bind(InflightActivationStatus::Processing)
@@ -998,6 +999,14 @@ impl InflightActivationStore for SqliteActivationStore {
         .bind(InflightActivationStatus::Sending)
         .execute(&mut *conn)
         .await?;
+
+        if result.rows_affected() == 0 {
+            warn!(
+                task_id = %id,
+                "Activation could not be marked as sent, it may be missing or its status may have already changed"
+            );
+        }
+
         Ok(())
     }
 

@@ -94,6 +94,7 @@ impl UpkeepResults {
             && self.completed == 0
             && self.failed == 0
             && self.pending == 0
+            && self.sending == 0
             && self.processing == 0
             && self.delay == 0
             && self.discarded == 0
