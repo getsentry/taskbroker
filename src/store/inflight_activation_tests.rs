@@ -13,11 +13,12 @@ use crate::{
         InflightActivationStoreConfig, ProcessingDeadlineCounts, QueryResult,
         SqliteActivationStore, create_sqlite_pool,
     },
-    store::postgres_activation_store::build_pg_connect_options,
+    store::postgres_activation_store::PostgresActivationStoreConfig,
     test_utils::{
         StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
-        create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
-        make_activations_with_namespace, replace_retry_state,
+        create_integration_config_with_ssl, create_test_store, generate_temp_filename,
+        generate_unique_namespace, make_activations, make_activations_with_namespace,
+        replace_retry_state,
     },
 };
 
@@ -73,40 +74,11 @@ async fn test_sqlite_create_db() {
 }
 
 #[test]
-fn test_connect_opts_plain_url() {
-    let pg_url = "postgresql://user:pass@localhost:5432";
-    let custom_db_name = "my-custom-db";
-    let opts = build_pg_connect_options(pg_url, custom_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some(custom_db_name));
-    assert_eq!(opts.get_host(), "localhost");
-    assert_eq!(opts.get_port(), 5432);
-}
-
-#[test]
 fn test_connect_opts_preserves_sslmode_query_param() {
-    let pg_url_with_query = "postgresql://user:pass@localhost:5432?sslmode=require";
-    let custom_db_name = "my-custom-db";
-    let opts = build_pg_connect_options(pg_url_with_query, custom_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some(custom_db_name));
+    let config = create_integration_config_with_ssl();
+    let opts = PostgresActivationStoreConfig::from_config(&config).pg_connection;
     assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
-}
-
-#[test]
-fn test_connect_opts_overrides_existing_db_in_url() {
-    let pg_url_with_existing_db = "postgresql://user:pass@localhost:5432/olddb-in-path";
-    let new_db_name = "newdb";
-    let opts = build_pg_connect_options(pg_url_with_existing_db, new_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some(new_db_name));
-}
-
-#[test]
-fn test_connect_opts_overrides_db_and_preserves_tls() {
-    let pg_url_with_existing_db_and_tls =
-        "postgresql://user:pass@localhost:5432/olddb?sslmode=verify-ca";
-    let new_db_name = "newdb";
-    let opts = build_pg_connect_options(pg_url_with_existing_db_and_tls, new_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some("newdb"));
-    assert!(matches!(opts.get_ssl_mode(), PgSslMode::VerifyCa));
+    assert_eq!(opts.get_host(), "localhost");
 }
 
 #[tokio::test]

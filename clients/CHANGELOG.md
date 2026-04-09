@@ -1,4 +1,19 @@
 # Changelog
+## 0.1.8
+
+### New Features ✨
+
+- (taskworker) Add Push Mode to Taskworker by @george-sentry in [#576](https://github.com/getsentry/taskbroker/pull/576)
+
+### Internal Changes 🔧
+
+- Bump sentry-arroyo to 2.38.7 by @bmckerry in [#585](https://github.com/getsentry/taskbroker/pull/585)
+- Bump sentry-arroyo to 2.38.5 by @bmckerry in [#583](https://github.com/getsentry/taskbroker/pull/583)
+
+### Other
+
+- Add headers and hooks to taskbroker client by @gricha in [#587](https://github.com/getsentry/taskbroker/pull/587)
+
 ## 0.1.7
 
 - feat(client) Make the ProducerFactory depend on a protocol by @markstory in [#578](https://github.com/getsentry/taskbroker/pull/578)
