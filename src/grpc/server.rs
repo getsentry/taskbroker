@@ -11,7 +11,7 @@ use tonic::{Request, Response, Status};
 
 use crate::config::{Config, DeliveryMode};
 use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
-use tracing::{error, instrument};
+use tracing::{error, instrument, warn};
 
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
@@ -42,7 +42,7 @@ impl ConsumerService for TaskbrokerServer {
             .await;
 
         match inflight {
-            Ok(None) => Err(Status::not_found("No pending activation")),
+            Ok(None) => Err(Status::not_found("No pending activations")),
 
             Ok(Some(inflight)) => {
                 let now = Utc::now();
@@ -137,8 +137,12 @@ impl ConsumerService for TaskbrokerServer {
                 Err(Status::internal("Unable to fetch next task"))
             }
 
-            // If we return an error, the worker will place the result back in its internal queue and send the update again in the future, which is not desired
-            Ok(None) => Ok(Response::new(SetTaskStatusResponse { task: None })),
+            Ok(None) => {
+                warn!("No pending activations");
+
+                // If we return an error, the worker will place the result back in its internal queue and send the update again in the future, which is not desired
+                Ok(Response::new(SetTaskStatusResponse { task: None }))
+            }
 
             Ok(Some(inflight)) => {
                 if inflight.processing_attempts < 1 {

@@ -306,7 +306,7 @@ pub async fn do_upkeep(
                 Some(&demoted_namespaces),
                 None,
                 None,
-                InflightActivationStatus::Processing,
+                InflightActivationStatus::Sending,
             )
             .await
         {

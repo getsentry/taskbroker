@@ -403,12 +403,14 @@ impl InflightActivationStore for PostgresActivationStore {
         let sql = "
              SELECT COUNT(*) FILTER (WHERE status = $1) AS pending,
                     COUNT(*) FILTER (WHERE status = $2) AS delay,
-                    COUNT(*) FILTER (WHERE status = $3) AS processing
+                    COUNT(*) FILTER (WHERE status = $3) AS sending,
+                    COUNT(*) FILTER (WHERE status = $4) AS processing
              FROM inflight_taskactivations";
 
-        let row: (i64, i64, i64) = sqlx::query_as(sql)
+        let row: (i64, i64, i64, i64) = sqlx::query_as(sql)
             .bind(InflightActivationStatus::Pending.to_string())
             .bind(InflightActivationStatus::Delay.to_string())
+            .bind(InflightActivationStatus::Sending.to_string())
             .bind(InflightActivationStatus::Processing.to_string())
             .fetch_one(&self.read_pool)
             .await?;
@@ -416,7 +418,8 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(DepthCounts {
             pending: row.0 as usize,
             delay: row.1 as usize,
-            processing: row.2 as usize,
+            sending: row.2 as usize,
+            processing: row.3 as usize,
         })
     }
 

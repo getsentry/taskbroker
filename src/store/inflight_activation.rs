@@ -376,6 +376,9 @@ pub struct DepthCounts {
     /// Number of delayed tasks in the store.
     pub delay: usize,
 
+    /// The number of tasks being sent in the store.
+    pub sending: usize,
+
     /// The number of processing tasks in the store.
     pub processing: usize,
 }
@@ -494,15 +497,17 @@ pub trait InflightActivationStore: Send + Sync {
     /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
     /// Default implementation uses separate calls, but stores may override with a single query.
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
-        let (pending, delay, processing) = join!(
+        let (pending, delay, sending, processing) = join!(
             self.count_by_status(InflightActivationStatus::Pending),
             self.count_by_status(InflightActivationStatus::Delay),
+            self.count_by_status(InflightActivationStatus::Sending),
             self.count_by_status(InflightActivationStatus::Processing),
         );
 
         Ok(DepthCounts {
             pending: pending?,
             delay: delay?,
+            sending: sending?,
             processing: processing?,
         })
     }
