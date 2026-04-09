@@ -51,7 +51,7 @@ async fn test_get_task(#[case] adapter: &str) {
     assert!(response.is_err());
     let e = response.unwrap_err();
     assert_eq!(e.code(), Code::NotFound);
-    assert_eq!(e.message(), "No pending activation");
+    assert_eq!(e.message(), "No pending activations");
 }
 
 #[tokio::test]
