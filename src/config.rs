@@ -151,11 +151,24 @@ pub struct Config {
     /// in production the migrations shouldn't be run by the taskbroker.
     pub run_migrations: bool,
 
-    /// The url of the postgres database to use for the inflight activation store.
-    pub pg_url: String,
+    /// The host of the postgres database to use for the inflight activation store.
+    pub pg_host: String,
+
+    /// The port of the postgres database to use for the inflight activation store.
+    pub pg_port: u16,
+
+    /// The username of the postgres database to use for the inflight activation store.
+    pub pg_username: String,
+
+    /// The password of the postgres database to use for the inflight activation store.
+    pub pg_password: String,
 
     /// The name of the postgres database to use for the inflight activation store.
     pub pg_database_name: String,
+
+    /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
+    /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
+    pub pg_extra_query_params: Option<String>,
 
     /// The path to the sqlite database
     pub db_path: String,
@@ -334,8 +347,12 @@ impl Default for Config {
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             database_adapter: DatabaseAdapter::Sqlite,
             run_migrations: false,
-            pg_url: "postgres://postgres:password@sentry-postgres-1:5432/".to_owned(),
+            pg_host: "sentry-postgres-1".to_owned(),
+            pg_port: 5432,
+            pg_username: "postgres".to_owned(),
+            pg_password: "password".to_owned(),
             pg_database_name: "default".to_owned(),
+            pg_extra_query_params: None,
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,

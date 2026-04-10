@@ -192,8 +192,23 @@ impl InflightActivationBuilder {
     }
 }
 
-pub fn get_pg_url() -> String {
-    var("TASKBROKER_PG_URL").unwrap_or("postgres://postgres:password@localhost:5432/".to_string())
+pub fn get_pg_host() -> String {
+    var("TASKBROKER_PG_HOST").unwrap_or("localhost".to_string())
+}
+
+pub fn get_pg_port() -> u16 {
+    var("TASKBROKER_PG_PORT")
+        .unwrap_or("5432".to_string())
+        .parse()
+        .unwrap()
+}
+
+pub fn get_pg_username() -> String {
+    var("TASKBROKER_PG_USERNAME").unwrap_or("postgres".to_string())
+}
+
+pub fn get_pg_password() -> String {
+    var("TASKBROKER_PG_PASSWORD").unwrap_or("password".to_string())
 }
 
 pub fn get_pg_database_name() -> String {
@@ -273,8 +288,31 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore
 /// with [`reset_topic`]
 pub fn create_integration_config() -> Arc<Config> {
     let config = Config {
-        pg_url: get_pg_url(),
+        pg_host: get_pg_host(),
+        pg_port: get_pg_port(),
+        pg_username: get_pg_username(),
+        pg_password: get_pg_password(),
         pg_database_name: get_pg_database_name(),
+        run_migrations: true,
+        kafka_topic: "taskbroker-test".into(),
+        kafka_auto_offset_reset: "earliest".into(),
+        ..Config::default()
+    };
+
+    Arc::new(config)
+}
+
+/// Create a Config instance that uses SSL
+/// and earliest auto_offset_reset. This is intended to be combined
+/// with [`reset_topic`]
+pub fn create_integration_config_with_ssl() -> Arc<Config> {
+    let config = Config {
+        pg_host: get_pg_host(),
+        pg_port: get_pg_port(),
+        pg_username: get_pg_username(),
+        pg_password: get_pg_password(),
+        pg_database_name: get_pg_database_name(),
+        pg_extra_query_params: Some("sslmode=require".to_string()),
         run_migrations: true,
         kafka_topic: "taskbroker-test".into(),
         kafka_auto_offset_reset: "earliest".into(),
@@ -286,7 +324,10 @@ pub fn create_integration_config() -> Arc<Config> {
 
 pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
     let config = Config {
-        pg_url: get_pg_url(),
+        pg_host: get_pg_host(),
+        pg_port: get_pg_port(),
+        pg_username: get_pg_username(),
+        pg_password: get_pg_password(),
         pg_database_name: get_pg_database_name(),
         run_migrations: true,
         kafka_topic: topic,
