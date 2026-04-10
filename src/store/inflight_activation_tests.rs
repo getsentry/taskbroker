@@ -414,7 +414,7 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
             Some(&namespaces),
             None,
             None,
-            InflightActivationStatus::Sending,
+            InflightActivationStatus::Claimed,
         )
         .await
         .unwrap();
@@ -422,10 +422,10 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     assert_eq!(result.len(), 2);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
-    assert_eq!(result[1].status, InflightActivationStatus::Sending);
+    assert_eq!(result[1].status, InflightActivationStatus::Claimed);
     assert_eq!(result[0].id, "id_1");
     assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Sending);
+    assert_eq!(result[0].status, InflightActivationStatus::Claimed);
     store.remove_db().await.unwrap();
 }
 
@@ -456,7 +456,7 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
             Some(&namespaces),
             Some(2),
             None,
-            InflightActivationStatus::Sending,
+            InflightActivationStatus::Claimed,
         )
         .await
         .unwrap();
@@ -648,13 +648,13 @@ async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
     assert_eq!(got.len(), N);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Sending)
+            .all(|a| a.status == InflightActivationStatus::Claimed)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            sending: N,
+            claimed: N,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -682,7 +682,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert_eq!(got.len(), X as usize);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Sending)
+            .all(|a| a.status == InflightActivationStatus::Claimed)
     );
     assert_eq!(
         store.count_pending_activations().await.unwrap(),
@@ -691,7 +691,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert_counts(
         StatusCount {
             pending: N - X as usize,
-            sending: X as usize,
+            claimed: X as usize,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -719,13 +719,13 @@ async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str)
     assert_eq!(got.len(), Y);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Sending)
+            .all(|a| a.status == InflightActivationStatus::Claimed)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            sending: Y,
+            claimed: Y,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -1015,13 +1015,13 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     let mut batch = make_activations(2);
     batch[0].status = InflightActivationStatus::Processing;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
-    batch[1].status = InflightActivationStatus::Sending;
+    batch[1].status = InflightActivationStatus::Claimed;
     batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
     assert!(store.store(batch).await.is_ok());
     assert_counts(
         StatusCount {
             processing: 1,
-            sending: 1,
+            claimed: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -1041,7 +1041,7 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     assert_counts(
         StatusCount {
             pending: 1,
-            sending: 1,
+            claimed: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -1278,7 +1278,7 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
 async fn test_handle_processing_deadline_unsent_no_attempt_increment(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(1);
-    batch[0].status = InflightActivationStatus::Sending;
+    batch[0].status = InflightActivationStatus::Claimed;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
     assert!(store.store(batch.clone()).await.is_ok());
     let count = store.handle_processing_deadline().await.unwrap();
@@ -1303,7 +1303,7 @@ async fn test_handle_processing_deadline_unsent_no_attempt_increment(#[case] ada
 async fn test_handle_processing_deadline_at_most_once_unsent_failure(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(1);
-    batch[0].status = InflightActivationStatus::Sending;
+    batch[0].status = InflightActivationStatus::Claimed;
     batch[0].at_most_once = true;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
     assert!(store.store(batch.clone()).await.is_ok());

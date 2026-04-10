@@ -30,14 +30,14 @@ use crate::config::Config;
 
 pub type BucketRange = (i16, i16);
 
-/// The members of this enum should be synced with the members
-/// of InflightActivationStatus in sentry_protos
+/// The members of this enum should be a superset of the members
+/// of `InflightActivationStatus` in `sentry_protos`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
 pub enum InflightActivationStatus {
     /// Unused but necessary to align with sentry-protos
     Unspecified,
     Pending,
-    Sending,
+    Claimed,
     Processing,
     Failure,
     Retry,
@@ -59,8 +59,8 @@ impl FromStr for InflightActivationStatus {
             Ok(InflightActivationStatus::Unspecified)
         } else if s == "Pending" {
             Ok(InflightActivationStatus::Pending)
-        } else if s == "Sending" {
-            Ok(InflightActivationStatus::Sending)
+        } else if s == "Claimed" {
+            Ok(InflightActivationStatus::Claimed)
         } else if s == "Processing" {
             Ok(InflightActivationStatus::Processing)
         } else if s == "Failure" {
@@ -376,8 +376,8 @@ pub struct DepthCounts {
     /// Number of delayed tasks in the store.
     pub delay: usize,
 
-    /// The number of tasks being sent in the store.
-    pub sending: usize,
+    /// Activations claimed for push delivery but not yet marked processing.
+    pub claimed: usize,
 
     /// The number of processing tasks in the store.
     pub processing: usize,
@@ -411,7 +411,7 @@ pub trait InflightActivationStore: Send + Sync {
         status: InflightActivationStatus,
     ) -> Result<Vec<InflightActivation>, Error>;
 
-    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Sending` until `mark_activation_sent` moves to `Processing`.
+    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
     async fn claim_activations_for_push(
         &self,
         application: Option<&str>,
@@ -434,7 +434,7 @@ pub trait InflightActivationStore: Send + Sync {
             namespaces,
             limit,
             bucket,
-            InflightActivationStatus::Sending,
+            InflightActivationStatus::Claimed,
         )
         .await
     }
@@ -477,7 +477,7 @@ pub trait InflightActivationStore: Send + Sync {
     }
 
     /// Record successful push.
-    async fn mark_activation_sent(&self, id: &str) -> Result<(), Error>;
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error>;
 
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
@@ -497,17 +497,17 @@ pub trait InflightActivationStore: Send + Sync {
     /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
     /// Default implementation uses separate calls, but stores may override with a single query.
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
-        let (pending, delay, sending, processing) = join!(
+        let (pending, delay, claimed, processing) = join!(
             self.count_by_status(InflightActivationStatus::Pending),
             self.count_by_status(InflightActivationStatus::Delay),
-            self.count_by_status(InflightActivationStatus::Sending),
+            self.count_by_status(InflightActivationStatus::Claimed),
             self.count_by_status(InflightActivationStatus::Processing),
         );
 
         Ok(DepthCounts {
             pending: pending?,
             delay: delay?,
-            sending: sending?,
+            claimed: claimed?,
             processing: processing?,
         })
     }
@@ -986,9 +986,9 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn mark_activation_sent(&self, id: &str) -> Result<(), Error> {
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
         let mut conn = self
-            .acquire_write_conn_metric("mark_activation_sent")
+            .acquire_write_conn_metric("mark_activation_processing")
             .await?;
 
         let result = sqlx::query(
@@ -996,7 +996,7 @@ impl InflightActivationStore for SqliteActivationStore {
         )
         .bind(InflightActivationStatus::Processing)
         .bind(id)
-        .bind(InflightActivationStatus::Sending)
+        .bind(InflightActivationStatus::Claimed)
         .execute(&mut *conn)
         .await?;
 
@@ -1172,11 +1172,11 @@ impl InflightActivationStore for SqliteActivationStore {
         .bind(InflightActivationStatus::Failure)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Processing)
-        .bind(InflightActivationStatus::Sending)
+        .bind(InflightActivationStatus::Claimed)
         .execute(&mut *atomic)
         .await?;
 
-        // Revert activations that weren't delivered back to 'pending' without consuming an attempt
+        // Revert activations that weren't delivered back to 'pending' without consuming an attempt (release claims)
         let unsent = sqlx::query(
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
@@ -1187,7 +1187,7 @@ impl InflightActivationStore for SqliteActivationStore {
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
-        .bind(InflightActivationStatus::Sending)
+        .bind(InflightActivationStatus::Claimed)
         .execute(&mut *atomic)
         .await?;
 

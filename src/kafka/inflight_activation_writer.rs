@@ -85,7 +85,7 @@ impl Reducer for InflightActivationWriter {
         let DepthCounts {
             pending,
             delay,
-            sending,
+            claimed,
             processing,
         } = self
             .store
@@ -96,7 +96,7 @@ impl Reducer for InflightActivationWriter {
         let exceeded_pending_limit = pending + batch.len() > self.config.max_pending_activations;
         let exceeded_delay_limit = delay + batch.len() > self.config.max_delay_activations;
         let exceeded_processing_limit =
-            processing + sending >= self.config.max_processing_activations;
+            processing + claimed >= self.config.max_processing_activations;
         let exceeded_db_size = if let Some(db_max_size) = self.config.db_max_size {
             self.store
                 .db_size()

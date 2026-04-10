@@ -91,7 +91,7 @@ impl InflightActivationStore for MockStore {
         })
     }
 
-    async fn mark_activation_sent(&self, _id: &str) -> Result<(), Error> {
+    async fn mark_activation_processing(&self, _id: &str) -> Result<(), Error> {
         Ok(())
     }
 

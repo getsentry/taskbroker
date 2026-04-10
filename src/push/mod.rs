@@ -109,8 +109,9 @@ impl PushPool {
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
         let store = self.store.clone();
-        let mut push_pool: JoinSet<Result<()>> =
-            crate::tokio::spawn_pool(self.config.push_threads, |_| {
+        let mut push_pool: JoinSet<Result<()>> = crate::tokio::spawn_pool(
+            self.config.push_threads,
+            |_| {
                 let endpoint = self.config.worker_endpoint.clone();
                 let receiver = self.receiver.clone();
                 let store = store.clone();
@@ -167,7 +168,7 @@ impl PushPool {
                                     Ok(_) => {
                                         debug!(task_id = %id, "Activation sent to worker");
 
-                                        if let Err(e) = store.mark_activation_sent(&id).await {
+                                        if let Err(e) = store.mark_activation_processing(&id).await {
                                             error!(
                                                 task_id = %id,
                                                 error = ?e,
@@ -204,7 +205,7 @@ impl PushPool {
                             Ok(_) => {
                                 debug!(task_id = %id, "Activation sent to worker");
 
-                                if let Err(e) = store.mark_activation_sent(&id).await {
+                                if let Err(e) = store.mark_activation_processing(&id).await {
                                     error!(
                                         task_id = %id,
                                         error = ?e,
@@ -224,7 +225,8 @@ impl PushPool {
 
                     Ok(())
                 }
-            });
+            },
+        );
 
         while let Some(result) = push_pool.join_next().await {
             match result {
