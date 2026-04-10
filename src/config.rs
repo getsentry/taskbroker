@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 use figment::{
     Figment, Metadata, Profile, Provider,
     providers::{Env, Format, Yaml},
@@ -16,6 +17,17 @@ pub enum DatabaseAdapter {
 
     /// PostgreSQL database adapter
     Postgres,
+}
+
+/// How the taskbroker delivers tasks to workers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeliveryMode {
+    /// Workers pull tasks from the broker.
+    Pull,
+
+    /// Broker pushes tasks to workers.
+    Push,
 }
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
@@ -139,11 +151,24 @@ pub struct Config {
     /// in production the migrations shouldn't be run by the taskbroker.
     pub run_migrations: bool,
 
-    /// The url of the postgres database to use for the inflight activation store.
-    pub pg_url: String,
+    /// The host of the postgres database to use for the inflight activation store.
+    pub pg_host: String,
+
+    /// The port of the postgres database to use for the inflight activation store.
+    pub pg_port: u16,
+
+    /// The username of the postgres database to use for the inflight activation store.
+    pub pg_username: String,
+
+    /// The password of the postgres database to use for the inflight activation store.
+    pub pg_password: String,
 
     /// The name of the postgres database to use for the inflight activation store.
     pub pg_database_name: String,
+
+    /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
+    /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
+    pub pg_extra_query_params: Option<String>,
 
     /// The path to the sqlite database
     pub db_path: String,
@@ -238,6 +263,46 @@ pub struct Config {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
+
+    /// How to deliver tasks to workers: "push" or "pull".
+    pub delivery_mode: DeliveryMode,
+
+    /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
+    /// If it's not a power of two or it's too large, it will be rounded to a valid nearby value.
+    pub fetch_threads: usize,
+
+    /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
+    pub fetch_wait_ms: u64,
+
+    /// The number of activations to claim with a single fetch query.
+    pub fetch_batch_size: i32,
+
+    /// The number of concurrent pushers each dispatcher should run.
+    pub push_threads: usize,
+
+    /// The size of the push queue.
+    pub push_queue_size: usize,
+
+    /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
+    pub push_queue_timeout_ms: u64,
+
+    /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
+    pub push_timeout_ms: u64,
+
+    /// The worker service endpoint.
+    pub worker_endpoint: String,
+
+    /// The hostname used to construct `callback_url` for task push requests.
+    pub callback_addr: String,
+
+    /// The port used to construct `callback_url` for task push requests.
+    pub callback_port: u32,
+
+    /// Application filter for push mode. When set, only pending activations for this application are considered.
+    pub application: Option<String>,
+
+    /// List of namespaces for push mode. When set, application must also be set (store requirement).
+    pub namespaces: Option<Vec<String>>,
 }
 
 impl Default for Config {
@@ -282,8 +347,12 @@ impl Default for Config {
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             database_adapter: DatabaseAdapter::Sqlite,
             run_migrations: false,
-            pg_url: "postgres://postgres:password@sentry-postgres-1:5432/".to_owned(),
+            pg_host: "sentry-postgres-1".to_owned(),
+            pg_port: 5432,
+            pg_username: "postgres".to_owned(),
+            pg_password: "password".to_owned(),
             pg_database_name: "default".to_owned(),
+            pg_extra_query_params: None,
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
@@ -307,6 +376,19 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            delivery_mode: DeliveryMode::Pull,
+            fetch_threads: 1,
+            fetch_wait_ms: 100,
+            fetch_batch_size: 1,
+            push_threads: 1,
+            push_queue_size: 1,
+            push_queue_timeout_ms: 5000,
+            push_timeout_ms: 30000,
+            worker_endpoint: "http://127.0.0.1:50052".into(),
+            callback_addr: "0.0.0.0".into(),
+            callback_port: 50051,
+            application: None,
+            namespaces: None,
         }
     }
 }
@@ -421,7 +503,7 @@ impl Provider for Config {
 mod tests {
     use std::{borrow::Cow, collections::BTreeMap};
 
-    use super::{Config, DatabaseAdapter};
+    use super::{Config, DatabaseAdapter, DeliveryMode};
     use crate::{Args, logging::LogFormat};
     use figment::Jail;
 
@@ -707,6 +789,129 @@ mod tests {
                 producer_config.get("ssl.key.location").unwrap(),
                 "/etc/ssl/taskbroker/private.key"
             );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_default_delivery_mode() {
+        let config = Config::default();
+        assert_eq!(config.delivery_mode, DeliveryMode::Pull);
+    }
+
+    #[test]
+    fn test_from_args_delivery_mode_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_DELIVERY_MODE", "push");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.delivery_mode, DeliveryMode::Push);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_args_delivery_mode_from_config_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", "delivery_mode: push")?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.delivery_mode, DeliveryMode::Push);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_default_push_callback_fields() {
+        let config = Config::default();
+        assert_eq!(config.callback_addr, "0.0.0.0");
+        assert_eq!(config.callback_port, 50051);
+    }
+
+    #[test]
+    fn test_from_args_push_callback_fields_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_CALLBACK_ADDR", "127.0.0.1");
+            jail.set_env("TASKBROKER_CALLBACK_PORT", "51000");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.callback_addr, "127.0.0.1");
+            assert_eq!(config.callback_port, 51000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_args_push_callback_fields_from_config_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+                callback_addr: 10.0.0.1
+                callback_port: 52000
+            "#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.callback_addr, "10.0.0.1");
+            assert_eq!(config.callback_port, 52000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_default_application_and_namespaces() {
+        let config = Config::default();
+        assert_eq!(config.application, None);
+        assert_eq!(config.namespaces, None);
+    }
+
+    #[test]
+    fn test_from_args_application_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_APPLICATION", "getsentry");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.application.as_deref(), Some("getsentry"));
+            assert_eq!(config.namespaces, None);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_from_args_application_and_namespaces_from_config_file() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+                application: getsentry
+                namespaces:
+                  - ns1
+                  - ns2
+            "#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(config.application.as_deref(), Some("getsentry"));
+            assert_eq!(config.namespaces, Some(vec!["ns1".into(), "ns2".into()]));
 
             Ok(())
         });

@@ -1,14 +1,18 @@
+import datetime
 import importlib
 from collections.abc import Iterable
 from typing import Any
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
+from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE
 from taskbroker_client.imports import import_string
 from taskbroker_client.metrics import MetricsBackend
-from taskbroker_client.registry import TaskRegistry
+from taskbroker_client.registry import ExternalNamespace, TaskNamespace, TaskRegistry
+from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
-from taskbroker_client.types import AtMostOnceStore, ProducerFactory
+from taskbroker_client.task import Task
+from taskbroker_client.types import AtMostOnceStore, ContextHook, ProducerFactory
 
 
 class TaskbrokerApp:
@@ -23,8 +27,11 @@ class TaskbrokerApp:
         router_class: str | TaskRouter = "taskbroker_client.router.DefaultRouter",
         metrics_class: str | MetricsBackend = "taskbroker_client.metrics.NoOpMetricsBackend",
         at_most_once_store: AtMostOnceStore | None = None,
+        context_hooks: list[ContextHook] | None = None,
     ) -> None:
+        self.name = name
         self.metrics = self._build_metrics(metrics_class)
+        self.context_hooks: list[ContextHook] = context_hooks if context_hooks is not None else []
         self._config = {
             "rpc_secret": None,
             "grpc_config": None,
@@ -36,6 +43,7 @@ class TaskbrokerApp:
             producer_factory=producer_factory,
             router=self._build_router(router_class),
             metrics=self.metrics,
+            context_hooks=self.context_hooks,
         )
         self.at_most_once_store(at_most_once_store)
 
@@ -70,6 +78,63 @@ class TaskbrokerApp:
         for key, value in config.items():
             if key in self._config:
                 self._config[key] = value
+
+    def create_namespace(
+        self,
+        name: str,
+        *,
+        retry: Retry | None = None,
+        expires: int | datetime.timedelta | None = None,
+        processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
+        app_feature: str | None = None,
+    ) -> TaskNamespace:
+        """
+        Create a task namespace.
+
+        Namespaces are mapped onto topics through the configured router allowing
+        infrastructure to be scaled based on a region's requirements.
+
+        Namespaces can define default behavior for tasks defined within a namespace.
+        """
+        return self._taskregistry.create_namespace(
+            name=name,
+            retry=retry,
+            expires=expires,
+            processing_deadline_duration=processing_deadline_duration,
+            app_feature=app_feature,
+        )
+
+    def create_external_namespace(
+        self,
+        name: str,
+        application: str,
+        *,
+        retry: Retry | None = None,
+        expires: int | datetime.timedelta | None = None,
+        processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
+    ) -> ExternalNamespace:
+        """
+        Create a namespace for tasks belonging to an external (target) application.
+
+        Tasks registered in external namespaces are routed using the host application's
+        task router. When routing is required for an external namespace the namespace
+        name sent to the router will be in the form of `{application}:{namespace_name}`
+        """
+        return self._taskregistry.create_external_namespace(
+            name=name,
+            application=application,
+            retry=retry,
+            expires=expires,
+            processing_deadline_duration=processing_deadline_duration,
+        )
+
+    def get_task(self, namespace: str, task: str) -> Task[Any, Any]:
+        """Fetch a task by namespace and name."""
+        return self._taskregistry.get(namespace).get(task)
+
+    def get_namespace(self, namespace: str) -> TaskNamespace:
+        """Fetch a task by namespace and name."""
+        return self._taskregistry.get(namespace)
 
     def set_modules(self, modules: Iterable[str]) -> None:
         """

@@ -128,12 +128,16 @@ class Task(Generic[P, R]):
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
         if ALWAYS_EAGER:
-            self._func(*args, **kwargs)
+            self._call_func(*args, **kwargs)
         else:
             self._namespace.send_task(
                 activation,
                 wait_for_delivery=self.wait_for_delivery,
             )
+
+    def _call_func(self, *args: Any, **kwargs: Any) -> None:
+        # Overridden in ExternalTask
+        self._func(*args, **kwargs)
 
     def _signal_send(self, task: Task[Any, Any], args: Any, kwargs: Any) -> None:
         """
@@ -174,6 +178,9 @@ class Task(Generic[P, R]):
                 "baggage": sentry_sdk.get_baggage() or "",
                 **headers,
             }
+
+        for hook in self._namespace.context_hooks:
+            hook.on_dispatch(headers)
 
         # Monitor config is patched in by the sentry_sdk
         # however, taskworkers do not support the nested object,
@@ -256,3 +263,27 @@ class Task(Generic[P, R]):
         if not retry:
             return False
         return retry.should_retry(state, exc)
+
+
+class ExternalTask(Task[P, R]):
+    """
+    A task stub for tasks defined in another application.
+
+    ExternalTask instances can be dispatched to Kafka via delay() or apply_async(),
+    but cannot be called directly. They route to the target application's topic.
+    """
+
+    def _call_func(self, *args: Any, **kwargs: Any) -> None:
+        """
+        This method is called by delay() and apply_async()
+        """
+        raise ValueError(
+            "External tasks cannot be called within an ALWAYS_EAGER block. "
+            "Use a mock object to ensure that tasks have delay() or apply_async() called instead."
+        )
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
+        raise ValueError(
+            f"External tasks cannot be called locally. "
+            f"Use delay() or apply_async() to dispatch '{self.name}' to the target application."
+        )

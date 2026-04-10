@@ -1,4 +1,6 @@
+import contextlib
 import datetime
+from collections.abc import MutableMapping
 from typing import Any
 from unittest.mock import patch
 
@@ -375,3 +377,87 @@ def test_create_activation_headers_monitor_config_treatment(task_namespace: Task
     assert "sentry-monitor-config" not in result
     assert "sentry-monitor-slug" in result
     assert "sentry-monitor-check-in-id" in result
+
+
+class StubContextHook:
+    """Test hook that writes/reads a simple key."""
+
+    last_executed: str
+
+    def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
+        headers["x-test-context"] = "dispatched"
+
+    def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
+        if "x-test-context" not in headers:
+            return contextlib.nullcontext()
+        # Store the value so the test can verify it was called
+        StubContextHook.last_executed = headers["x-test-context"]
+        return contextlib.nullcontext()
+
+
+def test_context_hook_on_dispatch() -> None:
+    """Context hooks inject headers during create_activation."""
+    ns = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+        context_hooks=[StubContextHook()],
+    )
+
+    @ns.register(name="test.hooked")
+    def hooked_task() -> None:
+        pass
+
+    activation = hooked_task.create_activation([], {})
+    assert activation.headers["x-test-context"] == "dispatched"
+
+
+def test_context_hook_not_present_without_hooks() -> None:
+    """Without hooks, no extra headers are injected."""
+    ns = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+    )
+
+    @ns.register(name="test.no_hooks")
+    def no_hooks_task() -> None:
+        pass
+
+    activation = no_hooks_task.create_activation([], {})
+    assert "x-test-context" not in activation.headers
+
+
+def test_context_hook_multiple_hooks() -> None:
+    """Multiple hooks all get called."""
+
+    class AnotherHook:
+        def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
+            headers["x-another"] = "also-here"
+
+        def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
+            return contextlib.nullcontext()
+
+    ns = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+        context_hooks=[StubContextHook(), AnotherHook()],
+    )
+
+    @ns.register(name="test.multi_hooks")
+    def multi_task() -> None:
+        pass
+
+    activation = multi_task.create_activation([], {})
+    assert activation.headers["x-test-context"] == "dispatched"
+    assert activation.headers["x-another"] == "also-here"

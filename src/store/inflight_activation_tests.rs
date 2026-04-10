@@ -1,6 +1,7 @@
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
+use sqlx::postgres::PgSslMode;
 use sqlx::{QueryBuilder, Sqlite};
 use std::{collections::HashSet, fs, io::Error, path::Path, sync::Arc, time::Duration};
 use tokio::{sync::broadcast, task::JoinSet};
@@ -11,10 +12,12 @@ use crate::{
         InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
         InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
     },
+    store::postgres_activation_store::PostgresActivationStoreConfig,
     test_utils::{
         StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
-        create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
-        make_activations_with_namespace, replace_retry_state,
+        create_integration_config_with_ssl, create_test_store, generate_temp_filename,
+        generate_unique_namespace, make_activations, make_activations_with_namespace,
+        replace_retry_state,
     },
 };
 
@@ -69,6 +72,14 @@ async fn test_sqlite_create_db() {
     )
 }
 
+#[test]
+fn test_connect_opts_preserves_sslmode_query_param() {
+    let config = create_integration_config_with_ssl();
+    let opts = PostgresActivationStoreConfig::from_config(&config).pg_connection;
+    assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
+    assert_eq!(opts.get_host(), "localhost");
+}
+
 #[tokio::test]
 #[rstest]
 #[case::sqlite("sqlite")]
@@ -81,6 +92,75 @@ async fn test_store(#[case] adapter: &str) {
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 2);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_count_depths(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    // Check counts for an empty store
+    let pending = store
+        .count_by_status(InflightActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(InflightActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(InflightActivationStatus::Processing)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths().await.unwrap();
+
+    assert_eq!(depths.pending, pending);
+    assert_eq!(depths.delay, delay);
+    assert_eq!(depths.processing, processing);
+
+    // Check counts for a store with four activations with varying statuses
+    let batch = make_activations(4);
+    assert!(store.store(batch).await.is_ok());
+
+    store
+        .set_status("id_0", InflightActivationStatus::Processing)
+        .await
+        .unwrap();
+    store
+        .set_status("id_1", InflightActivationStatus::Delay)
+        .await
+        .unwrap();
+    store
+        .set_status("id_2", InflightActivationStatus::Complete)
+        .await
+        .unwrap();
+
+    let pending = store
+        .count_by_status(InflightActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(InflightActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(InflightActivationStatus::Processing)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths().await.unwrap();
+
+    assert_eq!(depths.pending, pending, "pending");
+    assert_eq!(depths.delay, delay, "delay");
+    assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(pending, 1);
+    assert_eq!(delay, 1);
+    assert_eq!(processing, 1);
+
     store.remove_db().await.unwrap();
 }
 
@@ -141,11 +221,12 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store
-        .get_pending_activation(None, None)
+    let mut got = store
+        .get_pending_activations(None, None, Some(1), None)
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(got.len(), 1);
+    let result = got.pop().unwrap();
 
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
@@ -163,6 +244,47 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let mut batch = make_activations(2);
+    batch[0].bucket = 10;
+    batch[1].bucket = 20;
+    assert!(store.store(batch).await.is_ok());
+
+    let mut first = store
+        .get_pending_activations(None, None, Some(1), Some((15, 25)))
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    let first = first.pop().unwrap();
+    assert_eq!(first.id, "id_1");
+    assert_eq!(first.bucket, 20);
+
+    let mut second = store
+        .get_pending_activations(None, None, Some(1), Some((0, 15)))
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    let second = second.pop().unwrap();
+    assert_eq!(second.id, "id_0");
+    assert_eq!(second.bucket, 10);
+
+    assert!(
+        store
+            .get_pending_activations(None, None, Some(1), Some((15, 25)))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
     store.remove_db().await.unwrap();
 }
 
@@ -192,11 +314,19 @@ async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
 
         join_set.spawn(async move {
             rx.recv().await.unwrap();
-            store
-                .get_pending_activation(Some("sentry"), Some(&ns))
-                .await
-                .unwrap()
-                .unwrap()
+            {
+                let mut v = store
+                    .get_pending_activations(
+                        Some("sentry"),
+                        Some(std::slice::from_ref(&ns)),
+                        Some(1),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(v.len(), 1);
+                v.pop().unwrap()
+            }
         });
     }
 
@@ -224,12 +354,19 @@ async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
     batch[1].namespace = "other_namespace".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
+    let other_namespace = "other_namespace".to_string();
     // Get activation from other namespace
-    let result = store
-        .get_pending_activation(Some("sentry"), Some("other_namespace"))
+    let mut got = store
+        .get_pending_activations(
+            Some("sentry"),
+            Some(std::slice::from_ref(&other_namespace)),
+            Some(1),
+            None,
+        )
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(got.len(), 1);
+    let result = got.pop().unwrap();
     assert_eq!(result.id, "id_1");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
@@ -254,7 +391,7 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     // Get activation from multiple namespaces (should get oldest)
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), None)
+        .get_pending_activations_from_namespaces(None, Some(&namespaces), None, None)
         .await
         .unwrap();
 
@@ -281,16 +418,22 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
 
     // This is an invalid query as we don't want to allow clients
     // to fetch tasks from any application.
-    let opt = store
-        .get_pending_activation(None, Some("other_namespace"))
+    let other_namespace = "other_namespace".to_string();
+    let got = store
+        .get_pending_activations(
+            None,
+            Some(std::slice::from_ref(&other_namespace)),
+            Some(1),
+            None,
+        )
         .await
         .unwrap();
-    assert!(opt.is_none());
+    assert!(got.is_empty());
 
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2))
+        .get_pending_activations_from_namespaces(None, Some(&namespaces), Some(2), None)
         .await
         .unwrap();
     assert_eq!(
@@ -321,10 +464,12 @@ async fn test_get_pending_activation_skip_expires(#[case] adapter: &str) {
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store.get_pending_activation(None, None).await;
+    let result = store
+        .get_pending_activations(None, None, Some(1), None)
+        .await;
     assert!(result.is_ok());
-    let res_option = result.unwrap();
-    assert!(res_option.is_none());
+    let res_vec = result.unwrap();
+    assert!(res_vec.is_empty());
 
     assert_counts(
         StatusCount {
@@ -350,11 +495,12 @@ async fn test_get_pending_activation_earliest(#[case] adapter: &str) {
     let ret = store.store(batch.clone()).await;
     assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 
-    let result = store
-        .get_pending_activation(None, None)
+    let mut got = store
+        .get_pending_activations(None, None, Some(1), None)
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(got.len(), 1);
+    let result = got.pop().unwrap();
     assert_eq!(
         result.added_at,
         Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
@@ -375,11 +521,12 @@ async fn test_get_pending_activation_fetches_application(#[case] adapter: &str) 
 
     // Getting an activation with no application filter should
     // include activations with application set.
-    let result = store
-        .get_pending_activation(None, None)
+    let mut got = store
+        .get_pending_activations(None, None, Some(1), None)
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(got.len(), 1);
+    let result = got.pop().unwrap();
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
@@ -399,27 +546,31 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
     assert!(store.store(batch.clone()).await.is_ok());
 
     // Get activation from a named application
-    let result = store
-        .get_pending_activation(Some("hammers"), None)
+    let mut got = store
+        .get_pending_activations(Some("hammers"), None, Some(1), None)
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(got.len(), 1);
+    let result = got.pop().unwrap();
     assert_eq!(result.id, "id_1");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
 
     let result_opt = store
-        .get_pending_activation(Some("hammers"), None)
+        .get_pending_activations(Some("hammers"), None, Some(1), None)
         .await
         .unwrap();
     assert!(
-        result_opt.is_none(),
+        result_opt.is_empty(),
         "no pending activations in hammers left"
     );
 
-    let result_opt = store.get_pending_activation(None, None).await.unwrap();
-    assert!(result_opt.is_some(), "one pending activation in '' left");
+    let remaining = store
+        .get_pending_activations(None, None, Some(1), None)
+        .await
+        .unwrap();
+    assert_eq!(remaining.len(), 1, "one pending activation in '' left");
     store.remove_db().await.unwrap();
 }
 
@@ -440,26 +591,138 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
     batch[2].namespace = "not-target".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
+    let target_ns = "target".to_string();
     // Get activation from a named application
-    let result = store
-        .get_pending_activation(Some("hammers"), Some("target"))
+    let mut got = store
+        .get_pending_activations(
+            Some("hammers"),
+            Some(std::slice::from_ref(&target_ns)),
+            Some(1),
+            None,
+        )
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(got.len(), 1);
+    let result = got.pop().unwrap();
     assert_eq!(result.id, "id_1");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "target");
 
-    let result = store
-        .get_pending_activation(Some("hammers"), None)
+    let mut got = store
+        .get_pending_activations(Some("hammers"), None, Some(1), None)
         .await
-        .unwrap()
         .unwrap();
+    assert_eq!(got.len(), 1);
+    let result = got.pop().unwrap();
     assert_eq!(result.id, "id_2");
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "not-target");
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    const N: usize = 4;
+
+    let batch = make_activations(N as u32);
+    assert!(store.store(batch).await.is_ok());
+
+    let got = store
+        .get_pending_activations(None, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), N);
+    assert!(
+        got.iter()
+            .all(|a| a.status == InflightActivationStatus::Processing)
+    );
+    assert_eq!(store.count_pending_activations().await.unwrap(), 0);
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            processing: N,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    const N: usize = 5;
+    const X: i32 = 3;
+
+    let batch = make_activations(N as u32);
+    assert!(store.store(batch).await.is_ok());
+
+    let got = store
+        .get_pending_activations(None, None, Some(X), None)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), X as usize);
+    assert!(
+        got.iter()
+            .all(|a| a.status == InflightActivationStatus::Processing)
+    );
+    assert_eq!(
+        store.count_pending_activations().await.unwrap(),
+        N - X as usize
+    );
+    assert_counts(
+        StatusCount {
+            pending: N - X as usize,
+            processing: X as usize,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    const Y: usize = 2;
+    const X: i32 = 10;
+
+    let batch = make_activations(Y as u32);
+    assert!(store.store(batch).await.is_ok());
+
+    let got = store
+        .get_pending_activations(None, None, Some(X), None)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), Y);
+    assert!(
+        got.iter()
+            .all(|a| a.status == InflightActivationStatus::Processing)
+    );
+    assert_eq!(store.count_pending_activations().await.unwrap(), 0);
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            processing: Y,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
     store.remove_db().await.unwrap();
 }
 
@@ -558,10 +821,10 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .get_pending_activation(None, None)
+            .get_pending_activations(None, None, Some(1), None)
             .await
             .unwrap()
-            .is_none()
+            .is_empty()
     );
 
     let result = store
@@ -657,10 +920,10 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .get_pending_activation(None, None)
+            .get_pending_activations(None, None, Some(1), None)
             .await
             .unwrap()
-            .is_none()
+            .is_empty()
     );
 
     let result = store

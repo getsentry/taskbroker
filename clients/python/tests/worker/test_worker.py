@@ -1,6 +1,8 @@
 import base64
+import contextlib
 import queue
 import time
+from collections.abc import MutableMapping
 from multiprocessing import Event
 from typing import Any
 from unittest import TestCase, mock
@@ -16,6 +18,8 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_COMPLETE,
     TASK_ACTIVATION_STATUS_FAILURE,
     TASK_ACTIVATION_STATUS_RETRY,
+    PushTaskRequest,
+    PushTaskResponse,
     RetryState,
     TaskActivation,
 )
@@ -25,7 +29,7 @@ from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
-from taskbroker_client.worker.worker import TaskWorker
+from taskbroker_client.worker.worker import TaskWorker, WorkerServicer
 from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded, child_process
 
 SIMPLE_TASK = InflightTaskActivation(
@@ -300,6 +304,27 @@ class TestTaskWorker(TestCase):
             assert mock_client.get_task.called
             assert mock_client.update_task.call_count == 3
 
+    def test_push_task_queue(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+            child_tasks_queue_maxsize=2,
+        )
+
+        # We can enqueue the first task
+        result = taskworker.push_task(SIMPLE_TASK, timeout=None)
+        self.assertTrue(result)
+
+        # We can enqueue the second task
+        result = taskworker.push_task(SIMPLE_TASK, timeout=1)
+        self.assertTrue(result)
+
+        # We cannot enqueue the third task because the queue is full
+        result = taskworker.push_task(SIMPLE_TASK, timeout=1)
+        self.assertFalse(result)
+
     def test_run_once_current_task_state(self) -> None:
         # Run a task that uses retry_task() helper
         # to raise and catch a NoRetriesRemainingError
@@ -347,6 +372,81 @@ class TestTaskWorker(TestCase):
             assert current_task() is None, "should clear current task on completion"
             assert redis.get("no-retries-remaining"), "key should exist if except block was hit"
             redis.delete("no-retries-remaining")
+
+    def test_constructor_push_mode(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+            push_mode=True,
+            grpc_port=50099,
+        )
+
+        # Make sure delivery mode and gRPC port arguments are stored
+        self.assertTrue(taskworker._push_mode)
+        self.assertEqual(taskworker._grpc_port, 50099)
+
+    def test_constructor_pull_mode(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+        )
+
+        # Make sure delivery mode and gRPC port are set to their defaults
+        self.assertFalse(taskworker._push_mode)
+        self.assertEqual(taskworker._grpc_port, 50052)
+
+
+class TestWorkerServicer(TestCase):
+    def test_push_task_success(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+            push_mode=True,
+        )
+        with mock.patch.object(taskworker, "push_task", return_value=True) as mock_push_task:
+            request = PushTaskRequest(
+                task=SIMPLE_TASK.activation,
+                callback_url="broker-host:50051",
+            )
+            mock_context = mock.MagicMock()
+            servicer = WorkerServicer(taskworker)
+
+            response = servicer.PushTask(request, mock_context)
+
+        self.assertIsInstance(response, PushTaskResponse)
+        mock_context.abort.assert_not_called()
+        mock_push_task.assert_called_once_with(mock.ANY, timeout=5)
+        (inflight,) = mock_push_task.call_args[0]
+        self.assertEqual(inflight.activation.id, SIMPLE_TASK.activation.id)
+        self.assertEqual(inflight.host, "broker-host:50051")
+
+    def test_push_task_worker_busy(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+            child_tasks_queue_maxsize=1,
+        )
+        with mock.patch.object(taskworker, "push_task", return_value=False):
+            request = PushTaskRequest(
+                task=SIMPLE_TASK.activation,
+                callback_url="broker-host:50051",
+            )
+            mock_context = mock.MagicMock()
+            servicer = WorkerServicer(taskworker)
+
+            servicer.PushTask(request, mock_context)
+
+            mock_context.abort.assert_called_once_with(
+                grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy"
+            )
 
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
@@ -663,3 +763,58 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
     assert result.task_id == COMPRESSED_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     assert mock_capture_checkin.call_count == 0
+
+
+def test_child_process_context_hooks() -> None:
+    """Context hooks' on_execute is called with activation headers during task execution."""
+    executed_headers: list[dict[str, str]] = []
+
+    class RecordingHook:
+        def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
+            pass
+
+        def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
+            executed_headers.append(dict(headers))
+            return contextlib.nullcontext()
+
+    from examples.app import app
+
+    hook = RecordingHook()
+    app.context_hooks.append(hook)
+
+    try:
+        activation_with_headers = InflightTaskActivation(
+            host="localhost:50051",
+            receive_timestamp=0,
+            activation=TaskActivation(
+                id="hook-test",
+                taskname="examples.simple_task",
+                namespace="examples",
+                parameters='{"args": [], "kwargs": {}}',
+                headers={"x-viewer-org": "42", "x-viewer-user": "7"},
+                processing_deadline_duration=5,
+            ),
+        )
+
+        todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+        processed: queue.Queue[ProcessingResult] = queue.Queue()
+        shutdown = Event()
+
+        todo.put(activation_with_headers)
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+        )
+
+        result = processed.get()
+        assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+        assert len(executed_headers) == 1
+        assert executed_headers[0]["x-viewer-org"] == "42"
+        assert executed_headers[0]["x-viewer-user"] == "7"
+    finally:
+        app.context_hooks.remove(hook)

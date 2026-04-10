@@ -1,50 +1,54 @@
 use crate::store::inflight_activation::{
-    FailedTasksForwarder, InflightActivation, InflightActivationStatus, InflightActivationStore,
-    QueryResult, TableRow,
+    BucketRange, DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
+    InflightActivationStore, QueryResult, TableRow,
 };
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
+use sqlx::ConnectOptions;
 use sqlx::{
     Pool, Postgres, QueryBuilder,
     pool::PoolConnection,
     postgres::{PgConnectOptions, PgPool, PgPoolOptions},
 };
+use std::str::FromStr;
 use std::sync::RwLock;
-use std::{str::FromStr, time::Instant};
+use std::time::Instant;
 use tracing::instrument;
 
 use crate::config::Config;
 
 pub async fn create_postgres_pool(
-    url: &str,
+    connection: &PgConnectOptions,
     database_name: &str,
 ) -> Result<(Pool<Postgres>, Pool<Postgres>), Error> {
-    let conn_str = url.to_owned() + "/" + database_name;
+    let conn_opts = connection.clone().database(database_name);
     let read_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts.clone())
         .await?;
 
     let write_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts)
         .await?;
     Ok((read_pool, write_pool))
 }
 
-pub async fn create_default_postgres_pool(url: &str) -> Result<Pool<Postgres>, Error> {
-    let conn_str = url.to_owned() + "/postgres";
+pub async fn create_default_postgres_pool(
+    connection: &PgConnectOptions,
+) -> Result<Pool<Postgres>, Error> {
+    let conn_opts = connection.clone().database("postgres");
     let default_pool = PgPoolOptions::new()
         .max_connections(64)
-        .connect_with(PgConnectOptions::from_str(&conn_str)?)
+        .connect_with(conn_opts)
         .await?;
     Ok(default_pool)
 }
 
 pub struct PostgresActivationStoreConfig {
-    pub pg_url: String,
+    pub pg_connection: PgConnectOptions,
     pub pg_database_name: String,
     pub run_migrations: bool,
     pub max_processing_attempts: usize,
@@ -55,8 +59,19 @@ pub struct PostgresActivationStoreConfig {
 
 impl PostgresActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
+        let mut conn_opts = PgConnectOptions::new()
+            .username(&config.pg_username)
+            .password(&config.pg_password)
+            .host(&config.pg_host)
+            .port(config.pg_port);
+        if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
+            let url = conn_opts.to_url_lossy();
+            let new_url =
+                url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
+            conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
+        }
         Self {
-            pg_url: config.pg_url.clone(),
+            pg_connection: conn_opts,
             pg_database_name: config.pg_database_name.clone(),
             run_migrations: config.run_migrations,
             max_processing_attempts: config.max_processing_attempts,
@@ -87,7 +102,7 @@ impl PostgresActivationStore {
 
     pub async fn new(config: PostgresActivationStoreConfig) -> Result<Self, Error> {
         if config.run_migrations {
-            let default_pool = create_default_postgres_pool(&config.pg_url).await?;
+            let default_pool = create_default_postgres_pool(&config.pg_connection).await?;
 
             // Create the database if it doesn't exist
             let row: (bool,) = sqlx::query_as(
@@ -109,7 +124,7 @@ impl PostgresActivationStore {
         }
 
         let (read_pool, write_pool) =
-            create_postgres_pool(&config.pg_url, &config.pg_database_name).await?;
+            create_postgres_pool(&config.pg_connection, &config.pg_database_name).await?;
 
         if config.run_migrations {
             println!("Running migrations on database");
@@ -194,7 +209,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -242,7 +258,8 @@ impl InflightActivationStore for PostgresActivationStore {
                     application,
                     namespace,
                     taskname,
-                    on_attempts_exceeded
+                    on_attempts_exceeded,
+                    bucket
                 )
             ",
         );
@@ -274,6 +291,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -281,20 +299,21 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(query.execute(&mut *conn).await?.into())
     }
 
-    /// Get a pending activation from specified namespaces
-    /// If namespaces is None, gets from any namespace
-    /// If namespaces is Some(&[...]), gets from those namespaces
+    /// Claim pending activations from specified namespaces (moves them to processing).
+    /// If namespaces is `None`, gets from any namespace.
+    /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
     async fn get_pending_activations_from_namespaces(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
-        let mut query_builder = QueryBuilder::new(
+        let mut query_builder = QueryBuilder::<Postgres>::new(
             "WITH selected_activations AS (
                 SELECT id
                 FROM inflight_taskactivations
@@ -322,6 +341,15 @@ impl InflightActivationStore for PostgresActivationStore {
             }
             query_builder.push(")");
         }
+
+        if let Some((min, max)) = bucket {
+            query_builder.push(" AND bucket >= ");
+            query_builder.push_bind(min);
+
+            query_builder.push(" AND bucket <= ");
+            query_builder.push_bind(max);
+        }
+
         query_builder.push(" ORDER BY added_at");
         if let Some(limit) = limit {
             query_builder.push(" LIMIT ");
@@ -413,6 +441,28 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(result.0 as usize)
     }
 
+    #[instrument(skip_all)]
+    async fn count_depths(&self) -> Result<DepthCounts, Error> {
+        let sql = "
+             SELECT COUNT(*) FILTER (WHERE status = $1) AS pending,
+                    COUNT(*) FILTER (WHERE status = $2) AS delay,
+                    COUNT(*) FILTER (WHERE status = $3) AS processing
+             FROM inflight_taskactivations";
+
+        let row: (i64, i64, i64) = sqlx::query_as(sql)
+            .bind(InflightActivationStatus::Pending.to_string())
+            .bind(InflightActivationStatus::Delay.to_string())
+            .bind(InflightActivationStatus::Processing.to_string())
+            .fetch_one(&self.read_pool)
+            .await?;
+
+        Ok(DepthCounts {
+            pending: row.0 as usize,
+            delay: row.1 as usize,
+            processing: row.2 as usize,
+        })
+    }
+
     /// Update the status of a specific activation
     #[instrument(skip_all)]
     async fn set_status(
@@ -482,7 +532,8 @@ impl InflightActivationStore for PostgresActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE status = ",
         );
@@ -754,7 +805,7 @@ impl InflightActivationStore for PostgresActivationStore {
     async fn remove_db(&self) -> Result<(), Error> {
         self.read_pool.close().await;
         self.write_pool.close().await;
-        let default_pool = create_default_postgres_pool(&self.config.pg_url).await?;
+        let default_pool = create_default_postgres_pool(&self.config.pg_connection).await?;
         let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg_database_name).as_str())
             .bind(&self.config.pg_database_name)
             .execute(&default_pool)

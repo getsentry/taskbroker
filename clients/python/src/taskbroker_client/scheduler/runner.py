@@ -17,7 +17,7 @@ from taskbroker_client.scheduler.config import ScheduleConfig, crontab
 from taskbroker_client.scheduler.schedules import CrontabSchedule, Schedule, TimedeltaSchedule
 from taskbroker_client.task import Task
 
-logger = logging.getLogger("taskworker.scheduler")
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sentry_sdk._types import MonitorConfig
@@ -195,7 +195,7 @@ class ScheduleRunner:
         except ValueError:
             raise ValueError("Invalid task name. Must be in the format namespace:taskname")
 
-        task = self._app.taskregistry.get_task(namespace, taskname)
+        task = self._app.get_task(namespace, taskname)
         entry = ScheduleEntry(key=key, task=task, schedule=task_config["schedule"])
         self._entries.append(entry)
         self._heap = []

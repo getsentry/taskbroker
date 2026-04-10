@@ -11,21 +11,24 @@ use libsqlite3_sys::{
     SQLITE_OK, sqlite3_db_status,
 };
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
-use sqlx::{
-    ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type,
-    migrate::MigrateDatabase,
-    pool::{PoolConnection, PoolOptions},
-    postgres::PgQueryResult,
-    sqlite::{
-        SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
-        SqliteRow, SqliteSynchronous,
-    },
-};
-use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::{str::FromStr, time::Instant};
+use tokio::join;
 use tracing::{instrument, warn};
 
+use sqlx::migrate::MigrateDatabase;
+use sqlx::pool::{PoolConnection, PoolOptions};
+use sqlx::postgres::PgQueryResult;
+use sqlx::sqlite::{
+    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
+    SqliteRow, SqliteSynchronous,
+};
+use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type};
+
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::{str::FromStr, time::Instant};
+
 use crate::config::Config;
+
+pub type BucketRange = (i16, i16);
 
 /// The members of this enum should be synced with the members
 /// of InflightActivationStatus in sentry_protos
@@ -173,6 +176,10 @@ pub struct InflightActivation {
     /// are exceeded.
     #[builder(default = false)]
     pub at_most_once: bool,
+
+    /// Bucket derived from activation ID (UUID as number % 256). Set once on ingestion.
+    #[builder(setter(skip), default = "0")]
+    pub bucket: i16,
 }
 
 impl InflightActivation {
@@ -235,6 +242,7 @@ pub struct TableRow {
     pub taskname: String,
     #[sqlx(try_from = "i32")]
     pub on_attempts_exceeded: OnAttemptsExceeded,
+    pub bucket: i16,
 }
 
 impl TryFrom<InflightActivation> for TableRow {
@@ -259,6 +267,7 @@ impl TryFrom<InflightActivation> for TableRow {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
         })
     }
 }
@@ -283,6 +292,7 @@ impl From<TableRow> for InflightActivation {
             namespace: value.namespace,
             taskname: value.taskname,
             on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
         }
     }
 }
@@ -335,6 +345,18 @@ impl InflightActivationStoreConfig {
     }
 }
 
+/// Counts pending, delayed, and processing tasks for backpressure and upkeep.
+pub struct DepthCounts {
+    /// The number of pending tasks in the store.
+    pub pending: usize,
+
+    /// Number of delayed tasks in the store.
+    pub delay: usize,
+
+    /// The number of processing tasks in the store.
+    pub processing: usize,
+}
+
 #[async_trait]
 pub trait InflightActivationStore: Send + Sync {
     /// CONSUMER OPERATIONS
@@ -343,38 +365,38 @@ pub trait InflightActivationStore: Send + Sync {
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
 
-    /// SERVER OPERATIONS
-    /// Get a single pending activation, optionally filtered by namespace
-    async fn get_pending_activation(
+    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
+    /// If no limit is provided, all matching activations will be returned.
+    async fn get_pending_activations(
         &self,
         application: Option<&str>,
-        namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
-        // Convert single namespace to vector for internal use
-        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
-
-        // If a namespace filter is used, an application must also be used.
+        namespaces: Option<&[String]>,
+        limit: Option<i32>,
+        bucket: Option<BucketRange>,
+    ) -> Result<Vec<InflightActivation>, Error> {
         if namespaces.is_some() && application.is_none() {
             warn!(
-                "Received request for namespaced task without application. namespaces = {namespaces:?}"
+                ?namespaces,
+                "Received request for namespaced task without application"
             );
-            return Ok(None);
+
+            return Ok(vec![]);
         }
-        let result = self
-            .get_pending_activations_from_namespaces(application, namespaces.as_deref(), Some(1))
+
+        let results = self
+            .get_pending_activations_from_namespaces(application, namespaces, limit, bucket)
             .await?;
-        if result.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(result[0].clone()))
+
+        Ok(results)
     }
 
-    /// Get pending activations from specified namespaces
+    /// Claim pending activations (moves them to processing), optionally filtered by application and namespaces.
     async fn get_pending_activations_from_namespaces(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error>;
 
     /// Update the status of a specific activation
@@ -403,6 +425,22 @@ pub trait InflightActivationStore: Send + Sync {
     /// ACTIVATION OPERATIONS
     /// Get an activation by id
     async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error>;
+
+    /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
+    /// Default implementation uses separate calls, but stores may override with a single query.
+    async fn count_depths(&self) -> Result<DepthCounts, Error> {
+        let (pending, delay, processing) = join!(
+            self.count_by_status(InflightActivationStatus::Pending),
+            self.count_by_status(InflightActivationStatus::Delay),
+            self.count_by_status(InflightActivationStatus::Processing),
+        );
+
+        Ok(DepthCounts {
+            pending: pending?,
+            delay: delay?,
+            processing: processing?,
+        })
+    }
 
     /// Set the processing deadline for a specific activation
     async fn set_processing_deadline(
@@ -707,7 +745,8 @@ impl InflightActivationStore for SqliteActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE id = $1
             ",
@@ -753,7 +792,8 @@ impl InflightActivationStore for SqliteActivationStore {
                     application,
                     namespace,
                     taskname,
-                    on_attempts_exceeded
+                    on_attempts_exceeded,
+                    bucket
                 )
             ",
         );
@@ -786,6 +826,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 b.push_bind(row.namespace);
                 b.push_bind(row.taskname);
                 b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
@@ -814,15 +855,16 @@ impl InflightActivationStore for SqliteActivationStore {
         meta_result
     }
 
-    /// Get a pending activation from specified namespaces
-    /// If namespaces is None, gets from any namespace
-    /// If namespaces is Some(&[...]), gets from those namespaces
+    /// Claim pending activations from specified namespaces (moves them to processing).
+    /// If namespaces is `None`, gets from any namespace.
+    /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
     async fn get_pending_activations_from_namespaces(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
+        bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
@@ -862,6 +904,12 @@ impl InflightActivationStore for SqliteActivationStore {
                 separated.push_bind(namespace);
             }
             query_builder.push(")");
+        }
+        if let Some((min, max)) = bucket {
+            query_builder.push(" AND bucket >= ");
+            query_builder.push_bind(min);
+            query_builder.push(" AND bucket <= ");
+            query_builder.push_bind(max);
         }
         query_builder.push(" ORDER BY added_at");
         if let Some(limit) = limit {
@@ -1003,7 +1051,8 @@ impl InflightActivationStore for SqliteActivationStore {
                 application,
                 namespace,
                 taskname,
-                on_attempts_exceeded
+                on_attempts_exceeded,
+                bucket
             FROM inflight_taskactivations
             WHERE status = $1
             ",
