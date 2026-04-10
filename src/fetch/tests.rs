@@ -9,11 +9,11 @@ use tonic::async_trait;
 use super::*;
 use crate::config::Config;
 use crate::push::PushError;
-use crate::store::inflight_activation::InflightActivationStore;
 use crate::store::inflight_activation::{BucketRange, InflightActivation};
 use crate::store::inflight_activation::{
     FailedTasksForwarder, InflightActivationStatus, QueryResult,
 };
+use crate::store::inflight_activation::{InflightActivationStore, ProcessingDeadlineCounts};
 use crate::test_utils::make_activations;
 
 /// Store stub that returns one activation once OR is always empty OR always fails.
@@ -70,31 +70,29 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn get_pending_activations(
+    async fn claim_activations(
         &self,
         _application: Option<&str>,
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
+        status: InflightActivationStatus,
     ) -> Result<Vec<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
         }
 
         Ok(match self.pending.lock().await.take() {
-            Some(a) => vec![a],
+            Some(mut a) => {
+                a.status = status;
+                vec![a]
+            }
             None => vec![],
         })
     }
 
-    async fn get_pending_activations_from_namespaces(
-        &self,
-        _application: Option<&str>,
-        _namespaces: Option<&[String]>,
-        _limit: Option<i32>,
-        _bucket: Option<BucketRange>,
-    ) -> Result<Vec<InflightActivation>, Error> {
-        unimplemented!()
+    async fn mark_activation_processing(&self, _id: &str) -> Result<(), Error> {
+        Ok(())
     }
 
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
@@ -137,7 +135,7 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error> {
         unimplemented!()
     }
 

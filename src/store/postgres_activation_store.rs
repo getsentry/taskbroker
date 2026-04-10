@@ -1,6 +1,6 @@
 use crate::store::inflight_activation::{
     BucketRange, DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
-    InflightActivationStore, QueryResult, TableRow,
+    InflightActivationStore, ProcessingDeadlineCounts, QueryResult, TableRow,
 };
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -14,7 +14,7 @@ use sqlx::{
 };
 use std::str::FromStr;
 use std::time::Instant;
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 use crate::config::Config;
 
@@ -269,16 +269,14 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(query.execute(&mut *conn).await?.into())
     }
 
-    /// Claim pending activations from specified namespaces (moves them to processing).
-    /// If namespaces is `None`, gets from any namespace.
-    /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
-    async fn get_pending_activations_from_namespaces(
+    async fn claim_activations(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
+        status: InflightActivationStatus,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
@@ -330,20 +328,43 @@ impl InflightActivationStore for PostgresActivationStore {
                 processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
                 status = "
         ));
-        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+        query_builder.push_bind(status.to_string());
         query_builder.push(" FROM selected_activations ");
         query_builder.push(" WHERE inflight_taskactivations.id = selected_activations.id");
         query_builder.push(" RETURNING *, kafka_offset AS offset");
 
-        let mut conn = self
-            .acquire_write_conn_metric("get_pending_activation")
-            .await?;
+        let mut conn = self.acquire_write_conn_metric("claim_activations").await?;
         let rows: Vec<TableRow> = query_builder
             .build_query_as::<TableRow>()
             .fetch_all(&mut *conn)
             .await?;
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
+    }
+
+    #[instrument(skip_all)]
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("mark_activation_processing")
+            .await?;
+
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Processing.to_string())
+        .bind(id)
+        .bind(InflightActivationStatus::Claimed.to_string())
+        .execute(&mut *conn)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            warn!(
+                task_id = %id,
+                "Activation could not be marked as processing, it may be missing or its status may have already changed"
+            );
+        }
+
+        Ok(())
     }
 
     /// Get the age of the oldest pending activation in seconds.
@@ -402,12 +423,14 @@ impl InflightActivationStore for PostgresActivationStore {
         let sql = "
              SELECT COUNT(*) FILTER (WHERE status = $1) AS pending,
                     COUNT(*) FILTER (WHERE status = $2) AS delay,
-                    COUNT(*) FILTER (WHERE status = $3) AS processing
+                    COUNT(*) FILTER (WHERE status = $3) AS claimed,
+                    COUNT(*) FILTER (WHERE status = $4) AS processing
              FROM inflight_taskactivations";
 
-        let row: (i64, i64, i64) = sqlx::query_as(sql)
+        let row: (i64, i64, i64, i64) = sqlx::query_as(sql)
             .bind(InflightActivationStatus::Pending.to_string())
             .bind(InflightActivationStatus::Delay.to_string())
+            .bind(InflightActivationStatus::Claimed.to_string())
             .bind(InflightActivationStatus::Processing.to_string())
             .fetch_one(&self.read_pool)
             .await?;
@@ -415,7 +438,8 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(DepthCounts {
             pending: row.0 as usize,
             delay: row.1 as usize,
-            processing: row.2 as usize,
+            claimed: row.2 as usize,
+            processing: row.3 as usize,
         })
     }
 
@@ -513,53 +537,66 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(())
     }
 
-    /// Update tasks that are in processing and have exceeded their processing deadline
-    /// Exceeding a processing deadline does not consume a retry as we don't know
-    /// if a worker took the task and was killed, or failed.
+    /// Update tasks that are in processing and have exceeded their processing deadline.
     #[instrument(skip_all)]
-    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
-        // At-most-once tasks that fail their processing deadlines go directly to failure
-        // there are no retries, as the worker will reject the task due to at_most_once keys.
-        let most_once_result = sqlx::query(
+        // Idempotent tasks that fail their processing deadlines go directly to failure
+        let amo = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
+             SET processing_deadline = null,
+                 status = $1
+             WHERE processing_deadline < $2
+                 AND at_most_once = TRUE
+                 AND (status = $3 OR status = $4)",
         )
         .bind(InflightActivationStatus::Failure.to_string())
         .bind(now)
         .bind(InflightActivationStatus::Processing.to_string())
+        .bind(InflightActivationStatus::Claimed.to_string())
         .execute(&mut *atomic)
-        .await;
+        .await?;
 
-        let mut processing_deadline_modified_rows = 0;
-        if let Ok(query_res) = most_once_result {
-            processing_deadline_modified_rows = query_res.rows_affected();
-        }
-
-        // Update regular tasks.
-        // Increment processing_attempts by 1 and reset processing_deadline to null.
-        let result = sqlx::query(
+        // Revert activations that weren't delivered back to 'pending' without consuming an attempt (release claims)
+        let unsent = sqlx::query(
             "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
-            WHERE processing_deadline < $2 AND status = $3",
+             SET processing_deadline = null,
+                 status = $1
+             WHERE processing_deadline < $2
+                 AND at_most_once = FALSE
+                 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending.to_string())
+        .bind(now)
+        .bind(InflightActivationStatus::Claimed.to_string())
+        .execute(&mut *atomic)
+        .await?;
+
+        // Revert activations that were delivered back to 'pending' AND consume an attempt
+        let sent = sqlx::query(
+            "UPDATE inflight_taskactivations
+             SET processing_deadline = null,
+                 status = $1,
+                 processing_attempts = processing_attempts + 1
+             WHERE processing_deadline < $2
+                 AND at_most_once = FALSE
+                 AND status = $3",
         )
         .bind(InflightActivationStatus::Pending.to_string())
         .bind(now)
         .bind(InflightActivationStatus::Processing.to_string())
         .execute(&mut *atomic)
-        .await;
+        .await?;
 
         atomic.commit().await?;
 
-        if let Ok(query_res) = result {
-            processing_deadline_modified_rows += query_res.rows_affected();
-            return Ok(processing_deadline_modified_rows);
-        }
-
-        Err(anyhow!("Could not update tasks past processing_deadline"))
+        Ok(ProcessingDeadlineCounts {
+            at_most_once: amo.rows_affected(),
+            non_amo_unsent: unsent.rows_affected(),
+            non_amo_sent: sent.rows_affected(),
+        })
     }
 
     /// Update tasks that have exceeded their max processing attempts.
