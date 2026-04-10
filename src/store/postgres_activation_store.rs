@@ -360,7 +360,7 @@ impl InflightActivationStore for PostgresActivationStore {
         if result.rows_affected() == 0 {
             warn!(
                 task_id = %id,
-                "Activation could not be marked as sent, it may be missing or its status may have already changed"
+                "Activation could not be marked as processing, it may be missing or its status may have already changed"
             );
         }
 

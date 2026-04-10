@@ -209,7 +209,7 @@ impl PushPool {
                                     error!(
                                         task_id = %id,
                                         error = ?e,
-                                        "Failed to mark activation as sent after push"
+                                        "Failed to mark activation as processing after push"
                                     );
                                 }
                             }
