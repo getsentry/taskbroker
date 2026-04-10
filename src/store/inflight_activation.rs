@@ -359,20 +359,11 @@ pub struct DepthCounts {
 
 #[async_trait]
 pub trait InflightActivationStore: Send + Sync {
-    /// Trigger incremental vacuum to reclaim free pages in the database
-    async fn vacuum_db(&self) -> Result<(), Error>;
-
-    /// Perform a full vacuum on the database
-    async fn full_vacuum_db(&self) -> Result<(), Error>;
-
-    /// Get the size of the database in bytes
-    async fn db_size(&self) -> Result<u64, Error>;
-
-    /// Get an activation by id
-    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error>;
-
+    /// CONSUMER OPERATIONS
     /// Store a batch of activations
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
+
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
 
     /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
     /// If no limit is provided, all matching activations will be returned.
@@ -408,6 +399,14 @@ pub trait InflightActivationStore: Send + Sync {
         bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error>;
 
+    /// Update the status of a specific activation
+    async fn set_status(
+        &self,
+        id: &str,
+        status: InflightActivationStatus,
+    ) -> Result<Option<InflightActivation>, Error>;
+
+    /// COUNT OPERATIONS
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
 
@@ -422,6 +421,10 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Count all activations
     async fn count(&self) -> Result<usize, Error>;
+
+    /// ACTIVATION OPERATIONS
+    /// Get an activation by id
+    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error>;
 
     /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
     /// Default implementation uses separate calls, but stores may override with a single query.
@@ -439,13 +442,6 @@ pub trait InflightActivationStore: Send + Sync {
         })
     }
 
-    /// Update the status of a specific activation
-    async fn set_status(
-        &self,
-        id: &str,
-        status: InflightActivationStatus,
-    ) -> Result<Option<InflightActivation>, Error>;
-
     /// Set the processing deadline for a specific activation
     async fn set_processing_deadline(
         &self,
@@ -456,11 +452,19 @@ pub trait InflightActivationStore: Send + Sync {
     /// Delete an activation by id
     async fn delete_activation(&self, id: &str) -> Result<(), Error>;
 
+    /// DATABASE OPERATIONS
+    /// Trigger incremental vacuum to reclaim free pages in the database
+    async fn vacuum_db(&self) -> Result<(), Error>;
+
+    /// Perform a full vacuum on the database
+    async fn full_vacuum_db(&self) -> Result<(), Error>;
+
+    /// Get the size of the database in bytes
+    async fn db_size(&self) -> Result<u64, Error>;
+
+    /// UPKEEP OPERATIONS
     /// Get all activations with status Retry
     async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error>;
-
-    /// Clear all activations from the store
-    async fn clear(&self) -> Result<(), Error>;
 
     /// Update tasks that exceeded their processing deadline
     async fn handle_processing_deadline(&self) -> Result<u64, Error>;
@@ -485,6 +489,10 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Remove killswitched tasks
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error>;
+
+    /// TEST OPERATIONS
+    /// Clear all activations from the store
+    async fn clear(&self) -> Result<(), Error>;
 
     /// Remove the database, used only in tests
     async fn remove_db(&self) -> Result<(), Error> {
@@ -752,6 +760,11 @@ impl InflightActivationStore for SqliteActivationStore {
         };
 
         Ok(Some(row.into()))
+    }
+
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        warn!("assign_partitions: {:?}", partitions);
+        Ok(())
     }
 
     #[instrument(skip_all)]

@@ -18,3 +18,5 @@ CREATE TABLE IF NOT EXISTS inflight_taskactivations (
     taskname TEXT NOT NULL,
     on_attempts_exceeded INTEGER NOT NULL DEFAULT 1
 );
+
+CREATE INDEX idx_activation_partition ON inflight_taskactivations (partition);

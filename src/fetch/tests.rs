@@ -50,6 +50,10 @@ impl MockStore {
 
 #[async_trait]
 impl InflightActivationStore for MockStore {
+    fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn vacuum_db(&self) -> Result<(), Error> {
         unimplemented!()
     }
