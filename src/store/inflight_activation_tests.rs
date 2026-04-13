@@ -1210,7 +1210,7 @@ async fn test_handle_claim_expiration_unsent_no_attempt_increment(#[case] adapte
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
-async fn test_handle_claim_expiration_at_most_once_failure(#[case] adapter: &str) {
+async fn test_handle_claim_expiration_at_most_once_reverts_to_pending(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(1);
     batch[0].status = InflightActivationStatus::Claimed;
@@ -1220,7 +1220,8 @@ async fn test_handle_claim_expiration_at_most_once_failure(#[case] adapter: &str
     let count = store.handle_claim_expiration().await.unwrap();
     assert_eq!(count, 1);
     let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
-    assert_eq!(task.status, InflightActivationStatus::Failure);
+    assert_eq!(task.status, InflightActivationStatus::Pending);
+    assert_eq!(task.processing_attempts, 0);
     store.remove_db().await.unwrap();
 }
 

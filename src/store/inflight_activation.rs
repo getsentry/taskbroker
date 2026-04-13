@@ -1156,44 +1156,25 @@ impl InflightActivationStore for SqliteActivationStore {
     #[instrument(skip_all)]
     async fn handle_claim_expiration(&self) -> Result<u64, Error> {
         let now = Utc::now();
-        let mut atomic = self.write_pool.begin().await?;
-
-        // Since push failures may result from downstream network issues, we must assume the task was delivered
-        let amo = sqlx::query(
-            "UPDATE inflight_taskactivations
-             SET processing_deadline = null,
-                 claim_expires_at = null,
-                 status = $1
-             WHERE at_most_once = TRUE
-                 AND status = $2
-                 AND claim_expires_at IS NOT NULL
-                 AND claim_expires_at < $3",
-        )
-        .bind(InflightActivationStatus::Failure)
-        .bind(InflightActivationStatus::Claimed)
-        .bind(now.timestamp())
-        .execute(&mut *atomic)
-        .await?;
+        let mut conn = self
+            .acquire_write_conn_metric("handle_claim_expiration")
+            .await?;
 
         let released = sqlx::query(
             "UPDATE inflight_taskactivations
-             SET processing_deadline = null,
-                 claim_expires_at = null,
+             SET claim_expires_at = null,
                  status = $1
              WHERE claim_expires_at IS NOT NULL
                  AND claim_expires_at < $2
-                 AND at_most_once = FALSE
                  AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Claimed)
-        .execute(&mut *atomic)
+        .execute(&mut *conn)
         .await?;
 
-        atomic.commit().await?;
-
-        Ok(amo.rows_affected() + released.rows_affected())
+        Ok(released.rows_affected())
     }
 
     /// Update tasks that are in processing and have exceeded their processing deadline
