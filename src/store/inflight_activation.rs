@@ -30,13 +30,14 @@ use crate::config::Config;
 
 pub type BucketRange = (i16, i16);
 
-/// The members of this enum should be synced with the members
-/// of InflightActivationStatus in sentry_protos
+/// The members of this enum should be a superset of the members
+/// of `InflightActivationStatus` in `sentry_protos`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
 pub enum InflightActivationStatus {
     /// Unused but necessary to align with sentry-protos
     Unspecified,
     Pending,
+    Claimed,
     Processing,
     Failure,
     Retry,
@@ -58,6 +59,8 @@ impl FromStr for InflightActivationStatus {
             Ok(InflightActivationStatus::Unspecified)
         } else if s == "Pending" {
             Ok(InflightActivationStatus::Pending)
+        } else if s == "Claimed" {
+            Ok(InflightActivationStatus::Claimed)
         } else if s == "Processing" {
             Ok(InflightActivationStatus::Processing)
         } else if s == "Failure" {
@@ -167,6 +170,10 @@ pub struct InflightActivation {
     #[builder(default = None, setter(strip_option))]
     pub processing_deadline: Option<DateTime<Utc>>,
 
+    /// If a task is still claimed after this time, upkeep may release the claim.
+    #[builder(default = None, setter(strip_option))]
+    pub claim_expires_at: Option<DateTime<Utc>>,
+
     /// What to do when the maximum number of attempts to complete a task is exceeded
     #[builder(default = OnAttemptsExceeded::Discard)]
     pub on_attempts_exceeded: OnAttemptsExceeded,
@@ -235,6 +242,7 @@ pub struct TableRow {
     pub delay_until: Option<DateTime<Utc>>,
     pub processing_deadline_duration: i32,
     pub processing_deadline: Option<DateTime<Utc>>,
+    pub claim_expires_at: Option<DateTime<Utc>>,
     pub status: String,
     pub at_most_once: bool,
     pub application: String,
@@ -261,6 +269,7 @@ impl TryFrom<InflightActivation> for TableRow {
             delay_until: value.delay_until,
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
+            claim_expires_at: value.claim_expires_at,
             status: value.status.to_string(),
             at_most_once: value.at_most_once,
             application: value.application,
@@ -287,6 +296,7 @@ impl From<TableRow> for InflightActivation {
             expires_at: value.expires_at,
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
+            claim_expires_at: value.claim_expires_at,
             at_most_once: value.at_most_once,
             application: value.application,
             namespace: value.namespace,
@@ -330,6 +340,8 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
+    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
+    pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
 }
@@ -340,6 +352,7 @@ impl InflightActivationStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
     }
@@ -352,6 +365,9 @@ pub struct DepthCounts {
 
     /// Number of delayed tasks in the store.
     pub delay: usize,
+
+    /// Activations claimed for push delivery but not yet marked processing.
+    pub claimed: usize,
 
     /// The number of processing tasks in the store.
     pub processing: usize,
@@ -375,14 +391,26 @@ pub trait InflightActivationStore: Send + Sync {
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
 
     /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
+    /// If `mark_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
     /// If no limit is provided, all matching activations will be returned.
-    async fn get_pending_activations(
+    async fn claim_activations(
+        &self,
+        application: Option<&str>,
+        namespaces: Option<&[String]>,
+        limit: Option<i32>,
+        bucket: Option<BucketRange>,
+        mark_processing: bool,
+    ) -> Result<Vec<InflightActivation>, Error>;
+
+    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
+    async fn claim_activations_for_push(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
+        // If a namespace filter is used, an application must also be used
         if namespaces.is_some() && application.is_none() {
             warn!(
                 ?namespaces,
@@ -392,21 +420,43 @@ pub trait InflightActivationStore: Send + Sync {
             return Ok(vec![]);
         }
 
-        let results = self
-            .get_pending_activations_from_namespaces(application, namespaces, limit, bucket)
-            .await?;
-
-        Ok(results)
+        self.claim_activations(application, namespaces, limit, bucket, false)
+            .await
     }
 
-    /// Claim pending activations (moves them to processing), optionally filtered by application and namespaces.
-    async fn get_pending_activations_from_namespaces(
+    /// Claims `limit` activations with application `application` and namespace `namespace`.
+    async fn claim_activation_for_pull(
         &self,
         application: Option<&str>,
-        namespaces: Option<&[String]>,
-        limit: Option<i32>,
-        bucket: Option<BucketRange>,
-    ) -> Result<Vec<InflightActivation>, Error>;
+        namespace: Option<&str>,
+    ) -> Result<Option<InflightActivation>, Error> {
+        // Convert single namespace to vector for internal use
+        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
+
+        // If a namespace filter is used, an application must also be used
+        if namespaces.is_some() && application.is_none() {
+            warn!(
+                ?namespaces,
+                "Received request for namespaced task without application"
+            );
+
+            return Ok(None);
+        }
+
+        let mut rows = self
+            .claim_activations(application, namespaces.as_deref(), Some(1), None, true)
+            .await?;
+
+        // If we are getting more than one task here, something is broken
+        if rows.len() > 1 {
+            Err(anyhow!("Found more than one row despite limit of one"))
+        } else {
+            Ok(rows.pop())
+        }
+    }
+
+    /// Record successful push.
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error>;
 
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
@@ -426,15 +476,17 @@ pub trait InflightActivationStore: Send + Sync {
     /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
     /// Default implementation uses separate calls, but stores may override with a single query.
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
-        let (pending, delay, processing) = join!(
+        let (pending, delay, claimed, processing) = join!(
             self.count_by_status(InflightActivationStatus::Pending),
             self.count_by_status(InflightActivationStatus::Delay),
+            self.count_by_status(InflightActivationStatus::Claimed),
             self.count_by_status(InflightActivationStatus::Processing),
         );
 
         Ok(DepthCounts {
             pending: pending?,
             delay: delay?,
+            claimed: claimed?,
             processing: processing?,
         })
     }
@@ -461,6 +513,9 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Clear all activations from the store
     async fn clear(&self) -> Result<(), Error>;
+
+    /// Revert expired push claims back to pending status.
+    async fn handle_claim_expiration(&self) -> Result<u64, Error>;
 
     /// Update tasks that exceeded their processing deadline
     async fn handle_processing_deadline(&self) -> Result<u64, Error>;
@@ -732,6 +787,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                claim_expires_at,
                 status,
                 at_most_once,
                 application,
@@ -774,6 +830,7 @@ impl InflightActivationStore for SqliteActivationStore {
                     delay_until,
                     processing_deadline_duration,
                     processing_deadline,
+                    claim_expires_at,
                     status,
                     at_most_once,
                     application,
@@ -801,12 +858,19 @@ impl InflightActivationStore for SqliteActivationStore {
                 b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
                 b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
                 b.push_bind(row.processing_deadline_duration);
+
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline.timestamp());
                 } else {
-                    // Add a literal null
                     b.push("null");
                 }
+
+                if let Some(exp) = row.claim_expires_at {
+                    b.push_bind(exp.timestamp());
+                } else {
+                    b.push("null");
+                }
+
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
                 b.push_bind(row.application);
@@ -842,42 +906,41 @@ impl InflightActivationStore for SqliteActivationStore {
         meta_result
     }
 
-    /// Claim pending activations from specified namespaces (moves them to processing).
-    /// If namespaces is `None`, gets from any namespace.
-    /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
-    async fn get_pending_activations_from_namespaces(
+    async fn claim_activations(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
+        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
-
         let grace_period = self.config.processing_deadline_grace_sec;
-        let mut query_builder = QueryBuilder::new(format!(
-            "UPDATE inflight_taskactivations
-            SET
-                processing_deadline = unixepoch(
-                    'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
-                ),
-                status = "
-        ));
-        query_builder.push_bind(InflightActivationStatus::Processing);
-        query_builder.push(
-            "
-            WHERE id IN (
-                SELECT id
-                FROM inflight_taskactivations
-                WHERE status = ",
-        );
+
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
+
+        if mark_processing {
+            query_builder.push(format!(
+                "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
+            ));
+
+            query_builder.push_bind(InflightActivationStatus::Processing);
+        } else {
+            query_builder.push(format!(
+                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
+                self.config.claim_lease_ms as f64 / 1000.0,
+            ));
+
+            query_builder.push_bind(InflightActivationStatus::Claimed);
+        }
+
+        query_builder.push(" WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        // Handle application & namespace filtering
         if let Some(value) = application {
             query_builder.push(" AND application =");
             query_builder.push_bind(value);
@@ -905,15 +968,43 @@ impl InflightActivationStore for SqliteActivationStore {
         }
         query_builder.push(") RETURNING *");
 
-        let mut conn = self
-            .acquire_write_conn_metric("get_pending_activation")
-            .await?;
+        let mut conn = self.acquire_write_conn_metric("claim_activations").await?;
         let rows: Vec<TableRow> = query_builder
             .build_query_as::<TableRow>()
             .fetch_all(&mut *conn)
             .await?;
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
+    }
+
+    #[instrument(skip_all)]
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("mark_activation_processing")
+            .await?;
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let result = sqlx::query(&format!(
+            "UPDATE inflight_taskactivations SET
+                status = $1,
+                processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'),
+                claim_expires_at = NULL
+            WHERE id = $2 AND status = $3",
+        ))
+        .bind(InflightActivationStatus::Processing)
+        .bind(id)
+        .bind(InflightActivationStatus::Claimed)
+        .execute(&mut *conn)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            warn!(
+                task_id = %id,
+                "Activation could not be marked as sent, it may be missing or its status may have already changed"
+            );
+        }
+
+        Ok(())
     }
 
     /// Get the age of the oldest pending activation in seconds.
@@ -1033,6 +1124,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                claim_expires_at,
                 status,
                 at_most_once,
                 application,
@@ -1058,6 +1150,31 @@ impl InflightActivationStore for SqliteActivationStore {
             .execute(&mut *conn)
             .await?;
         Ok(())
+    }
+
+    /// Expired push claims (`Claimed` + past `claim_expires_at`).
+    #[instrument(skip_all)]
+    async fn handle_claim_expiration(&self) -> Result<u64, Error> {
+        let now = Utc::now();
+        let mut conn = self
+            .acquire_write_conn_metric("handle_claim_expiration")
+            .await?;
+
+        let released = sqlx::query(
+            "UPDATE inflight_taskactivations
+             SET claim_expires_at = null,
+                 status = $1
+             WHERE claim_expires_at IS NOT NULL
+                 AND claim_expires_at < $2
+                 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Claimed)
+        .execute(&mut *conn)
+        .await?;
+
+        Ok(released.rows_affected())
     }
 
     /// Update tasks that are in processing and have exceeded their processing deadline

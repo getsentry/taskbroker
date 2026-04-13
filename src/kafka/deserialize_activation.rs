@@ -98,6 +98,7 @@ pub fn new(
             added_at: Utc::now(),
             received_at: activation_time,
             processing_deadline: None,
+            claim_expires_at: None,
             processing_deadline_duration: activation.processing_deadline_duration as i32,
             processing_attempts: 0,
             expires_at,

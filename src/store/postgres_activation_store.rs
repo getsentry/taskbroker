@@ -14,7 +14,7 @@ use sqlx::{
 };
 use std::str::FromStr;
 use std::time::Instant;
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 use crate::config::Config;
 
@@ -52,6 +52,8 @@ pub struct PostgresActivationStoreConfig {
     pub run_migrations: bool,
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
+    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
+    pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
 }
@@ -76,6 +78,7 @@ impl PostgresActivationStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
     }
@@ -181,6 +184,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                claim_expires_at,
                 status,
                 at_most_once,
                 application,
@@ -223,6 +227,7 @@ impl InflightActivationStore for PostgresActivationStore {
                     delay_until,
                     processing_deadline_duration,
                     processing_deadline,
+                    claim_expires_at,
                     status,
                     at_most_once,
                     application,
@@ -255,6 +260,11 @@ impl InflightActivationStore for PostgresActivationStore {
                     // Add a literal null
                     b.push("null");
                 }
+                if let Some(exp) = row.claim_expires_at {
+                    b.push_bind(exp);
+                } else {
+                    b.push("null");
+                }
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
                 b.push_bind(row.application);
@@ -269,20 +279,20 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(query.execute(&mut *conn).await?.into())
     }
 
-    /// Claim pending activations from specified namespaces (moves them to processing).
-    /// If namespaces is `None`, gets from any namespace.
-    /// If namespaces is `Some(...)`, restricts to those namespaces.
     #[instrument(skip_all)]
-    async fn get_pending_activations_from_namespaces(
+    async fn claim_activations(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
+        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
+        let claim_lease_ms = self.config.claim_lease_ms as i64;
+
         let mut query_builder = QueryBuilder::<Postgres>::new(
             "WITH selected_activations AS (
                 SELECT id
@@ -294,7 +304,6 @@ impl InflightActivationStore for PostgresActivationStore {
         query_builder.push_bind(now);
         query_builder.push(")");
 
-        // Handle application & namespace filtering
         if let Some(value) = application {
             query_builder.push(" AND application =");
             query_builder.push_bind(value);
@@ -324,26 +333,68 @@ impl InflightActivationStore for PostgresActivationStore {
             query_builder.push_bind(limit);
         }
         query_builder.push(" FOR UPDATE SKIP LOCKED)");
-        query_builder.push(format!(
-            "UPDATE inflight_taskactivations
-            SET
-                processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
-                status = "
-        ));
-        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+
+        if mark_processing {
+            query_builder.push(format!(
+                "UPDATE inflight_taskactivations
+                 SET processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                     claim_expires_at = NULL,
+                     status = "
+            ));
+
+            query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+        } else {
+            query_builder.push(format!(
+                "UPDATE inflight_taskactivations
+                 SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond') + (interval '{grace_period} seconds'),
+                     processing_deadline = NULL,
+                     status = "
+            ));
+
+            query_builder.push_bind(InflightActivationStatus::Claimed.to_string());
+        }
+
         query_builder.push(" FROM selected_activations ");
         query_builder.push(" WHERE inflight_taskactivations.id = selected_activations.id");
         query_builder.push(" RETURNING *, kafka_offset AS offset");
 
-        let mut conn = self
-            .acquire_write_conn_metric("get_pending_activation")
-            .await?;
+        let mut conn = self.acquire_write_conn_metric("claim_activations").await?;
         let rows: Vec<TableRow> = query_builder
             .build_query_as::<TableRow>()
             .fetch_all(&mut *conn)
             .await?;
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
+    }
+
+    #[instrument(skip_all)]
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("mark_activation_processing")
+            .await?;
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let result = sqlx::query(&format!(
+            "UPDATE inflight_taskactivations SET
+                status = $1,
+                processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                claim_expires_at = NULL
+            WHERE id = $2 AND status = $3",
+        ))
+        .bind(InflightActivationStatus::Processing.to_string())
+        .bind(id)
+        .bind(InflightActivationStatus::Claimed.to_string())
+        .execute(&mut *conn)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            warn!(
+                task_id = %id,
+                "Activation could not be marked as processing, it may be missing or its status may have already changed"
+            );
+        }
+
+        Ok(())
     }
 
     /// Get the age of the oldest pending activation in seconds.
@@ -402,12 +453,14 @@ impl InflightActivationStore for PostgresActivationStore {
         let sql = "
              SELECT COUNT(*) FILTER (WHERE status = $1) AS pending,
                     COUNT(*) FILTER (WHERE status = $2) AS delay,
-                    COUNT(*) FILTER (WHERE status = $3) AS processing
+                    COUNT(*) FILTER (WHERE status = $3) AS claimed,
+                    COUNT(*) FILTER (WHERE status = $4) AS processing
              FROM inflight_taskactivations";
 
-        let row: (i64, i64, i64) = sqlx::query_as(sql)
+        let row: (i64, i64, i64, i64) = sqlx::query_as(sql)
             .bind(InflightActivationStatus::Pending.to_string())
             .bind(InflightActivationStatus::Delay.to_string())
+            .bind(InflightActivationStatus::Claimed.to_string())
             .bind(InflightActivationStatus::Processing.to_string())
             .fetch_one(&self.read_pool)
             .await?;
@@ -415,7 +468,8 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(DepthCounts {
             pending: row.0 as usize,
             delay: row.1 as usize,
-            processing: row.2 as usize,
+            claimed: row.2 as usize,
+            processing: row.3 as usize,
         })
     }
 
@@ -484,6 +538,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                claim_expires_at,
                 status,
                 at_most_once,
                 application,
@@ -511,6 +566,31 @@ impl InflightActivationStore for PostgresActivationStore {
             .await?;
 
         Ok(())
+    }
+
+    /// Revert expired push claims back to pending status.
+    #[instrument(skip_all)]
+    async fn handle_claim_expiration(&self) -> Result<u64, Error> {
+        let now = Utc::now();
+        let mut conn = self
+            .acquire_write_conn_metric("handle_claim_expiration")
+            .await?;
+
+        let released = sqlx::query(
+            "UPDATE inflight_taskactivations
+             SET claim_expires_at = null,
+                 status = $1
+             WHERE claim_expires_at IS NOT NULL
+                 AND claim_expires_at < $2
+                 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending.to_string())
+        .bind(now)
+        .bind(InflightActivationStatus::Claimed.to_string())
+        .execute(&mut *conn)
+        .await?;
+
+        Ok(released.rows_affected())
     }
 
     /// Update tasks that are in processing and have exceeded their processing deadline
