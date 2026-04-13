@@ -443,16 +443,18 @@ impl InflightActivationStore for PostgresActivationStore {
 
     #[instrument(skip_all)]
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
-        let sql = "
-             SELECT COUNT(*) FILTER (WHERE status = $1) AS pending,
-                    COUNT(*) FILTER (WHERE status = $2) AS delay,
-                    COUNT(*) FILTER (WHERE status = $3) AS processing
-             FROM inflight_taskactivations";
+        // Notice that statuses are embedded into the query for simplicity - if the enum is every changed, this must change too!
+        let mut query_builder = QueryBuilder::new(
+            "SELECT COUNT(*) FILTER (WHERE status = 'Pending'),
+                    COUNT(*) FILTER (WHERE status = 'Delay'),
+                    COUNT(*) FILTER (WHERE status = 'Processing')
+             FROM inflight_taskactivations",
+        );
 
-        let row: (i64, i64, i64) = sqlx::query_as(sql)
-            .bind(InflightActivationStatus::Pending.to_string())
-            .bind(InflightActivationStatus::Delay.to_string())
-            .bind(InflightActivationStatus::Processing.to_string())
+        self.add_partition_condition(&mut query_builder, true);
+
+        let row: (i64, i64, i64) = query_builder
+            .build_query_as()
             .fetch_one(&self.read_pool)
             .await?;
 
@@ -574,7 +576,7 @@ impl InflightActivationStore for PostgresActivationStore {
             SET processing_deadline = null, status = ",
         );
         query_builder.push_bind(InflightActivationStatus::Failure.to_string());
-        query_builder.push("WHERE processing_deadline < ");
+        query_builder.push(" WHERE processing_deadline < ");
         query_builder.push_bind(now);
         query_builder.push(" AND at_most_once = TRUE AND status = ");
         query_builder.push_bind(InflightActivationStatus::Processing.to_string());

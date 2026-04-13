@@ -396,11 +396,13 @@ pub async fn handle_events(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
+                        activation_store.assign_partitions(vec![]).unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!("arroyo.consumer.current_partitions").set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
+                        activation_store.assign_partitions(vec![]).unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
