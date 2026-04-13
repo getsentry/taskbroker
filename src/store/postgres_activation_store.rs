@@ -574,6 +574,7 @@ impl InflightActivationStore for PostgresActivationStore {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
+        // Since push failures may result from downstream network issues, we must assume the task was delivered
         let amo = sqlx::query(
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,

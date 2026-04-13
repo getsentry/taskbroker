@@ -916,9 +916,7 @@ impl InflightActivationStore for SqliteActivationStore {
         mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
-
         let grace_period = self.config.processing_deadline_grace_sec;
-        let claim_lease_ms = self.config.claim_lease_ms;
 
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
 
@@ -930,7 +928,8 @@ impl InflightActivationStore for SqliteActivationStore {
             query_builder.push_bind(InflightActivationStatus::Processing);
         } else {
             query_builder.push(format!(
-                "claim_expires_at = unixepoch('now', '+' || {claim_lease_ms} || ' milliseconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = "
+                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
+                self.config.claim_lease_ms as f64 / 1000.0,
             ));
 
             query_builder.push_bind(InflightActivationStatus::Claimed);
@@ -1159,6 +1158,7 @@ impl InflightActivationStore for SqliteActivationStore {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
+        // Since push failures may result from downstream network issues, we must assume the task was delivered
         let amo = sqlx::query(
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
