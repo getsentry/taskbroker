@@ -935,7 +935,7 @@ impl InflightActivationStore for SqliteActivationStore {
             query_builder.push_bind(InflightActivationStatus::Claimed);
         }
 
-        query_builder.push("WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
+        query_builder.push(" WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
         query_builder.push_bind(now.timestamp());
