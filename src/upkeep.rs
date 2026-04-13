@@ -197,7 +197,6 @@ pub async fn do_upkeep(
         metrics::counter!("upkeep.handle_processing_deadline.skipped").increment(1);
     }
 
-    let seconds_since_startup = (current_time - startup_time).num_seconds() as u64;
     if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
         let handle_claim_expiration_start = Instant::now();
 
