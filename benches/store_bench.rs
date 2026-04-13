@@ -32,6 +32,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
+                claim_lease_ms: 5000,
                 enable_sqlite_status_metrics: false,
             },
         )
@@ -96,6 +97,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
+                claim_lease_ms: 5000,
                 enable_sqlite_status_metrics: false,
             },
         )

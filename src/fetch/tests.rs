@@ -9,11 +9,11 @@ use tonic::async_trait;
 use super::*;
 use crate::config::Config;
 use crate::push::PushError;
+use crate::store::inflight_activation::InflightActivationStore;
 use crate::store::inflight_activation::{BucketRange, InflightActivation};
 use crate::store::inflight_activation::{
     FailedTasksForwarder, InflightActivationStatus, QueryResult,
 };
-use crate::store::inflight_activation::{InflightActivationStore, ProcessingDeadlineCounts};
 use crate::test_utils::make_activations;
 
 /// Store stub that returns one activation once OR is always empty OR always fails.
@@ -76,7 +76,7 @@ impl InflightActivationStore for MockStore {
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
-        status: InflightActivationStatus,
+        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
@@ -84,7 +84,11 @@ impl InflightActivationStore for MockStore {
 
         Ok(match self.pending.lock().await.take() {
             Some(mut a) => {
-                a.status = status;
+                a.status = if mark_processing {
+                    InflightActivationStatus::Processing
+                } else {
+                    InflightActivationStatus::Claimed
+                };
                 vec![a]
             }
             None => vec![],
@@ -135,7 +139,11 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error> {
+    async fn handle_claim_expiration(&self) -> Result<u64, Error> {
+        unimplemented!()
+    }
+
+    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         unimplemented!()
     }
 

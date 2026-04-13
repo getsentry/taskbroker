@@ -170,6 +170,10 @@ pub struct InflightActivation {
     #[builder(default = None, setter(strip_option))]
     pub processing_deadline: Option<DateTime<Utc>>,
 
+    /// If a task is still claimed after this time, upkeep may release the claim.
+    #[builder(default = None, setter(strip_option))]
+    pub claim_expires_at: Option<DateTime<Utc>>,
+
     /// What to do when the maximum number of attempts to complete a task is exceeded
     #[builder(default = OnAttemptsExceeded::Discard)]
     pub on_attempts_exceeded: OnAttemptsExceeded,
@@ -183,26 +187,6 @@ pub struct InflightActivation {
     /// Bucket derived from activation ID (UUID as number % 256). Set once on ingestion.
     #[builder(setter(skip), default = "0")]
     pub bucket: i16,
-}
-
-/// Counts how many tasks were changed from 'processing' to 'pending' by `handle_processing_deadline`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ProcessingDeadlineCounts {
-    /// The number of AMO tasks reverted.
-    pub at_most_once: u64,
-
-    /// The number of regular, unsent tasks reverted.
-    pub non_amo_unsent: u64,
-
-    /// The number of regular, sent tasks reverted.
-    pub non_amo_sent: u64,
-}
-
-impl ProcessingDeadlineCounts {
-    /// Count the total number of tasks that reached their processing deadline and were reverted to pending.
-    pub fn total(&self) -> u64 {
-        self.at_most_once + self.non_amo_unsent + self.non_amo_sent
-    }
 }
 
 impl InflightActivation {
@@ -258,6 +242,7 @@ pub struct TableRow {
     pub delay_until: Option<DateTime<Utc>>,
     pub processing_deadline_duration: i32,
     pub processing_deadline: Option<DateTime<Utc>>,
+    pub claim_expires_at: Option<DateTime<Utc>>,
     pub status: String,
     pub at_most_once: bool,
     pub application: String,
@@ -284,6 +269,7 @@ impl TryFrom<InflightActivation> for TableRow {
             delay_until: value.delay_until,
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
+            claim_expires_at: value.claim_expires_at,
             status: value.status.to_string(),
             at_most_once: value.at_most_once,
             application: value.application,
@@ -310,6 +296,7 @@ impl From<TableRow> for InflightActivation {
             expires_at: value.expires_at,
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
+            claim_expires_at: value.claim_expires_at,
             at_most_once: value.at_most_once,
             application: value.application,
             namespace: value.namespace,
@@ -353,6 +340,8 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
+    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
+    pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
 }
@@ -363,6 +352,7 @@ impl InflightActivationStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
     }
@@ -400,7 +390,8 @@ pub trait InflightActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
 
-    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange, and update them to have status `status`.
+    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
+    /// If `mark_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
     /// If no limit is provided, all matching activations will be returned.
     async fn claim_activations(
         &self,
@@ -408,7 +399,7 @@ pub trait InflightActivationStore: Send + Sync {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        status: InflightActivationStatus,
+        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error>;
 
     /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
@@ -429,14 +420,8 @@ pub trait InflightActivationStore: Send + Sync {
             return Ok(vec![]);
         }
 
-        self.claim_activations(
-            application,
-            namespaces,
-            limit,
-            bucket,
-            InflightActivationStatus::Claimed,
-        )
-        .await
+        self.claim_activations(application, namespaces, limit, bucket, false)
+            .await
     }
 
     /// Claims `limit` activations with application `application` and namespace `namespace`.
@@ -459,13 +444,7 @@ pub trait InflightActivationStore: Send + Sync {
         }
 
         let mut rows = self
-            .claim_activations(
-                application,
-                namespaces.as_deref(),
-                Some(1),
-                None,
-                InflightActivationStatus::Processing,
-            )
+            .claim_activations(application, namespaces.as_deref(), Some(1), None, true)
             .await?;
 
         // If we are getting more than one task here, something is broken
@@ -535,8 +514,11 @@ pub trait InflightActivationStore: Send + Sync {
     /// Clear all activations from the store
     async fn clear(&self) -> Result<(), Error>;
 
+    /// Revert expired push claims back to pending status.
+    async fn handle_claim_expiration(&self) -> Result<u64, Error>;
+
     /// Update tasks that exceeded their processing deadline
-    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error>;
+    async fn handle_processing_deadline(&self) -> Result<u64, Error>;
 
     /// Update tasks that exceeded max processing attempts
     async fn handle_processing_attempts(&self) -> Result<u64, Error>;
@@ -805,6 +787,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                claim_expires_at,
                 status,
                 at_most_once,
                 application,
@@ -847,6 +830,7 @@ impl InflightActivationStore for SqliteActivationStore {
                     delay_until,
                     processing_deadline_duration,
                     processing_deadline,
+                    claim_expires_at,
                     status,
                     at_most_once,
                     application,
@@ -874,12 +858,19 @@ impl InflightActivationStore for SqliteActivationStore {
                 b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
                 b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
                 b.push_bind(row.processing_deadline_duration);
+
                 if let Some(deadline) = row.processing_deadline {
                     b.push_bind(deadline.timestamp());
                 } else {
-                    // Add a literal null
                     b.push("null");
                 }
+
+                if let Some(exp) = row.claim_expires_at {
+                    b.push_bind(exp.timestamp());
+                } else {
+                    b.push("null");
+                }
+
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
                 b.push_bind(row.application);
@@ -922,33 +913,35 @@ impl InflightActivationStore for SqliteActivationStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        status: InflightActivationStatus,
+        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
         let grace_period = self.config.processing_deadline_grace_sec;
-        let mut query_builder = QueryBuilder::new(format!(
-            "UPDATE inflight_taskactivations
-            SET
-                processing_deadline = unixepoch(
-                    'now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'
-                ),
-                status = "
-        ));
-        query_builder.push_bind(status);
-        query_builder.push(
-            "
-            WHERE id IN (
-                SELECT id
-                FROM inflight_taskactivations
-                WHERE status = ",
-        );
+        let claim_lease_ms = self.config.claim_lease_ms;
+
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
+
+        if mark_processing {
+            query_builder.push(format!(
+                "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
+            ));
+
+            query_builder.push_bind(InflightActivationStatus::Processing);
+        } else {
+            query_builder.push(format!(
+                "claim_expires_at = unixepoch('now', '+' || {claim_lease_ms} || ' milliseconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = "
+            ));
+
+            query_builder.push_bind(InflightActivationStatus::Claimed);
+        }
+
+        query_builder.push("WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
         query_builder.push_bind(InflightActivationStatus::Pending);
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
 
-        // Handle application & namespace filtering
         if let Some(value) = application {
             query_builder.push(" AND application =");
             query_builder.push_bind(value);
@@ -991,9 +984,14 @@ impl InflightActivationStore for SqliteActivationStore {
             .acquire_write_conn_metric("mark_activation_processing")
             .await?;
 
-        let result = sqlx::query(
-            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 AND status = $3",
-        )
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let result = sqlx::query(&format!(
+            "UPDATE inflight_taskactivations SET
+                status = $1,
+                processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'),
+                claim_expires_at = NULL
+            WHERE id = $2 AND status = $3",
+        ))
         .bind(InflightActivationStatus::Processing)
         .bind(id)
         .bind(InflightActivationStatus::Claimed)
@@ -1127,6 +1125,7 @@ impl InflightActivationStore for SqliteActivationStore {
                 delay_until,
                 processing_deadline_duration,
                 processing_deadline,
+                claim_expires_at,
                 status,
                 at_most_once,
                 application,
@@ -1154,66 +1153,96 @@ impl InflightActivationStore for SqliteActivationStore {
         Ok(())
     }
 
-    /// Update tasks that are in processing and have exceeded their processing deadline.
+    /// Expired push claims (`Claimed` + past `claim_expires_at`).
     #[instrument(skip_all)]
-    async fn handle_processing_deadline(&self) -> Result<ProcessingDeadlineCounts, Error> {
+    async fn handle_claim_expiration(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
-        // Idempotent tasks that fail their processing deadlines go directly to failure
         let amo = sqlx::query(
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
+                 claim_expires_at = null,
                  status = $1
-             WHERE processing_deadline < $2
-                 AND at_most_once = TRUE
-                 AND (status = $3 OR status = $4)",
+             WHERE at_most_once = TRUE
+                 AND status = $2
+                 AND claim_expires_at IS NOT NULL
+                 AND claim_expires_at < $3",
         )
         .bind(InflightActivationStatus::Failure)
-        .bind(now.timestamp())
-        .bind(InflightActivationStatus::Processing)
         .bind(InflightActivationStatus::Claimed)
+        .bind(now.timestamp())
         .execute(&mut *atomic)
         .await?;
 
-        // Revert activations that weren't delivered back to 'pending' without consuming an attempt (release claims)
-        let unsent = sqlx::query(
+        let released = sqlx::query(
             "UPDATE inflight_taskactivations
              SET processing_deadline = null,
+                 claim_expires_at = null,
                  status = $1
-             WHERE processing_deadline < $2
+             WHERE claim_expires_at IS NOT NULL
+                 AND claim_expires_at < $2
                  AND at_most_once = FALSE
                  AND status = $3",
         )
         .bind(InflightActivationStatus::Pending)
         .bind(now.timestamp())
         .bind(InflightActivationStatus::Claimed)
-        .execute(&mut *atomic)
-        .await?;
-
-        // Revert activations that were delivered back to 'pending' AND consume an attempt
-        let sent = sqlx::query(
-            "UPDATE inflight_taskactivations
-             SET processing_deadline = null,
-                 status = $1,
-                 processing_attempts = processing_attempts + 1
-             WHERE processing_deadline < $2
-                 AND at_most_once = FALSE
-                 AND status = $3",
-        )
-        .bind(InflightActivationStatus::Pending)
-        .bind(now.timestamp())
-        .bind(InflightActivationStatus::Processing)
         .execute(&mut *atomic)
         .await?;
 
         atomic.commit().await?;
 
-        Ok(ProcessingDeadlineCounts {
-            at_most_once: amo.rows_affected(),
-            non_amo_unsent: unsent.rows_affected(),
-            non_amo_sent: sent.rows_affected(),
-        })
+        Ok(amo.rows_affected() + released.rows_affected())
+    }
+
+    /// Update tasks that are in processing and have exceeded their processing deadline
+    /// Exceeding a processing deadline does not consume a retry as we don't know
+    /// if a worker took the task and was killed, or failed.
+    #[instrument(skip_all)]
+    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+        let now = Utc::now();
+        let mut atomic = self.write_pool.begin().await?;
+
+        // Idempotent tasks that fail their processing deadlines go directly to failure
+        // there are no retries, as the worker will reject the task due to idempotency keys.
+        let most_once_result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = $1
+            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
+        )
+        .bind(InflightActivationStatus::Failure)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Processing)
+        .execute(&mut *atomic)
+        .await;
+
+        let mut processing_deadline_modified_rows = 0;
+        if let Ok(query_res) = most_once_result {
+            processing_deadline_modified_rows = query_res.rows_affected();
+        }
+
+        // Update non-idempotent tasks.
+        // Increment processing_attempts by 1 and reset processing_deadline to null.
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
+            WHERE processing_deadline < $2 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Processing)
+        .execute(&mut *atomic)
+        .await;
+
+        atomic.commit().await?;
+
+        if let Ok(query_res) = result {
+            processing_deadline_modified_rows += query_res.rows_affected();
+            return Ok(processing_deadline_modified_rows);
+        }
+
+        Err(anyhow!("Could not update tasks past processing_deadline"))
     }
 
     /// Update tasks that have exceeded their max processing attempts.
