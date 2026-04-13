@@ -71,7 +71,7 @@ def test_should_retry_retryerror() -> None:
 
 
 def test_should_retry_processing_deadline_exceeded() -> None:
-    retry = Retry(times=3, retry_on_timeout=True)
+    retry = Retry(times=3, on=(ProcessingDeadlineExceeded,))
     state = retry.initial_state()
 
     deadline_exceeded = ProcessingDeadlineExceeded("processing deadline exceeded")

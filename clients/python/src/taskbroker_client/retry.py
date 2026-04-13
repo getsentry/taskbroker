@@ -99,11 +99,6 @@ class Retry:
         if isinstance(exc, self._allowed_exception_types):
             return True
 
-        from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded
-
-        if self._retry_on_timeout and isinstance(exc, ProcessingDeadlineExceeded):
-            return True
-
         return False
 
     def initial_state(self) -> RetryState:
