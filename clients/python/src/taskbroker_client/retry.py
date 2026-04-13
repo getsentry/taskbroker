@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from multiprocessing.context import TimeoutError
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DEADLETTER,
@@ -69,19 +68,21 @@ class Retry:
         ignore: tuple[type[BaseException], ...] | None = None,
         times_exceeded: LastAction = LastAction.Discard,
         delay: int | None = None,
+        retry_on_timeout: bool = True,
     ):
         self._times = times
         self._allowed_exception_types: tuple[type[BaseException], ...] = on or ()
         self._denied_exception_types: tuple[type[BaseException], ...] = ignore or ()
         self._times_exceeded = times_exceeded
         self._delay = delay
+        self._retry_on_timeout = retry_on_timeout
 
     def max_attempts_reached(self, state: RetryState) -> bool:
         # We subtract one, as attempts starts at 0, but `times`
         # starts at 1.
         return state.attempts >= (self._times - 1)
 
-    def should_retry(self, state: RetryState, exc: Exception) -> bool:
+    def should_retry(self, state: RetryState, exc: BaseException) -> bool:
         # If there are no retries remaining we should not retry
         if self.max_attempts_reached(state):
             return False
@@ -94,9 +95,13 @@ class Retry:
         if isinstance(exc, self._denied_exception_types):
             return False
 
-        # In the retry allow list or processing deadline is exceeded
-        # When processing deadline is exceeded, the subprocess raises a TimeoutError
-        if isinstance(exc, (TimeoutError, self._allowed_exception_types)):
+        # Retry for allowed exception types
+        if isinstance(exc, self._allowed_exception_types):
+            return True
+
+        from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded
+
+        if self._retry_on_timeout and isinstance(exc, ProcessingDeadlineExceeded):
             return True
 
         return False

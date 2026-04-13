@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from multiprocessing.context import TimeoutError
-
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DEADLETTER,
     ON_ATTEMPTS_EXCEEDED_DISCARD,
 )
 
 from taskbroker_client.retry import LastAction, Retry, RetryTaskError
+from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded
 
 
 class RuntimeChildError(RuntimeError):
@@ -71,22 +70,21 @@ def test_should_retry_retryerror() -> None:
     assert not retry.should_retry(state, err)
 
 
-def test_should_retry_multiprocessing_timeout() -> None:
-    retry = Retry(times=3)
+def test_should_retry_processing_deadline_exceeded() -> None:
+    retry = Retry(times=3, retry_on_timeout=True)
     state = retry.initial_state()
 
-    timeout = TimeoutError("timeouts should retry if there are attempts left")
-    assert retry.should_retry(state, timeout)
+    deadline_exceeded = ProcessingDeadlineExceeded("processing deadline exceeded")
+    assert retry.should_retry(state, deadline_exceeded)
 
     state.attempts = 1
-    assert retry.should_retry(state, timeout)
+    assert retry.should_retry(state, deadline_exceeded)
 
-    # attempt = 2 is actually the third attempt.
     state.attempts = 2
-    assert not retry.should_retry(state, timeout)
+    assert not retry.should_retry(state, deadline_exceeded)
 
     state.attempts = 3
-    assert not retry.should_retry(state, timeout)
+    assert not retry.should_retry(state, deadline_exceeded)
 
 
 def test_should_retry_error_allow_list() -> None:
