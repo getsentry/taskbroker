@@ -1,7 +1,6 @@
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use derive_builder::Builder;
 use libsqlite3_sys::{
     SQLITE_DBSTATUS_CACHE_HIT, SQLITE_DBSTATUS_CACHE_MISS, SQLITE_DBSTATUS_CACHE_SPILL,
     SQLITE_DBSTATUS_CACHE_USED, SQLITE_DBSTATUS_CACHE_USED_SHARED, SQLITE_DBSTATUS_CACHE_WRITE,
@@ -10,224 +9,23 @@ use libsqlite3_sys::{
     SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
     SQLITE_OK, sqlite3_db_status,
 };
-use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
-use tokio::join;
+use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use tracing::{instrument, warn};
 
 use sqlx::migrate::MigrateDatabase;
 use sqlx::pool::{PoolConnection, PoolOptions};
-use sqlx::postgres::PgQueryResult;
 use sqlx::sqlite::{
-    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteQueryResult,
-    SqliteRow, SqliteSynchronous,
+    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteRow,
+    SqliteSynchronous,
 };
-use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Type};
+use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite};
 
-use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::{str::FromStr, time::Instant};
 
 use crate::config::Config;
-
-pub type BucketRange = (i16, i16);
-
-/// The members of this enum should be a superset of the members
-/// of `InflightActivationStatus` in `sentry_protos`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
-pub enum InflightActivationStatus {
-    /// Unused but necessary to align with sentry-protos
-    Unspecified,
-    Pending,
-    Claimed,
-    Processing,
-    Failure,
-    Retry,
-    Complete,
-    Delay,
-}
-
-impl Display for InflightActivationStatus {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl FromStr for InflightActivationStatus {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s == "Unspecified" {
-            Ok(InflightActivationStatus::Unspecified)
-        } else if s == "Pending" {
-            Ok(InflightActivationStatus::Pending)
-        } else if s == "Claimed" {
-            Ok(InflightActivationStatus::Claimed)
-        } else if s == "Processing" {
-            Ok(InflightActivationStatus::Processing)
-        } else if s == "Failure" {
-            Ok(InflightActivationStatus::Failure)
-        } else if s == "Retry" {
-            Ok(InflightActivationStatus::Retry)
-        } else if s == "Complete" {
-            Ok(InflightActivationStatus::Complete)
-        } else if s == "Delay" {
-            Ok(InflightActivationStatus::Delay)
-        } else {
-            Err(format!("Unknown inflight activation status string: {}", s))
-        }
-    }
-}
-
-impl InflightActivationStatus {
-    /// Is the current value a 'conclusion' status that can be supplied over GRPC.
-    pub fn is_conclusion(&self) -> bool {
-        matches!(
-            self,
-            InflightActivationStatus::Complete
-                | InflightActivationStatus::Retry
-                | InflightActivationStatus::Failure
-        )
-    }
-}
-
-impl From<TaskActivationStatus> for InflightActivationStatus {
-    fn from(item: TaskActivationStatus) -> Self {
-        match item {
-            TaskActivationStatus::Unspecified => InflightActivationStatus::Unspecified,
-            TaskActivationStatus::Pending => InflightActivationStatus::Pending,
-            TaskActivationStatus::Processing => InflightActivationStatus::Processing,
-            TaskActivationStatus::Failure => InflightActivationStatus::Failure,
-            TaskActivationStatus::Retry => InflightActivationStatus::Retry,
-            TaskActivationStatus::Complete => InflightActivationStatus::Complete,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Builder)]
-#[builder(pattern = "owned")]
-#[builder(build_fn(name = "_build"))]
-#[builder(field(public))]
-pub struct InflightActivation {
-    #[builder(setter(into))]
-    pub id: String,
-
-    // The task application
-    #[builder(setter(into), default = "sentry".into())]
-    pub application: String,
-
-    /// The task namespace.
-    #[builder(setter(into))]
-    pub namespace: String,
-
-    /// The task name.
-    #[builder(setter(into))]
-    pub taskname: String,
-
-    /// The Protobuf activation that was received from Kafka.
-    #[builder(setter(custom))]
-    pub activation: Vec<u8>,
-
-    /// The current status of the activation
-    #[builder(default = InflightActivationStatus::Pending)]
-    pub status: InflightActivationStatus,
-
-    /// The partition the activation was received from
-    #[builder(default = 0)]
-    pub partition: i32,
-
-    /// The offset the activation had
-    #[builder(default = 0)]
-    pub offset: i64,
-
-    /// The timestamp when the activation was stored in activation store.
-    #[builder(default = Utc::now())]
-    pub added_at: DateTime<Utc>,
-
-    /// The timestamp a task was stored in Kafka
-    #[builder(default = Utc::now())]
-    pub received_at: DateTime<Utc>,
-
-    /// The number of times the activation has been attempted to be processed. This counter is
-    /// incremented everytime a task is reset from processing back to pending. When this
-    /// exceeds max_processing_attempts, the task is discarded/deadlettered.
-    #[builder(default = 0)]
-    pub processing_attempts: i32,
-
-    /// The duration in seconds that a worker has to complete task execution.
-    /// When an activation is moved from pending -> processing a result is expected
-    /// in this many seconds.
-    #[builder(default = 0)]
-    pub processing_deadline_duration: i32,
-
-    /// If the task has specified an expiry, this is the timestamp after which the task should be removed from inflight store
-    #[builder(default = None, setter(strip_option))]
-    pub expires_at: Option<DateTime<Utc>>,
-
-    /// If the task has specified a delay, this is the timestamp after which the task can be sent to workers
-    #[builder(default = None, setter(strip_option))]
-    pub delay_until: Option<DateTime<Utc>>,
-
-    /// The timestamp for when processing should be complete
-    #[builder(default = None, setter(strip_option))]
-    pub processing_deadline: Option<DateTime<Utc>>,
-
-    /// If a task is still claimed after this time, upkeep may release the claim.
-    #[builder(default = None, setter(strip_option))]
-    pub claim_expires_at: Option<DateTime<Utc>>,
-
-    /// What to do when the maximum number of attempts to complete a task is exceeded
-    #[builder(default = OnAttemptsExceeded::Discard)]
-    pub on_attempts_exceeded: OnAttemptsExceeded,
-
-    /// Whether or not the activation uses at_most_once.
-    /// When enabled activations are not retried when processing_deadlines
-    /// are exceeded.
-    #[builder(default = false)]
-    pub at_most_once: bool,
-
-    /// Bucket derived from activation ID (UUID as number % 256). Set once on ingestion.
-    #[builder(setter(skip), default = "0")]
-    pub bucket: i16,
-}
-
-impl InflightActivation {
-    /// The number of milliseconds between an activation's received timestamp
-    /// and the provided datetime
-    pub fn received_latency(&self, now: DateTime<Utc>) -> i64 {
-        now.signed_duration_since(self.received_at)
-            .num_milliseconds()
-            - self.delay_until.map_or(0, |delay_until| {
-                delay_until
-                    .signed_duration_since(self.received_at)
-                    .num_milliseconds()
-            })
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct QueryResult {
-    pub rows_affected: u64,
-}
-
-impl From<SqliteQueryResult> for QueryResult {
-    fn from(value: SqliteQueryResult) -> Self {
-        Self {
-            rows_affected: value.rows_affected(),
-        }
-    }
-}
-
-impl From<PgQueryResult> for QueryResult {
-    fn from(value: PgQueryResult) -> Self {
-        Self {
-            rows_affected: value.rows_affected(),
-        }
-    }
-}
-
-pub struct FailedTasksForwarder {
-    pub to_discard: Vec<(String, Vec<u8>)>,
-    pub to_deadletter: Vec<(String, Vec<u8>)>,
-}
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::traits::InflightActivationStore;
+use crate::store::types::{BucketRange, FailedTasksForwarder};
 
 #[derive(Debug, FromRow)]
 pub struct TableRow {
@@ -355,203 +153,6 @@ impl InflightActivationStoreConfig {
             claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
-    }
-}
-
-/// Counts pending, delayed, and processing tasks for backpressure and upkeep.
-pub struct DepthCounts {
-    /// The number of pending tasks in the store.
-    pub pending: usize,
-
-    /// Number of delayed tasks in the store.
-    pub delay: usize,
-
-    /// Activations claimed for push delivery but not yet marked processing.
-    pub claimed: usize,
-
-    /// The number of processing tasks in the store.
-    pub processing: usize,
-}
-
-#[async_trait]
-pub trait InflightActivationStore: Send + Sync {
-    /// CONSUMER OPERATIONS
-    /// Store a batch of activations
-    async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error>;
-
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
-
-    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
-    /// If `mark_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
-    /// If no limit is provided, all matching activations will be returned.
-    async fn claim_activations(
-        &self,
-        application: Option<&str>,
-        namespaces: Option<&[String]>,
-        limit: Option<i32>,
-        bucket: Option<BucketRange>,
-        mark_processing: bool,
-    ) -> Result<Vec<InflightActivation>, Error>;
-
-    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
-    async fn claim_activations_for_push(
-        &self,
-        application: Option<&str>,
-        namespaces: Option<&[String]>,
-        limit: Option<i32>,
-        bucket: Option<BucketRange>,
-    ) -> Result<Vec<InflightActivation>, Error> {
-        // If a namespace filter is used, an application must also be used
-        if namespaces.is_some() && application.is_none() {
-            warn!(
-                ?namespaces,
-                "Received request for namespaced task without application"
-            );
-
-            return Ok(vec![]);
-        }
-
-        self.claim_activations(application, namespaces, limit, bucket, false)
-            .await
-    }
-
-    /// Claims `limit` activations with application `application` and namespace `namespace`.
-    async fn claim_activation_for_pull(
-        &self,
-        application: Option<&str>,
-        namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
-        // Convert single namespace to vector for internal use
-        let namespaces = namespace.map(|ns| vec![ns.to_string()]);
-
-        // If a namespace filter is used, an application must also be used
-        if namespaces.is_some() && application.is_none() {
-            warn!(
-                ?namespaces,
-                "Received request for namespaced task without application"
-            );
-
-            return Ok(None);
-        }
-
-        let mut rows = self
-            .claim_activations(application, namespaces.as_deref(), Some(1), None, true)
-            .await?;
-
-        // If we are getting more than one task here, something is broken
-        if rows.len() > 1 {
-            Err(anyhow!("Found more than one row despite limit of one"))
-        } else {
-            Ok(rows.pop())
-        }
-    }
-
-    /// Record successful push.
-    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error>;
-
-    /// Update the status of a specific activation
-    async fn set_status(
-        &self,
-        id: &str,
-        status: InflightActivationStatus,
-    ) -> Result<Option<InflightActivation>, Error>;
-
-    /// COUNT OPERATIONS
-    /// Get the age of the oldest pending activation in seconds
-    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
-
-    /// Count activations with Pending status
-    async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(InflightActivationStatus::Pending)
-            .await
-    }
-
-    /// Count activations by status
-    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
-
-    /// Count all activations
-    async fn count(&self) -> Result<usize, Error>;
-
-    /// ACTIVATION OPERATIONS
-    /// Get an activation by id
-    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error>;
-
-    /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
-    /// Default implementation uses separate calls, but stores may override with a single query.
-    async fn count_depths(&self) -> Result<DepthCounts, Error> {
-        let (pending, delay, claimed, processing) = join!(
-            self.count_by_status(InflightActivationStatus::Pending),
-            self.count_by_status(InflightActivationStatus::Delay),
-            self.count_by_status(InflightActivationStatus::Claimed),
-            self.count_by_status(InflightActivationStatus::Processing),
-        );
-
-        Ok(DepthCounts {
-            pending: pending?,
-            delay: delay?,
-            claimed: claimed?,
-            processing: processing?,
-        })
-    }
-
-    /// Set the processing deadline for a specific activation
-    async fn set_processing_deadline(
-        &self,
-        id: &str,
-        deadline: Option<DateTime<Utc>>,
-    ) -> Result<(), Error>;
-
-    /// Delete an activation by id
-    async fn delete_activation(&self, id: &str) -> Result<(), Error>;
-
-    /// DATABASE OPERATIONS
-    /// Trigger incremental vacuum to reclaim free pages in the database
-    async fn vacuum_db(&self) -> Result<(), Error>;
-
-    /// Perform a full vacuum on the database
-    async fn full_vacuum_db(&self) -> Result<(), Error>;
-
-    /// Get the size of the database in bytes
-    async fn db_size(&self) -> Result<u64, Error>;
-
-    /// UPKEEP OPERATIONS
-    /// Get all activations with status Retry
-    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error>;
-
-    /// Revert expired push claims back to pending status.
-    async fn handle_claim_expiration(&self) -> Result<u64, Error>;
-
-    /// Update tasks that exceeded their processing deadline
-    async fn handle_processing_deadline(&self) -> Result<u64, Error>;
-
-    /// Update tasks that exceeded max processing attempts
-    async fn handle_processing_attempts(&self) -> Result<u64, Error>;
-
-    /// Delete tasks past their expires_at deadline
-    async fn handle_expires_at(&self) -> Result<u64, Error>;
-
-    /// Update delayed tasks past their delay_until deadline to Pending
-    async fn handle_delay_until(&self) -> Result<u64, Error>;
-
-    /// Process failed tasks for discard or deadletter
-    async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error>;
-
-    /// Mark tasks as complete by id
-    async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error>;
-
-    /// Remove completed tasks
-    async fn remove_completed(&self) -> Result<u64, Error>;
-
-    /// Remove killswitched tasks
-    async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error>;
-
-    /// TEST OPERATIONS
-    /// Clear all activations from the store
-    async fn clear(&self) -> Result<(), Error>;
-
-    /// Remove the database, used only in tests
-    async fn remove_db(&self) -> Result<(), Error> {
-        Ok(())
     }
 }
 
@@ -824,10 +425,11 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+    async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
         if batch.is_empty() {
-            return Ok(QueryResult { rows_affected: 0 });
+            return Ok(0);
         }
+
         let mut query_builder = QueryBuilder::<Sqlite>::new(
             "
             INSERT INTO inflight_taskactivations
@@ -895,7 +497,8 @@ impl InflightActivationStore for SqliteActivationStore {
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
         let mut conn = self.acquire_write_conn_metric("store").await?;
-        let meta_result = Ok(query.execute(&mut *conn).await?.into());
+        let result = query.execute(&mut *conn).await?;
+        let rows_affected = Ok(result.rows_affected());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
         let checkpoint_timer = Instant::now();
@@ -916,7 +519,7 @@ impl InflightActivationStore for SqliteActivationStore {
         }
         metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
 
-        meta_result
+        rows_affected
     }
 
     #[instrument(skip_all)]

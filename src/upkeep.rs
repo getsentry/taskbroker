@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
-use crate::store::inflight_activation::InflightActivationStore;
+use crate::store::traits::InflightActivationStore;
 
 /// The upkeep task that periodically performs upkeep
 /// on the inflight store
@@ -536,7 +536,7 @@ mod tests {
     use crate::{
         config::Config,
         runtime_config::RuntimeConfigManager,
-        store::inflight_activation::InflightActivationStatus,
+        store::activation::InflightActivationStatus,
         test_utils::{
             StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
             create_integration_config_with_topic, create_producer, create_test_store,

@@ -1,14 +1,10 @@
-use crate::store::inflight_activation::{
-    BucketRange, DepthCounts, FailedTasksForwarder, InflightActivation, InflightActivationStatus,
-    InflightActivationStore, QueryResult, TableRow,
-};
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sqlx::ConnectOptions;
 use sqlx::{
-    Pool, Postgres, QueryBuilder,
+    FromRow, Pool, Postgres, QueryBuilder,
     pool::PoolConnection,
     postgres::{PgConnectOptions, PgPool, PgPoolOptions},
 };
@@ -18,6 +14,87 @@ use std::time::Instant;
 use tracing::{instrument, warn};
 
 use crate::config::Config;
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::traits::InflightActivationStore;
+use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+
+#[derive(Debug, FromRow)]
+struct TableRow {
+    pub id: String,
+    pub activation: Vec<u8>,
+    pub partition: i32,
+    pub offset: i64,
+    pub added_at: DateTime<Utc>,
+    pub received_at: DateTime<Utc>,
+    pub processing_attempts: i32,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub delay_until: Option<DateTime<Utc>>,
+    pub processing_deadline_duration: i32,
+    pub processing_deadline: Option<DateTime<Utc>>,
+    pub claim_expires_at: Option<DateTime<Utc>>,
+    pub status: String,
+    pub at_most_once: bool,
+    pub application: String,
+    pub namespace: String,
+    pub taskname: String,
+    #[sqlx(try_from = "i32")]
+    pub on_attempts_exceeded: OnAttemptsExceeded,
+    pub bucket: i16,
+}
+
+impl TryFrom<InflightActivation> for TableRow {
+    type Error = anyhow::Error;
+
+    fn try_from(value: InflightActivation) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: value.id,
+            activation: value.activation,
+            partition: value.partition,
+            offset: value.offset,
+            added_at: value.added_at,
+            received_at: value.received_at,
+            processing_attempts: value.processing_attempts,
+            expires_at: value.expires_at,
+            delay_until: value.delay_until,
+            processing_deadline_duration: value.processing_deadline_duration,
+            processing_deadline: value.processing_deadline,
+            claim_expires_at: value.claim_expires_at,
+            status: value.status.to_string(),
+            at_most_once: value.at_most_once,
+            application: value.application,
+            namespace: value.namespace,
+            taskname: value.taskname,
+            on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
+        })
+    }
+}
+
+impl From<TableRow> for InflightActivation {
+    fn from(value: TableRow) -> Self {
+        Self {
+            id: value.id,
+            activation: value.activation,
+            status: InflightActivationStatus::from_str(&value.status).unwrap(),
+            partition: value.partition,
+            offset: value.offset,
+            added_at: value.added_at,
+            received_at: value.received_at,
+            processing_attempts: value.processing_attempts,
+            processing_deadline_duration: value.processing_deadline_duration,
+            expires_at: value.expires_at,
+            delay_until: value.delay_until,
+            processing_deadline: value.processing_deadline,
+            claim_expires_at: value.claim_expires_at,
+            at_most_once: value.at_most_once,
+            application: value.application,
+            namespace: value.namespace,
+            taskname: value.taskname,
+            on_attempts_exceeded: value.on_attempts_exceeded,
+            bucket: value.bucket,
+        }
+    }
+}
 
 pub async fn create_postgres_pool(
     connection: &PgConnectOptions,
@@ -238,10 +315,11 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn store(&self, batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+    async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
         if batch.is_empty() {
-            return Ok(QueryResult { rows_affected: 0 });
+            return Ok(0);
         }
+
         let mut query_builder = QueryBuilder::<Postgres>::new(
             "
             INSERT INTO inflight_taskactivations
@@ -305,8 +383,11 @@ impl InflightActivationStore for PostgresActivationStore {
             })
             .push(" ON CONFLICT(id) DO NOTHING")
             .build();
+
         let mut conn = self.acquire_write_conn_metric("store").await?;
-        Ok(query.execute(&mut *conn).await?.into())
+        let result = query.execute(&mut *conn).await?;
+
+        Ok(result.rows_affected())
     }
 
     #[instrument(skip_all)]

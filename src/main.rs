@@ -32,12 +32,11 @@ use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::inflight_activation::{
-    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
-};
-use taskbroker::store::postgres_activation_store::{
+use taskbroker::store::adapters::postgres::{
     PostgresActivationStore, PostgresActivationStoreConfig,
 };
+use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
 

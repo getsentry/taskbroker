@@ -15,11 +15,12 @@ use uuid::Uuid;
 use crate::{
     config::Config,
     store::{
-        inflight_activation::{
-            InflightActivation, InflightActivationBuilder, InflightActivationStatus,
-            InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
+        activation::{InflightActivation, InflightActivationBuilder, InflightActivationStatus},
+        adapters::{
+            postgres::{PostgresActivationStore, PostgresActivationStoreConfig},
+            sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
         },
-        postgres_activation_store::{PostgresActivationStore, PostgresActivationStoreConfig},
+        traits::InflightActivationStore,
     },
 };
 
