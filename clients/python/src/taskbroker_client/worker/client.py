@@ -486,3 +486,105 @@ class TaskbrokerClient:
                 receive_timestamp=time.monotonic(),
             )
         return None
+
+
+class PushTaskbrokerClient:
+    """
+    Taskworker RPC client wrapper
+
+    Push brokers are a deployment so don't need to be connected to individually. There is one service provided
+    that works for all the brokers.
+    """
+
+    def __init__(
+        self,
+        service: str,
+        application: str,
+        metrics: MetricsBackend,
+        max_tasks_before_rebalance: int = DEFAULT_REBALANCE_AFTER,
+        health_check_settings: HealthCheckSettings | None = None,
+        rpc_secret: str | None = None,
+        grpc_config: str | None = None,
+    ) -> None:
+        self._application = application
+        self._service = service
+        self._rpc_secret = rpc_secret
+        self._metrics = metrics
+
+        self._grpc_options: list[tuple[str, Any]] = [
+            ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)
+        ]
+        if grpc_config:
+            self._grpc_options.append(("grpc.service_config", grpc_config))
+
+        logger.info(
+            "taskworker.push_client.start",
+            extra={"service": service, "options": self._grpc_options},
+        )
+
+        self._stub = self._connect_to_host(service)
+
+        self._health_check_settings = health_check_settings
+        self._timestamp_since_touch_lock = threading.Lock()
+        self._timestamp_since_touch = 0.0
+
+    def _emit_health_check(self) -> None:
+        if self._health_check_settings is None:
+            return
+
+        with self._timestamp_since_touch_lock:
+            cur_time = time.time()
+            if (
+                cur_time - self._timestamp_since_touch
+                < self._health_check_settings.touch_interval_sec
+            ):
+                return
+
+            self._health_check_settings.file_path.touch()
+            self._metrics.incr(
+                "taskworker.client.health_check.touched",
+            )
+            self._timestamp_since_touch = cur_time
+
+    def _connect_to_host(self, host: str) -> ConsumerServiceStub:
+        logger.info("taskworker.push_client.connect", extra={"host": host})
+        channel = grpc.insecure_channel(host, options=self._grpc_options)
+        secrets = parse_rpc_secret_list(self._rpc_secret)
+        if secrets:
+            channel = grpc.intercept_channel(channel, RequestSignatureInterceptor(secrets))
+        return ConsumerServiceStub(channel)
+
+    def update_task(
+        self,
+        processing_result: ProcessingResult,
+    ) -> bool:
+        """
+        Update the status for a given task activation.
+
+        The return value is the next task that should be executed.
+        """
+        self._emit_health_check()
+
+        request = SetTaskStatusRequest(
+            id=processing_result.task_id,
+            status=processing_result.status,
+            fetch_next_task=None,
+        )
+
+        try:
+            with self._metrics.timer("taskworker.update_task.rpc", tags={"service": self._service}):
+                self._stub.SetTaskStatus(request)
+        except grpc.RpcError as err:
+            self._metrics.incr(
+                "taskworker.client.rpc_error",
+                tags={"method": "SetTaskStatus", "status": err.code().name},
+            )
+            if err.code() == grpc.StatusCode.NOT_FOUND:
+                # The task was not found, so we can't update it.
+                return False
+            if err.code() == grpc.StatusCode.UNAVAILABLE:
+                # The brokers are not responding, so we can't update the task.
+                return False
+            raise
+
+        return True

@@ -3,7 +3,7 @@ import contextlib
 import queue
 import time
 from collections.abc import MutableMapping
-from multiprocessing import Event
+from multiprocessing import Event, get_context
 from typing import Any
 from unittest import TestCase, mock
 
@@ -29,7 +29,12 @@ from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
-from taskbroker_client.worker.worker import TaskWorker, WorkerServicer
+from taskbroker_client.worker.worker import (
+    PushTaskWorker,
+    TaskWorker,
+    TaskWorkerProcessingPool,
+    WorkerServicer,
+)
 from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded, child_process
 
 SIMPLE_TASK = InflightTaskActivation(
@@ -195,8 +200,8 @@ class TestTaskWorker(TestCase):
             # No next_task returned
             mock_client.update_task.return_value = None
 
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
             start = time.time()
             while True:
                 taskworker.run_once()
@@ -235,8 +240,8 @@ class TestTaskWorker(TestCase):
 
             mock_client.update_task.side_effect = update_task_response
             mock_client.get_task.return_value = SIMPLE_TASK
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
 
             # Run until two tasks have been processed
             start = time.time()
@@ -287,8 +292,8 @@ class TestTaskWorker(TestCase):
 
             mock_client.update_task.side_effect = update_task_response
             mock_client.get_task.side_effect = get_task_response
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
 
             # Run until the update has 'completed'
             start = time.time()
@@ -305,12 +310,16 @@ class TestTaskWorker(TestCase):
             assert mock_client.update_task.call_count == 3
 
     def test_push_task_queue(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = TaskWorkerProcessingPool(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            send_result_fn=lambda x, y: None,
+            mp_context=get_context("fork"),
             max_child_task_count=100,
-            process_type="fork",
+            concurrency=1,
             child_tasks_queue_maxsize=2,
+            result_queue_maxsize=2,
+            processing_pool_name="test",
+            process_type="fork",
         )
 
         # We can enqueue the first task
@@ -342,13 +351,14 @@ class TestTaskWorker(TestCase):
 
             mock_client.update_task.side_effect = update_task_response
             mock_client.get_task.return_value = RETRY_STATE_TASK
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
 
             # Run until two tasks have been processed
             start = time.time()
             while True:
                 taskworker.run_once()
+                time.sleep(0.1)
                 if mock_client.update_task.call_count >= 1:
                     break
                 if time.time() - start > max_runtime:
@@ -374,48 +384,35 @@ class TestTaskWorker(TestCase):
             redis.delete("no-retries-remaining")
 
     def test_constructor_push_mode(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = PushTaskWorker(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            broker_service="127.0.0.1:50051",
             max_child_task_count=100,
             process_type="fork",
-            push_mode=True,
             grpc_port=50099,
         )
 
-        # Make sure delivery mode and gRPC port arguments are stored
-        self.assertTrue(taskworker._push_mode)
+        self.assertTrue(taskworker.client is not None)
         self.assertEqual(taskworker._grpc_port, 50099)
-
-    def test_constructor_pull_mode(self) -> None:
-        taskworker = TaskWorker(
-            app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
-            max_child_task_count=100,
-            process_type="fork",
-        )
-
-        # Make sure delivery mode and gRPC port are set to their defaults
-        self.assertFalse(taskworker._push_mode)
-        self.assertEqual(taskworker._grpc_port, 50052)
 
 
 class TestWorkerServicer(TestCase):
     def test_push_task_success(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = PushTaskWorker(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            broker_service="127.0.0.1:50051",
             max_child_task_count=100,
             process_type="fork",
-            push_mode=True,
         )
-        with mock.patch.object(taskworker, "push_task", return_value=True) as mock_push_task:
+        with mock.patch.object(
+            taskworker.worker_pool, "push_task", return_value=True
+        ) as mock_push_task:
             request = PushTaskRequest(
                 task=SIMPLE_TASK.activation,
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker)
+            servicer = WorkerServicer(taskworker.worker_pool)
 
             response = servicer.PushTask(request, mock_context)
 
@@ -427,20 +424,20 @@ class TestWorkerServicer(TestCase):
         self.assertEqual(inflight.host, "broker-host:50051")
 
     def test_push_task_worker_busy(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = PushTaskWorker(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            broker_service="127.0.0.1:50051",
             max_child_task_count=100,
             process_type="fork",
             child_tasks_queue_maxsize=1,
         )
-        with mock.patch.object(taskworker, "push_task", return_value=False):
+        with mock.patch.object(taskworker.worker_pool, "push_task", return_value=False):
             request = PushTaskRequest(
                 task=SIMPLE_TASK.activation,
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker)
+            servicer = WorkerServicer(taskworker.worker_pool)
 
             servicer.PushTask(request, mock_context)
 
