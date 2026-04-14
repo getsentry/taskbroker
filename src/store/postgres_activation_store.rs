@@ -624,19 +624,22 @@ impl InflightActivationStore for PostgresActivationStore {
             .acquire_write_conn_metric("handle_claim_expiration")
             .await?;
 
-        let released = sqlx::query(
+        let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
              SET claim_expires_at = null,
-                 status = $1
-             WHERE claim_expires_at IS NOT NULL
-                 AND claim_expires_at < $2
-                 AND status = $3",
-        )
-        .bind(InflightActivationStatus::Pending.to_string())
-        .bind(now)
-        .bind(InflightActivationStatus::Claimed.to_string())
-        .execute(&mut *conn)
-        .await?;
+                 status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        query_builder.push(
+            " WHERE claim_expires_at IS NOT NULL
+                 AND claim_expires_at < ",
+        );
+        query_builder.push_bind(now);
+        query_builder.push(" AND status = ");
+        query_builder.push_bind(InflightActivationStatus::Claimed.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+
+        let released = query_builder.build().execute(&mut *conn).await?;
 
         Ok(released.rows_affected())
     }
