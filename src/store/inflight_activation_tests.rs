@@ -221,12 +221,11 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
     let batch = make_activations(2);
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let mut got = store
-        .get_pending_activations(None, None, Some(1), None)
+    let result = store
+        .claim_activation_for_pull(None, None)
         .await
-        .unwrap();
-    assert_eq!(got.len(), 1);
-    let result = got.pop().unwrap();
+        .unwrap()
+        .expect("expected one activation");
 
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
@@ -260,7 +259,7 @@ async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
     assert!(store.store(batch).await.is_ok());
 
     let mut first = store
-        .get_pending_activations(None, None, Some(1), Some((15, 25)))
+        .claim_activations_for_push(None, None, Some(1), Some((15, 25)))
         .await
         .unwrap();
     assert_eq!(first.len(), 1);
@@ -269,7 +268,7 @@ async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
     assert_eq!(first.bucket, 20);
 
     let mut second = store
-        .get_pending_activations(None, None, Some(1), Some((0, 15)))
+        .claim_activations_for_push(None, None, Some(1), Some((0, 15)))
         .await
         .unwrap();
     assert_eq!(second.len(), 1);
@@ -279,7 +278,7 @@ async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
 
     assert!(
         store
-            .get_pending_activations(None, None, Some(1), Some((15, 25)))
+            .claim_activations_for_push(None, None, Some(1), Some((15, 25)))
             .await
             .unwrap()
             .is_empty()
@@ -315,17 +314,12 @@ async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
         join_set.spawn(async move {
             rx.recv().await.unwrap();
             {
-                let mut v = store
-                    .get_pending_activations(
-                        Some("sentry"),
-                        Some(std::slice::from_ref(&ns)),
-                        Some(1),
-                        None,
-                    )
+                let v = store
+                    .claim_activation_for_pull(Some("sentry"), Some(ns.as_str()))
                     .await
                     .unwrap();
-                assert_eq!(v.len(), 1);
-                v.pop().unwrap()
+                assert!(v.is_some());
+                v.unwrap()
             }
         });
     }
@@ -356,17 +350,11 @@ async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
 
     let other_namespace = "other_namespace".to_string();
     // Get activation from other namespace
-    let mut got = store
-        .get_pending_activations(
-            Some("sentry"),
-            Some(std::slice::from_ref(&other_namespace)),
-            Some(1),
-            None,
-        )
+    let result = store
+        .claim_activation_for_pull(Some("sentry"), Some(other_namespace.as_str()))
         .await
-        .unwrap();
-    assert_eq!(got.len(), 1);
-    let result = got.pop().unwrap();
+        .unwrap()
+        .expect("expected one activation");
     assert_eq!(result.id, "id_1");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
@@ -388,20 +376,21 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     batch[3].namespace = "ns4".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
-    // Get activation from multiple namespaces (should get oldest)
+    // Get activation from multiple namespaces (should get oldest).
+    // Use `claim_activations` so upkeep-style `None` application + namespaces is allowed (not `claim_activations_for_push`).
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), None, None)
+        .claim_activations(None, Some(&namespaces), None, None, false)
         .await
         .unwrap();
 
     assert_eq!(result.len(), 2);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
-    assert_eq!(result[1].status, InflightActivationStatus::Processing);
+    assert_eq!(result[1].status, InflightActivationStatus::Claimed);
     assert_eq!(result[0].id, "id_1");
     assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Processing);
+    assert_eq!(result[0].status, InflightActivationStatus::Claimed);
     store.remove_db().await.unwrap();
 }
 
@@ -416,24 +405,18 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
     batch[1].namespace = "other_namespace".into();
     assert!(store.store(batch.clone()).await.is_ok());
 
-    // This is an invalid query as we don't want to allow clients
-    // to fetch tasks from any application.
+    // This is an invalid query as we don't want to allow clients to fetch tasks from any application
     let other_namespace = "other_namespace".to_string();
     let got = store
-        .get_pending_activations(
-            None,
-            Some(std::slice::from_ref(&other_namespace)),
-            Some(1),
-            None,
-        )
+        .claim_activation_for_pull(None, Some(other_namespace.as_str()))
         .await
         .unwrap();
-    assert!(got.is_empty());
+    assert!(got.is_none());
 
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), Some(2), None)
+        .claim_activations(None, Some(&namespaces), Some(2), None, false)
         .await
         .unwrap();
     assert_eq!(
@@ -464,12 +447,9 @@ async fn test_get_pending_activation_skip_expires(#[case] adapter: &str) {
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
     assert!(store.store(batch.clone()).await.is_ok());
 
-    let result = store
-        .get_pending_activations(None, None, Some(1), None)
-        .await;
+    let result = store.claim_activation_for_pull(None, None).await;
     assert!(result.is_ok());
-    let res_vec = result.unwrap();
-    assert!(res_vec.is_empty());
+    assert!(result.unwrap().is_none());
 
     assert_counts(
         StatusCount {
@@ -495,12 +475,11 @@ async fn test_get_pending_activation_earliest(#[case] adapter: &str) {
     let ret = store.store(batch.clone()).await;
     assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 
-    let mut got = store
-        .get_pending_activations(None, None, Some(1), None)
+    let result = store
+        .claim_activation_for_pull(None, None)
         .await
-        .unwrap();
-    assert_eq!(got.len(), 1);
-    let result = got.pop().unwrap();
+        .unwrap()
+        .expect("expected one activation");
     assert_eq!(
         result.added_at,
         Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
@@ -521,12 +500,11 @@ async fn test_get_pending_activation_fetches_application(#[case] adapter: &str) 
 
     // Getting an activation with no application filter should
     // include activations with application set.
-    let mut got = store
-        .get_pending_activations(None, None, Some(1), None)
+    let result = store
+        .claim_activation_for_pull(None, None)
         .await
-        .unwrap();
-    assert_eq!(got.len(), 1);
-    let result = got.pop().unwrap();
+        .unwrap()
+        .expect("expected one activation");
     assert_eq!(result.id, "id_0");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
@@ -546,31 +524,27 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
     assert!(store.store(batch.clone()).await.is_ok());
 
     // Get activation from a named application
-    let mut got = store
-        .get_pending_activations(Some("hammers"), None, Some(1), None)
+    let result = store
+        .claim_activation_for_pull(Some("hammers"), None)
         .await
-        .unwrap();
-    assert_eq!(got.len(), 1);
-    let result = got.pop().unwrap();
+        .unwrap()
+        .expect("expected one activation");
     assert_eq!(result.id, "id_1");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
 
     let result_opt = store
-        .get_pending_activations(Some("hammers"), None, Some(1), None)
+        .claim_activation_for_pull(Some("hammers"), None)
         .await
         .unwrap();
     assert!(
-        result_opt.is_empty(),
+        result_opt.is_none(),
         "no pending activations in hammers left"
     );
 
-    let remaining = store
-        .get_pending_activations(None, None, Some(1), None)
-        .await
-        .unwrap();
-    assert_eq!(remaining.len(), 1, "one pending activation in '' left");
+    let remaining = store.claim_activation_for_pull(None, None).await.unwrap();
+    assert!(remaining.is_some(), "one pending activation in '' left");
     store.remove_db().await.unwrap();
 }
 
@@ -593,29 +567,22 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
 
     let target_ns = "target".to_string();
     // Get activation from a named application
-    let mut got = store
-        .get_pending_activations(
-            Some("hammers"),
-            Some(std::slice::from_ref(&target_ns)),
-            Some(1),
-            None,
-        )
+    let result = store
+        .claim_activation_for_pull(Some("hammers"), Some(target_ns.as_str()))
         .await
-        .unwrap();
-    assert_eq!(got.len(), 1);
-    let result = got.pop().unwrap();
+        .unwrap()
+        .expect("expected one activation");
     assert_eq!(result.id, "id_1");
     assert_eq!(result.status, InflightActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "target");
 
-    let mut got = store
-        .get_pending_activations(Some("hammers"), None, Some(1), None)
+    let result = store
+        .claim_activation_for_pull(Some("hammers"), None)
         .await
-        .unwrap();
-    assert_eq!(got.len(), 1);
-    let result = got.pop().unwrap();
+        .unwrap()
+        .expect("expected one activation");
     assert_eq!(result.id, "id_2");
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "not-target");
@@ -634,19 +601,19 @@ async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
     assert!(store.store(batch).await.is_ok());
 
     let got = store
-        .get_pending_activations(None, None, None, None)
+        .claim_activations_for_push(None, None, None, None)
         .await
         .unwrap();
     assert_eq!(got.len(), N);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Processing)
+            .all(|a| a.status == InflightActivationStatus::Claimed)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            processing: N,
+            claimed: N,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -668,13 +635,13 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert!(store.store(batch).await.is_ok());
 
     let got = store
-        .get_pending_activations(None, None, Some(X), None)
+        .claim_activations_for_push(None, None, Some(X), None)
         .await
         .unwrap();
     assert_eq!(got.len(), X as usize);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Processing)
+            .all(|a| a.status == InflightActivationStatus::Claimed)
     );
     assert_eq!(
         store.count_pending_activations().await.unwrap(),
@@ -683,7 +650,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert_counts(
         StatusCount {
             pending: N - X as usize,
-            processing: X as usize,
+            claimed: X as usize,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -705,19 +672,19 @@ async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str)
     assert!(store.store(batch).await.is_ok());
 
     let got = store
-        .get_pending_activations(None, None, Some(X), None)
+        .claim_activations_for_push(None, None, Some(X), None)
         .await
         .unwrap();
     assert_eq!(got.len(), Y);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Processing)
+            .all(|a| a.status == InflightActivationStatus::Claimed)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            processing: Y,
+            claimed: Y,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -821,10 +788,10 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .get_pending_activations(None, None, Some(1), None)
+            .claim_activation_for_pull(None, None)
             .await
             .unwrap()
-            .is_empty()
+            .is_none()
     );
 
     let result = store
@@ -920,7 +887,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .get_pending_activations(None, None, Some(1), None)
+            .claim_activations(None, None, Some(1), None, true)
             .await
             .unwrap()
             .is_empty()
@@ -1099,12 +1066,13 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     let mut batch = make_activations(2);
     batch[0].status = InflightActivationStatus::Processing;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = InflightActivationStatus::Claimed;
     batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
     assert!(store.store(batch).await.is_ok());
     assert_counts(
         StatusCount {
-            processing: 2,
+            processing: 1,
+            claimed: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -1117,7 +1085,7 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     assert_counts(
         StatusCount {
             pending: 1,
-            processing: 1,
+            claimed: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -1139,6 +1107,7 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
     batch[1].status = InflightActivationStatus::Processing;
+
     replace_retry_state(
         &mut batch[1],
         Some(RetryState {
@@ -1315,6 +1284,43 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_claim_expiration_unsent_no_attempt_increment(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = InflightActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(batch.clone()).await.is_ok());
+    let count = store.handle_claim_expiration().await.unwrap();
+    assert_eq!(count, 1);
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, InflightActivationStatus::Pending);
+    assert_eq!(task.processing_attempts, 0);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_claim_expiration_at_most_once_reverts_to_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = InflightActivationStatus::Claimed;
+    batch[0].at_most_once = true;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(batch.clone()).await.is_ok());
+    let count = store.handle_claim_expiration().await.unwrap();
+    assert_eq!(count, 1);
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, InflightActivationStatus::Pending);
+    assert_eq!(task.processing_attempts, 0);
     store.remove_db().await.unwrap();
 }
 
@@ -1917,6 +1923,7 @@ async fn test_db_status_calls_ok() {
         InflightActivationStoreConfig {
             max_processing_attempts: 3,
             processing_deadline_grace_sec: 0,
+            claim_lease_ms: 5000,
             vacuum_page_count: None,
             enable_sqlite_status_metrics: false,
         },

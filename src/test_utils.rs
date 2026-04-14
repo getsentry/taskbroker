@@ -441,6 +441,7 @@ pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<Retr
 #[derive(Default)]
 pub struct StatusCount {
     pub pending: usize,
+    pub claimed: usize,
     pub processing: usize,
     pub retry: usize,
     pub delayed: usize,
@@ -457,6 +458,14 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
             .await
             .unwrap(),
         "difference in pending count",
+    );
+    assert_eq!(
+        expected.claimed,
+        store
+            .count_by_status(InflightActivationStatus::Claimed)
+            .await
+            .unwrap(),
+        "difference in claimed count",
     );
     assert_eq!(
         expected.processing,

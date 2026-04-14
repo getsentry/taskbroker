@@ -67,6 +67,7 @@ pub async fn upkeep(
 #[derive(Debug)]
 pub struct UpkeepResults {
     retried: u64,
+    claim_expiration_reset: u64,
     processing_deadline_reset: u64,
     processing_attempts_exceeded: u64,
     delay_elapsed: u64,
@@ -74,6 +75,7 @@ pub struct UpkeepResults {
     completed: u64,
     failed: u64,
     pending: u32,
+    claimed: u32,
     processing: u32,
     delay: u32,
     deadlettered: u64,
@@ -85,12 +87,14 @@ pub struct UpkeepResults {
 impl UpkeepResults {
     fn empty(&self) -> bool {
         self.retried == 0
+            && self.claim_expiration_reset == 0
             && self.processing_deadline_reset == 0
             && self.processing_attempts_exceeded == 0
             && self.expired == 0
             && self.completed == 0
             && self.failed == 0
             && self.pending == 0
+            && self.claimed == 0
             && self.processing == 0
             && self.delay == 0
             && self.discarded == 0
@@ -115,6 +119,7 @@ pub async fn do_upkeep(
     let upkeep_start = Instant::now();
     let mut result_context = UpkeepResults {
         retried: 0,
+        claim_expiration_reset: 0,
         processing_deadline_reset: 0,
         processing_attempts_exceeded: 0,
         delay_elapsed: 0,
@@ -122,6 +127,7 @@ pub async fn do_upkeep(
         completed: 0,
         failed: 0,
         pending: 0,
+        claimed: 0,
         processing: 0,
         delay: 0,
         deadlettered: 0,
@@ -178,7 +184,7 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.handle_retries").record(handle_retries_start.elapsed());
 
-    // 4. Handle processing deadlines
+    // 4. Handle processing deadlines and claim expirations
     let seconds_since_startup = (current_time - startup_time).num_seconds() as u64;
     if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
         let handle_processing_deadline_start = Instant::now();
@@ -189,6 +195,19 @@ pub async fn do_upkeep(
             .record(handle_processing_deadline_start.elapsed());
     } else {
         metrics::counter!("upkeep.handle_processing_deadline.skipped").increment(1);
+    }
+
+    if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
+        let handle_claim_expiration_start = Instant::now();
+
+        if let Ok(claim_expiration_reset) = store.handle_claim_expiration().await {
+            result_context.claim_expiration_reset = claim_expiration_reset;
+        }
+
+        metrics::histogram!("upkeep.handle_claim_expiration")
+            .record(handle_claim_expiration_start.elapsed());
+    } else {
+        metrics::counter!("upkeep.handle_claim_expiration.skipped").increment(1);
     }
 
     // 5. Handle processing attempts exceeded
@@ -299,7 +318,7 @@ pub async fn do_upkeep(
                 .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None, None)
+            .claim_activations(None, Some(&demoted_namespaces), None, None, false)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -375,6 +394,7 @@ pub async fn do_upkeep(
     if let Ok(depths) = depth_counts {
         result_context.pending = depths.pending as u32;
         result_context.delay = depths.delay as u32;
+        result_context.claimed = depths.claimed as u32;
         result_context.processing = depths.processing as u32;
     }
 
@@ -383,17 +403,20 @@ pub async fn do_upkeep(
             result_context.completed,
             result_context.deadlettered,
             result_context.discarded,
+            result_context.claim_expiration_reset,
             result_context.processing_deadline_reset,
             result_context.processing_attempts_exceeded,
             result_context.expired,
             result_context.retried,
             result_context.pending,
+            result_context.claimed,
             result_context.processing,
             result_context.delay,
             result_context.delay_elapsed,
             "upkeep.complete",
         );
     }
+
     metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
 
     // Task statuses
@@ -413,7 +436,9 @@ pub async fn do_upkeep(
         .increment(result_context.discarded);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_attempts_exceeded_as_failure")
         .increment(result_context.processing_attempts_exceeded);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_deadline_exceeded_as_failure")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "claim_expiration_exceeded")
+        .increment(result_context.claim_expiration_reset);
+    metrics::counter!("upkeep.cleanup_action", "kind" => "processing_deadline_exceeded")
         .increment(result_context.processing_deadline_reset);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
         .increment(result_context.delay_elapsed);
@@ -423,6 +448,7 @@ pub async fn do_upkeep(
 
     // State of inflight tasks
     metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
+    metrics::gauge!("upkeep.current_claimed_tasks").set(result_context.claimed);
     metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
     metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
@@ -1163,14 +1189,14 @@ mod tests {
             1
         );
         let pending = store
-            .get_pending_activations(None, None, Some(1), None)
+            .claim_activations(None, None, Some(1), None, true)
             .await
             .unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, "id_0");
         assert!(
             store
-                .get_pending_activations(None, None, Some(1), None)
+                .claim_activations(None, None, Some(1), None, true)
                 .await
                 .unwrap()
                 .is_empty()
@@ -1195,7 +1221,7 @@ mod tests {
             1
         );
         let pending = store
-            .get_pending_activations(None, None, Some(1), None)
+            .claim_activations(None, None, Some(1), None, true)
             .await
             .unwrap();
         assert_eq!(pending.len(), 1);

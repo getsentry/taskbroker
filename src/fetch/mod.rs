@@ -117,7 +117,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             let namespaces = config.namespaces.as_deref();
 
                             match store
-                                .get_pending_activations(application, namespaces, limit, bucket)
+                                .claim_activations_for_push(application, namespaces, limit, bucket)
                                 .await
                             {
                                 Ok(activations) if activations.is_empty() => {
