@@ -10,6 +10,7 @@ use sentry_protos::taskbroker::v1::worker_service_client::WorkerServiceClient;
 use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
 use sha2::Sha256;
 use tokio::task::JoinSet;
+use tonic::Code;
 use tonic::async_trait;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
@@ -127,9 +128,15 @@ impl PushPool {
                 let grpc_shared_secret = self.config.grpc_shared_secret.clone();
 
                 async move {
+                    metrics::counter!("push.worker.connect.attempt").increment(1);
                     let mut worker = match WorkerServiceClient::connect(endpoint).await {
-                        Ok(w) => w,
+                        Ok(w) => {
+                            metrics::counter!("push.worker.connect", "result" => "ok").increment(1);
+                            w
+                        }
                         Err(e) => {
+                            metrics::counter!("push.worker.connect", "result" => "error")
+                                .increment(1);
                             error!("Failed to connect to worker - {:?}", e);
 
                             // When we fail to connect, the taskbroker will shut down, but this may change in the future
@@ -147,7 +154,10 @@ impl PushPool {
                             message = receiver.recv_async() => {
                                 let activation = match message {
                                     // Received activation from fetch thread
-                                    Ok(a) => a,
+                                    Ok(a) => {
+                                        metrics::gauge!("push.queue.depth").set(receiver.len() as f64);
+                                        a
+                                    }
 
                                     // Channel closed
                                     Err(_) => break
@@ -166,9 +176,11 @@ impl PushPool {
                                 .await
                                 {
                                     Ok(_) => {
+                                        metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                         debug!(task_id = %id, "Activation sent to worker");
 
                                         if let Err(e) = store.mark_activation_processing(&id).await {
+                                            metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
                                             error!(
                                                 task_id = %id,
                                                 error = ?e,
@@ -178,11 +190,21 @@ impl PushPool {
                                     }
 
                                     // Once processing deadline expires, status will be set back to pending
-                                    Err(e) => error!(
-                                        task_id = %id,
-                                        error = ?e,
-                                        "Failed to send activation to worker"
-                                    )
+                                    Err(e) => {
+                                        let (kind, status) = classify_push_error(&e);
+                                        metrics::counter!(
+                                            "push.delivery",
+                                            "result" => "error",
+                                            "error_kind" => kind,
+                                            "grpc_status" => status
+                                        )
+                                        .increment(1);
+                                        error!(
+                                            task_id = %id,
+                                            error = ?e,
+                                            "Failed to send activation to worker"
+                                        )
+                                    }
                                 };
                             }
                         }
@@ -203,9 +225,11 @@ impl PushPool {
                         .await
                         {
                             Ok(_) => {
+                                metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                 debug!(task_id = %id, "Activation sent to worker");
 
                                 if let Err(e) = store.mark_activation_processing(&id).await {
+                                    metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
                                     error!(
                                         task_id = %id,
                                         error = ?e,
@@ -215,11 +239,21 @@ impl PushPool {
                             }
 
                             // Once processing deadline expires, status will be set back to pending
-                            Err(e) => error!(
-                                task_id = %id,
-                                error = ?e,
-                                "Failed to send activation to worker"
-                            ),
+                            Err(e) => {
+                                let (kind, status) = classify_push_error(&e);
+                                metrics::counter!(
+                                    "push.delivery",
+                                    "result" => "error",
+                                    "error_kind" => kind,
+                                    "grpc_status" => status
+                                )
+                                .increment(1);
+                                error!(
+                                    task_id = %id,
+                                    error = ?e,
+                                    "Failed to send activation to worker"
+                                )
+                            }
                         };
                     }
 
@@ -246,15 +280,29 @@ impl PushPool {
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
     pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
+        let start = Instant::now();
+        metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
 
         match tokio::time::timeout(duration, self.sender.send_async(activation)).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+                metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
+                Ok(())
+            }
 
             // The channel has a problem
-            Ok(Err(e)) => Err(PushError::Channel(e)),
+            Ok(Err(e)) => {
+                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+                metrics::counter!("push.queue.submit", "result" => "channel_error").increment(1);
+                Err(PushError::Channel(e))
+            }
 
             // The channel was full so the send timed out
-            Err(_elapsed) => Err(PushError::Timeout),
+            Err(_elapsed) => {
+                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+                metrics::counter!("push.queue.submit", "result" => "timeout").increment(1);
+                Err(PushError::Timeout)
+            }
         }
     }
 }
@@ -268,9 +316,22 @@ async fn push_task<W: WorkerClient + Send>(
     grpc_shared_secret: &[String],
 ) -> Result<()> {
     let start = Instant::now();
+    metrics::counter!("push.rpc.attempt").increment(1);
 
     // Try to decode activation (if it fails, we will see the error where `push_task` is called)
-    let task = TaskActivation::decode(&activation.activation as &[u8])?;
+    let task = match TaskActivation::decode(&activation.activation as &[u8]) {
+        Ok(task) => task,
+        Err(err) => {
+            metrics::counter!(
+                "push.rpc.failure",
+                "error_kind" => "decode",
+                "grpc_status" => "none"
+            )
+            .increment(1);
+            metrics::histogram!("push.rpc.duration", "result" => "error").record(start.elapsed());
+            return Err(err.into());
+        }
+    };
 
     let request = PushTaskRequest {
         task: Some(task),
@@ -283,8 +344,66 @@ async fn push_task<W: WorkerClient + Send>(
         Err(e) => Err(e.into()),
     };
 
+    match &result {
+        Ok(()) => metrics::counter!("push.rpc.success").increment(1),
+        Err(err) => {
+            let (kind, status) = classify_push_error(err);
+            metrics::counter!(
+                "push.rpc.failure",
+                "error_kind" => kind,
+                "grpc_status" => status
+            )
+            .increment(1);
+        }
+    }
+    metrics::histogram!(
+        "push.rpc.duration",
+        "result" => if result.is_ok() { "ok" } else { "error" }
+    )
+    .record(start.elapsed());
     metrics::histogram!("push.push_task.duration").record(start.elapsed());
     result
+}
+
+fn classify_push_error(error: &anyhow::Error) -> (&'static str, &'static str) {
+    if error
+        .downcast_ref::<tokio::time::error::Elapsed>()
+        .is_some()
+    {
+        return ("timeout", "deadline_exceeded");
+    }
+
+    if let Some(status) = error.downcast_ref::<tonic::Status>() {
+        return ("grpc", tonic_code_name(status.code()));
+    }
+
+    if error.downcast_ref::<prost::DecodeError>().is_some() {
+        return ("decode", "none");
+    }
+
+    ("other", "none")
+}
+
+fn tonic_code_name(code: Code) -> &'static str {
+    match code {
+        Code::Ok => "ok",
+        Code::Cancelled => "cancelled",
+        Code::Unknown => "unknown",
+        Code::InvalidArgument => "invalid_argument",
+        Code::DeadlineExceeded => "deadline_exceeded",
+        Code::NotFound => "not_found",
+        Code::AlreadyExists => "already_exists",
+        Code::PermissionDenied => "permission_denied",
+        Code::ResourceExhausted => "resource_exhausted",
+        Code::FailedPrecondition => "failed_precondition",
+        Code::Aborted => "aborted",
+        Code::OutOfRange => "out_of_range",
+        Code::Unimplemented => "unimplemented",
+        Code::Internal => "internal",
+        Code::Unavailable => "unavailable",
+        Code::DataLoss => "data_loss",
+        Code::Unauthenticated => "unauthenticated",
+    }
 }
 
 #[cfg(test)]

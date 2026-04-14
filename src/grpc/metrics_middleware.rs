@@ -43,9 +43,11 @@ where
             let path = req.uri().path().to_string();
 
             let response = inner.call(req).await?;
+            let status = response.status().as_u16().to_string();
 
-            metrics::counter!("grpc.request", "path" => path.clone()).increment(1);
-            metrics::histogram!("grpc.request.duration", "path" => path.clone())
+            metrics::counter!("grpc.request", "path" => path.clone(), "status" => status.clone())
+                .increment(1);
+            metrics::histogram!("grpc.request.duration", "path" => path.clone(), "status" => status)
                 .record(start.elapsed());
 
             Ok(response)

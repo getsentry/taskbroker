@@ -100,17 +100,37 @@ impl ConsumerService for TaskbrokerServer {
         }
 
         let update_result = self.store.set_status(&id, status).await;
-        if let Err(e) = update_result {
-            error!(
-                ?id,
-                ?status,
-                "Unable to update status of activation: {:?}",
-                e,
-            );
-            return Err(Status::internal(format!(
-                "Unable to update status of {id:?} to {status:?}"
-            )));
-        }
+        let inflight = match update_result {
+            Ok(inflight) => inflight,
+            Err(e) => {
+                metrics::counter!(
+                    "grpc_server.set_status",
+                    "result" => "error",
+                    "status" => status.to_string()
+                )
+                .increment(1);
+                error!(
+                    ?id,
+                    ?status,
+                    "Unable to update status of activation: {:?}",
+                    e,
+                );
+                return Err(Status::internal(format!(
+                    "Unable to update status of {id:?} to {status:?}"
+                )));
+            }
+        };
+        let result_label = if inflight.is_some() {
+            "ok"
+        } else {
+            "not_found"
+        };
+        metrics::counter!(
+            "grpc_server.set_status",
+            "result" => result_label,
+            "status" => status.to_string()
+        )
+        .increment(1);
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
         if self.config.delivery_mode == DeliveryMode::Push {

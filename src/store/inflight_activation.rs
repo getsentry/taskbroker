@@ -1011,10 +1011,14 @@ impl InflightActivationStore for SqliteActivationStore {
         .await?;
 
         if result.rows_affected() == 0 {
+            metrics::counter!("push.mark_activation_processing", "result" => "not_found")
+                .increment(1);
             warn!(
                 task_id = %id,
                 "Activation could not be marked as sent, it may be missing or its status may have already changed"
             );
+        } else {
+            metrics::counter!("push.mark_activation_processing", "result" => "ok").increment(1);
         }
 
         Ok(())
