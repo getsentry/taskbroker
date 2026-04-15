@@ -580,6 +580,7 @@ class PushTaskbrokerClient:
                 ):
                     self._stub.SetTaskStatus(request)
                 exception = None
+                break
             except grpc.RpcError as err:
                 exception = err
                 self._metrics.incr(
