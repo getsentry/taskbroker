@@ -99,9 +99,21 @@ impl ConsumerService for TaskbrokerServer {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
-        let update_result = self.store.set_status(&id, status).await;
-        let inflight = match update_result {
-            Ok(inflight) => inflight,
+        match self.store.set_status(&id, status).await {
+            Ok(Some(_)) => metrics::counter!(
+                "grpc_server.set_status",
+                "result" => "ok",
+                "status" => status.to_string()
+            )
+            .increment(1),
+
+            Ok(None) => metrics::counter!(
+                "grpc_server.set_status",
+                "result" => "not_found",
+                "status" => status.to_string()
+            )
+            .increment(1),
+
             Err(e) => {
                 metrics::counter!(
                     "grpc_server.set_status",
@@ -109,28 +121,20 @@ impl ConsumerService for TaskbrokerServer {
                     "status" => status.to_string()
                 )
                 .increment(1);
+
                 error!(
                     ?id,
                     ?status,
                     "Unable to update status of activation: {:?}",
                     e,
                 );
+
                 return Err(Status::internal(format!(
                     "Unable to update status of {id:?} to {status:?}"
                 )));
             }
         };
-        let result_label = if inflight.is_some() {
-            "ok"
-        } else {
-            "not_found"
-        };
-        metrics::counter!(
-            "grpc_server.set_status",
-            "result" => result_label,
-            "status" => status.to_string()
-        )
-        .increment(1);
+
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
         if self.config.delivery_mode == DeliveryMode::Push {
