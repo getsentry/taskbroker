@@ -167,6 +167,9 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                                     error = ?e,
                                                     "Submit to push pool failed due to channel error",
                                                 );
+
+                                                // Wait before trying again
+                                                backoff = true;
                                             }
                                         }
                                     }
