@@ -65,6 +65,7 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
             "taskworker.worker.push_rpc",
             tags={"result": "attempt", "processing_pool": self.worker._processing_pool_name},
         )
+
         # Create `InflightTaskActivation` from the pushed task
         inflight = InflightTaskActivation(
             activation=request.task,
@@ -78,22 +79,26 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
                 "taskworker.worker.push_rpc",
                 tags={"result": "busy", "processing_pool": self.worker._processing_pool_name},
             )
+
             self.worker._metrics.distribution(
                 "taskworker.worker.push_rpc.duration",
                 time.monotonic() - start_time,
                 tags={"result": "busy", "processing_pool": self.worker._processing_pool_name},
             )
+
             context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy")
 
         self.worker._metrics.incr(
             "taskworker.worker.push_rpc",
             tags={"result": "accepted", "processing_pool": self.worker._processing_pool_name},
         )
+
         self.worker._metrics.distribution(
             "taskworker.worker.push_rpc.duration",
             time.monotonic() - start_time,
             tags={"result": "accepted", "processing_pool": self.worker._processing_pool_name},
         )
+
         return PushTaskResponse()
 
 

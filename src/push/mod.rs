@@ -48,8 +48,7 @@ pub enum PushError {
 #[async_trait]
 trait WorkerClient {
     /// Send a single `PushTaskRequest` to the worker service.
-    ///
-    /// When `grpc_shared_secret` is non-empty, signs with `grpc_shared_secret[0]` and sets `sentry-signature` metadata (same scheme as Python pull client and broker `AuthLayer`).
+    /// When `grpc_shared_secret` is not empty, it signs the request with `grpc_shared_secret[0]` and sets `sentry-signature` metadata (same scheme as Python pull client and broker `AuthLayer`).
     async fn send(&mut self, request: PushTaskRequest, grpc_shared_secret: &[String])
     -> Result<()>;
 }
@@ -74,6 +73,7 @@ impl WorkerClient for WorkerServiceClient<Channel> {
         self.push_task(req)
             .await
             .map_err(|status| anyhow::anyhow!(status))?;
+
         Ok(())
     }
 }
@@ -309,10 +309,7 @@ async fn push_task<W: WorkerClient + Send>(
     let task = match TaskActivation::decode(&activation.activation as &[u8]) {
         Ok(task) => task,
         Err(err) => {
-            metrics::counter!("push.push_task.failure", "reason" => "decode").increment(1);
-            metrics::histogram!("push.push_task.duration", "result" => "error")
-                .record(start.elapsed());
-
+            metrics::histogram!("push.push_task.duration").record(start.elapsed());
             return Err(err.into());
         }
     };
@@ -324,20 +321,8 @@ async fn push_task<W: WorkerClient + Send>(
 
     let result = match tokio::time::timeout(timeout, worker.send(request, grpc_shared_secret)).await
     {
-        Ok(result) => {
-            if result.is_ok() {
-                metrics::counter!("push.push_task.success").increment(1);
-            } else {
-                metrics::counter!("push.push_task.failure", "reason" => "rpc").increment(1);
-            }
-
-            result
-        }
-
-        Err(e) => {
-            metrics::counter!("push.push_task.failure", "reason" => "timeout").increment(1);
-            Err(e.into())
-        }
+        Ok(r) => r,
+        Err(e) => Err(e.into()),
     };
 
     metrics::histogram!("push.push_task.duration").record(start.elapsed());
