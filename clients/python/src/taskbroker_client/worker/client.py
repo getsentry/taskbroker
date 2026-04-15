@@ -594,8 +594,6 @@ class PushTaskbrokerClient:
             if exception.code() == grpc.StatusCode.NOT_FOUND:
                 # The task was not found, so we can't update it.
                 return False
-            if exception.code() == grpc.StatusCode.UNAVAILABLE:
-                # The brokers are not responding, so we can't update the task.
-                raise exception
+            raise exception
 
         return True
