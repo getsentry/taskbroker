@@ -1,4 +1,4 @@
-use crate::store::inflight_activation::InflightActivationStore;
+use crate::store::traits::InflightActivationStore;
 use anyhow::{Error, anyhow};
 use futures::{
     Stream, StreamExt,

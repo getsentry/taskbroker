@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::TaskbrokerServer;
-use crate::store::inflight_activation::InflightActivationStatus;
+use crate::store::activation::InflightActivationStatus;
 use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;

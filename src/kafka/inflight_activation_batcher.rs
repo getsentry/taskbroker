@@ -1,6 +1,5 @@
 use crate::{
-    config::Config, runtime_config::RuntimeConfigManager,
-    store::inflight_activation::InflightActivation,
+    config::Config, runtime_config::RuntimeConfigManager, store::activation::InflightActivation,
 };
 use chrono::Utc;
 use futures::future::join_all;
@@ -221,7 +220,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        store::inflight_activation::InflightActivationBuilder,
+        store::activation::InflightActivationBuilder,
         test_utils::{TaskActivationBuilder, generate_unique_namespace},
     };
 

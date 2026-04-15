@@ -4,10 +4,9 @@ use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
 use taskbroker::{
-    store::inflight_activation::{
-        InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        SqliteActivationStore,
-    },
+    store::activation::InflightActivationStatus,
+    store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
+    store::traits::InflightActivationStore,
     test_utils::{
         generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
     },

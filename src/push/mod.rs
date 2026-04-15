@@ -16,7 +16,8 @@ use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::store::inflight_activation::{InflightActivation, InflightActivationStore};
+use crate::store::activation::InflightActivation;
+use crate::store::traits::InflightActivationStore;
 
 type HmacSha256 = Hmac<Sha256>;
 

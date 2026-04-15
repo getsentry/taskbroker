@@ -8,11 +8,12 @@ use tokio::{sync::broadcast, task::JoinSet};
 
 use crate::{
     config::Config,
-    store::inflight_activation::{
-        InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
+    store::activation::{InflightActivationBuilder, InflightActivationStatus},
+    store::adapters::{
+        postgres::PostgresActivationStoreConfig,
+        sqlite::{InflightActivationStoreConfig, SqliteActivationStore, create_sqlite_pool},
     },
-    store::postgres_activation_store::PostgresActivationStoreConfig,
+    store::traits::InflightActivationStore,
     test_utils::{
         StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
         create_integration_config_with_ssl, create_test_store, generate_temp_filename,
@@ -2085,8 +2086,8 @@ async fn test_migrations() {
         .build();
     let result = query.execute(&write_pool).await;
     assert!(result.is_ok(), "{result:?}");
-    let meta_result: QueryResult = result.unwrap().into();
-    assert_eq!(meta_result.rows_affected, 2);
+    let result = result.unwrap();
+    assert_eq!(result.rows_affected(), 2);
 
     // Run other migrations
     let result = sqlx::migrate::Migrator::new(Path::new(&folders.other_folder))

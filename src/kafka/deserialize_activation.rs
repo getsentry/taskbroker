@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use crate::config::Config;
 use crate::fetch::MAX_FETCH_THREADS;
-use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message as _;
@@ -123,7 +123,7 @@ mod tests {
     use sentry_protos::taskbroker::v1::TaskActivation;
 
     use crate::{
-        store::inflight_activation::InflightActivationStatus, test_utils::generate_unique_namespace,
+        store::activation::InflightActivationStatus, test_utils::generate_unique_namespace,
     };
 
     use super::{Config, DeserializeActivationConfig, new};

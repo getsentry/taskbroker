@@ -9,7 +9,9 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::push::{PushError, PushPool};
-use crate::store::inflight_activation::{BucketRange, InflightActivation, InflightActivationStore};
+use crate::store::activation::InflightActivation;
+use crate::store::traits::InflightActivationStore;
+use crate::store::types::BucketRange;
 
 /// This value should be a power of two. If it decreases, some ranges will no longer be queried.
 /// That means the pending activation query will skip tasks within these ranges.
