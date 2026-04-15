@@ -571,20 +571,30 @@ class PushTaskbrokerClient:
             fetch_next_task=None,
         )
 
-        try:
-            with self._metrics.timer("taskworker.update_task.rpc", tags={"service": self._service}):
-                self._stub.SetTaskStatus(request)
-        except grpc.RpcError as err:
-            self._metrics.incr(
-                "taskworker.client.rpc_error",
-                tags={"method": "SetTaskStatus", "status": err.code().name},
-            )
-            if err.code() == grpc.StatusCode.NOT_FOUND:
+        retries = 0
+        exception = None
+        while retries < 3:
+            try:
+                with self._metrics.timer(
+                    "taskworker.update_task.rpc", tags={"service": self._service}
+                ):
+                    self._stub.SetTaskStatus(request)
+                exception = None
+            except grpc.RpcError as err:
+                exception = err
+                self._metrics.incr(
+                    "taskworker.client.rpc_error",
+                    tags={"method": "SetTaskStatus", "status": err.code().name},
+                )
+            finally:
+                retries += 1
+
+        if exception:
+            if exception.code() == grpc.StatusCode.NOT_FOUND:
                 # The task was not found, so we can't update it.
                 return False
-            if err.code() == grpc.StatusCode.UNAVAILABLE:
+            if exception.code() == grpc.StatusCode.UNAVAILABLE:
                 # The brokers are not responding, so we can't update the task.
-                return False
-            raise
+                raise exception
 
         return True

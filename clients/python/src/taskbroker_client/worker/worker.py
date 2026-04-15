@@ -191,7 +191,6 @@ class PushTaskWorker:
                 "taskworker.send_update_task.temporarily_unavailable",
                 extra={"task_id": result.task_id, "error": str(e)},
             )
-            self.worker_pool.put_result(result)
             raise RequeueException(f"Failed to update task: {e}")
 
         return None
@@ -257,11 +256,9 @@ class TaskWorker:
     """
     A TaskWorker fetches tasks from a taskworker RPC host and handles executing task activations.
 
-    Tasks are executed in a forked process so that processing timeouts can be enforced.
+    Tasks are executed in a forked/spawned/forkserver process so that processing timeouts can be enforced.
     As tasks are completed status changes will be sent back to the RPC host and new tasks
     will be fetched.
-
-    Taskworkers can be run with `sentry run taskworker`
     """
 
     _mp_context: ForkContext | SpawnContext | ForkServerContext
@@ -394,7 +391,7 @@ class TaskWorker:
                 "processing_pool": self._processing_pool_name,
             },
         )
-        # Use the shutdown_event as a sleep mechanism
+
         self._grpc_sync_event.wait(self._setstatus_backoff_seconds)
 
         try:
@@ -455,6 +452,7 @@ class TaskWorker:
         """
         Shutdown the worker.
         """
+        self._grpc_sync_event.set()
         self.worker_pool.shutdown()
 
 
@@ -509,6 +507,7 @@ class TaskWorkerProcessingPool:
             if next_task:
                 self.push_task(next_task)
         except RequeueException:
+            logger.warning("activation status couldn't be updated")
             self.put_result(result)
 
     def start_result_thread(self) -> None:
@@ -648,7 +647,7 @@ class TaskWorkerProcessingPool:
         while True:
             try:
                 result = self._processed_tasks.get_nowait()
-                self._send_result(result, True)
+                self.send_result(result, True)
             except queue.Empty:
                 break
 
