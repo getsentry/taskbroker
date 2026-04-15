@@ -204,13 +204,16 @@ class PushTaskWorker:
 
         # Convert signals into KeyboardInterrupt.
         # Running shutdown() within the signal handler can lead to deadlocks
+
+        server: grpc.Server | None = None
+
         def signal_handler(*args: Any) -> None:
+            if server:
+                server.stop(grace=5)
             raise KeyboardInterrupt()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
-
-        server = None
 
         try:
             # Start gRPC server
@@ -345,7 +348,7 @@ class TaskWorker:
             while True:
                 self.run_once()
         except KeyboardInterrupt:
-            self.worker_pool.shutdown()
+            self.shutdown()
             raise
 
     def run_once(self) -> None:
