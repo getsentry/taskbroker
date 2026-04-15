@@ -166,7 +166,9 @@ impl SqliteActivationStore {
     pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
         let (read_pool, write_pool) = create_sqlite_pool(url).await?;
 
-        sqlx::migrate!("./migrations").run(&write_pool).await?;
+        sqlx::migrate!("./migrations/sqlite")
+            .run(&write_pool)
+            .await?;
 
         Ok(Self {
             read_pool,
