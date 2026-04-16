@@ -8,7 +8,7 @@ use tonic::async_trait;
 use super::*;
 use crate::config::Config;
 use crate::push::PushError;
-use crate::store::activation::{Activation, ActivationStatus};
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::ClaimStore;
 use crate::store::types::BucketRange;
 use crate::test_utils::make_activations;
@@ -16,7 +16,7 @@ use crate::test_utils::make_activations;
 /// Store stub that returns one activation once OR is always empty OR always fails.
 struct MockStore {
     /// A single (optional) pending activation.
-    pending: Mutex<Option<Activation>>,
+    pending: Mutex<Option<InflightActivation>>,
 
     /// Should operations fail?
     fail: bool,
@@ -30,7 +30,7 @@ impl MockStore {
         }
     }
 
-    fn one(activation: Activation) -> Self {
+    fn one(activation: InflightActivation) -> Self {
         Self {
             pending: Mutex::new(Some(activation)),
             fail: false,
@@ -54,7 +54,7 @@ impl ClaimStore for MockStore {
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
         mark_processing: bool,
-    ) -> Result<Vec<Activation>, Error> {
+    ) -> Result<Vec<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
         }
@@ -62,9 +62,9 @@ impl ClaimStore for MockStore {
         Ok(match self.pending.lock().await.take() {
             Some(mut a) => {
                 a.status = if mark_processing {
-                    ActivationStatus::Processing
+                    InflightActivationStatus::Processing
                 } else {
-                    ActivationStatus::Claimed
+                    InflightActivationStatus::Claimed
                 };
                 vec![a]
             }
@@ -91,7 +91,7 @@ impl RecordingPusher {
 
 #[async_trait]
 impl TaskPusher for RecordingPusher {
-    async fn submit_task(&self, activation: Activation) -> Result<(), PushError> {
+    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError> {
         self.pushed_ids.lock().await.push(activation.id.clone());
 
         if self.fail {

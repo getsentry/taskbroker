@@ -10,7 +10,7 @@ use tracing::{debug, error, instrument};
 use crate::{
     config::Config,
     store::{
-        activation::{Activation, ActivationStatus},
+        activation::{InflightActivation, InflightActivationStatus},
         traits::{CountStore, IngestStore},
         types::DepthCounts,
     },
@@ -47,7 +47,7 @@ impl ActivationWriterConfig {
 pub struct InflightActivationWriter<Store: IngestStore + CountStore> {
     config: ActivationWriterConfig,
     store: Arc<Store>,
-    batch: Option<Vec<Activation>>,
+    batch: Option<Vec<InflightActivation>>,
 }
 
 impl<Store: IngestStore + CountStore> InflightActivationWriter<Store> {
@@ -61,7 +61,7 @@ impl<Store: IngestStore + CountStore> InflightActivationWriter<Store> {
 }
 
 impl<Store: IngestStore + CountStore> Reducer for InflightActivationWriter<Store> {
-    type Input = Vec<Activation>;
+    type Input = Vec<InflightActivation>;
 
     type Output = ();
 
@@ -112,10 +112,10 @@ impl<Store: IngestStore + CountStore> Reducer for InflightActivationWriter<Store
         // Check if the entire batch is either pending or delay
         let has_delay = batch
             .iter()
-            .any(|activation| activation.status == ActivationStatus::Delay);
+            .any(|activation| activation.status == InflightActivationStatus::Delay);
         let has_pending = batch
             .iter()
-            .any(|activation| activation.status == ActivationStatus::Pending);
+            .any(|activation| activation.status == InflightActivationStatus::Pending);
 
         // Backpressure if any of these conditions are met:
         // 1. The processing limit is exceeded
@@ -202,7 +202,7 @@ mod tests {
 
     use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
     use crate::{
-        store::activation::{ActivationBuilder, ActivationStatus},
+        store::activation::{InflightActivationBuilder, InflightActivationStatus},
         test_utils::{
             TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
         },
@@ -228,13 +228,13 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
@@ -247,7 +247,7 @@ mod tests {
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         let count_delay = writer
             .store
-            .count_by_status(ActivationStatus::Delay)
+            .count_by_status(InflightActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_pending + count_delay, 2);
@@ -274,7 +274,7 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
@@ -309,12 +309,12 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .status(ActivationStatus::Delay)
+                .status(InflightActivationStatus::Delay)
                 .build(TaskActivationBuilder::new()),
         ];
 
@@ -322,7 +322,7 @@ mod tests {
         writer.flush().await.unwrap();
         let count_delay = writer
             .store
-            .count_by_status(ActivationStatus::Delay)
+            .count_by_status(InflightActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 1);
@@ -349,13 +349,13 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(count_pending, 0);
         let count_delay = writer
             .store
-            .count_by_status(ActivationStatus::Delay)
+            .count_by_status(InflightActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
@@ -398,13 +398,13 @@ mod tests {
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("pending_task")
                 .namespace(&namespace)
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(count_pending, 2);
         let count_delay = writer
             .store
-            .count_by_status(ActivationStatus::Delay)
+            .count_by_status(InflightActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
@@ -443,25 +443,25 @@ mod tests {
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
-        let existing_activation = ActivationBuilder::new()
+        let existing_activation = InflightActivationBuilder::new()
             .id("existing")
             .taskname("existing_task")
             .namespace(&namespace)
             .received_at(received_at)
-            .status(ActivationStatus::Processing)
+            .status(InflightActivationStatus::Processing)
             .build(TaskActivationBuilder::new());
 
         store.store(vec![existing_activation]).await.unwrap();
 
         let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
         let batch = vec![
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            ActivationBuilder::new()
+            InflightActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
@@ -478,13 +478,13 @@ mod tests {
         assert_eq!(count_pending, 0);
         let count_delay = writer
             .store
-            .count_by_status(ActivationStatus::Delay)
+            .count_by_status(InflightActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
         let count_processing = writer
             .store
-            .count_by_status(ActivationStatus::Processing)
+            .count_by_status(InflightActivationStatus::Processing)
             .await
             .unwrap();
         // Only the existing processing activation should remain, new ones should be blocked

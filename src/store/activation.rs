@@ -8,7 +8,7 @@ use std::str::FromStr;
 /// The members of this enum should be a superset of the members
 /// of `InflightActivationStatus` in `sentry_protos`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
-pub enum ActivationStatus {
+pub enum InflightActivationStatus {
     /// Unused but necessary to align with sentry-protos
     Unspecified,
     Pending,
@@ -20,57 +20,59 @@ pub enum ActivationStatus {
     Delay,
 }
 
-impl Display for ActivationStatus {
+impl Display for InflightActivationStatus {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "{:?}", self)
     }
 }
 
-impl FromStr for ActivationStatus {
+impl FromStr for InflightActivationStatus {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "Unspecified" {
-            Ok(ActivationStatus::Unspecified)
+            Ok(InflightActivationStatus::Unspecified)
         } else if s == "Pending" {
-            Ok(ActivationStatus::Pending)
+            Ok(InflightActivationStatus::Pending)
         } else if s == "Claimed" {
-            Ok(ActivationStatus::Claimed)
+            Ok(InflightActivationStatus::Claimed)
         } else if s == "Processing" {
-            Ok(ActivationStatus::Processing)
+            Ok(InflightActivationStatus::Processing)
         } else if s == "Failure" {
-            Ok(ActivationStatus::Failure)
+            Ok(InflightActivationStatus::Failure)
         } else if s == "Retry" {
-            Ok(ActivationStatus::Retry)
+            Ok(InflightActivationStatus::Retry)
         } else if s == "Complete" {
-            Ok(ActivationStatus::Complete)
+            Ok(InflightActivationStatus::Complete)
         } else if s == "Delay" {
-            Ok(ActivationStatus::Delay)
+            Ok(InflightActivationStatus::Delay)
         } else {
             Err(format!("Unknown inflight activation status string: {}", s))
         }
     }
 }
 
-impl ActivationStatus {
+impl InflightActivationStatus {
     /// Is the current value a 'conclusion' status that can be supplied over GRPC.
     pub fn is_conclusion(&self) -> bool {
         matches!(
             self,
-            ActivationStatus::Complete | ActivationStatus::Retry | ActivationStatus::Failure
+            InflightActivationStatus::Complete
+                | InflightActivationStatus::Retry
+                | InflightActivationStatus::Failure
         )
     }
 }
 
-impl From<TaskActivationStatus> for ActivationStatus {
+impl From<TaskActivationStatus> for InflightActivationStatus {
     fn from(item: TaskActivationStatus) -> Self {
         match item {
-            TaskActivationStatus::Unspecified => ActivationStatus::Unspecified,
-            TaskActivationStatus::Pending => ActivationStatus::Pending,
-            TaskActivationStatus::Processing => ActivationStatus::Processing,
-            TaskActivationStatus::Failure => ActivationStatus::Failure,
-            TaskActivationStatus::Retry => ActivationStatus::Retry,
-            TaskActivationStatus::Complete => ActivationStatus::Complete,
+            TaskActivationStatus::Unspecified => InflightActivationStatus::Unspecified,
+            TaskActivationStatus::Pending => InflightActivationStatus::Pending,
+            TaskActivationStatus::Processing => InflightActivationStatus::Processing,
+            TaskActivationStatus::Failure => InflightActivationStatus::Failure,
+            TaskActivationStatus::Retry => InflightActivationStatus::Retry,
+            TaskActivationStatus::Complete => InflightActivationStatus::Complete,
         }
     }
 }
@@ -79,7 +81,7 @@ impl From<TaskActivationStatus> for ActivationStatus {
 #[builder(pattern = "owned")]
 #[builder(build_fn(name = "_build"))]
 #[builder(field(public))]
-pub struct Activation {
+pub struct InflightActivation {
     #[builder(setter(into))]
     pub id: String,
 
@@ -100,8 +102,8 @@ pub struct Activation {
     pub activation: Vec<u8>,
 
     /// The current status of the activation
-    #[builder(default = ActivationStatus::Pending)]
-    pub status: ActivationStatus,
+    #[builder(default = InflightActivationStatus::Pending)]
+    pub status: InflightActivationStatus,
 
     /// The partition the activation was received from
     #[builder(default = 0)]
@@ -162,7 +164,7 @@ pub struct Activation {
     pub bucket: i16,
 }
 
-impl Activation {
+impl InflightActivation {
     /// The number of milliseconds between an activation's received timestamp
     /// and the provided datetime
     pub fn received_latency(&self, now: DateTime<Utc>) -> i64 {

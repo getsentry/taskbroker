@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::TaskbrokerServer;
-use crate::store::activation::ActivationStatus;
+use crate::store::activation::InflightActivationStatus;
 use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -128,7 +128,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     assert!(task.id == "id_0");
 
     let row = store.get_by_id("id_0").await.unwrap().expect("claimed row");
-    assert_eq!(row.status, ActivationStatus::Processing);
+    assert_eq!(row.status, InflightActivationStatus::Processing);
 }
 
 #[tokio::test]

@@ -16,7 +16,7 @@ use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::store::activation::Activation;
+use crate::store::activation::InflightActivation;
 use crate::store::traits::PushStore;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -42,7 +42,7 @@ pub enum PushError {
     Timeout,
 
     /// Channel disconnected (no receivers) or another failure.
-    Channel(SendError<Activation>),
+    Channel(SendError<InflightActivation>),
 }
 
 /// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
@@ -82,10 +82,10 @@ impl WorkerClient for WorkerServiceClient<Channel> {
 /// Wrapper around `config.push_threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
 pub struct PushPool {
     /// The sending end of a channel that accepts task activations.
-    sender: Sender<Activation>,
+    sender: Sender<InflightActivation>,
 
     /// The receiving end of a channel that accepts task activations.
-    receiver: Receiver<Activation>,
+    receiver: Receiver<InflightActivation>,
 
     /// Taskbroker configuration.
     config: Arc<Config>,
@@ -268,7 +268,7 @@ impl PushPool {
     }
 
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
-    pub async fn submit(&self, activation: Activation) -> Result<(), PushError> {
+    pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
         let start = Instant::now();
 
@@ -298,7 +298,7 @@ impl PushPool {
 /// Decode task activation and push it to a worker.
 async fn push_task<W: WorkerClient + Send>(
     worker: &mut W,
-    activation: Activation,
+    activation: InflightActivation,
     callback_url: String,
     timeout: Duration,
     grpc_shared_secret: &[String],

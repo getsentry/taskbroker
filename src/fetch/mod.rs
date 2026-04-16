@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::Config;
 use crate::push::{PushError, PushPool};
-use crate::store::activation::Activation;
+use crate::store::activation::InflightActivation;
 use crate::store::traits::ClaimStore;
 use crate::store::types::BucketRange;
 
@@ -49,12 +49,12 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
 #[async_trait]
 pub trait TaskPusher {
     /// Submit a single task to the push pool.
-    async fn submit_task(&self, activation: Activation) -> Result<(), PushError>;
+    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError>;
 }
 
 #[async_trait]
 impl TaskPusher for PushPool {
-    async fn submit_task(&self, activation: Activation) -> Result<(), PushError> {
+    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError> {
         self.submit(activation).await
     }
 }
