@@ -6,14 +6,15 @@ use sqlx::{QueryBuilder, Sqlite};
 use std::{collections::HashSet, fs, io::Error, path::Path, sync::Arc, time::Duration};
 use tokio::{sync::broadcast, task::JoinSet};
 
+use crate::store::traits::{IngestStore, UpkeepStore};
 use crate::{
     config::Config,
-    store::activation::{InflightActivationBuilder, InflightActivationStatus},
+    store::activation::{ActivationBuilder, ActivationStatus},
     store::adapters::{
         postgres::PostgresActivationStoreConfig,
         sqlite::{InflightActivationStoreConfig, SqliteActivationStore, create_sqlite_pool},
     },
-    store::traits::InflightActivationStore,
+    store::traits::ClaimStore,
     test_utils::{
         StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
         create_integration_config_with_ssl, create_test_store, generate_temp_filename,
@@ -24,41 +25,41 @@ use crate::{
 
 #[test]
 fn test_inflightactivation_status_is_completion() {
-    let mut value = InflightActivationStatus::Unspecified;
+    let mut value = ActivationStatus::Unspecified;
     assert!(!value.is_conclusion());
 
-    value = InflightActivationStatus::Pending;
+    value = ActivationStatus::Pending;
     assert!(!value.is_conclusion());
 
-    value = InflightActivationStatus::Processing;
+    value = ActivationStatus::Processing;
     assert!(!value.is_conclusion());
 
-    value = InflightActivationStatus::Retry;
+    value = ActivationStatus::Retry;
     assert!(value.is_conclusion());
 
-    value = InflightActivationStatus::Failure;
+    value = ActivationStatus::Failure;
     assert!(value.is_conclusion());
 
-    value = InflightActivationStatus::Complete;
+    value = ActivationStatus::Complete;
     assert!(value.is_conclusion());
 }
 
 #[test]
 fn test_inflightactivation_status_from() {
-    let mut value: InflightActivationStatus = TaskActivationStatus::Pending.into();
-    assert_eq!(value, InflightActivationStatus::Pending);
+    let mut value: ActivationStatus = TaskActivationStatus::Pending.into();
+    assert_eq!(value, ActivationStatus::Pending);
 
     value = TaskActivationStatus::Processing.into();
-    assert_eq!(value, InflightActivationStatus::Processing);
+    assert_eq!(value, ActivationStatus::Processing);
 
     value = TaskActivationStatus::Retry.into();
-    assert_eq!(value, InflightActivationStatus::Retry);
+    assert_eq!(value, ActivationStatus::Retry);
 
     value = TaskActivationStatus::Failure.into();
-    assert_eq!(value, InflightActivationStatus::Failure);
+    assert_eq!(value, ActivationStatus::Failure);
 
     value = TaskActivationStatus::Complete.into();
-    assert_eq!(value, InflightActivationStatus::Complete);
+    assert_eq!(value, ActivationStatus::Complete);
 }
 
 #[tokio::test]
@@ -89,7 +90,7 @@ async fn test_store(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 2);
@@ -105,15 +106,15 @@ async fn test_count_depths(#[case] adapter: &str) {
 
     // Check counts for an empty store
     let pending = store
-        .count_by_status(InflightActivationStatus::Pending)
+        .count_by_status(ActivationStatus::Pending)
         .await
         .unwrap();
     let delay = store
-        .count_by_status(InflightActivationStatus::Delay)
+        .count_by_status(ActivationStatus::Delay)
         .await
         .unwrap();
     let processing = store
-        .count_by_status(InflightActivationStatus::Processing)
+        .count_by_status(ActivationStatus::Processing)
         .await
         .unwrap();
 
@@ -125,31 +126,31 @@ async fn test_count_depths(#[case] adapter: &str) {
 
     // Check counts for a store with four activations with varying statuses
     let batch = make_activations(4);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     store
-        .set_status("id_0", InflightActivationStatus::Processing)
+        .set_status("id_0", ActivationStatus::Processing)
         .await
         .unwrap();
     store
-        .set_status("id_1", InflightActivationStatus::Delay)
+        .set_status("id_1", ActivationStatus::Delay)
         .await
         .unwrap();
     store
-        .set_status("id_2", InflightActivationStatus::Complete)
+        .set_status("id_2", ActivationStatus::Complete)
         .await
         .unwrap();
 
     let pending = store
-        .count_by_status(InflightActivationStatus::Pending)
+        .count_by_status(ActivationStatus::Pending)
         .await
         .unwrap();
     let delay = store
-        .count_by_status(InflightActivationStatus::Delay)
+        .count_by_status(ActivationStatus::Delay)
         .await
         .unwrap();
     let processing = store
-        .count_by_status(InflightActivationStatus::Processing)
+        .count_by_status(ActivationStatus::Processing)
         .await
         .unwrap();
 
@@ -177,7 +178,7 @@ async fn test_store_duplicate_id_in_batch(#[case] adapter: &str) {
     batch[0].id = "id_0".into();
     batch[1].id = "id_0".into();
 
-    let first_result = store.store(batch).await;
+    let first_result = store.write(batch).await;
     assert!(
         first_result.is_ok(),
         "{}",
@@ -197,7 +198,7 @@ async fn test_store_duplicate_id_between_batches(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     let first_count = store.count().await;
     assert_eq!(first_count.unwrap(), 2);
 
@@ -205,7 +206,7 @@ async fn test_store_duplicate_id_between_batches(#[case] adapter: &str) {
     // Old batch and new should have conflicts
     assert_eq!(batch[0].id, new_batch[0].id);
     assert_eq!(batch[1].id, new_batch[1].id);
-    assert!(store.store(new_batch).await.is_ok());
+    assert!(store.write(new_batch).await.is_ok());
 
     let second_count = store.count().await;
     assert_eq!(second_count.unwrap(), 2);
@@ -220,7 +221,7 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     let result = store
         .claim_activation_for_pull(None, None)
@@ -229,7 +230,7 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
         .expect("expected one activation");
 
     assert_eq!(result.id, "id_0");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert_eq!(result.processing_deadline_duration, 10);
     assert!(
         result.processing_deadline.unwrap().timestamp() >= Utc::now().timestamp() + 13,
@@ -257,7 +258,7 @@ async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
     let mut batch = make_activations(2);
     batch[0].bucket = 10;
     batch[1].bucket = 20;
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let mut first = store
         .claim_activations_for_push(None, None, Some(1), Some((15, 25)))
@@ -301,7 +302,7 @@ async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
     for chunk in
         make_activations_with_namespace(namespace.clone(), NUM_CONCURRENT_WRITES).chunks(1024)
     {
-        store.store(chunk.to_vec()).await.unwrap();
+        store.write(chunk.to_vec()).await.unwrap();
     }
 
     let (tx, _) = broadcast::channel::<()>(1);
@@ -347,7 +348,7 @@ async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[1].namespace = "other_namespace".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     let other_namespace = "other_namespace".to_string();
     // Get activation from other namespace
@@ -357,7 +358,7 @@ async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
         .unwrap()
         .expect("expected one activation");
     assert_eq!(result.id, "id_1");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.namespace, "other_namespace");
     store.remove_db().await.unwrap();
@@ -375,7 +376,7 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     batch[1].namespace = "ns2".into();
     batch[2].namespace = "ns3".into();
     batch[3].namespace = "ns4".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     // Get activation from multiple namespaces (should get oldest).
     // Use `claim_activations` so upkeep-style `None` application + namespaces is allowed (not `claim_activations_for_push`).
@@ -388,10 +389,10 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     assert_eq!(result.len(), 2);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
-    assert_eq!(result[1].status, InflightActivationStatus::Claimed);
+    assert_eq!(result[1].status, ActivationStatus::Claimed);
     assert_eq!(result[0].id, "id_1");
     assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Claimed);
+    assert_eq!(result[0].status, ActivationStatus::Claimed);
     store.remove_db().await.unwrap();
 }
 
@@ -404,7 +405,7 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
 
     let mut batch = make_activations(2);
     batch[1].namespace = "other_namespace".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     // This is an invalid query as we don't want to allow clients to fetch tasks from any application
     let other_namespace = "other_namespace".to_string();
@@ -446,7 +447,7 @@ async fn test_get_pending_activation_skip_expires(#[case] adapter: &str) {
 
     let mut batch = make_activations(1);
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     let result = store.claim_activation_for_pull(None, None).await;
     assert!(result.is_ok());
@@ -473,7 +474,7 @@ async fn test_get_pending_activation_earliest(#[case] adapter: &str) {
     let mut batch = make_activations(2);
     batch[0].added_at = Utc.with_ymd_and_hms(2024, 6, 24, 0, 0, 0).unwrap();
     batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
-    let ret = store.store(batch.clone()).await;
+    let ret = store.write(batch.clone()).await;
     assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 
     let result = store
@@ -497,7 +498,7 @@ async fn test_get_pending_activation_fetches_application(#[case] adapter: &str) 
 
     let mut batch = make_activations(1);
     batch[0].application = "hammers".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     // Getting an activation with no application filter should
     // include activations with application set.
@@ -507,7 +508,7 @@ async fn test_get_pending_activation_fetches_application(#[case] adapter: &str) 
         .unwrap()
         .expect("expected one activation");
     assert_eq!(result.id, "id_0");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
     store.remove_db().await.unwrap();
@@ -522,7 +523,7 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[1].application = "hammers".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     // Get activation from a named application
     let result = store
@@ -531,7 +532,7 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
         .unwrap()
         .expect("expected one activation");
     assert_eq!(result.id, "id_1");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
 
@@ -564,7 +565,7 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
 
     batch[2].application = "hammers".into();
     batch[2].namespace = "not-target".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     let target_ns = "target".to_string();
     // Get activation from a named application
@@ -574,7 +575,7 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
         .unwrap()
         .expect("expected one activation");
     assert_eq!(result.id, "id_1");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "target");
@@ -599,18 +600,21 @@ async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
     const N: usize = 4;
 
     let batch = make_activations(N as u32);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let got = store
         .claim_activations_for_push(None, None, None, None)
         .await
         .unwrap();
     assert_eq!(got.len(), N);
-    assert!(
-        got.iter()
-            .all(|a| a.status == InflightActivationStatus::Claimed)
+    assert!(got.iter().all(|a| a.status == ActivationStatus::Claimed));
+    assert_eq!(
+        store
+            .count_by_status(ActivationStatus::Pending)
+            .await
+            .unwrap(),
+        0
     );
-    assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
@@ -633,19 +637,19 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     const X: i32 = 3;
 
     let batch = make_activations(N as u32);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let got = store
         .claim_activations_for_push(None, None, Some(X), None)
         .await
         .unwrap();
     assert_eq!(got.len(), X as usize);
-    assert!(
-        got.iter()
-            .all(|a| a.status == InflightActivationStatus::Claimed)
-    );
+    assert!(got.iter().all(|a| a.status == ActivationStatus::Claimed));
     assert_eq!(
-        store.count_pending_activations().await.unwrap(),
+        store
+            .count_by_status(ActivationStatus::Pending)
+            .await
+            .unwrap(),
         N - X as usize
     );
     assert_counts(
@@ -670,18 +674,21 @@ async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str)
     const X: i32 = 10;
 
     let batch = make_activations(Y as u32);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let got = store
         .claim_activations_for_push(None, None, Some(X), None)
         .await
         .unwrap();
     assert_eq!(got.len(), Y);
-    assert!(
-        got.iter()
-            .all(|a| a.status == InflightActivationStatus::Claimed)
+    assert!(got.iter().all(|a| a.status == ActivationStatus::Claimed));
+    assert_eq!(
+        store
+            .count_by_status(ActivationStatus::Pending)
+            .await
+            .unwrap(),
+        0
     );
-    assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
@@ -702,10 +709,16 @@ async fn test_count_pending_activations(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(3);
-    batch[0].status = InflightActivationStatus::Processing;
-    assert!(store.store(batch).await.is_ok());
+    batch[0].status = ActivationStatus::Processing;
+    assert!(store.write(batch).await.is_ok());
 
-    assert_eq!(store.count_pending_activations().await.unwrap(), 2);
+    assert_eq!(
+        store
+            .count_by_status(ActivationStatus::Pending)
+            .await
+            .unwrap(),
+        2
+    );
     assert_counts(
         StatusCount {
             pending: 2,
@@ -726,7 +739,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 2,
@@ -738,7 +751,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", ActivationStatus::Failure)
             .await
             .is_ok()
     );
@@ -754,7 +767,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Pending)
+            .set_status("id_0", ActivationStatus::Pending)
             .await
             .is_ok()
     );
@@ -768,13 +781,13 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", ActivationStatus::Failure)
             .await
             .is_ok()
     );
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Failure)
+            .set_status("id_1", ActivationStatus::Failure)
             .await
             .is_ok()
     );
@@ -796,23 +809,21 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     );
 
     let result = store
-        .set_status("not_there", InflightActivationStatus::Complete)
+        .set_status("not_there", ActivationStatus::Complete)
         .await;
     assert!(result.is_ok(), "no query error");
 
     let activation = result.unwrap();
     assert!(activation.is_none(), "no activation found");
 
-    let result = store
-        .set_status("id_0", InflightActivationStatus::Complete)
-        .await;
+    let result = store.set_status("id_0", ActivationStatus::Complete).await;
     assert!(result.is_ok(), "no query error");
 
     let result_opt = result.unwrap();
     assert!(result_opt.is_some(), "activation should be returned");
     let inflight = result_opt.unwrap();
     assert_eq!(inflight.id, "id_0");
-    assert_eq!(inflight.status, InflightActivationStatus::Complete);
+    assert_eq!(inflight.status, ActivationStatus::Complete);
     store.remove_db().await.unwrap();
 }
 
@@ -824,7 +835,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[1].partition = 1;
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -836,7 +847,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", ActivationStatus::Failure)
             .await
             .is_ok()
     );
@@ -851,7 +862,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Pending)
+            .set_status("id_0", ActivationStatus::Pending)
             .await
             .is_ok()
     );
@@ -865,13 +876,13 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", ActivationStatus::Failure)
             .await
             .is_ok()
     );
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Failure)
+            .set_status("id_1", ActivationStatus::Failure)
             .await
             .is_ok()
     );
@@ -895,23 +906,21 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     );
 
     let result = store
-        .set_status("not_there", InflightActivationStatus::Complete)
+        .set_status("not_there", ActivationStatus::Complete)
         .await;
     assert!(result.is_ok(), "no query error");
 
     let activation = result.unwrap();
     assert!(activation.is_none(), "no activation found");
 
-    let result = store
-        .set_status("id_0", InflightActivationStatus::Complete)
-        .await;
+    let result = store.set_status("id_0", ActivationStatus::Complete).await;
     assert!(result.is_ok(), "no query error");
 
     let result_opt = result.unwrap();
     assert!(result_opt.is_some(), "activation should be returned");
     let inflight = result_opt.unwrap();
     assert_eq!(inflight.id, "id_0");
-    assert_eq!(inflight.status, InflightActivationStatus::Complete);
+    assert_eq!(inflight.status, ActivationStatus::Complete);
     store.remove_db().await.unwrap();
 }
 
@@ -923,7 +932,7 @@ async fn test_set_processing_deadline(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(1);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
 
     let deadline = Utc::now().round_subsecs(0);
     let result = store.set_processing_deadline("id_0", Some(deadline)).await;
@@ -945,7 +954,7 @@ async fn test_delete_activation(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 2);
@@ -972,7 +981,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 2,
@@ -984,7 +993,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Retry)
+            .set_status("id_0", ActivationStatus::Retry)
             .await
             .is_ok()
     );
@@ -1000,7 +1009,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Retry)
+            .set_status("id_1", ActivationStatus::Retry)
             .await
             .is_ok()
     );
@@ -1008,7 +1017,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
     let retries = store.get_retry_activations().await.unwrap();
     assert_eq!(retries.len(), 2);
     for record in retries.iter() {
-        assert_eq!(record.status, InflightActivationStatus::Retry);
+        assert_eq!(record.status, ActivationStatus::Retry);
     }
     store.remove_db().await.unwrap();
 }
@@ -1021,10 +1030,10 @@ async fn test_handle_processing_deadline(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -1065,11 +1074,11 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[0].status = InflightActivationStatus::Processing;
+    batch[0].status = ActivationStatus::Processing;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
-    batch[1].status = InflightActivationStatus::Claimed;
+    batch[1].status = ActivationStatus::Claimed;
     batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
     assert_counts(
         StatusCount {
             processing: 1,
@@ -1104,10 +1113,10 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
 
     // Both records are past processing deadlines
     let mut batch = make_activations(2);
-    batch[0].status = InflightActivationStatus::Processing;
+    batch[0].status = ActivationStatus::Processing;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
 
     replace_retry_state(
         &mut batch[1],
@@ -1122,7 +1131,7 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
     batch[1].at_most_once = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             processing: 2,
@@ -1146,7 +1155,7 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
     .await;
 
     let task = store.get_by_id(&batch[1].id).await.unwrap().unwrap();
-    assert_eq!(task.status, InflightActivationStatus::Failure);
+    assert_eq!(task.status, ActivationStatus::Failure);
     store.remove_db().await.unwrap();
 }
 
@@ -1158,7 +1167,7 @@ async fn test_handle_processing_deadline_discard_after(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -1171,7 +1180,7 @@ async fn test_handle_processing_deadline_discard_after(#[case] adapter: &str) {
         }),
     );
 
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -1204,7 +1213,7 @@ async fn test_handle_processing_deadline_deadletter_after(#[case] adapter: &str)
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -1217,7 +1226,7 @@ async fn test_handle_processing_deadline_deadletter_after(#[case] adapter: &str)
         }),
     );
 
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -1250,7 +1259,7 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -1262,7 +1271,7 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
             delay_on_retry: None,
         }),
     );
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
     assert_counts(
         StatusCount {
             processing: 1,
@@ -1295,13 +1304,13 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
 async fn test_handle_claim_expiration_unsent_no_attempt_increment(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(1);
-    batch[0].status = InflightActivationStatus::Claimed;
+    batch[0].status = ActivationStatus::Claimed;
     batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     let count = store.handle_claim_expiration().await.unwrap();
     assert_eq!(count, 1);
     let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
-    assert_eq!(task.status, InflightActivationStatus::Pending);
+    assert_eq!(task.status, ActivationStatus::Pending);
     assert_eq!(task.processing_attempts, 0);
     store.remove_db().await.unwrap();
 }
@@ -1313,14 +1322,14 @@ async fn test_handle_claim_expiration_unsent_no_attempt_increment(#[case] adapte
 async fn test_handle_claim_expiration_at_most_once_reverts_to_pending(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(1);
-    batch[0].status = InflightActivationStatus::Claimed;
+    batch[0].status = ActivationStatus::Claimed;
     batch[0].at_most_once = true;
     batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     let count = store.handle_claim_expiration().await.unwrap();
     assert_eq!(count, 1);
     let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
-    assert_eq!(task.status, InflightActivationStatus::Pending);
+    assert_eq!(task.status, ActivationStatus::Pending);
     assert_eq!(task.processing_attempts, 0);
     store.remove_db().await.unwrap();
 }
@@ -1334,18 +1343,18 @@ async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(3);
-    batch[0].status = InflightActivationStatus::Pending;
+    batch[0].status = ActivationStatus::Pending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     batch[0].processing_attempts = config.max_processing_attempts as i32;
 
-    batch[1].status = InflightActivationStatus::Complete;
+    batch[1].status = ActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
-    batch[2].status = InflightActivationStatus::Pending;
+    batch[2].status = ActivationStatus::Pending;
     batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     batch[2].processing_attempts = config.max_processing_attempts as i32;
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             complete: 1,
@@ -1379,13 +1388,13 @@ async fn test_remove_completed(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut records = make_activations(3);
-    records[0].status = InflightActivationStatus::Complete;
-    records[1].status = InflightActivationStatus::Pending;
+    records[0].status = ActivationStatus::Complete;
+    records[1].status = ActivationStatus::Pending;
     records[1].added_at += Duration::from_secs(1);
-    records[2].status = InflightActivationStatus::Complete;
+    records[2].status = ActivationStatus::Complete;
     records[2].added_at += Duration::from_secs(2);
 
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.write(records.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             complete: 2,
@@ -1441,17 +1450,17 @@ async fn test_remove_completed_multiple_gaps(#[case] adapter: &str) {
 
     let mut records = make_activations(4);
     // only record 1 can be removed
-    records[0].status = InflightActivationStatus::Complete;
-    records[1].status = InflightActivationStatus::Failure;
+    records[0].status = ActivationStatus::Complete;
+    records[1].status = ActivationStatus::Failure;
     records[1].added_at += Duration::from_secs(1);
 
-    records[2].status = InflightActivationStatus::Complete;
+    records[2].status = ActivationStatus::Complete;
     records[2].added_at += Duration::from_secs(2);
 
-    records[3].status = InflightActivationStatus::Processing;
+    records[3].status = ActivationStatus::Processing;
     records[3].added_at += Duration::from_secs(3);
 
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.write(records.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             complete: 2,
@@ -1516,7 +1525,7 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
 
     let mut records = make_activations(4);
     // deadletter
-    records[0].status = InflightActivationStatus::Failure;
+    records[0].status = ActivationStatus::Failure;
     replace_retry_state(
         &mut records[0],
         Some(RetryState {
@@ -1528,7 +1537,7 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
         }),
     );
     // discard
-    records[1].status = InflightActivationStatus::Failure;
+    records[1].status = ActivationStatus::Failure;
     replace_retry_state(
         &mut records[1],
         Some(RetryState {
@@ -1540,11 +1549,11 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
         }),
     );
     // no retry state = discard
-    records[2].status = InflightActivationStatus::Failure;
+    records[2].status = ActivationStatus::Failure;
     replace_retry_state(&mut records[2], None);
 
     // Another deadletter
-    records[3].status = InflightActivationStatus::Failure;
+    records[3].status = ActivationStatus::Failure;
     replace_retry_state(
         &mut records[3],
         Some(RetryState {
@@ -1555,7 +1564,7 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
             delay_on_retry: None,
         }),
     );
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.write(records.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             failure: 4,
@@ -1605,7 +1614,7 @@ async fn test_mark_completed(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let records = make_activations(3);
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.write(records.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 3,
@@ -1646,7 +1655,7 @@ async fn test_handle_expires_at(#[case] adapter: &str) {
     batch[1].expires_at = Some(Utc::now() + (Duration::from_secs(5 * 60)));
     batch[2].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 3,
@@ -1686,7 +1695,7 @@ async fn test_remove_killswitched(#[case] adapter: &str) {
     batch[2].taskname = "task_to_be_killswitched_two".to_string();
     batch[4].taskname = "task_to_be_killswitched_three".to_string();
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.write(batch.clone()).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 6,
@@ -1729,7 +1738,7 @@ async fn test_clear(#[case] adapter: &str) {
     let namespace = generate_unique_namespace();
 
     let batch = vec![
-        InflightActivationBuilder::new()
+        ActivationBuilder::new()
             .id("id_0")
             .taskname("taskname")
             .namespace(&namespace)
@@ -1738,7 +1747,7 @@ async fn test_clear(#[case] adapter: &str) {
             .build(TaskActivationBuilder::new()),
     ];
 
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -1763,7 +1772,7 @@ async fn test_full_vacuum(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let result = store.full_vacuum_db().await;
     assert!(result.is_ok());
@@ -1778,7 +1787,7 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let result = store.vacuum_db().await;
     assert!(result.is_ok());
@@ -1799,7 +1808,7 @@ async fn test_vacuum_db_incremental() {
     .expect("could not create store");
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
     let result = store.vacuum_db().await;
     assert!(result.is_ok());
@@ -1811,16 +1820,16 @@ async fn test_vacuum_db_incremental() {
 #[case::postgres("postgres")]
 async fn test_db_size(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
-    assert!(store.db_size().await.is_ok());
+    assert!(store.size().await.is_ok());
 
-    let first_size = store.db_size().await.unwrap();
+    let first_size = store.size().await.unwrap();
     assert!(first_size > 0, "should have some bytes");
 
     // Generate a large enough batch that we use another page.
     let batch = make_activations(50);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.write(batch).await.is_ok());
 
-    let second_size = store.db_size().await.unwrap();
+    let second_size = store.size().await.unwrap();
     assert!(second_size > first_size, "should have more bytes now");
     store.remove_db().await.unwrap();
 }
@@ -1836,8 +1845,8 @@ async fn test_pending_activation_max_lag_no_pending(#[case] adapter: &str) {
     assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
 
     let mut processing = make_activations(1);
-    processing[0].status = InflightActivationStatus::Processing;
-    assert!(store.store(processing).await.is_ok());
+    processing[0].status = ActivationStatus::Processing;
+    assert!(store.write(processing).await.is_ok());
 
     // No pending activations, max lag is 0
     assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
@@ -1855,7 +1864,7 @@ async fn test_pending_activation_max_lag_use_oldest(#[case] adapter: &str) {
     let mut pending = make_activations(2);
     pending[0].received_at = now - Duration::from_secs(10);
     pending[1].received_at = now - Duration::from_secs(500);
-    assert!(store.store(pending).await.is_ok());
+    assert!(store.write(pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(11.0 < result, "Should not get the small record");
@@ -1875,7 +1884,7 @@ async fn test_pending_activation_max_lag_ignore_processing_attempts(#[case] adap
     pending[0].received_at = now - Duration::from_secs(10);
     pending[1].received_at = now - Duration::from_secs(500);
     pending[1].processing_attempts = 1;
-    assert!(store.store(pending).await.is_ok());
+    assert!(store.write(pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert_eq!(result, 10.0, "max lag: {result:?}");
@@ -1895,7 +1904,7 @@ async fn test_pending_activation_max_lag_account_for_delayed(#[case] adapter: &s
     // the lag of a delayed task should begin *after* the delay has passed.
     pending[0].received_at = now - Duration::from_secs(520);
     pending[0].delay_until = Some(now - Duration::from_millis(22020));
-    assert!(store.store(pending).await.is_ok());
+    assert!(store.write(pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(22.00 < result, "result: {result}");

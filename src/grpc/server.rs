@@ -10,12 +10,12 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 use crate::config::{Config, DeliveryMode};
-use crate::store::activation::InflightActivationStatus;
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::ActivationStatus;
+use crate::store::traits::PullStore;
 use tracing::{error, instrument, warn};
 
 pub struct TaskbrokerServer {
-    pub store: Arc<dyn InflightActivationStore>,
+    pub store: Arc<dyn PullStore>,
     pub config: Arc<Config>,
 }
 
@@ -84,19 +84,16 @@ impl ConsumerService for TaskbrokerServer {
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
-        let status: InflightActivationStatus =
-            TaskActivationStatus::try_from(request.get_ref().status)
-                .map_err(|e| {
-                    Status::invalid_argument(format!("Unable to deserialize status: {e:?}"))
-                })?
-                .into();
+        let status: ActivationStatus = TaskActivationStatus::try_from(request.get_ref().status)
+            .map_err(|e| Status::invalid_argument(format!("Unable to deserialize status: {e:?}")))?
+            .into();
 
         if !status.is_conclusion() {
             return Err(Status::invalid_argument(format!(
                 "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {status:?}"
             )));
         }
-        if status == InflightActivationStatus::Failure {
+        if status == ActivationStatus::Failure {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 

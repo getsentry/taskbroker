@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::TaskbrokerServer;
-use crate::store::activation::InflightActivationStatus;
+use crate::store::activation::ActivationStatus;
 use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -110,7 +110,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     let config = create_config();
 
     let activations = make_activations(1);
-    store.store(activations).await.unwrap();
+    store.write(activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store: store.clone(),
@@ -128,7 +128,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     assert!(task.id == "id_0");
 
     let row = store.get_by_id("id_0").await.unwrap().expect("claimed row");
-    assert_eq!(row.status, InflightActivationStatus::Processing);
+    assert_eq!(row.status, ActivationStatus::Processing);
 }
 
 #[tokio::test]
@@ -147,7 +147,7 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
     activations[1].activation = payload.encode_to_vec();
     activations[1].application = "hammers".into();
 
-    store.store(activations).await.unwrap();
+    store.write(activations).await.unwrap();
 
     let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest {
@@ -175,7 +175,7 @@ async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 
-    store.store(activations).await.unwrap();
+    store.write(activations).await.unwrap();
 
     let service = TaskbrokerServer { store, config };
     let request = GetTaskRequest {
@@ -199,7 +199,7 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
     let config = create_config();
 
     let activations = make_activations(2);
-    store.store(activations).await.unwrap();
+    store.write(activations).await.unwrap();
 
     let service = TaskbrokerServer { store, config };
 
@@ -246,7 +246,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
     activations[1].activation = payload.encode_to_vec();
     activations[1].application = "hammers".into();
 
-    store.store(activations).await.unwrap();
+    store.write(activations).await.unwrap();
 
     let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {
@@ -285,7 +285,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
     activations[1].activation = payload.encode_to_vec();
     activations[1].application = "hammers".into();
 
-    store.store(activations).await.unwrap();
+    store.write(activations).await.unwrap();
 
     let service = TaskbrokerServer { store, config };
     // Request a task from an application without any activations.
@@ -314,7 +314,7 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 
-    store.store(activations).await.unwrap();
+    store.write(activations).await.unwrap();
 
     let service = TaskbrokerServer { store, config };
     let request = SetTaskStatusRequest {

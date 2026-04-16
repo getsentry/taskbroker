@@ -7,6 +7,7 @@ use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
 use taskbroker::push::PushPool;
+use taskbroker::store::traits::Store;
 use taskbroker::upkeep::upkeep;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -32,11 +33,8 @@ use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{
-    PostgresActivationStore, PostgresActivationStoreConfig,
-};
+use taskbroker::store::adapters::postgres::{PostgresActivationStoreConfig, PostgresStore};
 use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
-use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
 
@@ -67,7 +65,7 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
-    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
+    let store: Arc<dyn Store> = match config.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
             SqliteActivationStore::new(
                 &config.db_path,
@@ -75,10 +73,9 @@ async fn main() -> Result<(), Error> {
             )
             .await?,
         ),
-        DatabaseAdapter::Postgres => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
-                .await?,
-        ),
+        DatabaseAdapter::Postgres => {
+            Arc::new(PostgresStore::new(PostgresActivationStoreConfig::from_config(&config)).await?)
+        }
     };
 
     // If this is an environment where the topics might not exist, check and create them.

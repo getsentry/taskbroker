@@ -16,8 +16,8 @@ use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::store::activation::InflightActivation;
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::Activation;
+use crate::store::traits::PushStore;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -42,7 +42,7 @@ pub enum PushError {
     Timeout,
 
     /// Channel disconnected (no receivers) or another failure.
-    Channel(SendError<InflightActivation>),
+    Channel(SendError<Activation>),
 }
 
 /// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
@@ -82,21 +82,21 @@ impl WorkerClient for WorkerServiceClient<Channel> {
 /// Wrapper around `config.push_threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
 pub struct PushPool {
     /// The sending end of a channel that accepts task activations.
-    sender: Sender<InflightActivation>,
+    sender: Sender<Activation>,
 
     /// The receiving end of a channel that accepts task activations.
-    receiver: Receiver<InflightActivation>,
+    receiver: Receiver<Activation>,
 
     /// Taskbroker configuration.
     config: Arc<Config>,
 
     /// Activation store, which we need for marking tasks as sent.
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn PushStore>,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
+    pub fn new(config: Arc<Config>, store: Arc<dyn PushStore>) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
@@ -178,7 +178,7 @@ impl PushPool {
                                         metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                         debug!(task_id = %id, "Activation sent to worker");
 
-                                        if let Err(e) = store.mark_activation_processing(&id).await {
+                                        if let Err(e) = store.mark_processing(&id).await {
                                             metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
 
                                             error!(
@@ -222,7 +222,7 @@ impl PushPool {
                                 metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                 debug!(task_id = %id, "Activation sent to worker");
 
-                                if let Err(e) = store.mark_activation_processing(&id).await {
+                                if let Err(e) = store.mark_processing(&id).await {
                                     metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
 
                                     error!(
@@ -268,7 +268,7 @@ impl PushPool {
     }
 
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
-    pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
+    pub async fn submit(&self, activation: Activation) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
         let start = Instant::now();
 
@@ -298,7 +298,7 @@ impl PushPool {
 /// Decode task activation and push it to a worker.
 async fn push_task<W: WorkerClient + Send>(
     worker: &mut W,
-    activation: InflightActivation,
+    activation: Activation,
     callback_url: String,
     timeout: Duration,
     grpc_shared_secret: &[String],

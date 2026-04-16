@@ -4,19 +4,58 @@ use chrono::{DateTime, Utc};
 use tokio::join;
 use tracing::warn;
 
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
+/// This trait only contains methods used by the consumer component.
 #[async_trait]
-pub trait InflightActivationStore: Send + Sync {
-    /// CONSUMER OPERATIONS
-    /// Store a batch of activations
-    async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error>;
+pub trait IngestStore: Send + Sync {
+    /// Write a batch of activations to the store.
+    async fn write(&self, batch: Vec<Activation>) -> Result<u64, Error>;
 
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
+    /// Change the Kafka partitions for which this instance is responsible.
+    async fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
+}
 
-    /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
-    /// If `mark_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
+/// This trait only contains methods for counting operations, used for backpressure and metrics.
+#[async_trait]
+pub trait CountStore: Send + Sync {
+    /// Get the size of the database in bytes.
+    async fn size(&self) -> Result<u64, Error>;
+
+    /// Count all activations
+    async fn count(&self) -> Result<usize, Error>;
+
+    /// Count activations by status.
+    async fn count_by_status(&self, status: ActivationStatus) -> Result<usize, Error>;
+
+    /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
+    /// Default implementation uses separate calls, but stores may override with a single query.
+    async fn count_depths(&self) -> Result<DepthCounts, Error> {
+        let (pending, delay, claimed, processing) = join!(
+            self.count_by_status(ActivationStatus::Pending),
+            self.count_by_status(ActivationStatus::Delay),
+            self.count_by_status(ActivationStatus::Claimed),
+            self.count_by_status(ActivationStatus::Processing),
+        );
+
+        Ok(DepthCounts {
+            pending: pending?,
+            delay: delay?,
+            claimed: claimed?,
+            processing: processing?,
+        })
+    }
+
+    /// Get the age of the oldest pending activation in seconds
+    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
+}
+
+/// This trait only contains methods for managing claims.
+#[async_trait]
+pub trait ClaimStore: Send + Sync {
+    /// Get `limit` pending activations with several optional filters.
+    /// If `mark_processing` is true, sets `Processing` and `processing_deadline`, otherwise `Claimed` and `claim_expires_at`.
     /// If no limit is provided, all matching activations will be returned.
     async fn claim_activations(
         &self,
@@ -25,16 +64,16 @@ pub trait InflightActivationStore: Send + Sync {
         limit: Option<i32>,
         bucket: Option<BucketRange>,
         mark_processing: bool,
-    ) -> Result<Vec<InflightActivation>, Error>;
+    ) -> Result<Vec<Activation>, Error>;
 
-    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
+    /// Claims `limit` activations and updates status to `Claimed` until `mark_processing` moves them to `Processing`.
     async fn claim_activations_for_push(
         &self,
         application: Option<&str>,
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-    ) -> Result<Vec<InflightActivation>, Error> {
+    ) -> Result<Vec<Activation>, Error> {
         // If a namespace filter is used, an application must also be used
         if namespaces.is_some() && application.is_none() {
             warn!(
@@ -49,12 +88,12 @@ pub trait InflightActivationStore: Send + Sync {
             .await
     }
 
-    /// Claims `limit` activations with application `application` and namespace `namespace`.
+    /// Claims one activation with application `application` and namespace `namespace`.
     async fn claim_activation_for_pull(
         &self,
         application: Option<&str>,
         namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
+    ) -> Result<Option<Activation>, Error> {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
 
@@ -79,78 +118,31 @@ pub trait InflightActivationStore: Send + Sync {
             Ok(rows.pop())
         }
     }
+}
 
+/// This trait only contains methods used in push mode.
+#[async_trait]
+pub trait PushStore: Send + Sync {
     /// Record successful push.
-    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error>;
+    async fn mark_processing(&self, id: &str) -> Result<(), Error>;
+}
 
-    /// Update the status of a specific activation
+/// This trait only contains methods used in pull mode.
+#[async_trait]
+pub trait PullStore: ClaimStore {
+    /// Update the status of a specific activation.
     async fn set_status(
         &self,
         id: &str,
-        status: InflightActivationStatus,
-    ) -> Result<Option<InflightActivation>, Error>;
+        status: ActivationStatus,
+    ) -> Result<Option<Activation>, Error>;
+}
 
-    /// COUNT OPERATIONS
-    /// Get the age of the oldest pending activation in seconds
-    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
-
-    /// Count activations with Pending status
-    async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(InflightActivationStatus::Pending)
-            .await
-    }
-
-    /// Count activations by status
-    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
-
-    /// Count all activations
-    async fn count(&self) -> Result<usize, Error>;
-
-    /// ACTIVATION OPERATIONS
-    /// Get an activation by id
-    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error>;
-
-    /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
-    /// Default implementation uses separate calls, but stores may override with a single query.
-    async fn count_depths(&self) -> Result<DepthCounts, Error> {
-        let (pending, delay, claimed, processing) = join!(
-            self.count_by_status(InflightActivationStatus::Pending),
-            self.count_by_status(InflightActivationStatus::Delay),
-            self.count_by_status(InflightActivationStatus::Claimed),
-            self.count_by_status(InflightActivationStatus::Processing),
-        );
-
-        Ok(DepthCounts {
-            pending: pending?,
-            delay: delay?,
-            claimed: claimed?,
-            processing: processing?,
-        })
-    }
-
-    /// Set the processing deadline for a specific activation
-    async fn set_processing_deadline(
-        &self,
-        id: &str,
-        deadline: Option<DateTime<Utc>>,
-    ) -> Result<(), Error>;
-
-    /// Delete an activation by id
-    async fn delete_activation(&self, id: &str) -> Result<(), Error>;
-
-    /// DATABASE OPERATIONS
-    /// Trigger incremental vacuum to reclaim free pages in the database
-    async fn vacuum_db(&self) -> Result<(), Error>;
-
-    /// Perform a full vacuum on the database
-    async fn full_vacuum_db(&self) -> Result<(), Error>;
-
-    /// Get the size of the database in bytes
-    async fn db_size(&self) -> Result<u64, Error>;
-
-    /// UPKEEP OPERATIONS
+/// This trait only contains methods used by upkeep.
+#[async_trait]
+pub trait UpkeepStore {
     /// Get all activations with status Retry
-    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error>;
+    async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error>;
 
     /// Revert expired push claims back to pending status.
     async fn handle_claim_expiration(&self) -> Result<u64, Error>;
@@ -167,19 +159,47 @@ pub trait InflightActivationStore: Send + Sync {
     /// Update delayed tasks past their delay_until deadline to Pending
     async fn handle_delay_until(&self) -> Result<u64, Error>;
 
-    /// Process failed tasks for discard or deadletter
+    /// Process failed tasks for discard or deadletter.
     async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error>;
 
-    /// Mark tasks as complete by id
+    /// Mark tasks as completd by ID.
     async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error>;
 
-    /// Remove completed tasks
+    /// Remove completed tasks.
     async fn remove_completed(&self) -> Result<u64, Error>;
 
-    /// Remove killswitched tasks
+    /// Remove killswitched tasks.
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error>;
 
-    /// TEST OPERATIONS
+    /// Trigger incremental vacuum to reclaim free pages in the database.
+    async fn vacuum_db(&self) -> Result<(), Error>;
+
+    /// Perform a full vacuum on the database.
+    async fn full_vacuum_db(&self) -> Result<(), Error>;
+}
+
+/// Umbrella interface that represents ALL possible operations on any runtime store.
+#[async_trait]
+pub trait Store:
+    IngestStore + ClaimStore + UpkeepStore + CountStore + PushStore + PullStore
+{
+}
+
+#[async_trait]
+pub trait TestStore: Store {
+    /// Get an activation by id
+    async fn get_by_id(&self, id: &str) -> Result<Option<Activation>, Error>;
+
+    /// Set the processing deadline for a specific activation
+    async fn set_processing_deadline(
+        &self,
+        id: &str,
+        deadline: Option<DateTime<Utc>>,
+    ) -> Result<(), Error>;
+
+    /// Delete an activation by id
+    async fn delete_activation(&self, id: &str) -> Result<(), Error>;
+
     /// Clear all activations from the store
     async fn clear(&self) -> Result<(), Error>;
 

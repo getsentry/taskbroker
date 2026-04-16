@@ -1,6 +1,4 @@
-use crate::{
-    config::Config, runtime_config::RuntimeConfigManager, store::activation::InflightActivation,
-};
+use crate::{config::Config, runtime_config::RuntimeConfigManager, store::activation::Activation};
 use chrono::Utc;
 use futures::future::join_all;
 use rdkafka::config::ClientConfig;
@@ -43,7 +41,7 @@ impl ActivationBatcherConfig {
 }
 
 pub struct InflightActivationBatcher {
-    batch: Vec<InflightActivation>,
+    batch: Vec<Activation>,
     batch_size: usize,
     forward_batch: Vec<Vec<u8>>, // payload
     config: ActivationBatcherConfig,
@@ -81,9 +79,9 @@ impl InflightActivationBatcher {
 }
 
 impl Reducer for InflightActivationBatcher {
-    type Input = InflightActivation;
+    type Input = Activation;
 
-    type Output = Vec<InflightActivation>;
+    type Output = Vec<Activation>;
 
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
@@ -220,7 +218,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        store::activation::InflightActivationBuilder,
+        store::activation::ActivationBuilder,
         test_utils::{TaskActivationBuilder, generate_unique_namespace},
     };
 
@@ -244,7 +242,7 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let inflight_activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace(&namespace)
@@ -267,7 +265,7 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let inflight_activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace(&namespace)
@@ -294,7 +292,7 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let inflight_activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("taskname")
             .namespace(&namespace)
@@ -322,13 +320,13 @@ demoted_namespaces:
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let inflight_activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("taskname")
             .namespace(&namespace)
             .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivationBuilder::new()
+        let inflight_activation_1 = ActivationBuilder::new()
             .id("1")
             .taskname("taskname")
             .namespace(&namespace)
@@ -363,13 +361,13 @@ demoted_topic: taskworker-demoted"#;
 
         assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let inflight_activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace("bad_namespace")
             .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivationBuilder::new()
+        let inflight_activation_1 = ActivationBuilder::new()
             .id("1")
             .taskname("good_task")
             .namespace("good_namespace")

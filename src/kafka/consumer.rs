@@ -1,4 +1,4 @@
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::IngestStore;
 use anyhow::{Error, anyhow};
 use futures::{
     Stream, StreamExt,
@@ -45,7 +45,7 @@ use tracing::{debug, error, info, instrument, warn};
 pub async fn start_consumer(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
-    activation_store: Arc<dyn InflightActivationStore>,
+    activation_store: Arc<dyn IngestStore>,
     spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,
         &BTreeSet<(String, i32)>,
@@ -343,7 +343,7 @@ enum ConsumerState {
 pub async fn handle_events(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     events: UnboundedReceiver<(Event, SyncSender<()>)>,
-    activation_store: Arc<dyn InflightActivationStore>,
+    activation_store: Arc<dyn IngestStore>,
     shutdown_client: oneshot::Sender<()>,
     mut spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,
@@ -381,7 +381,7 @@ pub async fn handle_events(
                         for (_, partition) in tpl.iter() {
                             partitions.push(*partition);
                         }
-                        activation_store.assign_partitions(partitions).unwrap();
+                        activation_store.assign_partitions(partitions).await.unwrap();
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
@@ -396,13 +396,13 @@ pub async fn handle_events(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
-                        activation_store.assign_partitions(vec![]).unwrap();
+                        activation_store.assign_partitions(vec![]).await.unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!("arroyo.consumer.current_partitions").set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
-                        activation_store.assign_partitions(vec![]).unwrap();
+                        activation_store.assign_partitions(vec![]).await.unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
