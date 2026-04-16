@@ -123,7 +123,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                 .await
                             {
                                 Ok(activations) if activations.is_empty() => {
-                                    metrics::counter!("push.fetch.empty").increment(1);
+                                    metrics::counter!("fetch.empty").increment(1);
                                     debug!("No pending activations");
 
                                     // Wait for pending activations to appear
@@ -131,9 +131,9 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                 }
 
                                 Ok(activations) => {
-                                    metrics::counter!("push.fetch.claimed")
+                                    metrics::counter!("fetch.claimed")
                                         .increment(activations.len() as u64);
-                                    metrics::histogram!("push.fetch.claim_batch_size")
+                                    metrics::histogram!("fetch.claim_batch_size")
                                         .record(activations.len() as f64);
 
                                     debug!("Fetched {} activations", activations.len());
@@ -142,10 +142,10 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                         let id = activation.id.clone();
 
                                         match pusher.submit_task(activation).await {
-                                            Ok(()) => metrics::counter!("push.fetch.submit", "result" => "ok").increment(1),
+                                            Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
 
                                             Err(PushError::Timeout) => {
-                                                metrics::counter!("push.fetch.submit", "result" => "timeout")
+                                                metrics::counter!("fetch.submit", "result" => "timeout")
                                                     .increment(1);
 
                                                 warn!(
@@ -159,7 +159,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                             }
 
                                             Err(PushError::Channel(e)) => {
-                                                metrics::counter!("push.fetch.submit", "result" => "channel_error")
+                                                metrics::counter!("fetch.submit", "result" => "channel_error")
                                                     .increment(1);
 
                                                 warn!(
@@ -176,7 +176,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                 }
 
                                 Err(e) => {
-                                    metrics::counter!("push.fetch.store_error").increment(1);
+                                    metrics::counter!("fetch.store_error").increment(1);
                                     warn!(
                                         error = ?e,
                                         "Store failed while fetching tasks"

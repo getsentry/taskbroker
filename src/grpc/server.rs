@@ -130,11 +130,12 @@ impl ConsumerService for TaskbrokerServer {
                     e,
                 );
 
+                metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
                 return Err(Status::internal(format!(
                     "Unable to update status of {id:?} to {status:?}"
                 )));
             }
-        };
+        }
 
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
