@@ -1000,7 +1000,7 @@ mod tests {
             self.pipe
                 .write()
                 .unwrap()
-                .extend(take(&mut self.buffer.write().unwrap() as &mut Vec<T>).into_iter());
+                .extend(take(&mut self.buffer.write().unwrap() as &mut Vec<T>));
             Ok(Some(()))
         }
 
