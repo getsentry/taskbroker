@@ -3,15 +3,14 @@ use std::sync::Arc;
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
-use taskbroker::{
-    store::activation::InflightActivationStatus,
-    store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
-    store::traits::InflightActivationStore,
-    test_utils::{
-        generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
-    },
-};
 use tokio::task::JoinSet;
+
+use taskbroker::store::activation::InflightActivationStatus;
+use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::traits::InflightActivationStore;
+use taskbroker::test_utils::{
+    generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
+};
 
 async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     let url = if cfg!(feature = "bench-with-mnt-disk") {

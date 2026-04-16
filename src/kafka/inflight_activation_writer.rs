@@ -1,18 +1,14 @@
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
-use crate::{
-    config::Config,
-    store::activation::{InflightActivation, InflightActivationStatus},
-    store::traits::InflightActivationStore,
-    store::types::DepthCounts,
-};
+use crate::config::Config;
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::traits::InflightActivationStore;
+use crate::store::types::DepthCounts;
 
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
@@ -198,13 +194,12 @@ mod tests {
     use chrono::DateTime;
     use rstest::rstest;
 
-    use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
-    use crate::{
-        store::activation::{InflightActivationBuilder, InflightActivationStatus},
-        test_utils::{
-            TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
-        },
+    use crate::store::activation::{InflightActivationBuilder, InflightActivationStatus};
+    use crate::test_utils::{
+        TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
     };
+
+    use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
 
     #[tokio::test]
     #[rstest]

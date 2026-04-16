@@ -1,28 +1,27 @@
+use std::collections::HashMap;
+use std::env::var;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use rdkafka::Message;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::producer::FutureProducer;
+
 use chrono::Utc;
 use futures::StreamExt;
 use prost::Message as ProstMessage;
 use prost_types::Timestamp;
-use rdkafka::{
-    Message,
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-    consumer::{CommitMode, Consumer, StreamConsumer},
-    producer::FutureProducer,
-};
 use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskActivation};
-use std::{collections::HashMap, env::var, sync::Arc, time::SystemTime};
 use uuid::Uuid;
 
-use crate::{
-    config::Config,
-    store::{
-        activation::{InflightActivation, InflightActivationBuilder, InflightActivationStatus},
-        adapters::{
-            postgres::{PostgresActivationStore, PostgresActivationStoreConfig},
-            sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
-        },
-        traits::InflightActivationStore,
-    },
+use crate::config::Config;
+use crate::store::activation::{
+    InflightActivation, InflightActivationBuilder, InflightActivationStatus,
 };
+use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
+use crate::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use crate::store::traits::InflightActivationStore;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {

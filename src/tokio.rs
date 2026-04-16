@@ -1,5 +1,4 @@
 use std::future::Future;
-
 use tokio::task::JoinSet;
 
 /// Spawns `max(n, 1)` tasks, each running the future produced by `f` with the task's index.

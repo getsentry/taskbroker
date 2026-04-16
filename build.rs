@@ -1,4 +1,5 @@
-use std::{env, fs, process::Command};
+use std::process::Command;
+use std::{env, fs};
 
 fn emit_version() {
     let package_name = env::var("CARGO_PKG_NAME").unwrap();

@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Timelike, Utc};
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::error::KafkaError;
@@ -522,28 +523,27 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use prost::Message;
     use prost_types::Timestamp;
     use rstest::rstest;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
-    use std::sync::Arc;
-    use std::time::Duration;
-    use std::time::Instant;
     use tokio::fs;
     use tokio::time::sleep;
 
-    use crate::{
-        config::Config,
-        runtime_config::RuntimeConfigManager,
-        store::activation::InflightActivationStatus,
-        test_utils::{
-            StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
-            create_integration_config_with_topic, create_producer, create_test_store,
-            make_activations, replace_retry_state, reset_topic,
-        },
-        upkeep::{create_retry_activation, do_upkeep},
+    use crate::config::Config;
+    use crate::runtime_config::RuntimeConfigManager;
+    use crate::store::activation::InflightActivationStatus;
+    use crate::test_utils::{
+        StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
+        create_integration_config_with_topic, create_producer, create_test_store, make_activations,
+        replace_retry_state, reset_topic,
     };
+    use crate::upkeep::{create_retry_activation, do_upkeep};
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {

@@ -1,8 +1,5 @@
 use std::sync::Arc;
 
-use crate::config::{Config, DeliveryMode};
-use crate::grpc::server::TaskbrokerServer;
-use crate::store::activation::InflightActivationStatus;
 use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -11,6 +8,9 @@ use sentry_protos::taskbroker::v1::{
 };
 use tonic::{Code, Request};
 
+use crate::config::{Config, DeliveryMode};
+use crate::grpc::server::TaskbrokerServer;
+use crate::store::activation::InflightActivationStatus;
 use crate::test_utils::{create_config, create_test_store, make_activations};
 
 #[tokio::test]
