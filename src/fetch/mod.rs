@@ -48,13 +48,13 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
 /// Thin interface for the push pool. It mostly serves to enable proper unit testing, but it also decouples fetch logic from push logic even further.
 #[async_trait]
 pub trait TaskPusher {
-    /// Push a single task to the worker service.
-    async fn push_task(&self, activation: InflightActivation) -> Result<(), PushError>;
+    /// Submit a single task to the push pool.
+    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError>;
 }
 
 #[async_trait]
 impl TaskPusher for PushPool {
-    async fn push_task(&self, activation: InflightActivation) -> Result<(), PushError> {
+    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError> {
         self.submit(activation).await
     }
 }
@@ -123,6 +123,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                 .await
                             {
                                 Ok(activations) if activations.is_empty() => {
+                                    metrics::counter!("fetch.empty").increment(1);
                                     debug!("No pending activations");
 
                                     // Wait for pending activations to appear
@@ -130,34 +131,52 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                 }
 
                                 Ok(activations) => {
+                                    metrics::counter!("fetch.claimed")
+                                        .increment(activations.len() as u64);
+                                    metrics::histogram!("fetch.claim_batch_size")
+                                        .record(activations.len() as f64);
+
                                     debug!("Fetched {} activations", activations.len());
 
                                     for activation in activations {
                                         let id = activation.id.clone();
 
-                                        if let Err(e) = pusher.push_task(activation).await {
-                                            match e {
-                                                PushError::Timeout => warn!(
+                                        match pusher.submit_task(activation).await {
+                                            Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
+
+                                            Err(PushError::Timeout) => {
+                                                metrics::counter!("fetch.submit", "result" => "timeout")
+                                                    .increment(1);
+
+                                                warn!(
                                                     task_id = %id,
                                                     "Submit to push pool timed out after {} milliseconds",
                                                     config.push_queue_timeout_ms
-                                                ),
+                                                );
 
-                                                PushError::Channel(e) => warn!(
+                                                // Wait for push queue to empty
+                                                backoff = true;
+                                            }
+
+                                            Err(PushError::Channel(e)) => {
+                                                metrics::counter!("fetch.submit", "result" => "channel_error")
+                                                    .increment(1);
+
+                                                warn!(
                                                     task_id = %id,
                                                     error = ?e,
                                                     "Submit to push pool failed due to channel error",
-                                                )
-                                            }
+                                                );
 
-                                            backoff = true;
+                                                // Wait before trying again
+                                                backoff = true;
+                                            }
                                         }
                                     }
-
-
                                 }
 
                                 Err(e) => {
+                                    metrics::counter!("fetch.store_error").increment(1);
                                     warn!(
                                         error = ?e,
                                         "Store failed while fetching tasks"

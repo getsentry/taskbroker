@@ -49,8 +49,7 @@ pub enum PushError {
 #[async_trait]
 trait WorkerClient {
     /// Send a single `PushTaskRequest` to the worker service.
-    ///
-    /// When `grpc_shared_secret` is non-empty, signs with `grpc_shared_secret[0]` and sets `sentry-signature` metadata (same scheme as Python pull client and broker `AuthLayer`).
+    /// When `grpc_shared_secret` is not empty, it signs the request with `grpc_shared_secret[0]` and sets `sentry-signature` metadata (same scheme as Python pull client and broker `AuthLayer`).
     async fn send(&mut self, request: PushTaskRequest, grpc_shared_secret: &[String])
     -> Result<()>;
 }
@@ -75,6 +74,7 @@ impl WorkerClient for WorkerServiceClient<Channel> {
         self.push_task(req)
             .await
             .map_err(|status| anyhow::anyhow!(status))?;
+
         Ok(())
     }
 }
@@ -128,9 +128,17 @@ impl PushPool {
                 let grpc_shared_secret = self.config.grpc_shared_secret.clone();
 
                 async move {
+                    metrics::counter!("push.worker.connect.attempt").increment(1);
+
                     let mut worker = match WorkerServiceClient::connect(endpoint).await {
-                        Ok(w) => w,
+                        Ok(w) => {
+                            metrics::counter!("push.worker.connect", "result" => "ok").increment(1);
+                            w
+                        }
+
                         Err(e) => {
+                            metrics::counter!("push.worker.connect", "result" => "error")
+                                .increment(1);
                             error!("Failed to connect to worker - {:?}", e);
 
                             // When we fail to connect, the taskbroker will shut down, but this may change in the future
@@ -167,9 +175,12 @@ impl PushPool {
                                 .await
                                 {
                                     Ok(_) => {
+                                        metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                         debug!(task_id = %id, "Activation sent to worker");
 
                                         if let Err(e) = store.mark_activation_processing(&id).await {
+                                            metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+
                                             error!(
                                                 task_id = %id,
                                                 error = ?e,
@@ -178,12 +189,16 @@ impl PushPool {
                                         }
                                     }
 
-                                    // Once processing deadline expires, status will be set back to pending
-                                    Err(e) => error!(
-                                        task_id = %id,
-                                        error = ?e,
-                                        "Failed to send activation to worker"
-                                    )
+                                    // Once claim expires, status will be set back to pending
+                                    Err(e) => {
+                                        metrics::counter!("push.delivery", "result" => "error").increment(1);
+
+                                        error!(
+                                            task_id = %id,
+                                            error = ?e,
+                                            "Failed to send activation to worker"
+                                        )
+                                    }
                                 };
                             }
                         }
@@ -204,9 +219,12 @@ impl PushPool {
                         .await
                         {
                             Ok(_) => {
+                                metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                 debug!(task_id = %id, "Activation sent to worker");
 
                                 if let Err(e) = store.mark_activation_processing(&id).await {
+                                    metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+
                                     error!(
                                         task_id = %id,
                                         error = ?e,
@@ -216,11 +234,16 @@ impl PushPool {
                             }
 
                             // Once processing deadline expires, status will be set back to pending
-                            Err(e) => error!(
-                                task_id = %id,
-                                error = ?e,
-                                "Failed to send activation to worker"
-                            ),
+                            Err(e) => {
+                                metrics::counter!("push.delivery", "result" => "error")
+                                    .increment(1);
+
+                                error!(
+                                    task_id = %id,
+                                    error = ?e,
+                                    "Failed to send activation to worker"
+                                )
+                            }
                         };
                     }
 
@@ -247,15 +270,27 @@ impl PushPool {
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
     pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
+        let start = Instant::now();
+
+        metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
 
         match tokio::time::timeout(duration, self.sender.send_async(activation)).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+                Ok(())
+            }
 
             // The channel has a problem
-            Ok(Err(e)) => Err(PushError::Channel(e)),
+            Ok(Err(e)) => {
+                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+                Err(PushError::Channel(e))
+            }
 
             // The channel was full so the send timed out
-            Err(_elapsed) => Err(PushError::Timeout),
+            Err(_elapsed) => {
+                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+                Err(PushError::Timeout)
+            }
         }
     }
 }
@@ -269,9 +304,16 @@ async fn push_task<W: WorkerClient + Send>(
     grpc_shared_secret: &[String],
 ) -> Result<()> {
     let start = Instant::now();
+    metrics::counter!("push.push_task.attempt").increment(1);
 
     // Try to decode activation (if it fails, we will see the error where `push_task` is called)
-    let task = TaskActivation::decode(&activation.activation as &[u8])?;
+    let task = match TaskActivation::decode(&activation.activation as &[u8]) {
+        Ok(task) => task,
+        Err(err) => {
+            metrics::histogram!("push.push_task.duration").record(start.elapsed());
+            return Err(err.into());
+        }
+    };
 
     let request = PushTaskRequest {
         task: Some(task),
