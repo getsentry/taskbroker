@@ -1,9 +1,10 @@
+use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::str::FromStr;
+
 use chrono::{DateTime, Utc};
 use derive_builder::Builder;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::Type;
-use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::str::FromStr;
 
 /// The members of this enum should be a superset of the members
 /// of `InflightActivationStatus` in `sentry_protos`.

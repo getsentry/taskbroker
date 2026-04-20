@@ -1,13 +1,14 @@
 #![allow(clippy::result_large_err)]
-use figment::{
-    Figment, Metadata, Profile, Provider,
-    providers::{Env, Format, Yaml},
-};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
+
+use figment::providers::{Env, Format, Yaml};
+use figment::{Figment, Metadata, Profile, Provider};
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, collections::BTreeMap};
 
-use crate::{Args, logging::LogFormat};
+use crate::Args;
+use crate::logging::LogFormat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -501,11 +502,15 @@ impl Provider for Config {
 
 #[cfg(test)]
 mod tests {
-    use std::{borrow::Cow, collections::BTreeMap};
+    use std::borrow::Cow;
+    use std::collections::BTreeMap;
+
+    use figment::Jail;
+
+    use crate::Args;
+    use crate::logging::LogFormat;
 
     use super::{Config, DatabaseAdapter, DeliveryMode};
-    use crate::{Args, logging::LogFormat};
-    use figment::Jail;
 
     #[test]
     fn test_default() {

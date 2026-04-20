@@ -1,8 +1,6 @@
 use anyhow::Error;
-use rdkafka::{
-    ClientConfig,
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-};
+use rdkafka::ClientConfig;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use tracing::info;
 
 pub async fn create_missing_topics(

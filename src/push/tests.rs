@@ -5,9 +5,10 @@ use sentry_protos::taskbroker::v1::PushTaskRequest;
 use tokio::time::{Duration, timeout};
 use tonic::async_trait;
 
-use super::*;
 use crate::config::Config;
 use crate::test_utils::{create_test_store, make_activations};
+
+use super::*;
 
 /// Fake worker client for unit testing.
 struct MockWorkerClient {

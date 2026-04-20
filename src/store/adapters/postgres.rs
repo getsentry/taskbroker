@@ -1,16 +1,16 @@
+use std::str::FromStr;
+use std::sync::RwLock;
+use std::time::Instant;
+
+use sqlx::ConnectOptions;
+use sqlx::pool::PoolConnection;
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use sqlx::{FromRow, Pool, Postgres, QueryBuilder};
+
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
-use sqlx::ConnectOptions;
-use sqlx::{
-    FromRow, Pool, Postgres, QueryBuilder,
-    pool::PoolConnection,
-    postgres::{PgConnectOptions, PgPool, PgPoolOptions},
-};
-use std::str::FromStr;
-use std::sync::RwLock;
-use std::time::Instant;
 use tracing::{instrument, warn};
 
 use crate::config::Config;
