@@ -560,8 +560,6 @@ class PushTaskbrokerClient:
     ) -> bool:
         """
         Update the status for a given task activation.
-
-        The return value is the next task that should be executed.
         """
         self._emit_health_check()
 
