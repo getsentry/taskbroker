@@ -241,14 +241,15 @@ def child_process(
                     _execute_activation(task_func, inflight.activation, app.context_hooks)
                 next_state = TASK_ACTIVATION_STATUS_COMPLETE
             except ProcessingDeadlineExceeded as err:
-                with sentry_sdk.isolation_scope() as scope:
-                    scope.fingerprint = [
-                        "taskworker.processing_deadline_exceeded",
-                        inflight.activation.namespace,
-                        inflight.activation.taskname,
-                    ]
-                    scope.set_transaction_name(inflight.activation.taskname)
-                    sentry_sdk.capture_exception(err)
+                if task_func.report_timeout_errors:
+                    with sentry_sdk.isolation_scope() as scope:
+                        scope.fingerprint = [
+                            "taskworker.processing_deadline_exceeded",
+                            inflight.activation.namespace,
+                            inflight.activation.taskname,
+                        ]
+                        scope.set_transaction_name(inflight.activation.taskname)
+                        sentry_sdk.capture_exception(err)
                 metrics.incr(
                     "taskworker.worker.processing_deadline_exceeded",
                     tags={
@@ -257,7 +258,11 @@ def child_process(
                         "taskname": inflight.activation.taskname,
                     },
                 )
-                next_state = TASK_ACTIVATION_STATUS_FAILURE
+                retry = task_func.retry
+                if retry and retry.should_retry(inflight.activation.retry_state, err):
+                    next_state = TASK_ACTIVATION_STATUS_RETRY
+                else:
+                    next_state = TASK_ACTIVATION_STATUS_FAILURE
             except Exception as err:
                 retry = task_func.retry
                 captured_error = False

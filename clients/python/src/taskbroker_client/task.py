@@ -66,6 +66,7 @@ class Task(Generic[P, R]):
         at_most_once: bool = False,
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
+        report_timeout_errors: bool = True,
     ):
         self.name = name
         self._func = func
@@ -86,6 +87,7 @@ class Task(Generic[P, R]):
         self.at_most_once = at_most_once
         self.wait_for_delivery = wait_for_delivery
         self.compression_type = compression_type
+        self.report_timeout_errors = report_timeout_errors
         update_wrapper(self, func)
 
     @property
