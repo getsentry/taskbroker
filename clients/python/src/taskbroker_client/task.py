@@ -233,7 +233,7 @@ class Task(Generic[P, R]):
 
         should_compress = (
             self.compression_type == CompressionType.ZSTD
-            or (len(msgpack_bytes) or len(json_bytes or b""))
+            or (len(msgpack_bytes) + len(json_bytes or b""))
             > MAX_PARAMETER_BYTES_BEFORE_COMPRESSION
         )
 
