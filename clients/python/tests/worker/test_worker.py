@@ -1,6 +1,8 @@
 import base64
+import contextlib
 import queue
 import time
+from collections.abc import MutableMapping
 from multiprocessing import Event
 from typing import Any
 from unittest import TestCase, mock
@@ -847,3 +849,58 @@ def test_child_process_legacy_compressed_parameters(mock_capture_checkin: mock.M
     result = processed.get()
     assert result.task_id == LEGACY_COMPRESSED_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+def test_child_process_context_hooks() -> None:
+    """Context hooks' on_execute is called with activation headers during task execution."""
+    executed_headers: list[dict[str, str]] = []
+
+    class RecordingHook:
+        def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
+            pass
+
+        def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
+            executed_headers.append(dict(headers))
+            return contextlib.nullcontext()
+
+    from examples.app import app
+
+    hook = RecordingHook()
+    app.context_hooks.append(hook)
+
+    try:
+        activation_with_headers = InflightTaskActivation(
+            host="localhost:50051",
+            receive_timestamp=0,
+            activation=TaskActivation(
+                id="hook-test",
+                taskname="examples.simple_task",
+                namespace="examples",
+                parameters='{"args": [], "kwargs": {}}',
+                headers={"x-viewer-org": "42", "x-viewer-user": "7"},
+                processing_deadline_duration=5,
+            ),
+        )
+
+        todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+        processed: queue.Queue[ProcessingResult] = queue.Queue()
+        shutdown = Event()
+
+        todo.put(activation_with_headers)
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+        )
+
+        result = processed.get()
+        assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+        assert len(executed_headers) == 1
+        assert executed_headers[0]["x-viewer-org"] == "42"
+        assert executed_headers[0]["x-viewer-user"] == "7"
+    finally:
+        app.context_hooks.remove(hook)

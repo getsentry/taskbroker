@@ -9,9 +9,9 @@ use tracing::{debug, error, instrument};
 
 use crate::{
     config::Config,
-    store::inflight_activation::{
-        DepthCounts, InflightActivation, InflightActivationStatus, InflightActivationStore,
-    },
+    store::activation::{InflightActivation, InflightActivationStatus},
+    store::traits::InflightActivationStore,
+    store::types::DepthCounts,
 };
 
 use super::consumer::{
@@ -85,6 +85,7 @@ impl Reducer for InflightActivationWriter {
         let DepthCounts {
             pending,
             delay,
+            claimed,
             processing,
         } = self
             .store
@@ -94,7 +95,8 @@ impl Reducer for InflightActivationWriter {
 
         let exceeded_pending_limit = pending + batch.len() > self.config.max_pending_activations;
         let exceeded_delay_limit = delay + batch.len() > self.config.max_delay_activations;
-        let exceeded_processing_limit = processing >= self.config.max_processing_activations;
+        let exceeded_processing_limit =
+            processing + claimed >= self.config.max_processing_activations;
         let exceeded_db_size = if let Some(db_max_size) = self.config.db_max_size {
             self.store
                 .db_size()
@@ -145,7 +147,7 @@ impl Reducer for InflightActivationWriter {
         let write_to_store_start = Instant::now();
         let res = self.store.store(batch.clone()).await;
         match res {
-            Ok(res) => {
+            Ok(entries) => {
                 self.batch.take();
                 let lag = Utc::now()
                     - batch
@@ -158,11 +160,10 @@ impl Reducer for InflightActivationWriter {
                     .record(write_to_store_start.elapsed());
                 metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
                     .record(lag.num_seconds() as f64);
-                metrics::counter!("consumer.inflight_activation_writer.stored")
-                    .increment(res.rows_affected);
+                metrics::counter!("consumer.inflight_activation_writer.stored").increment(entries);
                 debug!(
                     "Inserted {:?} entries with max lag: {:?}s",
-                    res.rows_affected,
+                    entries,
                     lag.num_seconds()
                 );
                 Ok(Some(()))
@@ -199,7 +200,7 @@ mod tests {
 
     use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
     use crate::{
-        store::inflight_activation::{InflightActivationBuilder, InflightActivationStatus},
+        store::activation::{InflightActivationBuilder, InflightActivationStatus},
         test_utils::{
             TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
         },

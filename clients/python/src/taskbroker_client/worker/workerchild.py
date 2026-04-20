@@ -6,7 +6,7 @@ import logging
 import queue
 import signal
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from multiprocessing.synchronize import Event
 from types import FrameType
 from typing import Any
@@ -31,7 +31,7 @@ from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
-from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
 
 logger = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ def child_process(
             execution_start_time = time.time()
             try:
                 with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
-                    _execute_activation(task_func, inflight.activation)
+                    _execute_activation(task_func, inflight.activation, app.context_hooks)
                 next_state = TASK_ACTIVATION_STATUS_COMPLETE
             except ProcessingDeadlineExceeded as err:
                 with sentry_sdk.isolation_scope() as scope:
@@ -320,7 +320,11 @@ def child_process(
                 inflight.host,
             )
 
-    def _execute_activation(task_func: Task[Any, Any], activation: TaskActivation) -> None:
+    def _execute_activation(
+        task_func: Task[Any, Any],
+        activation: TaskActivation,
+        context_hooks: Sequence[ContextHook] = (),
+    ) -> None:
         """Invoke a task function with the activation parameters."""
         parameters = load_parameters(activation)
 
@@ -375,7 +379,17 @@ def child_process(
                     kwargs.pop("__start_time")
 
                 try:
-                    task_func(*args, **kwargs)
+                    with contextlib.ExitStack() as stack:
+                        with metrics.timer(
+                            "taskworker.worker.context_rebuild.duration",
+                            tags={
+                                "namespace": activation.namespace,
+                                "taskname": activation.taskname,
+                            },
+                        ):
+                            for hook in context_hooks:
+                                stack.enter_context(hook.on_execute(headers))
+                        task_func(*args, **kwargs)
                     transaction.set_status(SPANSTATUS.OK)
                 except Exception:
                     transaction.set_status(SPANSTATUS.INTERNAL_ERROR)

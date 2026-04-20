@@ -32,12 +32,11 @@ use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::inflight_activation::{
-    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
-};
-use taskbroker::store::postgres_activation_store::{
+use taskbroker::store::adapters::postgres::{
     PostgresActivationStore, PostgresActivationStoreConfig,
 };
+use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::{Args, get_version};
 use tonic_health::ServingStatus;
 
@@ -164,6 +163,7 @@ async fn main() -> Result<(), Error> {
             start_consumer(
                 &[&consumer_config.kafka_topic],
                 &consumer_config.kafka_consumer_config(),
+                consumer_store.clone(),
                 processing_strategy!({
                     err:
                         OsStreamWriter::new(
@@ -241,7 +241,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.clone()));
+    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
     let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
     // Initialize push threads

@@ -1,1 +1,29 @@
 # Changelog
+## 26.4.0
+
+### New Features ✨
+
+#### Taskbroker
+
+- Add Useful Push Taskbroker Metrics by @george-sentry in [#595](https://github.com/getsentry/taskbroker/pull/595)
+- Add Claimed Status to Handle Push Failures by @george-sentry in [#586](https://github.com/getsentry/taskbroker/pull/586)
+
+#### Other
+
+- (postgres) Change the Postgres Adapter to be Partition Aware by @george-sentry in [#591](https://github.com/getsentry/taskbroker/pull/591)
+
+### Bug Fixes 🐛
+
+#### Ci
+
+- Fix image publishing on release branches by @hubertdeng123 in [#598](https://github.com/getsentry/taskbroker/pull/598)
+- Fix branch prefix in assemble-taskbroker-image condition by @hubertdeng123 in [#597](https://github.com/getsentry/taskbroker/pull/597)
+
+### Internal Changes 🔧
+
+- (store) Restructure Store Module by @george-sentry in [#594](https://github.com/getsentry/taskbroker/pull/594)
+
+### Other
+
+- fix(scheduler) Make schedule changes take effect immediately by @markstory in [#590](https://github.com/getsentry/taskbroker/pull/590)
+

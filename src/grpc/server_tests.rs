@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::TaskbrokerServer;
+use crate::store::activation::InflightActivationStatus;
 use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -50,7 +51,7 @@ async fn test_get_task(#[case] adapter: &str) {
     assert!(response.is_err());
     let e = response.unwrap_err();
     assert_eq!(e.code(), Code::NotFound);
-    assert_eq!(e.message(), "No pending activation");
+    assert_eq!(e.message(), "No pending activations");
 }
 
 #[tokio::test]
@@ -111,7 +112,10 @@ async fn test_get_task_success(#[case] adapter: &str) {
     let activations = make_activations(1);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store: store.clone(),
+        config,
+    };
     let request = GetTaskRequest {
         namespace: None,
         application: None,
@@ -122,6 +126,9 @@ async fn test_get_task_success(#[case] adapter: &str) {
     assert!(resp.get_ref().task.is_some());
     let task = resp.get_ref().task.as_ref().unwrap();
     assert!(task.id == "id_0");
+
+    let row = store.get_by_id("id_0").await.unwrap().expect("claimed row");
+    assert_eq!(row.status, InflightActivationStatus::Processing);
 }
 
 #[tokio::test]
@@ -291,9 +298,8 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
         }),
     };
     let response = service.set_task_status(Request::new(request)).await;
-    assert!(response.is_err());
-    let e = response.unwrap_err();
-    assert_eq!(e.code(), Code::NotFound);
+    assert!(response.is_ok());
+    assert!(response.unwrap().get_ref().task.is_none());
 }
 
 #[tokio::test]
@@ -320,12 +326,9 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
         }),
     };
     let response = service.set_task_status(Request::new(request)).await;
-    assert!(response.is_err());
-
-    let resp = response.unwrap_err();
-    assert_eq!(
-        resp.code(),
-        Code::NotFound,
-        "No task found as namespace without filter is invalid."
+    assert!(response.is_ok());
+    assert!(
+        response.unwrap().get_ref().task.is_none(),
+        "namespace without application yields no next task in response"
     );
 }
