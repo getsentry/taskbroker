@@ -15,7 +15,9 @@ use tracing::{instrument, warn};
 
 use crate::config::Config;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::{
+    ClaimStore, CountStore, IngestStore, PullStore, PushStore, Store, TestStore, UpkeepStore,
+};
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
 #[derive(Debug, FromRow)]
@@ -162,14 +164,14 @@ impl PostgresActivationStoreConfig {
     }
 }
 
-pub struct PostgresActivationStore {
+pub struct PostgresStore {
     read_pool: PgPool,
     write_pool: PgPool,
     config: PostgresActivationStoreConfig,
     partitions: RwLock<Vec<i32>>,
 }
 
-impl PostgresActivationStore {
+impl PostgresStore {
     async fn acquire_write_conn_metric(
         &self,
         caller: &'static str,
@@ -241,155 +243,7 @@ impl PostgresActivationStore {
 }
 
 #[async_trait]
-impl InflightActivationStore for PostgresActivationStore {
-    /// Trigger incremental vacuum to reclaim free pages in the database.
-    /// Depending on config data, will either vacuum a set number of
-    /// pages or attempt to reclaim all free pages.
-    #[instrument(skip_all)]
-    async fn vacuum_db(&self) -> Result<(), Error> {
-        // TODO: Remove
-        Ok(())
-    }
-
-    /// Perform a full vacuum on the database.
-    async fn full_vacuum_db(&self) -> Result<(), Error> {
-        // TODO: Remove
-        Ok(())
-    }
-
-    /// Get the size of the database in bytes based on SQLite metadata queries.
-    async fn db_size(&self) -> Result<u64, Error> {
-        let row_result: (i64,) = sqlx::query_as("SELECT pg_database_size($1) as size")
-            .bind(&self.config.pg_database_name)
-            .fetch_one(&self.read_pool)
-            .await?;
-        if row_result.0 < 0 {
-            return Ok(0);
-        }
-        Ok(row_result.0 as u64)
-    }
-
-    /// Get an activation by id. Primarily used for testing
-    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
-        let row_result: Option<TableRow> = sqlx::query_as(
-            "
-            SELECT id,
-                activation,
-                partition,
-                kafka_offset AS offset,
-                added_at,
-                received_at,
-                processing_attempts,
-                expires_at,
-                delay_until,
-                processing_deadline_duration,
-                processing_deadline,
-                claim_expires_at,
-                status,
-                at_most_once,
-                application,
-                namespace,
-                taskname,
-                on_attempts_exceeded,
-                bucket
-            FROM inflight_taskactivations
-            WHERE id = $1
-            ",
-        )
-        .bind(id)
-        .fetch_optional(&self.read_pool)
-        .await?;
-
-        let Some(row) = row_result else {
-            return Ok(None);
-        };
-
-        Ok(Some(row.into()))
-    }
-
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
-        let mut write_guard = self.partitions.write().unwrap();
-        write_guard.clear();
-        write_guard.extend(partitions);
-        Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
-        if batch.is_empty() {
-            return Ok(0);
-        }
-
-        let mut query_builder = QueryBuilder::<Postgres>::new(
-            "
-            INSERT INTO inflight_taskactivations
-                (
-                    id,
-                    activation,
-                    partition,
-                    kafka_offset,
-                    added_at,
-                    received_at,
-                    processing_attempts,
-                    expires_at,
-                    delay_until,
-                    processing_deadline_duration,
-                    processing_deadline,
-                    claim_expires_at,
-                    status,
-                    at_most_once,
-                    application,
-                    namespace,
-                    taskname,
-                    on_attempts_exceeded,
-                    bucket
-                )
-            ",
-        );
-        let rows = batch
-            .into_iter()
-            .map(TableRow::try_from)
-            .collect::<Result<Vec<TableRow>, _>>()?;
-        let query = query_builder
-            .push_values(rows, |mut b, row| {
-                b.push_bind(row.id);
-                b.push_bind(row.activation);
-                b.push_bind(row.partition);
-                b.push_bind(row.offset);
-                b.push_bind(row.added_at);
-                b.push_bind(row.received_at);
-                b.push_bind(row.processing_attempts);
-                b.push_bind(row.expires_at);
-                b.push_bind(row.delay_until);
-                b.push_bind(row.processing_deadline_duration);
-                if let Some(deadline) = row.processing_deadline {
-                    b.push_bind(deadline);
-                } else {
-                    // Add a literal null
-                    b.push("null");
-                }
-                if let Some(exp) = row.claim_expires_at {
-                    b.push_bind(exp);
-                } else {
-                    b.push("null");
-                }
-                b.push_bind(row.status);
-                b.push_bind(row.at_most_once);
-                b.push_bind(row.application);
-                b.push_bind(row.namespace);
-                b.push_bind(row.taskname);
-                b.push_bind(row.on_attempts_exceeded as i32);
-                b.push_bind(row.bucket);
-            })
-            .push(" ON CONFLICT(id) DO NOTHING")
-            .build();
-
-        let mut conn = self.acquire_write_conn_metric("store").await?;
-        let result = query.execute(&mut *conn).await?;
-
-        Ok(result.rows_affected())
-    }
-
+impl ClaimStore for PostgresStore {
     #[instrument(skip_all)]
     async fn claim_activations(
         &self,
@@ -480,9 +334,12 @@ impl InflightActivationStore for PostgresActivationStore {
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
     }
+}
 
+#[async_trait]
+impl PushStore for PostgresStore {
     #[instrument(skip_all)]
-    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
+    async fn mark_processing(&self, id: &str) -> Result<(), Error> {
         let mut conn = self
             .acquire_write_conn_metric("mark_activation_processing")
             .await?;
@@ -514,6 +371,71 @@ impl InflightActivationStore for PostgresActivationStore {
         }
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl PullStore for PostgresStore {
+    /// Update the status of a specific activation.
+    #[instrument(skip_all)]
+    async fn set_status(
+        &self,
+        id: &str,
+        status: InflightActivationStatus,
+    ) -> Result<Option<InflightActivation>, Error> {
+        let mut conn = self.acquire_write_conn_metric("set_status").await?;
+        let result: Option<TableRow> = sqlx::query_as(
+            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *, kafka_offset AS offset",
+        )
+        .bind(status.to_string())
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        let Some(row) = result else {
+            return Ok(None);
+        };
+
+        Ok(Some(row.into()))
+    }
+}
+
+#[async_trait]
+impl CountStore for PostgresStore {
+    #[instrument(skip_all)]
+    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
+        let mut query_builder = QueryBuilder::new(
+            "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = ",
+        );
+        query_builder.push_bind(status.to_string());
+        self.add_partition_condition(&mut query_builder, false);
+        let result = query_builder
+            .build_query_as::<(i64,)>()
+            .fetch_one(&self.read_pool)
+            .await?;
+        Ok(result.0 as usize)
+    }
+
+    async fn count(&self) -> Result<usize, Error> {
+        let mut query_builder =
+            QueryBuilder::new("SELECT COUNT(*) as count FROM inflight_taskactivations");
+        self.add_partition_condition(&mut query_builder, true);
+        let result = query_builder
+            .build_query_as::<(i64,)>()
+            .fetch_one(&self.read_pool)
+            .await?;
+        Ok(result.0 as usize)
+    }
+
+    async fn size(&self) -> Result<u64, Error> {
+        let row_result: (i64,) = sqlx::query_as("SELECT pg_database_size($1) as size")
+            .bind(&self.config.pg_database_name)
+            .fetch_one(&self.read_pool)
+            .await?;
+        if row_result.0 < 0 {
+            return Ok(0);
+        }
+        Ok(row_result.0 as u64)
     }
 
     /// Get the age of the oldest pending activation in seconds.
@@ -555,31 +477,6 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
-        let mut query_builder = QueryBuilder::new(
-            "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = ",
-        );
-        query_builder.push_bind(status.to_string());
-        self.add_partition_condition(&mut query_builder, false);
-        let result = query_builder
-            .build_query_as::<(i64,)>()
-            .fetch_one(&self.read_pool)
-            .await?;
-        Ok(result.0 as usize)
-    }
-
-    async fn count(&self) -> Result<usize, Error> {
-        let mut query_builder =
-            QueryBuilder::new("SELECT COUNT(*) as count FROM inflight_taskactivations");
-        self.add_partition_condition(&mut query_builder, true);
-        let result = query_builder
-            .build_query_as::<(i64,)>()
-            .fetch_one(&self.read_pool)
-            .await?;
-        Ok(result.0 as usize)
-    }
-
-    #[instrument(skip_all)]
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
         // Notice that statuses are embedded into the query for simplicity - if the enum is every changed, this must change too!
         let mut query_builder = QueryBuilder::new(
@@ -604,24 +501,42 @@ impl InflightActivationStore for PostgresActivationStore {
             processing: row.3 as usize,
         })
     }
+}
 
-    /// Update the status of a specific activation
-    #[instrument(skip_all)]
-    async fn set_status(
-        &self,
-        id: &str,
-        status: InflightActivationStatus,
-    ) -> Result<Option<InflightActivation>, Error> {
-        let mut conn = self.acquire_write_conn_metric("set_status").await?;
-        let result: Option<TableRow> = sqlx::query_as(
-            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *, kafka_offset AS offset",
+#[async_trait]
+impl TestStore for PostgresStore {
+    /// Get an activation by id. Primarily used for testing
+    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+        let row_result: Option<TableRow> = sqlx::query_as(
+            "
+            SELECT id,
+                activation,
+                partition,
+                kafka_offset AS offset,
+                added_at,
+                received_at,
+                processing_attempts,
+                expires_at,
+                delay_until,
+                processing_deadline_duration,
+                processing_deadline,
+                claim_expires_at,
+                status,
+                at_most_once,
+                application,
+                namespace,
+                taskname,
+                on_attempts_exceeded,
+                bucket
+            FROM inflight_taskactivations
+            WHERE id = $1
+            ",
         )
-        .bind(status.to_string())
         .bind(id)
-        .fetch_optional(&mut *conn)
+        .fetch_optional(&self.read_pool)
         .await?;
 
-        let Some(row) = result else {
+        let Some(row) = row_result else {
             return Ok(None);
         };
 
@@ -652,6 +567,133 @@ impl InflightActivationStore for PostgresActivationStore {
             .bind(id)
             .execute(&mut *conn)
             .await?;
+        Ok(())
+    }
+
+    // Used in tests
+    async fn clear(&self) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("clear").await?;
+        sqlx::query("TRUNCATE TABLE inflight_taskactivations")
+            .execute(&mut *conn)
+            .await?;
+
+        Ok(())
+    }
+
+    // Used in tests
+    async fn remove_db(&self) -> Result<(), Error> {
+        self.read_pool.close().await;
+        self.write_pool.close().await;
+        let default_pool = create_default_postgres_pool(&self.config.pg_connection).await?;
+        let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg_database_name).as_str())
+            .bind(&self.config.pg_database_name)
+            .execute(&default_pool)
+            .await;
+        let _ = default_pool.close().await;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl IngestStore for PostgresStore {
+    async fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        let mut write_guard = self.partitions.write().unwrap();
+        write_guard.clear();
+        write_guard.extend(partitions);
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn write(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
+        if batch.is_empty() {
+            return Ok(0);
+        }
+
+        let mut query_builder = QueryBuilder::<Postgres>::new(
+            "
+            INSERT INTO inflight_taskactivations
+                (
+                    id,
+                    activation,
+                    partition,
+                    kafka_offset,
+                    added_at,
+                    received_at,
+                    processing_attempts,
+                    expires_at,
+                    delay_until,
+                    processing_deadline_duration,
+                    processing_deadline,
+                    claim_expires_at,
+                    status,
+                    at_most_once,
+                    application,
+                    namespace,
+                    taskname,
+                    on_attempts_exceeded,
+                    bucket
+                )
+            ",
+        );
+        let rows = batch
+            .into_iter()
+            .map(TableRow::try_from)
+            .collect::<Result<Vec<TableRow>, _>>()?;
+        let query = query_builder
+            .push_values(rows, |mut b, row| {
+                b.push_bind(row.id);
+                b.push_bind(row.activation);
+                b.push_bind(row.partition);
+                b.push_bind(row.offset);
+                b.push_bind(row.added_at);
+                b.push_bind(row.received_at);
+                b.push_bind(row.processing_attempts);
+                b.push_bind(row.expires_at);
+                b.push_bind(row.delay_until);
+                b.push_bind(row.processing_deadline_duration);
+                if let Some(deadline) = row.processing_deadline {
+                    b.push_bind(deadline);
+                } else {
+                    // Add a literal null
+                    b.push("null");
+                }
+                if let Some(exp) = row.claim_expires_at {
+                    b.push_bind(exp);
+                } else {
+                    b.push("null");
+                }
+                b.push_bind(row.status);
+                b.push_bind(row.at_most_once);
+                b.push_bind(row.application);
+                b.push_bind(row.namespace);
+                b.push_bind(row.taskname);
+                b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
+            })
+            .push(" ON CONFLICT(id) DO NOTHING")
+            .build();
+
+        let mut conn = self.acquire_write_conn_metric("store").await?;
+        let result = query.execute(&mut *conn).await?;
+
+        Ok(result.rows_affected())
+    }
+}
+
+#[async_trait]
+impl UpkeepStore for PostgresStore {
+    /// Trigger incremental vacuum to reclaim free pages in the database.
+    /// Depending on config data, will either vacuum a set number of
+    /// pages or attempt to reclaim all free pages.
+    #[instrument(skip_all)]
+    async fn vacuum_db(&self) -> Result<(), Error> {
+        // TODO: Remove
+        Ok(())
+    }
+
+    /// Perform a full vacuum on the database.
+    async fn full_vacuum_db(&self) -> Result<(), Error> {
+        // TODO: Remove
         Ok(())
     }
 
@@ -690,16 +732,6 @@ impl InflightActivationStore for PostgresActivationStore {
             .into_iter()
             .map(|row| row.into())
             .collect())
-    }
-
-    // Used in tests
-    async fn clear(&self) -> Result<(), Error> {
-        let mut conn = self.acquire_write_conn_metric("clear").await?;
-        sqlx::query("TRUNCATE TABLE inflight_taskactivations")
-            .execute(&mut *conn)
-            .await?;
-
-        Ok(())
     }
 
     /// Revert expired push claims back to pending status.
@@ -971,17 +1003,6 @@ impl InflightActivationStore for PostgresActivationStore {
 
         Ok(query.rows_affected())
     }
-
-    // Used in tests
-    async fn remove_db(&self) -> Result<(), Error> {
-        self.read_pool.close().await;
-        self.write_pool.close().await;
-        let default_pool = create_default_postgres_pool(&self.config.pg_connection).await?;
-        let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg_database_name).as_str())
-            .bind(&self.config.pg_database_name)
-            .execute(&default_pool)
-            .await;
-        let _ = default_pool.close().await;
-        Ok(())
-    }
 }
+
+impl Store for PostgresStore {}

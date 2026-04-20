@@ -9,9 +9,11 @@ use tracing::{debug, error, instrument};
 
 use crate::{
     config::Config,
-    store::activation::{InflightActivation, InflightActivationStatus},
-    store::traits::InflightActivationStore,
-    store::types::DepthCounts,
+    store::{
+        activation::{InflightActivation, InflightActivationStatus},
+        traits::{CountStore, IngestStore},
+        types::DepthCounts,
+    },
 };
 
 use super::consumer::{
@@ -42,14 +44,14 @@ impl ActivationWriterConfig {
     }
 }
 
-pub struct InflightActivationWriter {
+pub struct InflightActivationWriter<Store: IngestStore + CountStore> {
     config: ActivationWriterConfig,
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<Store>,
     batch: Option<Vec<InflightActivation>>,
 }
 
-impl InflightActivationWriter {
-    pub fn new(store: Arc<dyn InflightActivationStore>, config: ActivationWriterConfig) -> Self {
+impl<Store: IngestStore + CountStore> InflightActivationWriter<Store> {
+    pub fn new(store: Arc<Store>, config: ActivationWriterConfig) -> Self {
         Self {
             config,
             store,
@@ -58,7 +60,7 @@ impl InflightActivationWriter {
     }
 }
 
-impl Reducer for InflightActivationWriter {
+impl<Store: IngestStore + CountStore> Reducer for InflightActivationWriter<Store> {
     type Input = Vec<InflightActivation>;
 
     type Output = ();
@@ -99,7 +101,7 @@ impl Reducer for InflightActivationWriter {
             processing + claimed >= self.config.max_processing_activations;
         let exceeded_db_size = if let Some(db_max_size) = self.config.db_max_size {
             self.store
-                .db_size()
+                .size()
                 .await
                 .expect("Error getting database size")
                 >= db_max_size
@@ -145,7 +147,7 @@ impl Reducer for InflightActivationWriter {
 
         let batch = self.batch.clone().unwrap();
         let write_to_store_start = Instant::now();
-        let res = self.store.store(batch.clone()).await;
+        let res = self.store.write(batch.clone()).await;
         match res {
             Ok(entries) => {
                 self.batch.take();

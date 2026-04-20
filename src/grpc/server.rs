@@ -11,11 +11,11 @@ use tonic::{Request, Response, Status};
 
 use crate::config::{Config, DeliveryMode};
 use crate::store::activation::InflightActivationStatus;
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::PullStore;
 use tracing::{error, instrument, warn};
 
 pub struct TaskbrokerServer {
-    pub store: Arc<dyn InflightActivationStore>,
+    pub store: Arc<dyn PullStore>,
     pub config: Arc<Config>,
 }
 

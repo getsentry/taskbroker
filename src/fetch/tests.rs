@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::{Error, anyhow};
-use chrono::{DateTime, Utc};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 use tonic::async_trait;
@@ -10,8 +9,8 @@ use super::*;
 use crate::config::Config;
 use crate::push::PushError;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use crate::store::traits::InflightActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder};
+use crate::store::traits::ClaimStore;
+use crate::store::types::BucketRange;
 use crate::test_utils::make_activations;
 
 /// Store stub that returns one activation once OR is always empty OR always fails.
@@ -47,31 +46,7 @@ impl MockStore {
 }
 
 #[async_trait]
-impl InflightActivationStore for MockStore {
-    fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn vacuum_db(&self) -> Result<(), Error> {
-        unimplemented!()
-    }
-
-    async fn full_vacuum_db(&self) -> Result<(), Error> {
-        unimplemented!()
-    }
-
-    async fn db_size(&self) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn get_by_id(&self, _id: &str) -> Result<Option<InflightActivation>, Error> {
-        unimplemented!()
-    }
-
-    async fn store(&self, _batch: Vec<InflightActivation>) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
+impl ClaimStore for MockStore {
     async fn claim_activations(
         &self,
         _application: Option<&str>,
@@ -95,86 +70,6 @@ impl InflightActivationStore for MockStore {
             }
             None => vec![],
         })
-    }
-
-    async fn mark_activation_processing(&self, _id: &str) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
-        unimplemented!()
-    }
-
-    async fn count_by_status(&self, _status: InflightActivationStatus) -> Result<usize, Error> {
-        unimplemented!()
-    }
-
-    async fn count(&self) -> Result<usize, Error> {
-        unimplemented!()
-    }
-
-    async fn set_status(
-        &self,
-        _id: &str,
-        _status: InflightActivationStatus,
-    ) -> Result<Option<InflightActivation>, Error> {
-        unimplemented!()
-    }
-
-    async fn set_processing_deadline(
-        &self,
-        _id: &str,
-        _deadline: Option<DateTime<Utc>>,
-    ) -> Result<(), Error> {
-        unimplemented!()
-    }
-
-    async fn delete_activation(&self, _id: &str) -> Result<(), Error> {
-        unimplemented!()
-    }
-
-    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        unimplemented!()
-    }
-
-    async fn clear(&self) -> Result<(), Error> {
-        unimplemented!()
-    }
-
-    async fn handle_claim_expiration(&self) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn handle_processing_attempts(&self) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn handle_expires_at(&self) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn handle_delay_until(&self) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
-        unimplemented!()
-    }
-
-    async fn mark_completed(&self, _ids: Vec<String>) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn remove_completed(&self) -> Result<u64, Error> {
-        unimplemented!()
-    }
-
-    async fn remove_killswitched(&self, _killswitched_tasks: Vec<String>) -> Result<u64, Error> {
-        unimplemented!()
     }
 }
 
@@ -218,7 +113,7 @@ fn test_config() -> Arc<Config> {
 #[tokio::test]
 async fn fetch_pool_delivers_activation_to_pusher() {
     let activation = make_activations(1).remove(0);
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::one(activation.clone()));
+    let store = Arc::new(MockStore::one(activation.clone()));
     let pusher = Arc::new(RecordingPusher::new(false));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());
@@ -233,7 +128,7 @@ async fn fetch_pool_delivers_activation_to_pusher() {
 #[tokio::test]
 async fn fetch_pool_calls_pusher_once_when_push_errors() {
     let activation = make_activations(1).remove(0);
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::one(activation));
+    let store = Arc::new(MockStore::one(activation));
     let pusher = Arc::new(RecordingPusher::new(true));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());
@@ -247,7 +142,7 @@ async fn fetch_pool_calls_pusher_once_when_push_errors() {
 
 #[tokio::test]
 async fn fetch_pool_skips_pusher_when_store_errors() {
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::error());
+    let store = Arc::new(MockStore::error());
     let pusher = Arc::new(RecordingPusher::new(false));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());
@@ -261,7 +156,7 @@ async fn fetch_pool_skips_pusher_when_store_errors() {
 
 #[tokio::test]
 async fn fetch_pool_skips_pusher_when_no_pending() {
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::empty());
+    let store = Arc::new(MockStore::empty());
     let pusher = Arc::new(RecordingPusher::new(false));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());

@@ -17,7 +17,7 @@ use tracing::{debug, error, info};
 
 use crate::config::Config;
 use crate::store::activation::InflightActivation;
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::PushStore;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -91,12 +91,12 @@ pub struct PushPool {
     config: Arc<Config>,
 
     /// Activation store, which we need for marking tasks as sent.
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn PushStore>,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
+    pub fn new(config: Arc<Config>, store: Arc<dyn PushStore>) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
@@ -178,7 +178,7 @@ impl PushPool {
                                         metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                         debug!(task_id = %id, "Activation sent to worker");
 
-                                        if let Err(e) = store.mark_activation_processing(&id).await {
+                                        if let Err(e) = store.mark_processing(&id).await {
                                             metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
 
                                             error!(
@@ -222,7 +222,7 @@ impl PushPool {
                                 metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                 debug!(task_id = %id, "Activation sent to worker");
 
-                                if let Err(e) = store.mark_activation_processing(&id).await {
+                                if let Err(e) = store.mark_processing(&id).await {
                                     metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
 
                                     error!(

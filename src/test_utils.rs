@@ -17,10 +17,10 @@ use crate::{
     store::{
         activation::{InflightActivation, InflightActivationBuilder, InflightActivationStatus},
         adapters::{
-            postgres::{PostgresActivationStore, PostgresActivationStoreConfig},
+            postgres::{PostgresActivationStoreConfig, PostgresStore},
             sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
         },
-        traits::InflightActivationStore,
+        traits::{Store, TestStore},
     },
 };
 
@@ -273,7 +273,7 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create an InflightActivationStore instance
-pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore> {
+pub async fn create_test_store(adapter: &str) -> Arc<dyn TestStore> {
     match adapter {
         "sqlite" => Arc::new(
             SqliteActivationStore::new(
@@ -282,16 +282,16 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore
             )
             .await
             .unwrap(),
-        ) as Arc<dyn InflightActivationStore>,
+        ) as Arc<dyn TestStore>,
         "postgres" => {
             let store = Arc::new(
-                PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
+                PostgresStore::new(PostgresActivationStoreConfig::from_config(
                     &create_integration_config(),
                 ))
                 .await
                 .unwrap(),
-            ) as Arc<dyn InflightActivationStore>;
-            store.assign_partitions(vec![0]).unwrap();
+            ) as Arc<dyn TestStore>;
+            store.assign_partitions(vec![0]).await.unwrap();
             store
         }
         _ => panic!("Invalid adapter: {}", adapter),
@@ -461,7 +461,7 @@ pub struct StatusCount {
 }
 
 /// Assert the state of all counts in the inflight activation store.
-pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivationStore) {
+pub async fn assert_counts(expected: StatusCount, store: &dyn Store) {
     assert_eq!(
         expected.pending,
         store

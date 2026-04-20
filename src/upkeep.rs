@@ -18,13 +18,13 @@ use uuid::Uuid;
 use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::UpkeepStore;
 
 /// The upkeep task that periodically performs upkeep
 /// on the inflight store
 pub async fn upkeep(
     config: Arc<Config>,
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn UpkeepStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     health_reporter: HealthReporter,
@@ -109,7 +109,7 @@ impl UpkeepResults {
 )]
 pub async fn do_upkeep(
     config: Arc<Config>,
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn UpkeepStore>,
     producer: Arc<FutureProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
