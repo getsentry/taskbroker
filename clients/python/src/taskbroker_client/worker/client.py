@@ -557,11 +557,9 @@ class PushTaskbrokerClient:
     def update_task(
         self,
         processing_result: ProcessingResult,
-    ) -> bool:
+    ) -> None:
         """
         Update the status for a given task activation.
-
-        The return value is the next task that should be executed.
         """
         self._emit_health_check()
 
@@ -591,9 +589,4 @@ class PushTaskbrokerClient:
                 retries += 1
 
         if exception:
-            if exception.code() == grpc.StatusCode.NOT_FOUND:
-                # The task was not found, so we can't update it.
-                return False
             raise exception
-
-        return True

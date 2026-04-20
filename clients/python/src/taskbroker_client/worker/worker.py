@@ -214,7 +214,9 @@ class PushTaskWorker:
                 "taskworker.send_update_task.failed",
                 extra={"task_id": result.task_id, "error": e},
             )
-            raise RequeueException(f"Failed to update task: {e}")
+            if e.code() != grpc.StatusCode.NOT_FOUND:
+                # If the task was not found, we can't update it, so we should just return None
+                raise RequeueException(f"Failed to update task: {e}")
         except HostTemporarilyUnavailable as e:
             self._setstatus_backoff_seconds = min(
                 self._setstatus_backoff_seconds + 4, MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE
@@ -224,6 +226,8 @@ class PushTaskWorker:
                 extra={"task_id": result.task_id, "error": str(e)},
             )
             raise RequeueException(f"Failed to update task: {e}")
+
+        return None
 
     def start(self) -> int:
         """

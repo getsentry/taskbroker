@@ -89,7 +89,7 @@ def worker(rpc_host: str, concurrency: int, push_mode: bool, grpc_port: int) -> 
     if push_mode:
         worker: PushTaskWorker | TaskWorker = PushTaskWorker(
             app_module="examples.app:app",
-            broker_service="examples",
+            broker_service=rpc_host,
             max_child_task_count=100,
             concurrency=concurrency,
             child_tasks_queue_maxsize=concurrency * 2,
