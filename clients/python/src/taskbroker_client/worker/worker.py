@@ -534,8 +534,8 @@ class TaskWorkerProcessingPool:
         - A RequeueException if the result failed to send and should be retried
         """
         try:
-            is_draining = is_draining or self._child_tasks.full()
-            next_task = self._send_result(result, is_draining)
+            worker_full = is_draining or self._child_tasks.full()
+            next_task = self._send_result(result, worker_full)
             if next_task:
                 self.push_task(next_task)
         except RequeueException:
