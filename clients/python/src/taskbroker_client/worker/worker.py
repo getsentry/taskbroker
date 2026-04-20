@@ -388,6 +388,9 @@ class TaskWorker:
         """
         Add a task to child tasks queue. Returns False if no new task was fetched.
         """
+        if self.worker_pool.is_worker_full():
+            return False
+
         inflight = self.fetch_task()
         if inflight:
             return self.worker_pool.push_task(inflight)
@@ -650,6 +653,9 @@ class TaskWorkerProcessingPool:
             tags={"processing_pool": self._processing_pool_name},
         )
         return True
+
+    def is_worker_full(self) -> bool:
+        return self._child_tasks.full()
 
     def put_result(self, result: ProcessingResult) -> None:
         self._processed_tasks.put(result)
