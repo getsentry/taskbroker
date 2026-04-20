@@ -15,11 +15,12 @@ use uuid::Uuid;
 use crate::{
     config::Config,
     store::{
-        inflight_activation::{
-            InflightActivation, InflightActivationBuilder, InflightActivationStatus,
-            InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
+        activation::{InflightActivation, InflightActivationBuilder, InflightActivationStatus},
+        adapters::{
+            postgres::{PostgresActivationStore, PostgresActivationStoreConfig},
+            sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
         },
-        postgres_activation_store::{PostgresActivationStore, PostgresActivationStoreConfig},
+        traits::InflightActivationStore,
     },
 };
 
@@ -272,13 +273,17 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore
             .await
             .unwrap(),
         ) as Arc<dyn InflightActivationStore>,
-        "postgres" => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
-                &create_integration_config(),
-            ))
-            .await
-            .unwrap(),
-        ) as Arc<dyn InflightActivationStore>,
+        "postgres" => {
+            let store = Arc::new(
+                PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
+                    &create_integration_config(),
+                ))
+                .await
+                .unwrap(),
+            ) as Arc<dyn InflightActivationStore>;
+            store.assign_partitions(vec![0]).unwrap();
+            store
+        }
         _ => panic!("Invalid adapter: {}", adapter),
     }
 }
@@ -437,6 +442,7 @@ pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<Retr
 #[derive(Default)]
 pub struct StatusCount {
     pub pending: usize,
+    pub claimed: usize,
     pub processing: usize,
     pub retry: usize,
     pub delayed: usize,
@@ -453,6 +459,14 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
             .await
             .unwrap(),
         "difference in pending count",
+    );
+    assert_eq!(
+        expected.claimed,
+        store
+            .count_by_status(InflightActivationStatus::Claimed)
+            .await
+            .unwrap(),
+        "difference in claimed count",
     );
     assert_eq!(
         expected.processing,

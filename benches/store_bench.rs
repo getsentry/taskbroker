@@ -4,10 +4,9 @@ use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
 use taskbroker::{
-    store::inflight_activation::{
-        InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        SqliteActivationStore,
-    },
+    store::activation::InflightActivationStatus,
+    store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
+    store::traits::InflightActivationStore,
     test_utils::{
         generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
     },
@@ -32,6 +31,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
+                claim_lease_ms: 5000,
                 enable_sqlite_status_metrics: false,
             },
         )
@@ -58,16 +58,11 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
         join_set.spawn(async move {
             let mut num_activations_processed = 0;
 
-            while !store
-                .get_pending_activations(
-                    Some("sentry"),
-                    Some(std::slice::from_ref(&ns)),
-                    Some(1),
-                    None,
-                )
+            while store
+                .claim_activation_for_pull(Some("sentry"), Some(&ns))
                 .await
                 .unwrap()
-                .is_empty()
+                .is_some()
             {
                 num_activations_processed += 1;
             }
@@ -101,6 +96,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
+                claim_lease_ms: 5000,
                 enable_sqlite_status_metrics: false,
             },
         )

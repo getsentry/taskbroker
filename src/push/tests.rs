@@ -7,7 +7,7 @@ use tonic::async_trait;
 
 use super::*;
 use crate::config::Config;
-use crate::test_utils::make_activations;
+use crate::test_utils::{create_test_store, make_activations};
 
 /// Fake worker client for unit testing.
 struct MockWorkerClient {
@@ -117,7 +117,8 @@ async fn push_pool_submit_enqueues_item() {
         ..Config::default()
     });
 
-    let pool = PushPool::new(config);
+    let store = create_test_store("sqlite").await;
+    let pool = PushPool::new(config, store);
     let activation = make_activations(1).remove(0);
 
     let result = pool.submit(activation).await;
@@ -131,7 +132,8 @@ async fn push_pool_submit_backpressures_when_queue_full() {
         ..Config::default()
     });
 
-    let pool = PushPool::new(config);
+    let store = create_test_store("sqlite").await;
+    let pool = PushPool::new(config, store);
 
     let first = make_activations(1).remove(0);
     let second = make_activations(1).remove(0);

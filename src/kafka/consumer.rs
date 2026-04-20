@@ -1,3 +1,4 @@
+use crate::store::traits::InflightActivationStore;
 use anyhow::{Error, anyhow};
 use futures::{
     Stream, StreamExt,
@@ -44,6 +45,7 @@ use tracing::{debug, error, info, instrument, warn};
 pub async fn start_consumer(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
+    activation_store: Arc<dyn InflightActivationStore>,
     spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,
         &BTreeSet<(String, i32)>,
@@ -68,6 +70,7 @@ pub async fn start_consumer(
     handle_events(
         consumer,
         event_receiver,
+        activation_store,
         client_shutdown_sender,
         spawn_actors,
     )
@@ -340,6 +343,7 @@ enum ConsumerState {
 pub async fn handle_events(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     events: UnboundedReceiver<(Event, SyncSender<()>)>,
+    activation_store: Arc<dyn InflightActivationStore>,
     shutdown_client: oneshot::Sender<()>,
     mut spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,
@@ -372,6 +376,12 @@ pub async fn handle_events(
                 state = match (state, event) {
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
                         metrics::gauge!("arroyo.consumer.current_partitions").set(tpl.len() as f64);
+                        // Note: This assumes we only process one topic per consumer.
+                        let mut partitions = Vec::<i32>::new();
+                        for (_, partition) in tpl.iter() {
+                            partitions.push(*partition);
+                        }
+                        activation_store.assign_partitions(partitions).unwrap();
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
@@ -386,11 +396,13 @@ pub async fn handle_events(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
+                        activation_store.assign_partitions(vec![]).unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!("arroyo.consumer.current_partitions").set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
+                        activation_store.assign_partitions(vec![]).unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
@@ -988,7 +1000,7 @@ mod tests {
             self.pipe
                 .write()
                 .unwrap()
-                .extend(take(&mut self.buffer.write().unwrap() as &mut Vec<T>).into_iter());
+                .extend(take(&mut self.buffer.write().unwrap() as &mut Vec<T>));
             Ok(Some(()))
         }
 

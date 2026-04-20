@@ -66,6 +66,13 @@ def test_timedeltaschedule_remaining_seconds() -> None:
     assert schedule.remaining_seconds(ten_min_ago) == 0
 
 
+def test_timedeltaschedule_schedule_id() -> None:
+    assert TimedeltaSchedule(timedelta(seconds=30)).schedule_id() == "30"
+    assert TimedeltaSchedule(timedelta(minutes=5)).schedule_id() == "300"
+    assert TimedeltaSchedule(timedelta(hours=3)).schedule_id() == "10800"
+    assert TimedeltaSchedule(timedelta(hours=1, minutes=30)).schedule_id() == "5400"
+
+
 def test_crontabschedule_invalid() -> None:
     with pytest.raises(ValueError):
         CrontabSchedule("test", crontab(hour="99"))
@@ -199,3 +206,9 @@ def test_crontabschedule_monitor_value() -> None:
 
     schedule = CrontabSchedule("test", crontab(minute="*/10", day_of_week="1"))
     assert schedule.monitor_value() == "*/10 * * * 1"
+
+
+def test_crontabschedule_schedule_id() -> None:
+    assert CrontabSchedule("test", crontab(minute="*/2")).schedule_id() == "*/2_*_*_*_*"
+    assert CrontabSchedule("test", crontab(minute="1", hour="*/6")).schedule_id() == "1_*/6_*_*_*"
+    assert CrontabSchedule("test", crontab()).schedule_id() == "*_*_*_*_*"

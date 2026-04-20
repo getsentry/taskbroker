@@ -9,11 +9,9 @@ use tonic::async_trait;
 use super::*;
 use crate::config::Config;
 use crate::push::PushError;
-use crate::store::inflight_activation::InflightActivationStore;
-use crate::store::inflight_activation::{BucketRange, InflightActivation};
-use crate::store::inflight_activation::{
-    FailedTasksForwarder, InflightActivationStatus, QueryResult,
-};
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::traits::InflightActivationStore;
+use crate::store::types::{BucketRange, FailedTasksForwarder};
 use crate::test_utils::make_activations;
 
 /// Store stub that returns one activation once OR is always empty OR always fails.
@@ -50,6 +48,10 @@ impl MockStore {
 
 #[async_trait]
 impl InflightActivationStore for MockStore {
+    fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn vacuum_db(&self) -> Result<(), Error> {
         unimplemented!()
     }
@@ -66,35 +68,37 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn store(&self, _batch: Vec<InflightActivation>) -> Result<QueryResult, Error> {
+    async fn store(&self, _batch: Vec<InflightActivation>) -> Result<u64, Error> {
         unimplemented!()
     }
 
-    async fn get_pending_activations(
+    async fn claim_activations(
         &self,
         _application: Option<&str>,
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
+        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
         }
 
         Ok(match self.pending.lock().await.take() {
-            Some(a) => vec![a],
+            Some(mut a) => {
+                a.status = if mark_processing {
+                    InflightActivationStatus::Processing
+                } else {
+                    InflightActivationStatus::Claimed
+                };
+                vec![a]
+            }
             None => vec![],
         })
     }
 
-    async fn get_pending_activations_from_namespaces(
-        &self,
-        _application: Option<&str>,
-        _namespaces: Option<&[String]>,
-        _limit: Option<i32>,
-        _bucket: Option<BucketRange>,
-    ) -> Result<Vec<InflightActivation>, Error> {
-        unimplemented!()
+    async fn mark_activation_processing(&self, _id: &str) -> Result<(), Error> {
+        Ok(())
     }
 
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
@@ -134,6 +138,10 @@ impl InflightActivationStore for MockStore {
     }
 
     async fn clear(&self) -> Result<(), Error> {
+        unimplemented!()
+    }
+
+    async fn handle_claim_expiration(&self) -> Result<u64, Error> {
         unimplemented!()
     }
 
@@ -188,7 +196,7 @@ impl RecordingPusher {
 
 #[async_trait]
 impl TaskPusher for RecordingPusher {
-    async fn push_task(&self, activation: InflightActivation) -> Result<(), PushError> {
+    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError> {
         self.pushed_ids.lock().await.push(activation.id.clone());
 
         if self.fail {

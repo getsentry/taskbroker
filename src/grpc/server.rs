@@ -10,8 +10,9 @@ use std::time::Instant;
 use tonic::{Request, Response, Status};
 
 use crate::config::{Config, DeliveryMode};
-use crate::store::inflight_activation::{InflightActivationStatus, InflightActivationStore};
-use tracing::{error, instrument};
+use crate::store::activation::InflightActivationStatus;
+use crate::store::traits::InflightActivationStore;
+use tracing::{error, instrument, warn};
 
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
@@ -35,31 +36,16 @@ impl ConsumerService for TaskbrokerServer {
 
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
-        let namespaces = namespace.as_ref().map(std::slice::from_ref);
 
         let inflight = self
             .store
-            .get_pending_activations(application.as_deref(), namespaces, Some(1), None)
+            .claim_activation_for_pull(application.as_deref(), namespace.as_deref())
             .await;
 
         match inflight {
-            Ok(activations) if activations.is_empty() => {
-                Err(Status::not_found("No pending activation"))
-            }
+            Ok(None) => Err(Status::not_found("No pending activations")),
 
-            Ok(activations) if activations.len() > 1 => {
-                error!(
-                    count = activations.len(),
-                    application = ?application,
-                    namespace = ?namespace,
-                    "get_pending_activations returned more than one row despite limit of 1",
-                );
-
-                Err(Status::internal("Unable to retrieve pending activation"))
-            }
-
-            Ok(activations) => {
-                let inflight = &activations[0];
+            Ok(Some(inflight)) => {
                 let now = Utc::now();
 
                 if inflight.processing_attempts < 1 {
@@ -114,18 +100,43 @@ impl ConsumerService for TaskbrokerServer {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
-        let update_result = self.store.set_status(&id, status).await;
-        if let Err(e) = update_result {
-            error!(
-                ?id,
-                ?status,
-                "Unable to update status of activation: {:?}",
-                e,
-            );
-            return Err(Status::internal(format!(
-                "Unable to update status of {id:?} to {status:?}"
-            )));
+        match self.store.set_status(&id, status).await {
+            Ok(Some(_)) => metrics::counter!(
+                "grpc_server.set_status",
+                "result" => "ok",
+                "status" => status.to_string()
+            )
+            .increment(1),
+
+            Ok(None) => metrics::counter!(
+                "grpc_server.set_status",
+                "result" => "not_found",
+                "status" => status.to_string()
+            )
+            .increment(1),
+
+            Err(e) => {
+                metrics::counter!(
+                    "grpc_server.set_status",
+                    "result" => "error",
+                    "status" => status.to_string()
+                )
+                .increment(1);
+
+                error!(
+                    ?id,
+                    ?status,
+                    "Unable to update status of activation: {:?}",
+                    e,
+                );
+
+                metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
+                return Err(Status::internal(format!(
+                    "Unable to update status of {id:?} to {status:?}"
+                )));
+            }
         }
+
         metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
 
         if self.config.delivery_mode == DeliveryMode::Push {
@@ -141,10 +152,10 @@ impl ConsumerService for TaskbrokerServer {
         };
 
         let start_time = Instant::now();
-        let namespaces = namespace.as_ref().map(std::slice::from_ref);
+
         let res = match self
             .store
-            .get_pending_activations(application.as_deref(), namespaces, Some(1), None)
+            .claim_activation_for_pull(application.as_deref(), namespace.as_deref())
             .await
         {
             Err(e) => {
@@ -152,24 +163,14 @@ impl ConsumerService for TaskbrokerServer {
                 Err(Status::internal("Unable to fetch next task"))
             }
 
-            Ok(activations) if activations.is_empty() => {
-                Err(Status::not_found("No pending activation"))
+            Ok(None) => {
+                warn!("No pending activations");
+
+                // If we return an error, the worker will place the result back in its internal queue and send the update again in the future, which is not desired
+                Ok(Response::new(SetTaskStatusResponse { task: None }))
             }
 
-            Ok(activations) if activations.len() > 1 => {
-                error!(
-                    count = activations.len(),
-                    application = ?application,
-                    namespace = ?namespace,
-                    "get_pending_activations returned more than one row despite limit of 1",
-                );
-
-                Err(Status::internal("Unable to fetch next task"))
-            }
-
-            Ok(activations) => {
-                let inflight = &activations[0];
-
+            Ok(Some(inflight)) => {
                 if inflight.processing_attempts < 1 {
                     let now = Utc::now();
                     let received_to_gettask_latency = inflight.received_latency(now);
