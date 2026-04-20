@@ -252,6 +252,7 @@ class PushTaskWorker:
         """
         Shutdown the worker.
         """
+        self._grpc_sync_event.set()
         self.worker_pool.shutdown()
 
 
@@ -511,7 +512,9 @@ class TaskWorkerProcessingPool:
                 self.push_task(next_task)
         except RequeueException:
             logger.warning("activation status couldn't be updated")
-            self.put_result(result)
+            # This can cause an infinite loop if we are draining and the result fails to send
+            if not is_draining:
+                self.put_result(result)
 
     def start_result_thread(self) -> None:
         """
