@@ -521,6 +521,7 @@ pub async fn check_health(
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use prost::Message;
@@ -626,7 +627,6 @@ mod tests {
         );
     }
 
-    #[allow(deprecated)]
     #[tokio::test]
     #[rstest]
     #[case::sqlite("sqlite")]
@@ -969,12 +969,12 @@ mod tests {
         );
     }
 
-    #[allow(deprecated)]
     #[tokio::test]
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
+        #![allow(deprecated)]
         let config = create_integration_config();
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;

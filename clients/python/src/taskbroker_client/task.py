@@ -39,6 +39,7 @@ def _get_parameters_format() -> ParametersFormat:
             f"Expected one of: {', '.join(f.value for f in ParametersFormat)}"
         )
 
+
 if TYPE_CHECKING:
     from taskbroker_client.registry import TaskNamespace
 
