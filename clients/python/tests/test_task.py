@@ -4,6 +4,7 @@ from collections.abc import MutableMapping
 from typing import Any
 from unittest.mock import patch
 
+import msgpack
 import orjson
 import pytest
 import sentry_sdk
@@ -78,9 +79,9 @@ def test_apply_async_expires(task_namespace: TaskNamespace) -> None:
 
     activation = call_params.args[0]
     assert activation.expires == 10
-    assert activation.parameters == orjson.dumps(
-        {"args": ["arg2"], "kwargs": {"org_id": 2}}
-    ).decode("utf-8")
+    expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
+    assert orjson.loads(activation.parameters) == expected_params
 
 
 def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
@@ -99,9 +100,9 @@ def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
 
     activation = call_params.args[0]
     assert activation.delay == 600
-    assert activation.parameters == orjson.dumps(
-        {"args": ["arg2"], "kwargs": {"org_id": 2}}
-    ).decode("utf-8")
+    expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
+    assert orjson.loads(activation.parameters) == expected_params
 
 
 def test_delay_immediate_mode(task_namespace: TaskNamespace) -> None:
@@ -268,10 +269,13 @@ def test_create_activation_parameters(task_namespace: TaskNamespace) -> None:
         raise NotImplementedError
 
     activation = with_parameters.create_activation(["one", 22], {"org_id": 99})
-    params = orjson.loads(activation.parameters)
+    params = msgpack.unpackb(activation.parameters_bytes, raw=False)
     assert params["args"]
     assert params["args"] == ["one", 22]
     assert params["kwargs"] == {"org_id": 99}
+
+    json_params = orjson.loads(activation.parameters)
+    assert json_params == params
 
 
 def test_create_activation_tracing(task_namespace: TaskNamespace) -> None:

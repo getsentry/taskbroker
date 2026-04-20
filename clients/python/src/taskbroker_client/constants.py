@@ -66,3 +66,16 @@ class CompressionType(Enum):
 
     ZSTD = "zstd"
     PLAINTEXT = "plaintext"
+
+
+class ParametersFormat(Enum):
+    """
+    How the producer populates the legacy `parameters` (JSON) and new
+    `parameters_bytes` (msgpack) fields on TaskActivation.
+
+    Set via env var `TASKBROKER_CLIENT_PARAMETERS_FORMAT`. Default BOTH.
+    """
+
+    BOTH = "both"
+    JSON = "json"
+    MSGPACK = "msgpack"
