@@ -88,17 +88,23 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
             )
 
             context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy")
+        else:
+            self.worker_pool._metrics.incr(
+                "taskworker.worker.push_rpc",
+                tags={
+                    "result": "accepted",
+                    "processing_pool": self.worker_pool._processing_pool_name,
+                },
+            )
 
-        self.worker_pool._metrics.incr(
-            "taskworker.worker.push_rpc",
-            tags={"result": "accepted", "processing_pool": self.worker_pool._processing_pool_name},
-        )
-
-        self.worker_pool._metrics.distribution(
-            "taskworker.worker.push_rpc.duration",
-            time.monotonic() - start_time,
-            tags={"result": "accepted", "processing_pool": self.worker_pool._processing_pool_name},
-        )
+            self.worker_pool._metrics.distribution(
+                "taskworker.worker.push_rpc.duration",
+                time.monotonic() - start_time,
+                tags={
+                    "result": "accepted",
+                    "processing_pool": self.worker_pool._processing_pool_name,
+                },
+            )
 
         return PushTaskResponse()
 
@@ -389,6 +395,12 @@ class TaskWorker:
         Add a task to child tasks queue. Returns False if no new task was fetched.
         """
         if self.worker_pool.is_worker_full():
+            self._metrics.incr(
+                "taskworker.worker.add_tasks.child_tasks_full",
+                tags={"processing_pool": self._processing_pool_name},
+            )
+            # If we weren't able to add a task, backoff for a bit
+            time.sleep(0.1)
             return False
 
         inflight = self.fetch_task()
