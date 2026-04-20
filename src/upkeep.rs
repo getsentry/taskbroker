@@ -521,7 +521,6 @@ pub async fn check_health(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use prost::Message;
@@ -663,7 +662,10 @@ mod tests {
             activation.received_at.unwrap().nanos as u32,
         )
         .expect("");
-        activation.parameters = r#"{"a":"b"}"#.into();
+        {
+            #![allow(deprecated)]
+            activation.parameters = r#"{"a":"b"}"#.into();
+        }
         activation.delay = Some(30);
         records[0].status = InflightActivationStatus::Retry;
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
@@ -700,7 +702,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.taskname, activation_to_check.taskname);
         assert_eq!(activation.namespace, activation_to_check.namespace);
-        assert_eq!(activation.parameters, activation_to_check.parameters);
+        {
+            #![allow(deprecated)]
+            assert_eq!(activation.parameters, activation_to_check.parameters);
+        }
         // received_at should be set be later than the original activation
         assert!(
             activation.received_at.unwrap().seconds
@@ -1021,7 +1026,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.id, activation_to_check.id);
         // DLQ should retain parameters of original task
-        assert_eq!(activation.parameters, activation_to_check.parameters);
+        {
+            #![allow(deprecated)]
+            assert_eq!(activation.parameters, activation_to_check.parameters);
+        }
     }
 
     #[tokio::test]
