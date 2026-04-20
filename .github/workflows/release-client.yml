@@ -37,11 +37,12 @@ jobs:
           version: '0.8.2'
 
       - name: Validate version number
+        env:
+          VERSION: ${{ github.event.inputs.version }}
         run: |
-          VERSION="${{ github.event.inputs.version }}"
           MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          if [ "$MAJOR" -gt 26 ]; then
-            echo "Error: Version $VERSION is not allowed. Major version must be 26 or lower."
+          if [ "$MAJOR" -ge 26 ]; then
+            echo "Error: Version $VERSION is not allowed. Major version must be below 26."
             echo ""
             echo "This is likely not the version you want to release, it looks like calver."
             echo "See README.md for more information about versioning."
