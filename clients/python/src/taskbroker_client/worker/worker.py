@@ -161,7 +161,6 @@ class PushTaskWorker:
             service=broker_service,
             application=app.name,
             metrics=app.metrics,
-            max_tasks_before_rebalance=rebalance_after,
             health_check_settings=(
                 None
                 if health_check_file_path is None

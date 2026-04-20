@@ -501,7 +501,6 @@ class PushTaskbrokerClient:
         service: str,
         application: str,
         metrics: MetricsBackend,
-        max_tasks_before_rebalance: int = DEFAULT_REBALANCE_AFTER,
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
