@@ -230,6 +230,8 @@ impl PushPool {
                         let callback_url = callback_url.clone();
 
                         let Some(worker) = workers.get_mut(&activation.application) else {
+                            metrics::counter!("push.missing_worker_mapping").increment(1);
+
                             error!(
                                 task_id = %id,
                                 application = activation.application,
