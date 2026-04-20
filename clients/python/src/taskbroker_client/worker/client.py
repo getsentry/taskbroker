@@ -492,7 +492,7 @@ class PushTaskbrokerClient:
     """
     Taskworker RPC client wrapper
 
-    Push brokers are a deployment so don't need to be connected to individually. There is one service provided
+    Push brokers are a deployment so they don't need to be connected to individually. There is one service provided
     that works for all the brokers.
     """
 
