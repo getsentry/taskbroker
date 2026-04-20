@@ -31,6 +31,7 @@ pub struct TaskActivationBuilder {
     pub namespace: Option<String>,
     pub taskname: Option<String>,
     pub parameters: Option<String>,
+    pub parameters_bytes: Option<Vec<u8>>,
     pub headers: Option<HashMap<String, String>>,
     pub received_at: Option<Timestamp>,
     pub retry_state: Option<v1::RetryState>,
@@ -47,6 +48,7 @@ impl TaskActivationBuilder {
             namespace: None,
             taskname: None,
             parameters: None,
+            parameters_bytes: None,
             headers: None,
             received_at: None,
             retry_state: None,
@@ -76,8 +78,14 @@ impl TaskActivationBuilder {
         self
     }
 
+    #[allow(deprecated)]
     pub fn parameters<T: Into<String>>(mut self, parameters: T) -> Self {
         self.parameters = Some(parameters.into());
+        self
+    }
+
+    pub fn parameters_bytes(mut self, parameters_bytes: Vec<u8>) -> Self {
+        self.parameters_bytes = Some(parameters_bytes);
         self
     }
 
@@ -111,6 +119,7 @@ impl TaskActivationBuilder {
         self
     }
 
+    #[allow(deprecated)]
     pub fn build(self) -> v1::TaskActivation {
         v1::TaskActivation {
             id: self.id.expect("id is required"),
@@ -118,6 +127,7 @@ impl TaskActivationBuilder {
             namespace: self.namespace.expect("namespace is required"),
             taskname: self.taskname.expect("taskname is required"),
             parameters: self.parameters.unwrap_or_else(|| "{}".to_string()),
+            parameters_bytes: self.parameters_bytes.unwrap_or_default(),
             headers: self.headers.unwrap_or_default(),
             processing_deadline_duration: self.processing_deadline_duration.unwrap_or(0),
             received_at: self.received_at,
