@@ -289,20 +289,14 @@ pub struct Config {
     /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     pub push_timeout_ms: u64,
 
-    /// The worker service endpoint.
-    pub worker_endpoint: String,
-
     /// The hostname used to construct `callback_url` for task push requests.
     pub callback_addr: String,
 
     /// The port used to construct `callback_url` for task push requests.
     pub callback_port: u32,
 
-    /// Application filter for push mode. When set, only pending activations for this application are considered.
-    pub application: Option<String>,
-
-    /// List of namespaces for push mode. When set, application must also be set (store requirement).
-    pub namespaces: Option<Vec<String>>,
+    /// Maps every application to its worker endpoint, both represented as strings.
+    pub worker_map: BTreeMap<String, String>,
 }
 
 impl Default for Config {
@@ -384,11 +378,9 @@ impl Default for Config {
             push_queue_size: 1,
             push_queue_timeout_ms: 5000,
             push_timeout_ms: 30000,
-            worker_endpoint: "http://127.0.0.1:50052".into(),
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
-            application: None,
-            namespaces: None,
+            worker_map: [("getsentry".into(), "http://127.0.0.1:50052".into())].into(),
         }
     }
 }
@@ -522,6 +514,10 @@ mod tests {
         assert_eq!(config.max_pending_count, 2048);
         assert_eq!(config.max_processing_count, 2048);
         assert_eq!(config.vacuum_page_count, None);
+        assert_eq!(
+            config.worker_map.get("getsentry").map(String::as_str),
+            Some("http://127.0.0.1:50052")
+        );
     }
 
     #[test]
@@ -549,6 +545,9 @@ mod tests {
                 max_processing_attempts: 5
                 vacuum_page_count: 1000
                 full_vacuum_on_start: true
+                worker_map:
+                    getsentry: http://worker-getsentry:50052
+                    launchpad: http://worker-launchpad:50053
             "#,
             )?;
             // Env vars always override config file
@@ -583,6 +582,19 @@ mod tests {
             assert_eq!(config.vacuum_page_count, Some(1000));
             assert_eq!(config.db_max_size, Some(3_000_000_000));
             assert!(config.full_vacuum_on_start);
+            assert_eq!(
+                config.worker_map,
+                BTreeMap::from([
+                    (
+                        "getsentry".to_owned(),
+                        "http://worker-getsentry:50052".to_owned(),
+                    ),
+                    (
+                        "launchpad".to_owned(),
+                        "http://worker-launchpad:50053".to_owned(),
+                    ),
+                ])
+            );
 
             Ok(())
         });
@@ -626,6 +638,35 @@ mod tests {
             assert_eq!(
                 config.default_metrics_tags,
                 BTreeMap::from([("key".to_owned(), "value".to_owned())])
+            );
+            assert_eq!(
+                config.worker_map.get("getsentry").map(String::as_str),
+                Some("http://127.0.0.1:50052"),
+                "partial env override must not drop worker_map defaults"
+            );
+
+            Ok(())
+        });
+    }
+
+    /// `worker_map` uses the same env map encoding as `default_metrics_tags` (brace `key=value` pairs).
+    #[test]
+    fn test_worker_map_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_LOG_FILTER", "error");
+            jail.set_env(
+                "TASKBROKER_WORKER_MAP",
+                "{getsentry=http://127.0.0.1:60052,launchpad=http://127.0.0.1:60053}",
+            );
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            assert_eq!(
+                config.worker_map,
+                BTreeMap::from([
+                    ("getsentry".to_owned(), "http://127.0.0.1:60052".to_owned(),),
+                    ("launchpad".to_owned(), "http://127.0.0.1:60053".to_owned(),),
+                ])
             );
 
             Ok(())
@@ -867,51 +908,6 @@ mod tests {
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.callback_addr, "10.0.0.1");
             assert_eq!(config.callback_port, 52000);
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_default_application_and_namespaces() {
-        let config = Config::default();
-        assert_eq!(config.application, None);
-        assert_eq!(config.namespaces, None);
-    }
-
-    #[test]
-    fn test_from_args_application_from_env() {
-        Jail::expect_with(|jail| {
-            jail.set_env("TASKBROKER_APPLICATION", "getsentry");
-
-            let args = Args { config: None };
-            let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.application.as_deref(), Some("getsentry"));
-            assert_eq!(config.namespaces, None);
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_from_args_application_and_namespaces_from_config_file() {
-        Jail::expect_with(|jail| {
-            jail.create_file(
-                "config.yaml",
-                r#"
-                application: getsentry
-                namespaces:
-                  - ns1
-                  - ns2
-            "#,
-            )?;
-
-            let args = Args {
-                config: Some("config.yaml".to_owned()),
-            };
-            let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.application.as_deref(), Some("getsentry"));
-            assert_eq!(config.namespaces, Some(vec!["ns1".into(), "ns2".into()]));
 
             Ok(())
         });

@@ -30,22 +30,10 @@ pub trait InflightActivationStore: Send + Sync {
     /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
     async fn claim_activations_for_push(
         &self,
-        application: Option<&str>,
-        namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
-        // If a namespace filter is used, an application must also be used
-        if namespaces.is_some() && application.is_none() {
-            warn!(
-                ?namespaces,
-                "Received request for namespaced task without application"
-            );
-
-            return Ok(vec![]);
-        }
-
-        self.claim_activations(application, namespaces, limit, bucket, false)
+        self.claim_activations(None, None, limit, bucket, false)
             .await
     }
 

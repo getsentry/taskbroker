@@ -115,13 +115,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                             let start = Instant::now();
                             let mut backoff = false;
 
-                            let application = config.application.as_deref();
-                            let namespaces = config.namespaces.as_deref();
-
-                            match store
-                                .claim_activations_for_push(application, namespaces, limit, bucket)
-                                .await
-                            {
+                            match store.claim_activations_for_push(limit, bucket).await {
                                 Ok(activations) if activations.is_empty() => {
                                     metrics::counter!("fetch.empty").increment(1);
                                     debug!("No pending activations");
