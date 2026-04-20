@@ -2013,7 +2013,7 @@ async fn test_migrations() {
     let folders = TestFolders::new().unwrap();
 
     // Move migrations to different folders
-    let orig = fs::read_dir("./migrations");
+    let orig = fs::read_dir("./migrations/sqlite");
     assert!(orig.is_ok(), "{orig:?}");
 
     let origdir = orig.unwrap();

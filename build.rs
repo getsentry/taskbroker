@@ -26,5 +26,6 @@ fn main() {
     emit_version();
 
     // trigger recompilation when a new migration is added
-    println!("cargo:rerun-if-changed=migrations");
+    println!("cargo:rerun-if-changed=migrations/sqlite");
+    println!("cargo:rerun-if-changed=migrations/postgres");
 }

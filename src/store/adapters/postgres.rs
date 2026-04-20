@@ -208,7 +208,9 @@ impl PostgresActivationStore {
 
         if config.run_migrations {
             println!("Running migrations on database");
-            sqlx::migrate!("./pg_migrations").run(&write_pool).await?;
+            sqlx::migrate!("./migrations/postgres")
+                .run(&write_pool)
+                .await?;
         }
 
         Ok(Self {
