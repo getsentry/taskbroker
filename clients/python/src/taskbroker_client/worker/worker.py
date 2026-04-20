@@ -174,7 +174,6 @@ class PushTaskWorker:
         self._concurrency = concurrency
         self._grpc_sync_event = self._mp_context.Event()
 
-        self._gettask_backoff_seconds = 0
         self._setstatus_backoff_seconds = 0
 
         self._processing_pool_name: str = processing_pool_name or "unknown"
@@ -215,8 +214,7 @@ class PushTaskWorker:
                 "taskworker.send_update_task.failed",
                 extra={"task_id": result.task_id, "error": e},
             )
-            if e.code() == grpc.StatusCode.UNAVAILABLE:
-                raise RequeueException(f"Failed to update task: {e}")
+            raise RequeueException(f"Failed to update task: {e}")
         except HostTemporarilyUnavailable as e:
             self._setstatus_backoff_seconds = min(
                 self._setstatus_backoff_seconds + 4, MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE
@@ -226,8 +224,6 @@ class PushTaskWorker:
                 extra={"task_id": result.task_id, "error": str(e)},
             )
             raise RequeueException(f"Failed to update task: {e}")
-
-        return None
 
     def start(self) -> int:
         """
@@ -451,8 +447,7 @@ class TaskWorker:
                 "taskworker.send_update_task.failed",
                 extra={"task_id": result.task_id, "error": e},
             )
-            if e.code() == grpc.StatusCode.UNAVAILABLE:
-                raise RequeueException(f"Failed to update task: {e}")
+            raise RequeueException(f"Failed to update task: {e}")
         except HostTemporarilyUnavailable as e:
             self._setstatus_backoff_seconds = min(
                 self._setstatus_backoff_seconds + 4, MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE
@@ -462,8 +457,6 @@ class TaskWorker:
                 extra={"task_id": result.task_id, "error": str(e)},
             )
             raise RequeueException(f"Failed to update task: {e}")
-
-        return None
 
     def fetch_task(self) -> InflightTaskActivation | None:
         self._grpc_sync_event.wait(self._gettask_backoff_seconds)
