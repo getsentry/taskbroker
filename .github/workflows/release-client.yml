@@ -36,6 +36,18 @@ jobs:
         with:
           version: '0.8.2'
 
+      - name: Validate version number
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          if [ "$MAJOR" -gt 26 ]; then
+            echo "Error: Version $VERSION is not allowed. Major version must be 26 or lower."
+            echo ""
+            echo "This is likely not the version you want to release, it looks like calver."
+            echo "See README.md for more information about versioning."
+            exit 1
+          fi
+
       - name: Prepare release
         uses: getsentry/craft@c6e2f04939b6ee67030588afbb5af76b127d8203 # v2
         env:
