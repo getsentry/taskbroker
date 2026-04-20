@@ -1,4 +1,15 @@
 # Changelog
+## 0.1.10
+
+### New Features ✨
+
+- (taskbroker) Dual-write new parameters_bytes by @untitaker in [#602](https://github.com/getsentry/taskbroker/pull/602)
+- Separate push Taskworker from pull Taskworker by @evanh in [#593](https://github.com/getsentry/taskbroker/pull/593)
+
+### Other
+
+- release: 26.5.0 by @untitaker in [0206415b](https://github.com/getsentry/taskbroker/commit/0206415bffe6b91c4934fe3e3682e78f2659f13c)
+
 ## 26.5.0
 
 ### New Features ✨
