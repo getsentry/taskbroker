@@ -141,6 +141,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // not used when the activation doesn't have expires.
             received_at: Some(prost_types::Timestamp {
@@ -186,6 +187,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has expires
             received_at: Some(prost_types::Timestamp {
@@ -232,6 +234,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has expires
             received_at: Some(prost_types::Timestamp {
@@ -278,6 +281,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has delay
             received_at: Some(prost_types::Timestamp {
@@ -325,6 +329,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has delay
             received_at: Some(prost_types::Timestamp {

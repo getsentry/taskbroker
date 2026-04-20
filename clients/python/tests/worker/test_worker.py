@@ -6,6 +6,7 @@ from typing import Any
 from unittest import TestCase, mock
 
 import grpc
+import msgpack
 import orjson
 import zstandard as zstd
 from redis import StrictRedis
@@ -37,7 +38,7 @@ SIMPLE_TASK = InflightTaskActivation(
         id="111",
         taskname="examples.simple_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -49,7 +50,7 @@ RETRY_TASK = InflightTaskActivation(
         id="222",
         taskname="examples.retry_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -61,7 +62,7 @@ FAIL_TASK = InflightTaskActivation(
         id="333",
         taskname="examples.fail_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -73,7 +74,7 @@ UNDEFINED_TASK = InflightTaskActivation(
         id="444",
         taskname="total.rubbish",
         namespace="lolnope",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -85,7 +86,7 @@ AT_MOST_ONCE_TASK = InflightTaskActivation(
         id="555",
         taskname="examples.at_most_once",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -97,7 +98,7 @@ RETRY_STATE_TASK = InflightTaskActivation(
         id="654",
         taskname="examples.retry_state",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
         retry_state=RetryState(
             # no more attempts left
@@ -115,7 +116,7 @@ SCHEDULED_TASK = InflightTaskActivation(
         id="111",
         taskname="examples.simple_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
         headers={
             "sentry-monitor-slug": "simple-task",
@@ -129,6 +130,43 @@ COMPRESSED_TASK = InflightTaskActivation(
     receive_timestamp=0,
     activation=TaskActivation(
         id="compressed_task_123",
+        taskname="examples.simple_task",
+        namespace="examples",
+        parameters_bytes=zstd.compress(
+            msgpack.packb(
+                {
+                    "args": ["test_arg1", "test_arg2"],
+                    "kwargs": {"test_key": "test_value", "number": 42},
+                },
+                use_bin_type=True,
+            )
+        ),
+        headers={
+            "compression-type": CompressionType.ZSTD.value,
+        },
+        processing_deadline_duration=2,
+    ),
+)
+
+# Legacy fixture using the old JSON parameters field for backward compat testing
+LEGACY_JSON_TASK = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="legacy_json_123",
+        taskname="examples.simple_task",
+        namespace="examples",
+        parameters='{"args": ["legacy_arg"], "kwargs": {}}',
+        processing_deadline_duration=2,
+    ),
+)
+
+# Legacy compressed fixture using base64+zstd in the old parameters field
+LEGACY_COMPRESSED_TASK = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="legacy_compressed_123",
         taskname="examples.simple_task",
         namespace="examples",
         parameters=base64.b64encode(
@@ -761,3 +799,51 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
     assert result.task_id == COMPRESSED_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     assert mock_capture_checkin.call_count == 0
+
+
+@mock.patch("sentry_sdk.crons.api.capture_checkin")
+def test_child_process_legacy_json_parameters(mock_capture_checkin: mock.MagicMock) -> None:
+    """Test backward compat: worker can handle legacy JSON parameters field."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(LEGACY_JSON_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == LEGACY_JSON_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+@mock.patch("sentry_sdk.crons.api.capture_checkin")
+def test_child_process_legacy_compressed_parameters(mock_capture_checkin: mock.MagicMock) -> None:
+    """Test backward compat: worker can handle legacy base64+zstd compressed JSON parameters."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(LEGACY_COMPRESSED_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == LEGACY_COMPRESSED_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE

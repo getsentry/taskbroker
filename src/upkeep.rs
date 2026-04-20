@@ -600,6 +600,7 @@ mod tests {
         );
     }
 
+    #[allow(deprecated)]
     #[tokio::test]
     #[rstest]
     #[case::sqlite("sqlite")]
@@ -942,6 +943,7 @@ mod tests {
         );
     }
 
+    #[allow(deprecated)]
     #[tokio::test]
     #[rstest]
     #[case::sqlite("sqlite")]

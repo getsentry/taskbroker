@@ -2,6 +2,7 @@ import base64
 from concurrent.futures import Future
 from unittest.mock import Mock
 
+import msgpack
 import orjson
 import pytest
 import zstandard as zstd
@@ -174,11 +175,13 @@ def test_namespace_send_task_with_compression() -> None:
 
     expected_params = {"args": ["test_arg"], "kwargs": {"test_key": "test_value"}}
 
-    decoded_data = base64.b64decode(activation.parameters.encode("utf-8"))
-    decompressed_data = zstd.decompress(decoded_data)
-    actual_params = orjson.loads(decompressed_data)
+    decompressed_data = zstd.decompress(activation.parameters_bytes)
+    actual_params = msgpack.unpackb(decompressed_data, raw=False)
 
     assert actual_params == expected_params
+
+    legacy_decompressed = zstd.decompress(base64.b64decode(activation.parameters.encode("utf-8")))
+    assert orjson.loads(legacy_decompressed) == expected_params
 
 
 def test_namespace_send_task_with_auto_compression() -> None:
@@ -204,11 +207,13 @@ def test_namespace_send_task_with_auto_compression() -> None:
 
     expected_params = {"args": big_args, "kwargs": {"test_key": "test_value"}}
 
-    decoded_data = base64.b64decode(activation.parameters.encode("utf-8"))
-    decompressed_data = zstd.decompress(decoded_data)
-    actual_params = orjson.loads(decompressed_data)
+    decompressed_data = zstd.decompress(activation.parameters_bytes)
+    actual_params = msgpack.unpackb(decompressed_data, raw=False)
 
     assert actual_params == expected_params
+
+    legacy_decompressed = zstd.decompress(base64.b64decode(activation.parameters.encode("utf-8")))
+    assert orjson.loads(legacy_decompressed) == expected_params
 
 
 def test_namespace_send_task_with_retry() -> None:
