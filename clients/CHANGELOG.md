@@ -1,4 +1,10 @@
 # Changelog
+## 26.5.0
+
+### New Features ✨
+
+- (taskbroker) Dual-write new parameters_bytes by @untitaker in [#602](https://github.com/getsentry/taskbroker/pull/602)
+
 ## 0.1.8
 
 ### New Features ✨
