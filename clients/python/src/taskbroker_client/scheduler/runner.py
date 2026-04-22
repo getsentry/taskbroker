@@ -73,22 +73,36 @@ class RunStorage:
         """
         Retrieve last run times in bulk.
 
-        storage_keys are the new-format keys including the schedule_id suffix
-        (e.g. "test:valid:300"). Falls back to the legacy key (derived by
-        stripping the suffix) when the new key has no data, allowing a seamless
-        first-deploy transition.
+        storage_keys are the new-format keys including the entry key prefix and
+        schedule_id suffix (e.g. "my-entry:test:valid:300"). Falls back through
+        two legacy formats to allow seamless deploys:
 
-        Returns a mapping keyed by storage_key.
+          new:    "{entry_key}:{fullname}:{schedule_id}"  (e.g. "my-entry:test:valid:300")
+          compat: "{fullname}:{schedule_id}"              (e.g. "test:valid:300")
+          legacy: "{fullname}"                            (e.g. "test:valid")
+
+        Compat is derived by stripping the entry_key prefix (split on first colon).
+        Legacy is derived from compat by stripping the schedule_id suffix (rsplit on last colon).
+
+        Returns a mapping keyed by new storage_key.
         """
-        legacy_keys = [sk.rsplit(":", 1)[0] for sk in storage_keys]
+        compat_keys = [sk.split(":", 1)[1] for sk in storage_keys]
+        legacy_keys = [ck.rsplit(":", 1)[0] for ck in compat_keys]
 
         new_values = self._redis.mget([self._make_key(sk) for sk in storage_keys])
+        compat_values = self._redis.mget([self._make_key(ck) for ck in compat_keys])
         legacy_values = self._redis.mget([self._make_key(lk) for lk in legacy_keys])
 
         run_times: dict[str, datetime | None] = {}
-        for storage_key, new_val, legacy_val in zip(storage_keys, new_values, legacy_values):
-            raw = new_val if new_val is not None else legacy_val
-            run_times[storage_key] = datetime.fromisoformat(raw) if raw else None
+        for storage_key, new_val, compat_val, legacy_val in zip(
+            storage_keys, new_values, compat_values, legacy_values
+        ):
+            value = new_val
+            if value is None:
+                value = compat_val
+            if value is None:
+                value = legacy_val
+            run_times[storage_key] = datetime.fromisoformat(value) if value else None
         return run_times
 
     def delete(self, key: str) -> None:
@@ -126,7 +140,7 @@ class ScheduleEntry:
 
     @property
     def storage_key(self) -> str:
-        return f"{self.fullname}:{self._schedule.schedule_id()}"
+        return f"{self._key}:{self.fullname}:{self._schedule.schedule_id()}"
 
     @property
     def namespace(self) -> str:
