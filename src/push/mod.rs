@@ -25,7 +25,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// gRPC path for `WorkerService::PushTask` — keep in sync with `sentry_protos` generated client.
 const WORKER_PUSH_TASK_PATH: &str = "/sentry_protos.taskbroker.v1.WorkerService/PushTask";
 
-/// HMAC-SHA256(secret, grpc_path + ":" + message), hex-encoded. Matches Python `RequestSignatureInterceptor` and broker `crate::grpc::auth_middleware`.
+/// HMAC-SHA256(secret, grpc_path + ":" + message), hex-encoded. Matches Python `RequestSignatureInterceptor` and broker [`crate::grpc::auth_middleware`].
 fn sentry_signature_hex(secret: &str, grpc_path: &str, message: &[u8]) -> String {
     let mut mac =
         HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
