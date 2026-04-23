@@ -546,7 +546,7 @@ mod tests {
                 vacuum_page_count: 1000
                 full_vacuum_on_start: true
                 worker_map:
-                    getsentry: http://worker-getsentry:50052
+                    sentry: http://worker-sentry:50052
                     launchpad: http://worker-launchpad:50053
             "#,
             )?;
@@ -585,10 +585,7 @@ mod tests {
             assert_eq!(
                 config.worker_map,
                 BTreeMap::from([
-                    (
-                        "sentry".to_owned(),
-                        "http://worker-getsentry:50052".to_owned(),
-                    ),
+                    ("sentry".to_owned(), "http://worker-sentry:50052".to_owned(),),
                     (
                         "launchpad".to_owned(),
                         "http://worker-launchpad:50053".to_owned(),
@@ -656,7 +653,7 @@ mod tests {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
             jail.set_env(
                 "TASKBROKER_WORKER_MAP",
-                "{getsentry=http://127.0.0.1:60052,launchpad=http://127.0.0.1:60053}",
+                "{sentry=http://127.0.0.1:60052,launchpad=http://127.0.0.1:60053}",
             );
 
             let args = Args { config: None };
