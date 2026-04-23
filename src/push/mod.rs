@@ -136,13 +136,13 @@ impl PushPool {
                     for (application, endpoint) in worker_map.clone() {
                         let worker = match WorkerServiceClient::connect(endpoint).await {
                             Ok(w) => {
-                                metrics::counter!("push.worker.connect", "result" => "ok")
+                                metrics::counter!("push.worker.connect", "result" => "ok", "application" => application.clone())
                                     .increment(1);
                                 w
                             }
 
                             Err(e) => {
-                                metrics::counter!("push.worker.connect", "result" => "error")
+                                metrics::counter!("push.worker.connect", "result" => "error", "application" => application.clone())
                                     .increment(1);
                                 error!(error = ?e, "Failed to connect to worker");
 
@@ -174,7 +174,7 @@ impl PushPool {
                                 let callback_url = callback_url.clone();
 
                                 let Some(worker) = workers.get_mut(&activation.application) else {
-                                    metrics::counter!("push.missing_worker_mapping").increment(1);
+                                    metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
 
                                     error!(
                                         task_id = %id,

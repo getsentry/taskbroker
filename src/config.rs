@@ -380,7 +380,7 @@ impl Default for Config {
             push_timeout_ms: 30000,
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
-            worker_map: [("getsentry".into(), "http://127.0.0.1:50052".into())].into(),
+            worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
         }
     }
 }
@@ -515,7 +515,7 @@ mod tests {
         assert_eq!(config.max_processing_count, 2048);
         assert_eq!(config.vacuum_page_count, None);
         assert_eq!(
-            config.worker_map.get("getsentry").map(String::as_str),
+            config.worker_map.get("sentry").map(String::as_str),
             Some("http://127.0.0.1:50052")
         );
     }
@@ -586,7 +586,7 @@ mod tests {
                 config.worker_map,
                 BTreeMap::from([
                     (
-                        "getsentry".to_owned(),
+                        "sentry".to_owned(),
                         "http://worker-getsentry:50052".to_owned(),
                     ),
                     (
@@ -640,7 +640,7 @@ mod tests {
                 BTreeMap::from([("key".to_owned(), "value".to_owned())])
             );
             assert_eq!(
-                config.worker_map.get("getsentry").map(String::as_str),
+                config.worker_map.get("sentry").map(String::as_str),
                 Some("http://127.0.0.1:50052"),
                 "partial env override must not drop worker_map defaults"
             );
@@ -664,7 +664,7 @@ mod tests {
             assert_eq!(
                 config.worker_map,
                 BTreeMap::from([
-                    ("getsentry".to_owned(), "http://127.0.0.1:60052".to_owned(),),
+                    ("sentry".to_owned(), "http://127.0.0.1:60052".to_owned(),),
                     ("launchpad".to_owned(), "http://127.0.0.1:60053".to_owned(),),
                 ])
             );
