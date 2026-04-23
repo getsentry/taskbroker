@@ -49,12 +49,12 @@ class NoOpMetrics:
     def incr(self, _key: str, _tags: MutableMapping[str, Any] | None = None) -> None:
         pass
 
-    def distribution(self, _key: str, _value: float, _tags: MutableMapping[str, Any] | None = None) -> None:
+    def distribution(
+        self, _key: str, _value: float, _tags: MutableMapping[str, Any] | None = None
+    ) -> None:
         pass
 
-    def timer(
-        self, _key: str, _tags: MutableMapping[str, Any] | None = None
-    ) -> _NoOpTimer:
+    def timer(self, _key: str, _tags: MutableMapping[str, Any] | None = None) -> _NoOpTimer:
         return _NoOpTimer()
 
     def gauge(self, _key: str, _value: float) -> None:

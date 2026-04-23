@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 
 import click
-
 from kafka_queue_worker.logging_config import configure_kqueue_logging
 from kafka_queue_worker.worker import TaskQueueWorker
 

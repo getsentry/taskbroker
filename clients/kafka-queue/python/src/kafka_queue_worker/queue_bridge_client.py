@@ -4,22 +4,25 @@ import logging
 import time
 from typing import Any
 
-import grpc
 from kafka_queue_proto import queue_bridge_pb2, queue_bridge_pb2_grpc
-
 from kafka_queue_worker.types import (
     BRIDGE_HOST_TAG,
+    FetchNextTask,
     InflightTaskActivation,
     NoOpMetrics,
     ProcessingResult,
     TaskActivation,
-    FetchNextTask,
 )
+
+import grpc
 
 logger = logging.getLogger(__name__)
 
 MAX_ACT = 10 * 1024 * 1024
-OPTIONS: list[tuple[str, Any]] = [("grpc.max_receive_message_length", MAX_ACT), ("grpc.max_send_message_length", MAX_ACT)]
+OPTIONS: list[tuple[str, Any]] = [
+    ("grpc.max_receive_message_length", MAX_ACT),
+    ("grpc.max_send_message_length", MAX_ACT),
+]
 
 
 class QueueBridgeClient:

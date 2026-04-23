@@ -15,16 +15,16 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
-from typing import Any, Optional, TYPE_CHECKING
-
-import grpc
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import FetchNextTask
+from typing import TYPE_CHECKING, Any, Optional
 
 from kafka_queue_worker.child import child_process
 from kafka_queue_worker.imports import import_string
 from kafka_queue_worker.queue_bridge_client import QueueBridgeClient
 from kafka_queue_worker.requeue import RequeueException
 from kafka_queue_worker.types import InflightTaskActivation, NoOpMetrics, ProcessingResult
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import FetchNextTask
+
+import grpc
 
 if TYPE_CHECKING:
     AppLike = object
@@ -193,7 +193,9 @@ class _ProcessingPool:
         self._ctasks: multiprocessing.Queue[InflightTaskActivation] = self._mp.Queue(
             maxsize=child_tasks_queue_maxsize
         )
-        self._results: multiprocessing.Queue[ProcessingResult] = self._mp.Queue(maxsize=result_queue_maxsize)
+        self._results: multiprocessing.Queue[ProcessingResult] = self._mp.Queue(
+            maxsize=result_queue_maxsize
+        )
         self._children: list[BaseProcess] = []
         self._rthread: Optional[threading.Thread] = None
         self._sthread: Optional[threading.Thread] = None
@@ -202,9 +204,7 @@ class _ProcessingPool:
         if a is not None and getattr(a, "metrics", None) is not None:
             self._metrics = a.metrics  # type: ignore[assignment]
 
-    def _deliver_result(
-        self, r: ProcessingResult, draining: bool
-    ) -> InflightTaskActivation | None:
+    def _deliver_result(self, r: ProcessingResult, draining: bool) -> InflightTaskActivation | None:
         try:
             skip = draining or self._ctasks.full()
             n = self._on_complete(r, skip)

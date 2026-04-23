@@ -11,7 +11,14 @@ class PollRequest(_message.Message):
     def __init__(self, poll_timeout_ms: _Optional[int] = ...) -> None: ...
 
 class PollResponse(_message.Message):
-    __slots__ = ("empty", "delivery_id", "payload", "bridge_host", "total_polls", "total_deliveries")
+    __slots__ = (
+        "empty",
+        "delivery_id",
+        "payload",
+        "bridge_host",
+        "total_polls",
+        "total_deliveries",
+    )
     EMPTY_FIELD_NUMBER: _ClassVar[int]
     DELIVERY_ID_FIELD_NUMBER: _ClassVar[int]
     PAYLOAD_FIELD_NUMBER: _ClassVar[int]
@@ -24,7 +31,15 @@ class PollResponse(_message.Message):
     bridge_host: str
     total_polls: int
     total_deliveries: int
-    def __init__(self, empty: bool = ..., delivery_id: _Optional[str] = ..., payload: _Optional[bytes] = ..., bridge_host: _Optional[str] = ..., total_polls: _Optional[int] = ..., total_deliveries: _Optional[int] = ...) -> None: ...
+    def __init__(
+        self,
+        empty: bool = ...,
+        delivery_id: _Optional[str] = ...,
+        payload: _Optional[bytes] = ...,
+        bridge_host: _Optional[str] = ...,
+        total_polls: _Optional[int] = ...,
+        total_deliveries: _Optional[int] = ...,
+    ) -> None: ...
 
 class CompleteRequest(_message.Message):
     __slots__ = ("delivery_id", "task_id", "activation_status", "fetch_next", "poll_timeout_ms")
@@ -38,7 +53,14 @@ class CompleteRequest(_message.Message):
     activation_status: int
     fetch_next: bool
     poll_timeout_ms: int
-    def __init__(self, delivery_id: _Optional[str] = ..., task_id: _Optional[str] = ..., activation_status: _Optional[int] = ..., fetch_next: bool = ..., poll_timeout_ms: _Optional[int] = ...) -> None: ...
+    def __init__(
+        self,
+        delivery_id: _Optional[str] = ...,
+        task_id: _Optional[str] = ...,
+        activation_status: _Optional[int] = ...,
+        fetch_next: bool = ...,
+        poll_timeout_ms: _Optional[int] = ...,
+    ) -> None: ...
 
 class CompleteResponse(_message.Message):
     __slots__ = ("has_next", "next_delivery_id", "next_payload", "bridge_host", "total_completes")
@@ -52,7 +74,14 @@ class CompleteResponse(_message.Message):
     next_payload: bytes
     bridge_host: str
     total_completes: int
-    def __init__(self, has_next: bool = ..., next_delivery_id: _Optional[str] = ..., next_payload: _Optional[bytes] = ..., bridge_host: _Optional[str] = ..., total_completes: _Optional[int] = ...) -> None: ...
+    def __init__(
+        self,
+        has_next: bool = ...,
+        next_delivery_id: _Optional[str] = ...,
+        next_payload: _Optional[bytes] = ...,
+        bridge_host: _Optional[str] = ...,
+        total_completes: _Optional[int] = ...,
+    ) -> None: ...
 
 class CheckRequest(_message.Message):
     __slots__ = ()

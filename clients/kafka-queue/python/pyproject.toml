@@ -22,4 +22,3 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 package-dir = { "" = "src" }
 packages = ["kafka_queue_worker", "kafka_queue_proto", "kqueue_examples"]
-

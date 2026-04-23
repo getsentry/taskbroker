@@ -11,14 +11,18 @@ import time
 from multiprocessing.synchronize import Event
 
 import orjson
+from kafka_queue_worker.imports import import_string
+from kafka_queue_worker.logging_config import configure_kqueue_logging
+from kafka_queue_worker.types import (
+    InflightTaskActivation,
+    NoOpMetrics,
+    ProcessingResult,
+    TaskActivation,
+)
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_COMPLETE,
     TASK_ACTIVATION_STATUS_FAILURE,
 )
-
-from kafka_queue_worker.imports import import_string
-from kafka_queue_worker.logging_config import configure_kqueue_logging
-from kafka_queue_worker.types import InflightTaskActivation, NoOpMetrics, ProcessingResult, TaskActivation
 
 logger = logging.getLogger(__name__)
 
