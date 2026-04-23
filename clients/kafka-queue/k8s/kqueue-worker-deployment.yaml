@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kqueue-worker
+  namespace: taskbroker-testing
+  labels:
+    app: kqueue-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kqueue-worker
+  template:
+    metadata:
+      labels:
+        app: kqueue-worker
+    spec:
+      containers:
+        - name: kqueue-worker
+          image: REPLACE_IMAGE_KQUEUE_WORKER:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: QUEUE_BRIDGE_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: kqueue-config
+                  key: QUEUE_BRIDGE_ADDR
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          # Click loads QUEUE_BRIDGE_ADDR; see kqueue_cli.worker_cmd
+          command: ["kqueue", "worker"]

@@ -1,0 +1,7 @@
+# Java (Gradle) — all projects under java/ (e.g. queue-bridge, example)
+java/**/build/
+java/**/.gradle/
+
+python/.venv
+python/**/*.egg-info
+**/__pycache__

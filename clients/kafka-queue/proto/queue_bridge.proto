@@ -1,0 +1,65 @@
+// gRPC contract between the Python KIP-932 prototype worker and the Java
+// KafkaShareConsumer bridge. Codegen: see clients/kafka-queue/README.md
+syntax = "proto3";
+
+package queuebridge;
+
+option java_multiple_files = true;
+option java_package = "io.sentry.kqueue";
+
+// Queue bridge backed by org.apache.kafka.clients.consumer.KafkaShareConsumer (Kafka 4.2+).
+service QueueBridge {
+  // Returns one acquired record or empty. After a non-empty Poll, the bridge
+  // does not call Kafka poll() again until Complete for that delivery_id.
+  rpc Poll (PollRequest) returns (PollResponse);
+  // Ack the delivery and commit; optionally block for one more Kafka record (fetch_next).
+  rpc Complete (CompleteRequest) returns (CompleteResponse);
+  // Lightweight readiness for k8s; does not require Kafka in the first version.
+  rpc Check (CheckRequest) returns (CheckResponse);
+}
+
+message PollRequest {
+  // How long the bridge may block in Kafka share consumer poll, milliseconds.
+  int32 poll_timeout_ms = 1;
+}
+
+message PollResponse {
+  // True if no message was available within the timeout.
+  bool empty = 1;
+  // Opaque id used with Complete. Must be unique per in-flight message.
+  string delivery_id = 2;
+  // TaskActivation wire bytes.
+  bytes payload = 3;
+  // Set on ProcessResult.host in the Python pool (fixed tag).
+  string bridge_host = 4;
+  // Counters for demo metrics in responses.
+  uint64 total_polls = 5;
+  uint64 total_deliveries = 6;
+}
+
+// Mirrors TaskActivationStatus value numbers from taskbroker proto (1=complete,2=failure,3=retry, etc.)
+message CompleteRequest {
+  string delivery_id = 1;
+  // Same meaning as task id for logging; bridge does not use it for Kafka.
+  string task_id = 2;
+  // TaskActivationStatus int from sentry_protos.
+  int32 activation_status = 3;
+  bool fetch_next = 4;
+  int32 poll_timeout_ms = 5;
+}
+
+message CompleteResponse {
+  // Optional next message when fetch_next was true in the same RPC.
+  bool has_next = 1;
+  string next_delivery_id = 2;
+  bytes next_payload = 3;
+  string bridge_host = 4;
+  uint64 total_completes = 5;
+}
+
+message CheckRequest {}
+
+message CheckResponse {
+  bool ready = 1;
+  string detail = 2;
+}

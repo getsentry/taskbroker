@@ -1,0 +1,13 @@
+# Namespace: taskbroker-testing. Edit KAFKA_BOOTSTRAP for your cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kqueue-config
+  namespace: taskbroker-testing
+data:
+  KAFKA_BOOTSTRAP: "kafka-taskbroker-test-2-001:9092"
+  KAFKA_GROUP_ID: "kqueue-demo"
+  KAFKA_TOPIC: "kqueue-demo"
+  KAFKA_MAX_POLL: "8"
+  GRPC_LISTEN_PORT: "50060"
+  QUEUE_BRIDGE_ADDR: "queue-bridge:50060"

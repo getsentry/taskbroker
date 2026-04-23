@@ -1,0 +1,37 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+    id 'application'
+}
+
+group = 'io.sentry'
+version = '0.0.1-SNAPSHOT'
+java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
+
+repositories { mavenCentral() }
+
+dependencies {
+    // Align with queue-bridge: Kafka 4.2+ share groups (KIP-932).
+    implementation 'org.apache.kafka:kafka-clients:4.2.0'
+    runtimeOnly 'org.slf4j:slf4j-simple:1.7.36'
+}
+
+application { mainClass = 'io.sentry.kqueue.example.SlowShareConsumerApp' }
+
+tasks.named('shadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    mergeServiceFiles()
+    archiveFileName = 'example-slow-share-consumer-all.jar'
+    manifest { attributes 'Main-Class': 'io.sentry.kqueue.example.SlowShareConsumerApp' }
+}
+
+// Classic consumer group (KafkaConsumer), not share group; same fat-jar contents, different Main-Class.
+tasks.register('normalConsumerShadowJar', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
+    group = 'build'
+    description = 'Fat JAR for SlowNormalConsumerApp (regular consumer group)'
+    from sourceSets.main.output
+    configurations = [ project.configurations.runtimeClasspath ]
+    mergeServiceFiles()
+    manifest { attributes 'Main-Class': 'io.sentry.kqueue.example.SlowNormalConsumerApp' }
+    archiveFileName = 'example-normal-consumer-all.jar'
+    dependsOn tasks.named('classes')
+}

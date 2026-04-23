@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue-bridge
+  namespace: taskbroker-testing
+  labels:
+    app: queue-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: queue-bridge
+  template:
+    metadata:
+      labels:
+        app: queue-bridge
+    spec:
+      containers:
+        - name: queue-bridge
+          image: REPLACE_IMAGE_QUEUE_BRIDGE:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 50060
+          envFrom:
+            - configMapRef:
+                name: kqueue-config
+          readinessProbe:
+            tcpSocket:
+              port: 50060
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 50060
+            initialDelaySeconds: 15
+            periodSeconds: 20

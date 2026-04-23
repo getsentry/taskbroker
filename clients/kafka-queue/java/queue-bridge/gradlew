@@ -1,0 +1,3 @@
+#!/bin/sh
+# Minimal wrapper: require GRADLE_HOME or use `gradle` from PATH
+exec gradle "$@"

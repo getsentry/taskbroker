@@ -1,0 +1,25 @@
+[project]
+name = "kafka-queue-worker"
+version = "0.0.1"
+description = "KIP-932 prototype: Python worker that talks to the Java gRPC queue bridge (not taskbroker_client)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "grpcio>=1.67.0,<1.80.0",
+  "protobuf>=5.28.3,<6",
+  "sentry-protos>=0.8.0",
+  "orjson>=3.9.0",
+  "click>=8.0",
+]
+
+[project.scripts]
+kqueue = "kqueue_examples.kqueue_cli:main"
+
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+packages = ["kafka_queue_worker", "kafka_queue_proto", "kqueue_examples"]
+
