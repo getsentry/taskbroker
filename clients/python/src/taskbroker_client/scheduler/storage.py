@@ -17,34 +17,34 @@ class RunStorageProtocol(Protocol):
     in the future, or adapt taskworkers for other applications should we need to.
     """
 
-    def set(self, key: str, next_runtime: datetime) -> bool: ...
+    def set(self, key: str, next_runtime: datetime) -> bool:
+        """
+        Record a spawn time for a task.
+        The next_runtime parameter indicates when the record should expire,
+        and a task can be spawned again.
 
-    """
-    Record a spawn time for a task.
-    The next_runtime parameter indicates when the record should expire,
-    and a task can be spawned again.
+        Returns False when the key is set and a task should not be spawned.
+        """
+        ...
 
-    Returns False when the key is set and a task should not be spawned.
-    """
+    def read(self, key: str) -> datetime | None:
+        """
+        Retrieve the last run time of a task
+        Returns None if last run time has expired or is unknown.
+        """
+        ...
 
-    def read(self, key: str) -> datetime | None: ...
+    def read_many(self, storage_keys: list[str]) -> Mapping[str, datetime | None]:
+        """
+        Retrieve last run times in bulk.
 
-    """
-    Retrieve the last run time of a task
-    Returns None if last run time has expired or is unknown.
-    """
+        Returns a mapping keyed by new storage_key.
+        """
+        ...
 
-    def read_many(self, storage_keys: list[str]) -> Mapping[str, datetime | None]: ...
-
-    """
-    Retrieve last run times in bulk.
-
-    Returns a mapping keyed by new storage_key.
-    """
-
-    def delete(self, key: str) -> None: ...
-
-    """remove a task key - mostly for testing."""
+    def delete(self, key: str) -> None:
+        """remove a task key - mostly for testing."""
+        ...
 
 
 class VolatileRunStorage(RunStorageProtocol):
