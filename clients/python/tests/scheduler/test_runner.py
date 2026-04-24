@@ -8,6 +8,7 @@ from taskbroker_client.app import TaskbrokerApp
 from taskbroker_client.metrics import NoOpMetricsBackend
 from taskbroker_client.scheduler.config import crontab
 from taskbroker_client.scheduler.runner import RunStorage, ScheduleRunner
+from taskbroker_client.scheduler.storage import VolatileRunStorage
 
 from ..conftest import freeze_time, producer_factory
 
@@ -533,3 +534,35 @@ def test_schedulerunner_two_schedules_same_task(
     # Each entry has its own Redis key — neither blocks the other
     assert run_storage.read("first:test:valid:300") is not None
     assert run_storage.read("second:test:valid:600") is not None
+
+
+def test_schedulerunner_volatile_storage_crontab(task_app: TaskbrokerApp) -> None:
+    storage = VolatileRunStorage()
+    schedule_set = ScheduleRunner(app=task_app, run_storage=storage)
+    schedule_set.add(
+        "valid",
+        {
+            "task": "test:valid",
+            "schedule": crontab(minute="*/2"),
+        },
+    )
+
+    namespace = task_app.taskregistry.get("test")
+    with patch.object(namespace, "send_task") as mock_send:
+        with freeze_time("2025-01-24 14:24:00 UTC"):
+            sleep_time = schedule_set.tick()
+            assert sleep_time == 120
+        assert mock_send.call_count == 1
+
+        # Not due yet — 1 minute into the 2-minute interval
+        with freeze_time("2025-01-24 14:25:00 UTC"):
+            sleep_time = schedule_set.tick()
+            assert sleep_time == 60
+        assert mock_send.call_count == 1
+
+        # Due again — no delete() needed; VolatileRunStorage.set() always returns True
+        # and the entry's in-memory last_run governs re-spawning
+        with freeze_time("2025-01-24 14:26:00 UTC"):
+            sleep_time = schedule_set.tick()
+            assert sleep_time == 120
+        assert mock_send.call_count == 2
