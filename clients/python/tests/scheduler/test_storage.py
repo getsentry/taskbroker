@@ -5,11 +5,17 @@ from taskbroker_client.scheduler.storage import VolatileRunStorage
 from ..conftest import freeze_time
 
 
-def test_volatile_run_storage_set_returns_true() -> None:
+def test_volatile_run_storage_set() -> None:
     storage = VolatileRunStorage()
     with freeze_time("2025-01-24 14:25:00 UTC"):
         result = storage.set("key", datetime(2025, 1, 24, 14, 30, 0, tzinfo=UTC))
-    assert result is True
+        assert result is True
+    with freeze_time("2025-01-24 14:26:00 UTC"):
+        result = storage.set("key", datetime(2025, 1, 24, 14, 30, 0, tzinfo=UTC))
+        assert result is False
+    with freeze_time("2025-01-24 14:30:01 UTC"):
+        result = storage.set("key", datetime(2025, 1, 24, 14, 35, 0, tzinfo=UTC))
+        assert result is True
 
 
 def test_volatile_run_storage_set_stores_now_not_next_runtime() -> None:

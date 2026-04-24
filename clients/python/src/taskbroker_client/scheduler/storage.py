@@ -56,19 +56,29 @@ class VolatileRunStorage(RunStorageProtocol):
     """
 
     def __init__(self) -> None:
-        self._data: dict[str, datetime] = {}
+        self._data: dict[str, tuple[datetime, datetime]] = {}
 
     def set(self, key: str, next_runtime: datetime) -> bool:
         now = datetime.now(tz=UTC)
-        self._data[key] = now
-        return True
+
+        if key not in self._data:
+            self._data[key] = (now, next_runtime)
+            return True
+        existing_expires = self._data[key][1]
+        if existing_expires <= now:
+            self._data[key] = (now, next_runtime)
+            return True
+        return False
 
     def read(self, key: str) -> datetime | None:
         """
         Retrieve the last run time of a task
         Returns None if last run time has expired or is unknown.
         """
-        return self._data.get(key, None)
+        value = self._data.get(key, None)
+        if value is None:
+            return None
+        return value[0]
 
     def read_many(self, storage_keys: list[str]) -> Mapping[str, datetime | None]:
         """
@@ -76,9 +86,13 @@ class VolatileRunStorage(RunStorageProtocol):
 
         Returns a mapping keyed by new storage_key.
         """
-        results = {}
+        results: dict[str, datetime | None] = {}
         for key in storage_keys:
-            results[key] = self._data.get(key)
+            value = self._data.get(key, None)
+            if value is None:
+                results[key] = value
+            else:
+                results[key] = value[0]
         return results
 
     def delete(self, key: str) -> None:
