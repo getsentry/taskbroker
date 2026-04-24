@@ -1,4 +1,10 @@
 # Changelog
+## 0.1.11
+
+### New Features ✨
+
+- Add volatile schedule storage by @markstory in [#605](https://github.com/getsentry/taskbroker/pull/605)
+
 ## 0.1.9
 
 ### New Features ✨
