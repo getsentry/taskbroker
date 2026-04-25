@@ -57,6 +57,7 @@ module = [
     "redis.*",
     "rediscluster.*",
     "confluent_kafka.*",
+    "msgpack",
 ]
 ignore_missing_imports = true
 # end: missing 3rd party stubs

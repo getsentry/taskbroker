@@ -1,28 +1,27 @@
+use std::collections::HashMap;
+use std::env::var;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use rdkafka::Message;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+use rdkafka::producer::FutureProducer;
+
 use chrono::Utc;
 use futures::StreamExt;
 use prost::Message as ProstMessage;
 use prost_types::Timestamp;
-use rdkafka::{
-    Message,
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-    consumer::{CommitMode, Consumer, StreamConsumer},
-    producer::FutureProducer,
-};
 use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskActivation};
-use std::{collections::HashMap, env::var, sync::Arc, time::SystemTime};
 use uuid::Uuid;
 
-use crate::{
-    config::Config,
-    store::{
-        activation::{InflightActivation, InflightActivationBuilder, InflightActivationStatus},
-        adapters::{
-            postgres::{PostgresActivationStore, PostgresActivationStoreConfig},
-            sqlite::{InflightActivationStoreConfig, SqliteActivationStore},
-        },
-        traits::InflightActivationStore,
-    },
+use crate::config::Config;
+use crate::store::activation::{
+    InflightActivation, InflightActivationBuilder, InflightActivationStatus,
 };
+use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
+use crate::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use crate::store::traits::InflightActivationStore;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {
@@ -31,6 +30,7 @@ pub struct TaskActivationBuilder {
     pub namespace: Option<String>,
     pub taskname: Option<String>,
     pub parameters: Option<String>,
+    pub parameters_bytes: Option<Vec<u8>>,
     pub headers: Option<HashMap<String, String>>,
     pub received_at: Option<Timestamp>,
     pub retry_state: Option<v1::RetryState>,
@@ -47,6 +47,7 @@ impl TaskActivationBuilder {
             namespace: None,
             taskname: None,
             parameters: None,
+            parameters_bytes: None,
             headers: None,
             received_at: None,
             retry_state: None,
@@ -76,8 +77,14 @@ impl TaskActivationBuilder {
         self
     }
 
+    #[allow(deprecated)]
     pub fn parameters<T: Into<String>>(mut self, parameters: T) -> Self {
         self.parameters = Some(parameters.into());
+        self
+    }
+
+    pub fn parameters_bytes(mut self, parameters_bytes: Vec<u8>) -> Self {
+        self.parameters_bytes = Some(parameters_bytes);
         self
     }
 
@@ -111,6 +118,7 @@ impl TaskActivationBuilder {
         self
     }
 
+    #[allow(deprecated)]
     pub fn build(self) -> v1::TaskActivation {
         v1::TaskActivation {
             id: self.id.expect("id is required"),
@@ -118,6 +126,7 @@ impl TaskActivationBuilder {
             namespace: self.namespace.expect("namespace is required"),
             taskname: self.taskname.expect("taskname is required"),
             parameters: self.parameters.unwrap_or_else(|| "{}".to_string()),
+            parameters_bytes: self.parameters_bytes.unwrap_or_default(),
             headers: self.headers.unwrap_or_default(),
             processing_deadline_duration: self.processing_deadline_duration.unwrap_or(0),
             received_at: self.received_at,

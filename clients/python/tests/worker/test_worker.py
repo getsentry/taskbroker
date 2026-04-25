@@ -3,11 +3,12 @@ import contextlib
 import queue
 import time
 from collections.abc import MutableMapping
-from multiprocessing import Event
+from multiprocessing import Event, get_context
 from typing import Any
 from unittest import TestCase, mock
 
 import grpc
+import msgpack
 import orjson
 import zstandard as zstd
 from redis import StrictRedis
@@ -29,7 +30,12 @@ from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
-from taskbroker_client.worker.worker import TaskWorker, WorkerServicer
+from taskbroker_client.worker.worker import (
+    PushTaskWorker,
+    TaskWorker,
+    TaskWorkerProcessingPool,
+    WorkerServicer,
+)
 from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded, child_process
 
 SIMPLE_TASK = InflightTaskActivation(
@@ -39,7 +45,7 @@ SIMPLE_TASK = InflightTaskActivation(
         id="111",
         taskname="examples.simple_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -51,7 +57,7 @@ RETRY_TASK = InflightTaskActivation(
         id="222",
         taskname="examples.retry_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -63,7 +69,7 @@ FAIL_TASK = InflightTaskActivation(
         id="333",
         taskname="examples.fail_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -75,7 +81,7 @@ UNDEFINED_TASK = InflightTaskActivation(
         id="444",
         taskname="total.rubbish",
         namespace="lolnope",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -87,7 +93,7 @@ AT_MOST_ONCE_TASK = InflightTaskActivation(
         id="555",
         taskname="examples.at_most_once",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
 )
@@ -99,7 +105,7 @@ RETRY_STATE_TASK = InflightTaskActivation(
         id="654",
         taskname="examples.retry_state",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
         retry_state=RetryState(
             # no more attempts left
@@ -117,7 +123,7 @@ SCHEDULED_TASK = InflightTaskActivation(
         id="111",
         taskname="examples.simple_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
         headers={
             "sentry-monitor-slug": "simple-task",
@@ -131,6 +137,43 @@ COMPRESSED_TASK = InflightTaskActivation(
     receive_timestamp=0,
     activation=TaskActivation(
         id="compressed_task_123",
+        taskname="examples.simple_task",
+        namespace="examples",
+        parameters_bytes=zstd.compress(
+            msgpack.packb(
+                {
+                    "args": ["test_arg1", "test_arg2"],
+                    "kwargs": {"test_key": "test_value", "number": 42},
+                },
+                use_bin_type=True,
+            )
+        ),
+        headers={
+            "compression-type": CompressionType.ZSTD.value,
+        },
+        processing_deadline_duration=2,
+    ),
+)
+
+# Legacy fixture using the old JSON parameters field for backward compat testing
+LEGACY_JSON_TASK = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="legacy_json_123",
+        taskname="examples.simple_task",
+        namespace="examples",
+        parameters='{"args": ["legacy_arg"], "kwargs": {}}',
+        processing_deadline_duration=2,
+    ),
+)
+
+# Legacy compressed fixture using base64+zstd in the old parameters field
+LEGACY_COMPRESSED_TASK = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="legacy_compressed_123",
         taskname="examples.simple_task",
         namespace="examples",
         parameters=base64.b64encode(
@@ -195,8 +238,8 @@ class TestTaskWorker(TestCase):
             # No next_task returned
             mock_client.update_task.return_value = None
 
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
             start = time.time()
             while True:
                 taskworker.run_once()
@@ -235,8 +278,8 @@ class TestTaskWorker(TestCase):
 
             mock_client.update_task.side_effect = update_task_response
             mock_client.get_task.return_value = SIMPLE_TASK
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
 
             # Run until two tasks have been processed
             start = time.time()
@@ -287,8 +330,8 @@ class TestTaskWorker(TestCase):
 
             mock_client.update_task.side_effect = update_task_response
             mock_client.get_task.side_effect = get_task_response
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
 
             # Run until the update has 'completed'
             start = time.time()
@@ -305,12 +348,16 @@ class TestTaskWorker(TestCase):
             assert mock_client.update_task.call_count == 3
 
     def test_push_task_queue(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = TaskWorkerProcessingPool(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            send_result_fn=lambda x, y: None,
+            mp_context=get_context("fork"),
             max_child_task_count=100,
-            process_type="fork",
+            concurrency=1,
             child_tasks_queue_maxsize=2,
+            result_queue_maxsize=2,
+            processing_pool_name="test",
+            process_type="fork",
         )
 
         # We can enqueue the first task
@@ -342,13 +389,14 @@ class TestTaskWorker(TestCase):
 
             mock_client.update_task.side_effect = update_task_response
             mock_client.get_task.return_value = RETRY_STATE_TASK
-            taskworker.start_result_thread()
-            taskworker.start_spawn_children_thread()
+            taskworker.worker_pool.start_result_thread()
+            taskworker.worker_pool.start_spawn_children_thread()
 
             # Run until two tasks have been processed
             start = time.time()
             while True:
                 taskworker.run_once()
+                time.sleep(0.1)
                 if mock_client.update_task.call_count >= 1:
                     break
                 if time.time() - start > max_runtime:
@@ -374,48 +422,35 @@ class TestTaskWorker(TestCase):
             redis.delete("no-retries-remaining")
 
     def test_constructor_push_mode(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = PushTaskWorker(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            broker_service="127.0.0.1:50051",
             max_child_task_count=100,
             process_type="fork",
-            push_mode=True,
             grpc_port=50099,
         )
 
-        # Make sure delivery mode and gRPC port arguments are stored
-        self.assertTrue(taskworker._push_mode)
+        self.assertTrue(taskworker.client is not None)
         self.assertEqual(taskworker._grpc_port, 50099)
-
-    def test_constructor_pull_mode(self) -> None:
-        taskworker = TaskWorker(
-            app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
-            max_child_task_count=100,
-            process_type="fork",
-        )
-
-        # Make sure delivery mode and gRPC port are set to their defaults
-        self.assertFalse(taskworker._push_mode)
-        self.assertEqual(taskworker._grpc_port, 50052)
 
 
 class TestWorkerServicer(TestCase):
     def test_push_task_success(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = PushTaskWorker(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            broker_service="127.0.0.1:50051",
             max_child_task_count=100,
             process_type="fork",
-            push_mode=True,
         )
-        with mock.patch.object(taskworker, "push_task", return_value=True) as mock_push_task:
+        with mock.patch.object(
+            taskworker.worker_pool, "push_task", return_value=True
+        ) as mock_push_task:
             request = PushTaskRequest(
                 task=SIMPLE_TASK.activation,
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker)
+            servicer = WorkerServicer(taskworker.worker_pool)
 
             response = servicer.PushTask(request, mock_context)
 
@@ -427,20 +462,20 @@ class TestWorkerServicer(TestCase):
         self.assertEqual(inflight.host, "broker-host:50051")
 
     def test_push_task_worker_busy(self) -> None:
-        taskworker = TaskWorker(
+        taskworker = PushTaskWorker(
             app_module="examples.app:app",
-            broker_hosts=["127.0.0.1:50051"],
+            broker_service="127.0.0.1:50051",
             max_child_task_count=100,
             process_type="fork",
             child_tasks_queue_maxsize=1,
         )
-        with mock.patch.object(taskworker, "push_task", return_value=False):
+        with mock.patch.object(taskworker.worker_pool, "push_task", return_value=False):
             request = PushTaskRequest(
                 task=SIMPLE_TASK.activation,
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker)
+            servicer = WorkerServicer(taskworker.worker_pool)
 
             servicer.PushTask(request, mock_context)
 
@@ -763,6 +798,54 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
     assert result.task_id == COMPRESSED_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     assert mock_capture_checkin.call_count == 0
+
+
+@mock.patch("sentry_sdk.crons.api.capture_checkin")
+def test_child_process_legacy_json_parameters(mock_capture_checkin: mock.MagicMock) -> None:
+    """Test backward compat: worker can handle legacy JSON parameters field."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(LEGACY_JSON_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == LEGACY_JSON_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+@mock.patch("sentry_sdk.crons.api.capture_checkin")
+def test_child_process_legacy_compressed_parameters(mock_capture_checkin: mock.MagicMock) -> None:
+    """Test backward compat: worker can handle legacy base64+zstd compressed JSON parameters."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(LEGACY_COMPRESSED_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == LEGACY_COMPRESSED_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
 def test_child_process_context_hooks() -> None:

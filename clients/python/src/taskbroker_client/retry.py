@@ -81,7 +81,7 @@ class Retry:
         # starts at 1.
         return state.attempts >= (self._times - 1)
 
-    def should_retry(self, state: RetryState, exc: Exception) -> bool:
+    def should_retry(self, state: RetryState, exc: BaseException) -> bool:
         # If there are no retries remaining we should not retry
         if self.max_attempts_reached(state):
             return False

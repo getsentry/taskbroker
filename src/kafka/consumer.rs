@@ -1,46 +1,34 @@
-use crate::store::traits::InflightActivationStore;
-use anyhow::{Error, anyhow};
-use futures::{
-    Stream, StreamExt,
-    future::{self},
-    pin_mut,
-};
-use rdkafka::{
-    ClientConfig, ClientContext, Message, Offset, TopicPartitionList,
-    consumer::{
-        BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer,
-        stream_consumer::StreamPartitionQueue,
-    },
-    error::{KafkaError, KafkaResult},
-    message::{BorrowedMessage, OwnedMessage},
-    types::RDKafkaErrorCode,
-};
-use std::{
-    cmp,
-    collections::{BTreeSet, HashMap},
-    fmt::Debug,
-    future::Future,
-    iter,
-    mem::take,
-    sync::{
-        Arc,
-        mpsc::{SyncSender, sync_channel},
-    },
-    time::Duration,
-};
-use tokio::{
-    runtime::Handle,
-    select,
-    sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender, unbounded_channel},
-        oneshot,
-    },
-    task::{self, JoinError, JoinSet},
-    time::{self, MissedTickBehavior, sleep},
-};
+use std::collections::{BTreeSet, HashMap};
+use std::fmt::Debug;
+use std::future::Future;
+use std::mem::take;
+use std::sync::Arc;
+use std::sync::mpsc::{SyncSender, sync_channel};
+use std::time::Duration;
+use std::{cmp, iter};
+
+use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer};
+use rdkafka::error::{KafkaError, KafkaResult};
+use rdkafka::message::{BorrowedMessage, OwnedMessage};
+use rdkafka::types::RDKafkaErrorCode;
+use rdkafka::{ClientConfig, ClientContext, Message, Offset, TopicPartitionList};
+
+use tokio::runtime::Handle;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::{JoinError, JoinSet};
+use tokio::time::{MissedTickBehavior, sleep};
+use tokio::{select, task, time};
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_util::{either::Either, sync::CancellationToken};
+use tokio_util::either::Either;
+use tokio_util::sync::CancellationToken;
+
+use anyhow::{Error, anyhow};
+use futures::{Stream, StreamExt, future, pin_mut};
 use tracing::{debug, error, info, instrument, warn};
+
+use crate::store::traits::InflightActivationStore;
 
 pub async fn start_consumer(
     topics: &[&str],
@@ -824,37 +812,30 @@ pub async fn commit(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashMap,
-        iter,
-        marker::PhantomData,
-        mem::take,
-        sync::{Arc, RwLock},
-        time::Duration,
-    };
+    use std::collections::HashMap;
+    use std::iter;
+    use std::marker::PhantomData;
+    use std::mem::take;
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
 
     use anyhow::{Error, anyhow};
     use futures::Stream;
-    use rdkafka::{
-        Message, Offset, Timestamp, TopicPartitionList,
-        error::{KafkaError, KafkaResult},
-        message::OwnedMessage,
-    };
-    use tokio::{
-        sync::{broadcast, mpsc, oneshot},
-        time::sleep,
-    };
-    use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
+    use rdkafka::error::{KafkaError, KafkaResult};
+    use rdkafka::message::OwnedMessage;
+    use rdkafka::{Message, Offset, Timestamp, TopicPartitionList};
+    use tokio::sync::{broadcast, mpsc, oneshot};
+    use tokio::time::sleep;
+    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
     use tokio_util::sync::CancellationToken;
 
-    use crate::kafka::{
-        consumer::{
-            CommitClient, KafkaMessage, MessageQueue, ReduceConfig, ReduceShutdownBehaviour,
-            ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour, commit, map, reduce,
-            reduce_err,
-        },
-        os_stream_writer::{OsStream, OsStreamWriter},
+    use crate::kafka::consumer::{
+        CommitClient, KafkaMessage, MessageQueue, ReduceConfig, ReduceShutdownBehaviour,
+        ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour, commit, map, reduce,
+        reduce_err,
     };
+    use crate::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 
     struct MockCommitClient {
         offsets: Arc<RwLock<Vec<TopicPartitionList>>>,

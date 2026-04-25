@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::time::Instant;
+
 use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -5,14 +8,12 @@ use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivation, TaskActivationStatus,
 };
-use std::sync::Arc;
-use std::time::Instant;
 use tonic::{Request, Response, Status};
+use tracing::{error, instrument, warn};
 
 use crate::config::{Config, DeliveryMode};
 use crate::store::activation::InflightActivationStatus;
 use crate::store::traits::InflightActivationStore;
-use tracing::{error, instrument, warn};
 
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,

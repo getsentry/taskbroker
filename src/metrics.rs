@@ -1,9 +1,9 @@
-use crate::config::Config;
+use std::collections::BTreeMap;
+use std::net::{SocketAddr, ToSocketAddrs};
+
 use metrics_exporter_statsd::StatsdBuilder;
-use std::{
-    collections::BTreeMap,
-    net::{SocketAddr, ToSocketAddrs},
-};
+
+use crate::config::Config;
 
 pub struct MetricsConfig {
     pub statsd_addr: SocketAddr,

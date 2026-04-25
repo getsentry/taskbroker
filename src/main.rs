@@ -1,44 +1,46 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
-use std::{sync::Arc, time::Duration};
-use taskbroker::fetch::FetchPool;
-use taskbroker::kafka::inflight_activation_batcher::{
-    ActivationBatcherConfig, InflightActivationBatcher,
-};
-use taskbroker::push::PushPool;
-use taskbroker::upkeep::upkeep;
+use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
+use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
-
-use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 
 use taskbroker::SERVICE_NAME;
 use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
+use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
-use taskbroker::kafka::{
-    admin::create_missing_topics,
-    consumer::start_consumer,
-    deserialize_activation::{self, DeserializeActivationConfig},
-    inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
-    os_stream_writer::{OsStream, OsStreamWriter},
+use taskbroker::kafka::admin::create_missing_topics;
+use taskbroker::kafka::consumer::start_consumer;
+use taskbroker::kafka::deserialize_activation;
+use taskbroker::kafka::deserialize_activation::DeserializeActivationConfig;
+use taskbroker::kafka::inflight_activation_batcher::{
+    ActivationBatcherConfig, InflightActivationBatcher,
 };
+use taskbroker::kafka::inflight_activation_writer::{
+    ActivationWriterConfig, InflightActivationWriter,
+};
+use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
+use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::adapters::postgres::{
     PostgresActivationStore, PostgresActivationStoreConfig,
 };
 use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
 use taskbroker::store::traits::InflightActivationStore;
+use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
-use tonic_health::ServingStatus;
 
 async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {

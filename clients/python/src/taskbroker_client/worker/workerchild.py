@@ -12,6 +12,7 @@ from types import FrameType
 from typing import Any
 
 # XXX: Don't import any modules that will import django here, do those within child_process
+import msgpack
 import orjson
 import sentry_sdk
 import zstandard as zstd
@@ -59,17 +60,28 @@ def timeout_alarm(
         signal.signal(signal.SIGALRM, original)
 
 
-def load_parameters(data: str, headers: dict[str, str]) -> dict[str, Any]:
+def load_parameters(activation: TaskActivation) -> dict[str, Any]:
+    headers = dict(activation.headers)
     compression_type = headers.get("compression-type", None)
+
+    # Prefer new msgpack field
+    if activation.parameters_bytes:
+        data = activation.parameters_bytes
+        if compression_type == CompressionType.ZSTD.value:
+            data = zstd.decompress(data)
+        return msgpack.unpackb(data, raw=False)
+
+    # Legacy JSON fallback
+    data_str = activation.parameters
     if not compression_type or compression_type == CompressionType.PLAINTEXT.value:
-        return orjson.loads(data)
+        return orjson.loads(data_str)
     elif compression_type == CompressionType.ZSTD.value:
-        return orjson.loads(zstd.decompress(base64.b64decode(data)))
+        return orjson.loads(zstd.decompress(base64.b64decode(data_str)))
     else:
         logger.error(
             "Unsupported compression type: %s. Continuing with plaintext.", compression_type
         )
-        return orjson.loads(data)
+        return orjson.loads(data_str)
 
 
 def status_name(status: TaskActivationStatus.ValueType) -> str:
@@ -229,14 +241,15 @@ def child_process(
                     _execute_activation(task_func, inflight.activation, app.context_hooks)
                 next_state = TASK_ACTIVATION_STATUS_COMPLETE
             except ProcessingDeadlineExceeded as err:
-                with sentry_sdk.isolation_scope() as scope:
-                    scope.fingerprint = [
-                        "taskworker.processing_deadline_exceeded",
-                        inflight.activation.namespace,
-                        inflight.activation.taskname,
-                    ]
-                    scope.set_transaction_name(inflight.activation.taskname)
-                    sentry_sdk.capture_exception(err)
+                if task_func.report_timeout_errors:
+                    with sentry_sdk.isolation_scope() as scope:
+                        scope.fingerprint = [
+                            "taskworker.processing_deadline_exceeded",
+                            inflight.activation.namespace,
+                            inflight.activation.taskname,
+                        ]
+                        scope.set_transaction_name(inflight.activation.taskname)
+                        sentry_sdk.capture_exception(err)
                 metrics.incr(
                     "taskworker.worker.processing_deadline_exceeded",
                     tags={
@@ -245,7 +258,11 @@ def child_process(
                         "taskname": inflight.activation.taskname,
                     },
                 )
-                next_state = TASK_ACTIVATION_STATUS_FAILURE
+                retry = task_func.retry
+                if retry and retry.should_retry(inflight.activation.retry_state, err):
+                    next_state = TASK_ACTIVATION_STATUS_RETRY
+                else:
+                    next_state = TASK_ACTIVATION_STATUS_FAILURE
             except Exception as err:
                 retry = task_func.retry
                 captured_error = False
@@ -314,12 +331,12 @@ def child_process(
         context_hooks: Sequence[ContextHook] = (),
     ) -> None:
         """Invoke a task function with the activation parameters."""
-        headers = {k: v for k, v in activation.headers.items()}
-        parameters = load_parameters(activation.parameters, headers)
+        parameters = load_parameters(activation)
 
         args = parameters.get("args", [])
         kwargs = parameters.get("kwargs", {})
 
+        headers = dict(activation.headers)
         transaction = sentry_sdk.continue_trace(
             environ_or_headers=headers,
             op="queue.task.taskworker",

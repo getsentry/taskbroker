@@ -1,4 +1,20 @@
 # Changelog
+## 26.4.1
+
+### New Features ✨
+
+- Separate push Taskworker from pull Taskworker by @evanh in [#593](https://github.com/getsentry/taskbroker/pull/593)
+
+### Internal Changes 🔧
+
+- (eco) Adds report_timeout_errors options to Task definitions, allows ProcessingDeadlineExceeded to be retried by @GabeVillalobos in [#592](https://github.com/getsentry/taskbroker/pull/592)
+- (store) Reorganize Migrations by @george-sentry in [#596](https://github.com/getsentry/taskbroker/pull/596)
+- (taskbroker) Flatten Imports by @george-sentry in [#600](https://github.com/getsentry/taskbroker/pull/600)
+
+### Other
+
+- feat(schedules) Improve schedule entry isolation by @markstory in [#599](https://github.com/getsentry/taskbroker/pull/599)
+
 ## 26.4.0
 
 ### New Features ✨

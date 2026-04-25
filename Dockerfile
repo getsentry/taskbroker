@@ -17,7 +17,6 @@ ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
-COPY ./pg_migrations ./pg_migrations
 COPY ./benches ./benches
 
 # Build dependencies in a way they can be cached

@@ -1,3 +1,14 @@
+use std::str::FromStr;
+use std::time::Instant;
+
+use sqlx::migrate::MigrateDatabase;
+use sqlx::pool::{PoolConnection, PoolOptions};
+use sqlx::sqlite::{
+    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteRow,
+    SqliteSynchronous,
+};
+use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite};
+
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,16 +22,6 @@ use libsqlite3_sys::{
 };
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use tracing::{instrument, warn};
-
-use sqlx::migrate::MigrateDatabase;
-use sqlx::pool::{PoolConnection, PoolOptions};
-use sqlx::sqlite::{
-    SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteRow,
-    SqliteSynchronous,
-};
-use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite};
-
-use std::{str::FromStr, time::Instant};
 
 use crate::config::Config;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
@@ -166,7 +167,9 @@ impl SqliteActivationStore {
     pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
         let (read_pool, write_pool) = create_sqlite_pool(url).await?;
 
-        sqlx::migrate!("./migrations").run(&write_pool).await?;
+        sqlx::migrate!("./migrations/sqlite")
+            .run(&write_pool)
+            .await?;
 
         Ok(Self {
             read_pool,

@@ -1,15 +1,18 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{Error, anyhow};
+use chrono::{DateTime, Utc};
+use prost::Message as _;
+use rdkafka::Message;
+use rdkafka::message::OwnedMessage;
+use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
+use sentry_protos::taskbroker::v1::TaskActivation;
+use uuid::Uuid;
 
 use crate::config::Config;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use anyhow::{Error, anyhow};
-use chrono::{DateTime, Utc};
-use prost::Message as _;
-use rdkafka::{Message, message::OwnedMessage};
-use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
-use sentry_protos::taskbroker::v1::TaskActivation;
-use uuid::Uuid;
 
 pub struct DeserializeActivationConfig {
     pub max_delayed_allowed: u64,
@@ -115,16 +118,18 @@ pub fn new(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use chrono::Utc;
     use prost::Message as _;
-    use rdkafka::{Timestamp, message::OwnedMessage};
+    use rdkafka::Timestamp;
+    use rdkafka::message::OwnedMessage;
     use sentry_protos::taskbroker::v1::TaskActivation;
 
-    use crate::{
-        store::activation::InflightActivationStatus, test_utils::generate_unique_namespace,
-    };
+    use crate::store::activation::InflightActivationStatus;
+    use crate::test_utils::generate_unique_namespace;
 
     use super::{Config, DeserializeActivationConfig, new};
 
@@ -142,6 +147,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // not used when the activation doesn't have expires.
             received_at: Some(prost_types::Timestamp {
@@ -187,6 +193,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has expires
             received_at: Some(prost_types::Timestamp {
@@ -233,6 +240,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has expires
             received_at: Some(prost_types::Timestamp {
@@ -279,6 +287,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has delay
             received_at: Some(prost_types::Timestamp {
@@ -326,6 +335,7 @@ mod tests {
             namespace: generate_unique_namespace(),
             taskname: "taskname".into(),
             parameters: "{}".into(),
+            parameters_bytes: vec![],
             headers: HashMap::new(),
             // used because the activation has delay
             received_at: Some(prost_types::Timestamp {

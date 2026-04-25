@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import heapq
 import logging
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from redis.client import StrictRedis
-from rediscluster import RedisCluster
 from sentry_sdk import capture_exception
 from sentry_sdk.crons import MonitorStatus, capture_checkin
 
 from taskbroker_client.app import TaskbrokerApp
-from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.scheduler.config import ScheduleConfig, crontab
 from taskbroker_client.scheduler.schedules import CrontabSchedule, Schedule, TimedeltaSchedule
+from taskbroker_client.scheduler.storage import RunStorage, RunStorageProtocol
 from taskbroker_client.task import Task
 
 logger = logging.getLogger(__name__)
@@ -23,77 +20,7 @@ if TYPE_CHECKING:
     from sentry_sdk._types import MonitorConfig
 
 
-class RunStorage:
-    """
-    Storage interface for tracking the last run time of tasks.
-    This is split out from `ScheduleRunner` to allow us to change storage
-    in the future, or adapt taskworkers for other applications should we need to.
-    """
-
-    def __init__(
-        self, metrics: MetricsBackend, redis: RedisCluster[str] | StrictRedis[str]
-    ) -> None:
-        self._redis = redis
-        self._metrics = metrics
-
-    def _make_key(self, key: str) -> str:
-        return f"tw:scheduler:{key}"
-
-    def set(self, key: str, next_runtime: datetime) -> bool:
-        """
-        Record a spawn time for a task.
-        The next_runtime parameter indicates when the record should expire,
-        and a task can be spawned again.
-
-        Returns False when the key is set and a task should not be spawned.
-        """
-        now = datetime.now(tz=UTC)
-        # next_runtime & now could be the same second, and redis gets sad if ex=0
-        duration = max(int((next_runtime - now).total_seconds()), 1)
-
-        result = self._redis.set(self._make_key(key), now.isoformat(), ex=duration, nx=True)
-        return bool(result)
-
-    def read(self, key: str) -> datetime | None:
-        """
-        Retrieve the last run time of a task
-        Returns None if last run time has expired or is unknown.
-        """
-        result = self._redis.get(self._make_key(key))
-        if result:
-            return datetime.fromisoformat(result)
-
-        self._metrics.incr("taskworker.scheduler.run_storage.read.miss", tags={"taskname": key})
-        return None
-
-    def read_many(
-        self,
-        storage_keys: list[str],
-    ) -> Mapping[str, datetime | None]:
-        """
-        Retrieve last run times in bulk.
-
-        storage_keys are the new-format keys including the schedule_id suffix
-        (e.g. "test:valid:300"). Falls back to the legacy key (derived by
-        stripping the suffix) when the new key has no data, allowing a seamless
-        first-deploy transition.
-
-        Returns a mapping keyed by storage_key.
-        """
-        legacy_keys = [sk.rsplit(":", 1)[0] for sk in storage_keys]
-
-        new_values = self._redis.mget([self._make_key(sk) for sk in storage_keys])
-        legacy_values = self._redis.mget([self._make_key(lk) for lk in legacy_keys])
-
-        run_times: dict[str, datetime | None] = {}
-        for storage_key, new_val, legacy_val in zip(storage_keys, new_values, legacy_values):
-            raw = new_val if new_val is not None else legacy_val
-            run_times[storage_key] = datetime.fromisoformat(raw) if raw else None
-        return run_times
-
-    def delete(self, key: str) -> None:
-        """remove a task key - mostly for testing."""
-        self._redis.delete(self._make_key(key))
+__all__ = ("ScheduleEntry", "ScheduleRunner", "RunStorage")
 
 
 class ScheduleEntry:
@@ -126,7 +53,7 @@ class ScheduleEntry:
 
     @property
     def storage_key(self) -> str:
-        return f"{self.fullname}:{self._schedule.schedule_id()}"
+        return f"{self._key}:{self.fullname}:{self._schedule.schedule_id()}"
 
     @property
     def namespace(self) -> str:
@@ -198,7 +125,7 @@ class ScheduleRunner:
     is used in a while loop to spawn tasks and sleep.
     """
 
-    def __init__(self, app: TaskbrokerApp, run_storage: RunStorage) -> None:
+    def __init__(self, app: TaskbrokerApp, run_storage: RunStorageProtocol) -> None:
         self._entries: list[ScheduleEntry] = []
         self._app = app
         self._run_storage = run_storage

@@ -1,15 +1,16 @@
 [project]
 name = "taskbroker-client"
-version = "0.1.8"
+version = "0.1.11"
 description = "Taskbroker python client and worker runtime"
 readme = "README.md"
 dependencies = [
     "sentry-arroyo>=2.38.7",
     "sentry-sdk[http2]>=2.43.0",
-    "sentry-protos>=0.8.5",
+    "sentry-protos>=0.8.13",
     "confluent_kafka>=2.3.0",
     "cronsim>=2.6",
     "grpcio>=1.67.0",
+    "msgpack>=1.0.0",
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
     "redis>=3.4.1",

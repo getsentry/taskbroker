@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Timelike, Utc};
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use prost::Message;
 use prost_types::Timestamp;
 use rdkafka::error::KafkaError;
@@ -522,28 +523,27 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use prost::Message;
     use prost_types::Timestamp;
     use rstest::rstest;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
-    use std::sync::Arc;
-    use std::time::Duration;
-    use std::time::Instant;
     use tokio::fs;
     use tokio::time::sleep;
 
-    use crate::{
-        config::Config,
-        runtime_config::RuntimeConfigManager,
-        store::activation::InflightActivationStatus,
-        test_utils::{
-            StatusCount, assert_counts, consume_topic, create_config,
-            create_integration_config_with_topic, create_producer, create_test_store,
-            make_activations, replace_retry_state, reset_topic,
-        },
-        upkeep::{create_retry_activation, do_upkeep},
+    use crate::config::Config;
+    use crate::runtime_config::RuntimeConfigManager;
+    use crate::store::activation::InflightActivationStatus;
+    use crate::test_utils::{
+      StatusCount, assert_counts, consume_topic, create_config,
+      create_integration_config_with_topic, create_producer, create_test_store,
+      make_activations, replace_retry_state, reset_topic,
     };
+    use crate::upkeep::{create_retry_activation, do_upkeep};
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
@@ -664,7 +664,10 @@ mod tests {
             activation.received_at.unwrap().nanos as u32,
         )
         .expect("");
-        activation.parameters = r#"{"a":"b"}"#.into();
+        {
+            #![allow(deprecated)]
+            activation.parameters = r#"{"a":"b"}"#.into();
+        }
         activation.delay = Some(30);
         records[0].status = InflightActivationStatus::Retry;
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
@@ -701,7 +704,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.taskname, activation_to_check.taskname);
         assert_eq!(activation.namespace, activation_to_check.namespace);
-        assert_eq!(activation.parameters, activation_to_check.parameters);
+        {
+            #![allow(deprecated)]
+            assert_eq!(activation.parameters, activation_to_check.parameters);
+        }
         // received_at should be set be later than the original activation
         assert!(
             activation.received_at.unwrap().seconds
@@ -977,7 +983,7 @@ mod tests {
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
         let config = Arc::new(Config {
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{}", adapter))
+            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
         });
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
@@ -1024,7 +1030,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.id, activation_to_check.id);
         // DLQ should retain parameters of original task
-        assert_eq!(activation.parameters, activation_to_check.parameters);
+        {
+            #![allow(deprecated)]
+            assert_eq!(activation.parameters, activation_to_check.parameters);
+        }
     }
 
     #[tokio::test]

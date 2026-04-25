@@ -1,14 +1,16 @@
-use crate::{
-    config::Config, runtime_config::RuntimeConfigManager, store::activation::InflightActivation,
-};
+use std::mem::replace;
+use std::sync::Arc;
+use std::time::Duration;
+
 use chrono::Utc;
 use futures::future::join_all;
 use rdkafka::config::ClientConfig;
-use rdkafka::{
-    producer::{FutureProducer, FutureRecord},
-    util::Timeout,
-};
-use std::{mem::replace, sync::Arc, time::Duration};
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
+
+use crate::config::Config;
+use crate::runtime_config::RuntimeConfigManager;
+use crate::store::activation::InflightActivation;
 
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
@@ -211,17 +213,16 @@ impl Reducer for InflightActivationBatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ActivationBatcherConfig, Config, InflightActivationBatcher, Reducer, RuntimeConfigManager,
-    };
+    use std::sync::Arc;
+
     use chrono::Utc;
     use tokio::fs;
 
-    use std::sync::Arc;
+    use crate::store::activation::InflightActivationBuilder;
+    use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
 
-    use crate::{
-        store::activation::InflightActivationBuilder,
-        test_utils::{TaskActivationBuilder, generate_unique_namespace},
+    use super::{
+        ActivationBatcherConfig, Config, InflightActivationBatcher, Reducer, RuntimeConfigManager,
     };
 
     #[tokio::test]
