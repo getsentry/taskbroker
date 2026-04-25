@@ -539,9 +539,9 @@ mod tests {
     use crate::runtime_config::RuntimeConfigManager;
     use crate::store::activation::InflightActivationStatus;
     use crate::test_utils::{
-      StatusCount, assert_counts, consume_topic, create_config,
-      create_integration_config_with_topic, create_producer, create_test_store,
-      make_activations, replace_retry_state, reset_topic,
+        StatusCount, assert_counts, consume_topic, create_config,
+        create_integration_config_with_topic, create_producer, create_test_store, make_activations,
+        replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
 
