@@ -327,8 +327,8 @@ pub fn create_integration_config_with_ssl() -> Arc<Config> {
     Arc::new(config)
 }
 
-pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
-    let config = Config {
+pub fn create_integration_config_with_topic(topic: String) -> Config {
+    Config {
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
         pg_username: get_pg_username(),
@@ -338,9 +338,7 @@ pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
         kafka_topic: topic,
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
-    };
-
-    Arc::new(config)
+    }
 }
 
 /// Create a kafka producer for a given config
