@@ -6,7 +6,7 @@ from typing import Any, Callable, Protocol
 from arroyo.backends.abstract import ProducerFuture
 from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
-from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation, TaskActivationStatus
+from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation, TaskActivationStatus, TaskError
 
 
 class ContextHook(Protocol):
@@ -21,6 +21,16 @@ class ContextHook(Protocol):
     def on_dispatch(self, headers: MutableMapping[str, Any]) -> None: ...
 
     def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]: ...
+
+
+class ErrorHook(Protocol):
+    """Hook for capturing task execution exceptions before status reporting."""
+
+    def on_exception(
+        self,
+        task_meta: "InflightTaskActivation",
+        exc: BaseException,
+    ) -> TaskError | None: ...
 
 
 class AtMostOnceStore(Protocol):
@@ -65,3 +75,4 @@ class ProcessingResult:
     status: TaskActivationStatus.ValueType
     host: str
     receive_timestamp: float
+    error: TaskError | None = None

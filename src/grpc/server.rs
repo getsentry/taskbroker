@@ -6,13 +6,13 @@ use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
-    TaskActivation, TaskActivationStatus,
+    TaskActivation, TaskActivationStatus, TaskError,
 };
 use tonic::{Request, Response, Status};
 use tracing::{error, instrument, warn};
 
 use crate::config::{Config, DeliveryMode};
-use crate::store::activation::InflightActivationStatus;
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 
 pub struct TaskbrokerServer {
@@ -97,17 +97,22 @@ impl ConsumerService for TaskbrokerServer {
                 "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {status:?}"
             )));
         }
+
         if status == InflightActivationStatus::Failure {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
         match self.store.set_status(&id, status).await {
-            Ok(Some(_)) => metrics::counter!(
-                "grpc_server.set_status",
-                "result" => "ok",
-                "status" => status.to_string()
-            )
-            .increment(1),
+            Ok(Some(row)) => {
+                metrics::counter!(
+                    "grpc_server.set_status",
+                    "result" => "ok",
+                    "status" => status.to_string()
+                )
+                .increment(1);
+
+                log_failure_context(&row, status, request.get_ref().error.as_ref());
+            }
 
             Ok(None) => metrics::counter!(
                 "grpc_server.set_status",
@@ -167,7 +172,8 @@ impl ConsumerService for TaskbrokerServer {
             Ok(None) => {
                 warn!("No pending activations");
 
-                // If we return an error, the worker will place the result back in its internal queue and send the update again in the future, which is not desired
+                // If we return an error, the worker will place the result back in its internal queue
+                // and send the update again in the future, which is not desired.
                 Ok(Response::new(SetTaskStatusResponse { task: None }))
             }
 
@@ -190,7 +196,43 @@ impl ConsumerService for TaskbrokerServer {
                 }))
             }
         };
+
         metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
         res
     }
+}
+
+/// Emit a structured ERROR log on task conclusions that reflect a caught worker
+/// exception. Called only after the store update succeeded.
+///
+/// Logs on Failure always, and on Retry only when an error envelope is present
+/// (bare retries triggered by retry_task() with no exception stay quiet).
+///
+/// Intentionally does not touch metrics — taskname/exception_type are too
+/// high-cardinality to tag counters with.
+fn log_failure_context(
+    row: &InflightActivation,
+    status: InflightActivationStatus,
+    error: Option<&TaskError>,
+) {
+    let should_log = match status {
+        InflightActivationStatus::Failure => true,
+        InflightActivationStatus::Retry => error.is_some(),
+        _ => false,
+    };
+
+    if !should_log {
+        return;
+    }
+
+    error!(
+        task_id = %row.id,
+        taskname = %row.taskname,
+        namespace = %row.namespace,
+        status = %status,
+        attempts = row.processing_attempts,
+        exception_type = error.map(|e| e.exception_type.as_str()).unwrap_or(""),
+        exception_message = error.map(|e| e.exception_message.as_str()).unwrap_or(""),
+        "task reported failure",
+    );
 }

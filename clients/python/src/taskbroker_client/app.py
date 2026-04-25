@@ -12,7 +12,7 @@ from taskbroker_client.registry import ExternalNamespace, TaskNamespace, TaskReg
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import Task
-from taskbroker_client.types import AtMostOnceStore, ContextHook, ProducerFactory
+from taskbroker_client.types import AtMostOnceStore, ContextHook, ErrorHook, ProducerFactory
 
 
 class TaskbrokerApp:
@@ -28,10 +28,12 @@ class TaskbrokerApp:
         metrics_class: str | MetricsBackend = "taskbroker_client.metrics.NoOpMetricsBackend",
         at_most_once_store: AtMostOnceStore | None = None,
         context_hooks: list[ContextHook] | None = None,
+        error_hook: ErrorHook | None = None,
     ) -> None:
         self.name = name
         self.metrics = self._build_metrics(metrics_class)
         self.context_hooks: list[ContextHook] = context_hooks if context_hooks is not None else []
+        self.error_hook = error_hook
         self._config = {
             "rpc_secret": None,
             "grpc_config": None,

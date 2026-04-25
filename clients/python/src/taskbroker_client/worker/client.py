@@ -445,6 +445,7 @@ class TaskbrokerClient:
             id=processing_result.task_id,
             status=processing_result.status,
             fetch_next_task=fetch_next_task,
+            error=processing_result.error,
         )
 
         try:
@@ -566,6 +567,7 @@ class PushTaskbrokerClient:
             id=processing_result.task_id,
             status=processing_result.status,
             fetch_next_task=None,
+            error=processing_result.error,
         )
 
         retries = 0

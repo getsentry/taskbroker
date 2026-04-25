@@ -4,14 +4,17 @@ use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivation,
+    FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivation, TaskActivationStatus,
+    TaskError,
 };
 use tonic::{Code, Request};
 
 use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::TaskbrokerServer;
 use crate::store::activation::InflightActivationStatus;
-use crate::test_utils::{create_config, create_test_store, make_activations};
+use crate::test_utils::{
+    create_config, create_test_store, make_activations, make_failing_store, seed_inflight,
+};
 
 #[tokio::test]
 async fn test_get_task_push_mode_returns_permission_denied() {
@@ -68,6 +71,7 @@ async fn test_set_task_status(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
+        error: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -89,6 +93,7 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
+        error: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_err());
@@ -125,7 +130,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_some());
     let task = resp.get_ref().task.as_ref().unwrap();
-    assert!(task.id == "id_0");
+    assert_eq!(task.id, "id_0");
 
     let row = store.get_by_id("id_0").await.unwrap().expect("claimed row");
     assert_eq!(row.status, InflightActivationStatus::Processing);
@@ -212,7 +217,7 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
     let resp = response.unwrap();
     assert!(resp.get_ref().task.is_some());
     let task = resp.get_ref().task.as_ref().unwrap();
-    assert!(task.id == "id_0");
+    assert_eq!(task.id, "id_0");
 
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
@@ -221,6 +226,7 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
             namespace: None,
             application: None,
         }),
+        error: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -256,6 +262,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
             application: Some("hammers".into()),
             namespace: None,
         }),
+        error: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -296,6 +303,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
             application: Some("no-matches".into()),
             namespace: None,
         }),
+        error: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -324,6 +332,7 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
             application: None,
             namespace: Some(namespace),
         }),
+        error: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -331,4 +340,193 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
         response.unwrap().get_ref().task.is_none(),
         "namespace without application yields no next task in response"
     );
+}
+
+#[tokio::test]
+async fn set_task_status_failure_with_error_logs_after_persist() {
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    async fn inner() {
+        let store = create_test_store("sqlite").await;
+        let config = create_config();
+        let id = seed_inflight(&store, "sentry.tasks.store.save_event", "ingest.errors").await;
+
+        let server = TaskbrokerServer {
+            store: store.clone(),
+            config,
+        };
+
+        server
+            .set_task_status(Request::new(SetTaskStatusRequest {
+                id: id.clone(),
+                status: TaskActivationStatus::Failure as i32,
+                fetch_next_task: None,
+                error: Some(TaskError {
+                    exception_type: "django.db.utils.OperationalError".into(),
+                    exception_message: r#"could not access file "$libdir/btree_gist""#.into(),
+                    traceback: Some("Traceback ...".into()),
+                }),
+            }))
+            .await
+            .unwrap();
+
+        assert!(logs_contain("task reported failure"));
+        assert!(logs_contain("sentry.tasks.store.save_event"));
+        assert!(logs_contain("django.db.utils.OperationalError"));
+        assert!(logs_contain("btree_gist"));
+        assert_eq!(
+            store.get_by_id(&id).await.unwrap().unwrap().status,
+            InflightActivationStatus::Failure,
+        );
+    }
+
+    inner().await;
+}
+
+#[tokio::test]
+async fn set_task_status_retry_with_error_logs() {
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    async fn inner() {
+        let store = create_test_store("sqlite").await;
+        let config = create_config();
+        let id = seed_inflight(&store, "x", "y").await;
+        let server = TaskbrokerServer {
+            store: store.clone(),
+            config,
+        };
+
+        server
+            .set_task_status(Request::new(SetTaskStatusRequest {
+                id,
+                status: TaskActivationStatus::Retry as i32,
+                fetch_next_task: None,
+                error: Some(TaskError {
+                    exception_type: "requests.exceptions.ConnectionError".into(),
+                    exception_message: "connection reset".into(),
+                    traceback: None,
+                }),
+            }))
+            .await
+            .unwrap();
+
+        assert!(logs_contain("task reported failure"));
+        assert!(logs_contain("requests.exceptions.ConnectionError"));
+    }
+
+    inner().await;
+}
+
+#[tokio::test]
+async fn set_task_status_retry_without_error_is_silent() {
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    async fn inner() {
+        let store = create_test_store("sqlite").await;
+        let config = create_config();
+        let id = seed_inflight(&store, "x", "y").await;
+        let server = TaskbrokerServer { store, config };
+
+        server
+            .set_task_status(Request::new(SetTaskStatusRequest {
+                id,
+                status: TaskActivationStatus::Retry as i32,
+                fetch_next_task: None,
+                error: None,
+            }))
+            .await
+            .unwrap();
+
+        assert!(!logs_contain("task reported failure"));
+    }
+
+    inner().await;
+}
+
+#[tokio::test]
+async fn set_task_status_failure_without_error_still_logs_task_context() {
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    async fn inner() {
+        let store = create_test_store("sqlite").await;
+        let config = create_config();
+        let id = seed_inflight(&store, "some.task", "some.namespace").await;
+        let server = TaskbrokerServer { store, config };
+
+        server
+            .set_task_status(Request::new(SetTaskStatusRequest {
+                id: id.clone(),
+                status: TaskActivationStatus::Failure as i32,
+                fetch_next_task: None,
+                error: None,
+            }))
+            .await
+            .unwrap();
+
+        assert!(logs_contain("task reported failure"));
+        assert!(logs_contain("some.task"));
+        assert!(logs_contain("some.namespace"));
+    }
+
+    inner().await;
+}
+
+#[tokio::test]
+async fn set_task_status_does_not_log_when_store_update_fails() {
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    async fn inner() {
+        let store = make_failing_store().await;
+        let config = create_config();
+        let server = TaskbrokerServer { store, config };
+
+        let _ = server
+            .set_task_status(Request::new(SetTaskStatusRequest {
+                id: "abc".into(),
+                status: TaskActivationStatus::Failure as i32,
+                fetch_next_task: None,
+                error: Some(TaskError {
+                    exception_type: "X".into(),
+                    exception_message: "Y".into(),
+                    traceback: None,
+                }),
+            }))
+            .await;
+
+        assert!(!logs_contain("task reported failure"));
+    }
+
+    inner().await;
+}
+
+#[tokio::test]
+async fn set_task_status_complete_does_not_log_failure() {
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    async fn inner() {
+        let store = create_test_store("sqlite").await;
+        let config = create_config();
+        let id = seed_inflight(&store, "x", "y").await;
+        let server = TaskbrokerServer { store, config };
+
+        server
+            .set_task_status(Request::new(SetTaskStatusRequest {
+                id,
+                status: TaskActivationStatus::Complete as i32,
+                fetch_next_task: None,
+                error: None,
+            }))
+            .await
+            .unwrap();
+
+        assert!(!logs_contain("task reported failure"));
+    }
+
+    inner().await;
 }

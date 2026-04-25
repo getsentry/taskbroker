@@ -31,7 +31,7 @@ from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
-from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
+from taskbroker_client.types import ContextHook, ErrorHook, InflightTaskActivation, ProcessingResult
 
 logger = logging.getLogger(__name__)
 
@@ -234,13 +234,19 @@ def child_process(
             set_current_task(inflight.activation)
 
             next_state = TASK_ACTIVATION_STATUS_FAILURE
+            task_error = None
             # Use time.time() so we can measure against activation.received_at
             execution_start_time = time.time()
             try:
                 with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
-                    _execute_activation(task_func, inflight.activation, app.context_hooks)
+                    _execute_activation(task_func, inflight.activation, app.context_hooks, app.error_hook)
                 next_state = TASK_ACTIVATION_STATUS_COMPLETE
             except ProcessingDeadlineExceeded as err:
+                if app.error_hook is not None:
+                    try:
+                        task_error = app.error_hook.on_exception(inflight, err)
+                    except Exception:
+                        logger.exception("taskbroker_client.error_hook_failed")
                 if task_func.report_timeout_errors:
                     with sentry_sdk.isolation_scope() as scope:
                         scope.fingerprint = [
@@ -264,6 +270,11 @@ def child_process(
                 else:
                     next_state = TASK_ACTIVATION_STATUS_FAILURE
             except Exception as err:
+                if app.error_hook is not None:
+                    try:
+                        task_error = app.error_hook.on_exception(inflight, err)
+                    except Exception:
+                        logger.exception("taskbroker_client.error_hook_failed")
                 retry = task_func.retry
                 captured_error = False
                 if retry:
@@ -313,6 +324,7 @@ def child_process(
                         status=next_state,
                         host=inflight.host,
                         receive_timestamp=inflight.receive_timestamp,
+                        error=task_error,
                     )
                 )
 

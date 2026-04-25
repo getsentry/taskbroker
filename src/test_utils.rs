@@ -3,12 +3,14 @@ use std::env::var;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use anyhow::{Error, anyhow};
+use async_trait::async_trait;
 use rdkafka::Message;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
 use rdkafka::producer::FutureProducer;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use prost::Message as ProstMessage;
 use prost_types::Timestamp;
@@ -22,6 +24,7 @@ use crate::store::activation::{
 use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
 use crate::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
 use crate::store::traits::InflightActivationStore;
+use crate::store::types::{BucketRange, FailedTasksForwarder};
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {
@@ -297,6 +300,135 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore
     }
 }
 
+struct FailingSetStatusStore {
+    inner: Arc<dyn InflightActivationStore>,
+}
+
+#[async_trait]
+impl InflightActivationStore for FailingSetStatusStore {
+    async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
+        self.inner.store(batch).await
+    }
+
+    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+        self.inner.assign_partitions(partitions)
+    }
+
+    async fn claim_activations(
+        &self,
+        application: Option<&str>,
+        namespaces: Option<&[String]>,
+        limit: Option<i32>,
+        bucket: Option<BucketRange>,
+        mark_processing: bool,
+    ) -> Result<Vec<InflightActivation>, Error> {
+        self.inner
+            .claim_activations(application, namespaces, limit, bucket, mark_processing)
+            .await
+    }
+
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
+        self.inner.mark_activation_processing(id).await
+    }
+
+    async fn set_status(
+        &self,
+        _id: &str,
+        _status: InflightActivationStatus,
+    ) -> Result<Option<InflightActivation>, Error> {
+        Err(anyhow!("injected set_status failure for test"))
+    }
+
+    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
+        self.inner.pending_activation_max_lag(now).await
+    }
+
+    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
+        self.inner.count_by_status(status).await
+    }
+
+    async fn count(&self) -> Result<usize, Error> {
+        self.inner.count().await
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+        self.inner.get_by_id(id).await
+    }
+
+    async fn set_processing_deadline(
+        &self,
+        id: &str,
+        deadline: Option<DateTime<Utc>>,
+    ) -> Result<(), Error> {
+        self.inner.set_processing_deadline(id, deadline).await
+    }
+
+    async fn delete_activation(&self, id: &str) -> Result<(), Error> {
+        self.inner.delete_activation(id).await
+    }
+
+    async fn vacuum_db(&self) -> Result<(), Error> {
+        self.inner.vacuum_db().await
+    }
+
+    async fn full_vacuum_db(&self) -> Result<(), Error> {
+        self.inner.full_vacuum_db().await
+    }
+
+    async fn db_size(&self) -> Result<u64, Error> {
+        self.inner.db_size().await
+    }
+
+    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
+        self.inner.get_retry_activations().await
+    }
+
+    async fn handle_claim_expiration(&self) -> Result<u64, Error> {
+        self.inner.handle_claim_expiration().await
+    }
+
+    async fn handle_processing_deadline(&self) -> Result<u64, Error> {
+        self.inner.handle_processing_deadline().await
+    }
+
+    async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+        self.inner.handle_processing_attempts().await
+    }
+
+    async fn handle_expires_at(&self) -> Result<u64, Error> {
+        self.inner.handle_expires_at().await
+    }
+
+    async fn handle_delay_until(&self) -> Result<u64, Error> {
+        self.inner.handle_delay_until().await
+    }
+
+    async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
+        self.inner.handle_failed_tasks().await
+    }
+
+    async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        self.inner.mark_completed(ids).await
+    }
+
+    async fn remove_completed(&self) -> Result<u64, Error> {
+        self.inner.remove_completed().await
+    }
+
+    async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
+        self.inner.remove_killswitched(killswitched_tasks).await
+    }
+
+    async fn clear(&self) -> Result<(), Error> {
+        self.inner.clear().await
+    }
+}
+
+pub async fn make_failing_store() -> Arc<dyn InflightActivationStore> {
+    let inner = create_test_store("sqlite").await;
+    Arc::new(FailingSetStatusStore { inner }) as Arc<dyn InflightActivationStore>
+}
+
 /// Create a Config instance that uses a testing topic
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
@@ -336,8 +468,8 @@ pub fn create_integration_config_with_ssl() -> Arc<Config> {
     Arc::new(config)
 }
 
-pub fn create_integration_config_with_topic(topic: String) -> Config {
-    Config {
+pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
+    let config = Config {
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
         pg_username: get_pg_username(),
@@ -347,7 +479,9 @@ pub fn create_integration_config_with_topic(topic: String) -> Config {
         kafka_topic: topic,
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
-    }
+    };
+
+    Arc::new(config)
 }
 
 /// Create a kafka producer for a given config
@@ -515,4 +649,29 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
             .unwrap(),
         "difference in failure count",
     );
+}
+
+/// Store a single inflight activation with a caller-provided task name and
+/// namespace, then return its task id.
+///
+/// This helper is used by gRPC server tests that need a real inflight row in
+/// the store before calling `set_task_status(...)`.
+pub async fn seed_inflight(
+    store: &Arc<dyn InflightActivationStore>,
+    taskname: &str,
+    namespace: &str,
+) -> String {
+    let mut activations = make_activations(1);
+
+    let mut payload = TaskActivation::decode(&activations[0].activation as &[u8]).unwrap();
+    payload.taskname = taskname.to_string();
+    payload.namespace = namespace.to_string();
+
+    activations[0].taskname = taskname.to_string();
+    activations[0].namespace = namespace.to_string();
+    activations[0].activation = payload.encode_to_vec();
+
+    let id = activations[0].id.clone();
+    store.store(activations).await.unwrap();
+    id
 }
