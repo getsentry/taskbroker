@@ -539,7 +539,7 @@ mod tests {
     use crate::runtime_config::RuntimeConfigManager;
     use crate::store::activation::InflightActivationStatus;
     use crate::test_utils::{
-        StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
+        StatusCount, assert_counts, consume_topic, create_config,
         create_integration_config_with_topic, create_producer, create_test_store, make_activations,
         replace_retry_state, reset_topic,
     };
@@ -631,9 +631,11 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
-        let config = create_integration_config_with_topic(format!("taskbroker-test-{}", adapter));
+        let config = Arc::new(Config {
+            kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
+            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
+        });
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        reset_topic(config.clone()).await;
 
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -979,8 +981,10 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
-        #![allow(deprecated)]
-        let config = create_integration_config();
+        let config = Arc::new(Config {
+            kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
+            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
+        });
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 

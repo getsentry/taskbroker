@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -113,7 +114,7 @@ impl PushPool {
         let mut push_pool: JoinSet<Result<()>> = crate::tokio::spawn_pool(
             self.config.push_threads,
             |_| {
-                let endpoint = self.config.worker_endpoint.clone();
+                let worker_map = self.config.worker_map.clone();
                 let receiver = self.receiver.clone();
                 let store = store.clone();
 
@@ -130,21 +131,28 @@ impl PushPool {
                 async move {
                     metrics::counter!("push.worker.connect.attempt").increment(1);
 
-                    let mut worker = match WorkerServiceClient::connect(endpoint).await {
-                        Ok(w) => {
-                            metrics::counter!("push.worker.connect", "result" => "ok").increment(1);
-                            w
-                        }
+                    let mut workers = HashMap::new();
 
-                        Err(e) => {
-                            metrics::counter!("push.worker.connect", "result" => "error")
-                                .increment(1);
-                            error!("Failed to connect to worker - {:?}", e);
+                    for (application, endpoint) in worker_map.clone() {
+                        let worker = match WorkerServiceClient::connect(endpoint).await {
+                            Ok(w) => {
+                                metrics::counter!("push.worker.connect", "result" => "ok", "application" => application.clone())
+                                    .increment(1);
+                                w
+                            }
 
-                            // When we fail to connect, the taskbroker will shut down, but this may change in the future
-                            return Err(e.into());
-                        }
-                    };
+                            Err(e) => {
+                                metrics::counter!("push.worker.connect", "result" => "error", "application" => application.clone())
+                                    .increment(1);
+                                error!(error = ?e, "Failed to connect to worker");
+
+                                // When we fail to connect, the taskbroker will shut down, but this may change in the future
+                                return Err(e.into());
+                            }
+                        };
+
+                        workers.insert(application, worker);
+                    }
 
                     loop {
                         tokio::select! {
@@ -165,8 +173,20 @@ impl PushPool {
                                 let id = activation.id.clone();
                                 let callback_url = callback_url.clone();
 
+                                let Some(worker) = workers.get_mut(&activation.application) else {
+                                    metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
+
+                                    error!(
+                                        task_id = %id,
+                                        application = activation.application,
+                                        "Task application has no worker pool mapping"
+                                    );
+
+                                    continue
+                                };
+
                                 match push_task(
-                                    &mut worker,
+                                    worker,
                                     activation,
                                     callback_url,
                                     timeout,
@@ -209,8 +229,20 @@ impl PushPool {
                         let id = activation.id.clone();
                         let callback_url = callback_url.clone();
 
+                        let Some(worker) = workers.get_mut(&activation.application) else {
+                            metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
+
+                            error!(
+                                task_id = %id,
+                                application = activation.application,
+                                "Task application has no worker pool mapping"
+                            );
+
+                            continue;
+                        };
+
                         match push_task(
-                            &mut worker,
+                            worker,
                             activation,
                             callback_url,
                             timeout,

@@ -265,7 +265,7 @@ async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
     assert!(store.store(batch).await.is_ok());
 
     let mut first = store
-        .claim_activations_for_push(None, None, Some(1), Some((15, 25)))
+        .claim_activations_for_push(Some(1), Some((15, 25)))
         .await
         .unwrap();
     assert_eq!(first.len(), 1);
@@ -274,7 +274,7 @@ async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
     assert_eq!(first.bucket, 20);
 
     let mut second = store
-        .claim_activations_for_push(None, None, Some(1), Some((0, 15)))
+        .claim_activations_for_push(Some(1), Some((0, 15)))
         .await
         .unwrap();
     assert_eq!(second.len(), 1);
@@ -284,7 +284,7 @@ async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
 
     assert!(
         store
-            .claim_activations_for_push(None, None, Some(1), Some((15, 25)))
+            .claim_activations_for_push(Some(1), Some((15, 25)))
             .await
             .unwrap()
             .is_empty()
@@ -606,10 +606,7 @@ async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
     let batch = make_activations(N as u32);
     assert!(store.store(batch).await.is_ok());
 
-    let got = store
-        .claim_activations_for_push(None, None, None, None)
-        .await
-        .unwrap();
+    let got = store.claim_activations_for_push(None, None).await.unwrap();
     assert_eq!(got.len(), N);
     assert!(
         got.iter()
@@ -641,7 +638,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert!(store.store(batch).await.is_ok());
 
     let got = store
-        .claim_activations_for_push(None, None, Some(X), None)
+        .claim_activations_for_push(Some(X), None)
         .await
         .unwrap();
     assert_eq!(got.len(), X as usize);
@@ -678,7 +675,7 @@ async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str)
     assert!(store.store(batch).await.is_ok());
 
     let got = store
-        .claim_activations_for_push(None, None, Some(X), None)
+        .claim_activations_for_push(Some(X), None)
         .await
         .unwrap();
     assert_eq!(got.len(), Y);
