@@ -43,7 +43,6 @@ class TaskNamespace:
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
         context_hooks: list[ContextHook] | None = None,
-        report_timeout_errors: bool = True,
     ):
         self.name = name
         self.application = application
