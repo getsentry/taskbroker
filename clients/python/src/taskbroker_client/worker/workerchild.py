@@ -22,6 +22,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_RETRY,
     TaskActivation,
     TaskActivationStatus,
+    TaskError,
 )
 from sentry_sdk.consts import OP, SPANDATA, SPANSTATUS
 from sentry_sdk.crons import MonitorStatus, capture_checkin
@@ -31,7 +32,7 @@ from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
-from taskbroker_client.types import ContextHook, ErrorHook, InflightTaskActivation, ProcessingResult
+from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,18 @@ def child_process(
                 f"execution deadline of {deadline} seconds exceeded by {taskname}"
             )
 
+        def _get_task_error_from_hook(
+            inflight_activation: InflightTaskActivation,
+            exc: BaseException,
+        ) -> TaskError | None:
+            if app.error_hook is None:
+                return None
+            try:
+                return app.error_hook.on_exception(inflight_activation, exc)
+            except Exception:
+                logger.exception("taskbroker_client.error_hook_failed")
+                return None
+
         while not shutdown_event.is_set():
             if max_task_count and processed_task_count >= max_task_count:
                 metrics.incr(
@@ -239,14 +252,9 @@ def child_process(
             execution_start_time = time.time()
             try:
                 with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
-                    _execute_activation(task_func, inflight.activation, app.context_hooks, app.error_hook)
+                    _execute_activation(task_func, inflight.activation, app.context_hooks)
                 next_state = TASK_ACTIVATION_STATUS_COMPLETE
             except ProcessingDeadlineExceeded as err:
-                if app.error_hook is not None:
-                    try:
-                        task_error = app.error_hook.on_exception(inflight, err)
-                    except Exception:
-                        logger.exception("taskbroker_client.error_hook_failed")
                 if task_func.report_timeout_errors:
                     with sentry_sdk.isolation_scope() as scope:
                         scope.fingerprint = [
@@ -269,12 +277,10 @@ def child_process(
                     next_state = TASK_ACTIVATION_STATUS_RETRY
                 else:
                     next_state = TASK_ACTIVATION_STATUS_FAILURE
+
+                task_error = _get_task_error_from_hook(inflight, err)
+
             except Exception as err:
-                if app.error_hook is not None:
-                    try:
-                        task_error = app.error_hook.on_exception(inflight, err)
-                    except Exception:
-                        logger.exception("taskbroker_client.error_hook_failed")
                 retry = task_func.retry
                 captured_error = False
                 if retry:
@@ -306,6 +312,8 @@ def child_process(
 
                 if not captured_error and next_state != TASK_ACTIVATION_STATUS_RETRY:
                     sentry_sdk.capture_exception(err)
+
+                task_error = _get_task_error_from_hook(inflight, err)
 
             clear_current_task()
             processed_task_count += 1
