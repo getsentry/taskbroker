@@ -43,6 +43,7 @@ class TaskNamespace:
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
         context_hooks: list[ContextHook] | None = None,
+        report_timeout_errors: bool = True,
     ):
         self.name = name
         self.application = application
@@ -88,6 +89,8 @@ class TaskNamespace:
         at_most_once: bool = False,
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
+        report_timeout_errors: bool = True,
+        exceptions_to_silence: tuple[type[BaseException], ...] | None = None,
     ) -> Callable[[Callable[P, R]], Task[P, R]]:
         """
         Register a task.
@@ -133,6 +136,8 @@ class TaskNamespace:
                 at_most_once=at_most_once,
                 wait_for_delivery=wait_for_delivery,
                 compression_type=compression_type,
+                report_timeout_errors=report_timeout_errors,
+                exceptions_to_silence=exceptions_to_silence,
             )
             # TODO(taskworker) tasks should be registered into the registry
             # so that we can ensure task names are globally unique
@@ -224,6 +229,8 @@ class ExternalNamespace(TaskNamespace):
         at_most_once: bool = False,
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
+        report_timeout_errors: bool = True,
+        exceptions_to_silence: tuple[type[BaseException], ...] | None = None,
     ) -> Callable[[Callable[P, R]], ExternalTask[P, R]]:
         """
         Register an external task stub.
@@ -269,6 +276,8 @@ class ExternalNamespace(TaskNamespace):
                 at_most_once=at_most_once,
                 wait_for_delivery=wait_for_delivery,
                 compression_type=compression_type,
+                report_timeout_errors=report_timeout_errors,
+                exceptions_to_silence=exceptions_to_silence,
             )
             self._registered_tasks[name] = task
             return task

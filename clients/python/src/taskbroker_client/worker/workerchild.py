@@ -280,17 +280,20 @@ def child_process(
                         next_state = TASK_ACTIVATION_STATUS_RETRY
                     elif retry.max_attempts_reached(inflight.activation.retry_state):
                         with sentry_sdk.isolation_scope() as scope:
-                            retry_error = NoRetriesRemainingError(
-                                f"{inflight.activation.taskname} has consumed all of its retries"
-                            )
-                            retry_error.__cause__ = err
-                            scope.fingerprint = [
-                                "taskworker.no_retries_remaining",
-                                inflight.activation.namespace,
-                                inflight.activation.taskname,
-                            ]
-                            scope.set_transaction_name(inflight.activation.taskname)
-                            sentry_sdk.capture_exception(retry_error)
+                            if not isinstance(err, task_func.exceptions_to_silence):
+                                retry_error = NoRetriesRemainingError(
+                                    f"{inflight.activation.taskname} has consumed all of its retries"
+                                )
+                                retry_error.__cause__ = err
+                                scope.fingerprint = [
+                                    "taskworker.no_retries_remaining",
+                                    inflight.activation.namespace,
+                                    inflight.activation.taskname,
+                                ]
+                                scope.set_transaction_name(inflight.activation.taskname)
+                                sentry_sdk.capture_exception(retry_error)
+                            # In this branch, all exceptions should be either
+                            #  captured or silenced.
                             captured_error = True
 
                 if not captured_error and next_state != TASK_ACTIVATION_STATUS_RETRY:
