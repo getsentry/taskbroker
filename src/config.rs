@@ -167,6 +167,9 @@ pub struct Config {
     /// The name of the postgres database to use for the inflight activation store.
     pub pg_database_name: String,
 
+    /// The default postgres database to use for migrations..
+    pub pg_default_database_name: String,
+
     /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
     /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
     pub pg_extra_query_params: Option<String>,
@@ -347,6 +350,7 @@ impl Default for Config {
             pg_username: "postgres".to_owned(),
             pg_password: "password".to_owned(),
             pg_database_name: "default".to_owned(),
+            pg_default_database_name: "postgres".to_owned(),
             pg_extra_query_params: None,
             db_write_failure_backoff_ms: 4000,
             db_insert_batch_max_len: 256,
@@ -395,6 +399,7 @@ impl Config {
         }
         builder = builder.merge(Env::prefixed("TASKBROKER_"));
         let config = builder.extract()?;
+        println!("config: {:?}", config);
         Ok(config)
     }
 
