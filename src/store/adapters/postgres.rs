@@ -115,8 +115,9 @@ pub async fn create_postgres_pool(
 
 pub async fn create_default_postgres_pool(
     connection: &PgConnectOptions,
+    default_database_name: &str,
 ) -> Result<Pool<Postgres>, Error> {
-    let conn_opts = connection.clone().database("postgres");
+    let conn_opts = connection.clone().database(default_database_name);
     let default_pool = PgPoolOptions::new()
         .max_connections(64)
         .connect_with(conn_opts)
@@ -127,6 +128,7 @@ pub async fn create_default_postgres_pool(
 pub struct PostgresActivationStoreConfig {
     pub pg_connection: PgConnectOptions,
     pub pg_database_name: String,
+    pub pg_default_database_name: String,
     pub run_migrations: bool,
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
@@ -152,6 +154,7 @@ impl PostgresActivationStoreConfig {
         Self {
             pg_connection: conn_opts,
             pg_database_name: config.pg_database_name.clone(),
+            pg_default_database_name: config.pg_default_database_name.clone(),
             run_migrations: config.run_migrations,
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
@@ -182,7 +185,11 @@ impl PostgresActivationStore {
 
     pub async fn new(config: PostgresActivationStoreConfig) -> Result<Self, Error> {
         if config.run_migrations {
-            let default_pool = create_default_postgres_pool(&config.pg_connection).await?;
+            let default_pool = create_default_postgres_pool(
+                &config.pg_connection,
+                &config.pg_default_database_name,
+            )
+            .await?;
 
             // Create the database if it doesn't exist
             let row: (bool,) = sqlx::query_as(
@@ -978,7 +985,11 @@ impl InflightActivationStore for PostgresActivationStore {
     async fn remove_db(&self) -> Result<(), Error> {
         self.read_pool.close().await;
         self.write_pool.close().await;
-        let default_pool = create_default_postgres_pool(&self.config.pg_connection).await?;
+        let default_pool = create_default_postgres_pool(
+            &self.config.pg_connection,
+            &self.config.pg_default_database_name,
+        )
+        .await?;
         let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg_database_name).as_str())
             .bind(&self.config.pg_database_name)
             .execute(&default_pool)
