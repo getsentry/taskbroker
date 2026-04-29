@@ -1,4 +1,14 @@
 # Changelog
+## 0.1.12
+
+### Bug Fixes 🐛
+
+- (taskworker) Improve Queue Size Metrics by @george-sentry in [#612](https://github.com/getsentry/taskbroker/pull/612)
+
+### Internal Changes 🔧
+
+- (deps-dev) Bump black from 24.10.0 to 26.3.1 in /clients/python by @dependabot in [#606](https://github.com/getsentry/taskbroker/pull/606)
+
 ## 0.1.11
 
 ### New Features ✨
