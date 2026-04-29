@@ -67,7 +67,7 @@ class Task(Generic[P, R]):
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
         report_timeout_errors: bool = True,
-        exceptions_to_silence: tuple[type[BaseException], ...] | None = None,
+        expected_exceptions: tuple[type[BaseException], ...] | None = None,
     ):
         self.name = name
         self._func = func
@@ -87,7 +87,7 @@ class Task(Generic[P, R]):
         self.wait_for_delivery = wait_for_delivery
         self.compression_type = compression_type
         self.report_timeout_errors = report_timeout_errors
-        self.exceptions_to_silence = exceptions_to_silence or ()
+        self.expected_exceptions = expected_exceptions or ()
         update_wrapper(self, func)
 
     @property

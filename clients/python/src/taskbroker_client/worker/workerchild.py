@@ -266,7 +266,7 @@ def child_process(
             except Exception as err:
                 retry = task_func.retry
                 captured_error = False
-                should_capture_error = not isinstance(err, task_func.exceptions_to_silence)
+                should_capture_error = not isinstance(err, task_func.expected_exceptions)
                 if retry:
                     if retry.should_retry(inflight.activation.retry_state, err):
                         logger.info(

@@ -89,7 +89,7 @@ class TaskNamespace:
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
         report_timeout_errors: bool = True,
-        exceptions_to_silence: tuple[type[BaseException], ...] | None = None,
+        expected_exceptions: tuple[type[BaseException], ...] | None = None,
     ) -> Callable[[Callable[P, R]], Task[P, R]]:
         """
         Register a task.
@@ -117,6 +117,10 @@ class TaskNamespace:
             before returning.
         compression_type: CompressionType
             The compression type to use to compress the task parameters.
+        report_timeout_errors: bool
+            Enable reporting of ProcessingDeadlineExceededError to Sentry.
+        expected_exceptions: tuple[type[BaseException], ...] | None
+            A tuple of exception types that will not be reported by Sentry.
         """
 
         def wrapped(func: Callable[P, R]) -> Task[P, R]:
@@ -136,7 +140,7 @@ class TaskNamespace:
                 wait_for_delivery=wait_for_delivery,
                 compression_type=compression_type,
                 report_timeout_errors=report_timeout_errors,
-                exceptions_to_silence=exceptions_to_silence,
+                expected_exceptions=expected_exceptions,
             )
             # TODO(taskworker) tasks should be registered into the registry
             # so that we can ensure task names are globally unique
@@ -229,7 +233,7 @@ class ExternalNamespace(TaskNamespace):
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
         report_timeout_errors: bool = True,
-        exceptions_to_silence: tuple[type[BaseException], ...] | None = None,
+        expected_exceptions: tuple[type[BaseException], ...] | None = None,
     ) -> Callable[[Callable[P, R]], ExternalTask[P, R]]:
         """
         Register an external task stub.
@@ -257,6 +261,10 @@ class ExternalNamespace(TaskNamespace):
             before returning.
         compression_type: CompressionType
             The compression type to use to compress the task parameters.
+        report_timeout_errors: bool
+            Enable reporting of ProcessingDeadlineExceededError to Sentry.
+        expected_exceptions: tuple[type[BaseException], ...] | None
+            A tuple of exception types that will not be reported by Sentry.
         """
 
         def wrapped(func: Callable[P, R]) -> ExternalTask[P, R]:
@@ -276,7 +284,7 @@ class ExternalNamespace(TaskNamespace):
                 wait_for_delivery=wait_for_delivery,
                 compression_type=compression_type,
                 report_timeout_errors=report_timeout_errors,
-                exceptions_to_silence=exceptions_to_silence,
+                expected_exceptions=expected_exceptions,
             )
             self._registered_tasks[name] = task
             return task
