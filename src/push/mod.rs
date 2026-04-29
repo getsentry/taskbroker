@@ -199,15 +199,17 @@ impl PushPool {
                                         metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                         debug!(task_id = %id, "Activation sent to worker");
 
-                                        let act = activation.clone();
-                                        let received_to_push_latency = act.received_latency(Utc::now());
-                                        if received_to_push_latency > 0 {
-                                            metrics::histogram!(
-                                                "push.received_to_push.latency",
-                                                "namespace" => act.namespace,
-                                                "taskname" => act.taskname,
-                                            )
-                                            .record(received_to_push_latency as f64);
+                                        if activation.processing_attempts < 1 {
+                                            let act = activation.clone();
+                                            let received_to_push_latency = act.received_latency(Utc::now());
+                                            if received_to_push_latency > 0 {
+                                                metrics::histogram!(
+                                                    "push.received_to_push.latency",
+                                                    "namespace" => act.namespace,
+                                                    "taskname" => act.taskname,
+                                                )
+                                                .record(received_to_push_latency as f64);
+                                            }
                                         }
 
                                         if let Err(e) = store.mark_activation_processing(&id).await {
