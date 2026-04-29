@@ -76,13 +76,11 @@ class Task(Generic[P, R]):
             processing_deadline_duration or DEFAULT_PROCESSING_DEADLINE
         )
         if at_most_once and retry:
-            raise AssertionError(
-                """
+            raise AssertionError("""
                 You cannot enable at_most_once and have retries defined.
                 Having retries enabled means that a task supports being executed
                 multiple times and thus cannot be idempotent.
-                """
-            )
+                """)
         self._retry = retry
         self.at_most_once = at_most_once
         self.wait_for_delivery = wait_for_delivery
