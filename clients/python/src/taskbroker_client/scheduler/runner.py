@@ -103,7 +103,7 @@ class ScheduleEntry:
             checkin_config["schedule"]["type"] = "crontab"
             checkin_config["schedule"]["value"] = self._schedule.monitor_value()
         elif isinstance(self._schedule, TimedeltaSchedule):
-            (interval_value, interval_units) = self._schedule.monitor_interval()
+            interval_value, interval_units = self._schedule.monitor_interval()
             # Monitors does not support intervals less than 1 minute.
             if interval_units == "second":
                 return None
@@ -134,7 +134,7 @@ class ScheduleRunner:
     def add(self, key: str, task_config: ScheduleConfig) -> None:
         """Add a scheduled task to the runner."""
         try:
-            (namespace, taskname) = task_config["task"].split(":")
+            namespace, taskname = task_config["task"].split(":")
         except ValueError:
             raise ValueError("Invalid task name. Must be in the format namespace:taskname")
 
