@@ -301,6 +301,22 @@ pub struct Config {
 
     /// Maps every application to its worker endpoint, both represented as strings.
     pub worker_map: BTreeMap<String, String>,
+
+    /// Enable passthrough mode for consuming raw bytes from legacy topics.
+    /// In passthrough mode, raw Kafka message bytes are wrapped into TaskActivation.
+    pub passthrough_mode: bool,
+
+    /// The namespace to assign to passthrough activations.
+    pub passthrough_namespace: Option<String>,
+
+    /// The application to assign to passthrough activations.
+    pub passthrough_application: Option<String>,
+
+    /// The taskname to assign to passthrough activations.
+    pub passthrough_taskname: Option<String>,
+
+    /// Processing deadline duration in seconds for passthrough activations.
+    pub passthrough_processing_deadline_duration: u64,
 }
 
 impl Default for Config {
@@ -386,6 +402,11 @@ impl Default for Config {
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
+            passthrough_mode: false,
+            passthrough_namespace: None,
+            passthrough_application: None,
+            passthrough_taskname: None,
+            passthrough_processing_deadline_duration: 30,
         }
     }
 }
