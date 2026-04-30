@@ -13,6 +13,7 @@ from redis import StrictRedis
 from examples.app import app
 from taskbroker_client.retry import LastAction, NoRetriesRemainingError, Retry, RetryTaskError
 from taskbroker_client.retry import retry_task as retry_task_helper
+from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -99,3 +100,12 @@ def will_fail_with_expected_exception() -> None:
 )
 def will_fail_with_expected_ignored_exception() -> None:
     raise RuntimeError("oh no")
+
+
+@exampletasks.register(
+    name="examples.will_retry_on_deadline_exceeded",
+    processing_deadline_duration=1,
+    retry=Retry(times=2, on=(ProcessingDeadlineExceeded,), times_exceeded=LastAction.Discard),
+)
+def will_retry_on_deadline_exceeded() -> None:
+    timed_task(sleep_seconds=2)
