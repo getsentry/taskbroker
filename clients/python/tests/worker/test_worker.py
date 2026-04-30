@@ -193,6 +193,63 @@ LEGACY_COMPRESSED_TASK = InflightTaskActivation(
     ),
 )
 
+# Task with Retry logic, expected exceptions to silence reporting
+RETRY_TASK_WITH_SILENCED_TIMEOUT = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="654",
+        taskname="examples.will_timeout_without_reporting",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=1,
+        retry_state=RetryState(
+            # no more attempts left
+            attempts=1,
+            max_attempts=2,
+            on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
+    ),
+)
+
+# Task with Retry logic, expected exceptions to silence reporting
+RETRY_TASK_WITH_EXPECTED_EXCEPTION = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="654",
+        taskname="examples.will_fail_with_expected_exception",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+        retry_state=RetryState(
+            # One retry left
+            attempts=0,
+            max_attempts=2,
+            on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
+    ),
+)
+
+# Task set to retry on deadline exceeded exceptions
+RETRY_TASK_WITH_EXPECTED_IGNORED_EXCEPTION = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="654",
+        taskname="examples.will_fail_with_expected_ignored_exception",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+        retry_state=RetryState(
+            # no more attempts left
+            attempts=1,
+            max_attempts=2,
+            on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
+    ),
+)
+
 
 class TestTaskWorker(TestCase):
     def test_fetch_task(self) -> None:
