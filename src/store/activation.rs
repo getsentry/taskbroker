@@ -8,7 +8,7 @@ use sqlx::Type;
 
 /// The members of this enum should be a superset of the members
 /// of `InflightActivationStatus` in `sentry_protos`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Type, Hash)]
 pub enum InflightActivationStatus {
     /// Unused but necessary to align with sentry-protos
     Unspecified,

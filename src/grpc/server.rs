@@ -8,16 +8,19 @@ use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivation, TaskActivationStatus,
 };
+use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 use tracing::{error, instrument, warn};
 
 use crate::config::{Config, DeliveryMode};
+use crate::grpc::status_flusher::StatusUpdate;
 use crate::store::activation::InflightActivationStatus;
 use crate::store::traits::InflightActivationStore;
 
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
     pub config: Arc<Config>,
+    pub status_tx: Option<mpsc::Sender<StatusUpdate>>,
 }
 
 #[tonic::async_trait]
@@ -97,8 +100,18 @@ impl ConsumerService for TaskbrokerServer {
                 "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {status:?}"
             )));
         }
+
         if status == InflightActivationStatus::Failure {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
+        }
+
+        if let Some(ref tx) = self.status_tx {
+            tx.send((id, status))
+                .await
+                .map_err(|_| Status::internal("Status update channel closed"))?;
+
+            metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 
         match self.store.set_status(&id, status).await {

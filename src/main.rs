@@ -5,6 +5,7 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
+use taskbroker::grpc::status_flusher;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -192,10 +193,27 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Status flusher
+    let (status_tx, flush_task) = if config.delivery_mode == DeliveryMode::Push {
+        let (tx, rx) = tokio::sync::mpsc::channel(config.status_flush_batch_size);
+
+        let flusher_store = store.clone();
+        let flusher_config = config.clone();
+
+        let handle = tokio::spawn(async move {
+            status_flusher::run_status_flusher(rx, flusher_store, flusher_config).await
+        });
+
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     // GRPC server
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+        let grpc_status_tx = status_tx.clone();
 
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
@@ -212,6 +230,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                     config: grpc_config,
+                    status_tx: grpc_status_tx,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -275,6 +294,10 @@ async fn main() -> Result<(), Error> {
     }
 
     if let Some(task) = fetch_task {
+        departure = departure.on_completion(log_task_completion("fetch_task", task));
+    }
+
+    if let Some(task) = flush_task {
         departure = departure.on_completion(log_task_completion("fetch_task", task));
     }
 

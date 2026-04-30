@@ -78,6 +78,13 @@ pub trait InflightActivationStore: Send + Sync {
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error>;
 
+    /// Update the status of multiple activations in one batch.
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<(), Error>;
+
     /// COUNT OPERATIONS
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
@@ -125,6 +132,9 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Delete an activation by id
     async fn delete_activation(&self, id: &str) -> Result<(), Error>;
+
+    /// Delete several activations by ID.
+    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error>;
 
     /// DATABASE OPERATIONS
     /// Trigger incremental vacuum to reclaim free pages in the database
