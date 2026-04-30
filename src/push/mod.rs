@@ -200,13 +200,12 @@ impl PushPool {
                                         debug!(task_id = %id, "Activation sent to worker");
 
                                         if activation.processing_attempts < 1 {
-                                            let act = activation.clone();
-                                            let received_to_push_latency = act.received_latency(Utc::now());
+                                            let received_to_push_latency = activation.received_latency(Utc::now());
                                             if received_to_push_latency > 0 {
                                                 metrics::histogram!(
                                                     "push.received_to_push.latency",
-                                                    "namespace" => act.namespace,
-                                                    "taskname" => act.taskname,
+                                                    "namespace" => activation.namespace,
+                                                    "taskname" => activation.taskname,
                                                 )
                                                 .record(received_to_push_latency as f64);
                                             }
