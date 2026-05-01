@@ -266,6 +266,7 @@ def child_process(
             except Exception as err:
                 retry = task_func.retry
                 captured_error = False
+                should_capture_error = not isinstance(err, task_func.silenced_exceptions)
                 if retry:
                     if retry.should_retry(inflight.activation.retry_state, err):
                         logger.info(
@@ -280,20 +281,27 @@ def child_process(
                         next_state = TASK_ACTIVATION_STATUS_RETRY
                     elif retry.max_attempts_reached(inflight.activation.retry_state):
                         with sentry_sdk.isolation_scope() as scope:
-                            retry_error = NoRetriesRemainingError(
-                                f"{inflight.activation.taskname} has consumed all of its retries"
-                            )
-                            retry_error.__cause__ = err
-                            scope.fingerprint = [
-                                "taskworker.no_retries_remaining",
-                                inflight.activation.namespace,
-                                inflight.activation.taskname,
-                            ]
-                            scope.set_transaction_name(inflight.activation.taskname)
-                            sentry_sdk.capture_exception(retry_error)
+                            if should_capture_error:
+                                retry_error = NoRetriesRemainingError(
+                                    f"{inflight.activation.taskname} has consumed all of its retries"
+                                )
+                                retry_error.__cause__ = err
+                                scope.fingerprint = [
+                                    "taskworker.no_retries_remaining",
+                                    inflight.activation.namespace,
+                                    inflight.activation.taskname,
+                                ]
+                                scope.set_transaction_name(inflight.activation.taskname)
+                                sentry_sdk.capture_exception(retry_error)
+                            # In this branch, all exceptions should be either
+                            #  captured or silenced.
                             captured_error = True
 
-                if not captured_error and next_state != TASK_ACTIVATION_STATUS_RETRY:
+                if (
+                    should_capture_error
+                    and not captured_error
+                    and next_state != TASK_ACTIVATION_STATUS_RETRY
+                ):
                     sentry_sdk.capture_exception(err)
 
             clear_current_task()

@@ -193,6 +193,82 @@ LEGACY_COMPRESSED_TASK = InflightTaskActivation(
     ),
 )
 
+# Task with Retry logic, expected exceptions to silence reporting
+RETRY_TASK_WITH_SILENCED_TIMEOUT = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="654",
+        taskname="examples.will_timeout_without_reporting",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=1,
+        retry_state=RetryState(
+            # no more attempts left
+            attempts=1,
+            max_attempts=2,
+            on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
+    ),
+)
+
+# Task with Retry logic, expected exceptions to silence reporting
+RETRY_TASK_WITH_SILENCED_UNHANDLED_EXCEPTION = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="654",
+        taskname="examples.will_fail_with_silenced_exception",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+        retry_state=RetryState(
+            # One retry left
+            attempts=0,
+            max_attempts=2,
+            on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
+    ),
+)
+
+# Task set to retry on deadline exceeded exceptions
+RETRY_TASK_WITH_SILENCED_IGNORED_EXCEPTION = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="654",
+        taskname="examples.will_fail_with_silenced_ignored_exception",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+        retry_state=RetryState(
+            # One retry left
+            attempts=0,
+            max_attempts=2,
+            on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
+    ),
+)
+
+# Task set to retry on deadline exceeded exceptions
+RETRY_TASK_ON_DEADLINE_EXCEEDED = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="654",
+        taskname="examples.will_retry_on_deadline_exceeded",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=1,
+        retry_state=RetryState(
+            # One retry left
+            attempts=0,
+            max_attempts=2,
+            on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+        ),
+    ),
+)
+
 
 class TestTaskWorker(TestCase):
     def test_fetch_task(self) -> None:
@@ -901,3 +977,106 @@ def test_child_process_context_hooks() -> None:
         assert executed_headers[0]["x-viewer-user"] == "7"
     finally:
         app.context_hooks.remove(hook)
+
+
+@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
+def test_child_process_silenced_timeout(mock_capture: mock.Mock) -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(RETRY_TASK_WITH_SILENCED_TIMEOUT)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == RETRY_TASK_WITH_SILENCED_TIMEOUT.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+    assert mock_capture.call_count == 0
+
+
+@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
+def test_child_process_silenced_exception_with_retries(mock_capture: mock.Mock) -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(RETRY_TASK_WITH_SILENCED_UNHANDLED_EXCEPTION)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == RETRY_TASK_WITH_SILENCED_UNHANDLED_EXCEPTION.activation.id
+
+    # No reporting, but the task still raised an unhandled exception
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+    assert mock_capture.call_count == 0
+
+
+@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
+def test_child_process_expected_ignored_exception_max_attempts(mock_capture: mock.Mock) -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    # Task has more retries left, but is set to ignore the raised error type
+    todo.put(RETRY_TASK_WITH_SILENCED_IGNORED_EXCEPTION)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    # No reporting, but exception type is retriable
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == RETRY_TASK_WITH_SILENCED_IGNORED_EXCEPTION.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_RETRY
+    assert mock_capture.call_count == 0
+
+
+@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
+def test_child_process_retry_on_deadline_exceeded(mock_capture: mock.Mock) -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    # Task will timeout, but should retry, because ProcessingDeadlineExceeded is
+    # in the Retry.on list
+    todo.put(RETRY_TASK_ON_DEADLINE_EXCEEDED)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == RETRY_TASK_ON_DEADLINE_EXCEEDED.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_RETRY
+    assert mock_capture.call_count == 1
+    assert type(mock_capture.call_args.args[0]) is ProcessingDeadlineExceeded
