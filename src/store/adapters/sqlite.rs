@@ -605,7 +605,11 @@ impl InflightActivationStore for SqliteActivationStore {
         .bind(id)
         .bind(InflightActivationStatus::Processing)
         .execute(&mut *conn)
-        .await?;
+        .await
+        .map_err(|e| {
+            metrics::counter!("store.undo_claim_activation", "result" => "error").increment(1);
+            e
+        })?;
 
         if result.rows_affected() == 0 {
             metrics::counter!("store.undo_claim_activation", "result" => "not_found").increment(1);

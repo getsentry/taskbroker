@@ -223,9 +223,6 @@ impl PushPool {
                                         );
 
                                         if let Err(e) = store.undo_claim_activation(&id).await {
-                                            // TODO - Move this into the `undo_claim_activation` method
-                                            metrics::counter!("store.undo_claim_activation", "result" => "error").increment(1);
-
                                             error!(
                                                 task_id = %id,
                                                 error = ?e,
@@ -281,9 +278,6 @@ impl PushPool {
                                 );
 
                                 if let Err(e) = store.undo_claim_activation(&id).await {
-                                    // TODO - Move this into the `undo_claim_activation` method
-                                    metrics::counter!("store.undo_claim_activation", "result" => "error").increment(1);
-
                                     error!(
                                         task_id = %id,
                                         error = ?e,
