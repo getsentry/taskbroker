@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Result;
 use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -10,10 +12,9 @@ use sentry_protos::taskbroker::v1::{
 };
 use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
-use tracing::{error, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use crate::config::{Config, DeliveryMode};
-use crate::grpc::status_flusher::StatusUpdate;
 use crate::store::activation::InflightActivationStatus;
 use crate::store::traits::InflightActivationStore;
 
@@ -206,4 +207,59 @@ impl ConsumerService for TaskbrokerServer {
         metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
         res
     }
+}
+
+pub type StatusUpdate = (String, InflightActivationStatus);
+
+pub async fn flush_status_updates(
+    store: Arc<dyn InflightActivationStore>,
+    buffer: &mut Vec<StatusUpdate>,
+) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let updates = std::mem::take(buffer);
+    let mut by_status: HashMap<InflightActivationStatus, Vec<String>> = HashMap::new();
+
+    for (id, status) in updates {
+        by_status.entry(status).or_default().push(id);
+    }
+
+    let mut success = 0;
+    let mut fail = 0;
+
+    for (status, ids) in by_status {
+        let count = ids.len() as u64;
+
+        match store
+            .set_status_batch(&ids, status)
+            .await
+            .map(|()| ids.len() as u64)
+        {
+            Ok(count) => {
+                success += count;
+                debug!(?status, ?count, "Flushed status batch");
+            }
+
+            Err(e) => {
+                fail += count;
+
+                error!(
+                    ?status,
+                    ?count,
+                    error = ?e,
+                    "Failed to flush status batch"
+                );
+
+                // Push failed updates back into the buffer so they can be retried on next flush
+                for id in ids {
+                    buffer.push((id, status));
+                }
+            }
+        }
+    }
+
+    metrics::gauge!(format!("grpc_server.flush_status_updates.success")).set(success as f64);
+    metrics::gauge!(format!("grpc_server.flush_status_updates.fail")).set(fail as f64);
 }

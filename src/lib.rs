@@ -3,6 +3,7 @@ use std::fs;
 
 pub mod config;
 pub mod fetch;
+pub mod flusher;
 pub mod grpc;
 pub mod kafka;
 pub mod logging;

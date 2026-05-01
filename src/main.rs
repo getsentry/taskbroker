@@ -5,7 +5,6 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
-use taskbroker::grpc::status_flusher;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -13,12 +12,11 @@ use tonic::transport::Server;
 use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
 
-use taskbroker::SERVICE_NAME;
 use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
 use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
-use taskbroker::grpc::server::TaskbrokerServer;
+use taskbroker::grpc::server::{TaskbrokerServer, flush_status_updates};
 use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
 use taskbroker::kafka::deserialize_activation;
@@ -42,6 +40,7 @@ use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteA
 use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
+use taskbroker::{SERVICE_NAME, flusher};
 
 async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -201,7 +200,13 @@ async fn main() -> Result<(), Error> {
         let flusher_config = config.clone();
 
         let handle = tokio::spawn(async move {
-            status_flusher::run_status_flusher(rx, flusher_store, flusher_config).await
+            flusher::run_flusher(
+                rx,
+                flusher_config.status_flush_batch_size,
+                flusher_config.status_flush_interval_ms,
+                move |buffer| Box::pin(flush_status_updates(flusher_store.clone(), buffer)),
+            )
+            .await
         });
 
         (Some(tx), Some(handle))
