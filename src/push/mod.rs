@@ -226,7 +226,7 @@ impl PushPool {
                                             error!(
                                                 task_id = %id,
                                                 error = ?e,
-                                                "Failed to mark activation as sent after push"
+                                                "Failed to revert processing activation back to pending"
                                             );
                                         }
                                     }
@@ -281,7 +281,7 @@ impl PushPool {
                                     error!(
                                         task_id = %id,
                                         error = ?e,
-                                        "Failed to mark activation as sent after push"
+                                        "Failed to revert processing activation back to pending"
                                     );
                                 }
                             }

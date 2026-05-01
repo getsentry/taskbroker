@@ -431,9 +431,8 @@ impl InflightActivationStore for PostgresActivationStore {
         .bind(InflightActivationStatus::Processing.to_string())
         .execute(&mut *conn)
         .await
-        .map_err(|e| {
+        .inspect_err(|_| {
             metrics::counter!("store.undo_claim_activation", "result" => "error").increment(1);
-            e
         })?;
 
         if result.rows_affected() == 0 {

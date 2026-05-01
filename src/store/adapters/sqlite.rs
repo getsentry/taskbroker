@@ -23,7 +23,7 @@ use libsqlite3_sys::{
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use tracing::{instrument, warn};
 
-use crate::config::Config;
+use crate::config::{Config, DeliveryMode};
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
@@ -147,10 +147,21 @@ pub struct InflightActivationStoreConfig {
 
 impl InflightActivationStoreConfig {
     pub fn from_config(config: &Config) -> Self {
+        let mut processing_deadline_grace_sec = config.processing_deadline_grace_sec;
+
+        if config.delivery_mode == DeliveryMode::Push {
+            // Account for queueing time
+            processing_deadline_grace_sec += config.push_queue_timeout_ms.div_ceil(1000);
+
+            // Account for the time required to send every task in a full queue
+            let send_time_ms = (config.push_queue_size * config.push_timeout_ms as usize) as u64;
+            processing_deadline_grace_sec += send_time_ms.div_ceil(1000);
+        }
+
         Self {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
-            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            processing_deadline_grace_sec,
             claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
@@ -606,9 +617,8 @@ impl InflightActivationStore for SqliteActivationStore {
         .bind(InflightActivationStatus::Processing)
         .execute(&mut *conn)
         .await
-        .map_err(|e| {
+        .inspect_err(|_| {
             metrics::counter!("store.undo_claim_activation", "result" => "error").increment(1);
-            e
         })?;
 
         if result.rows_affected() == 0 {
