@@ -85,20 +85,20 @@ def will_timeout_without_reporting() -> None:
 
 
 @exampletasks.register(
-    name="examples.will_fail_with_expected_exception",
+    name="examples.will_fail_with_silenced_exception",
     retry=Retry(times=2, times_exceeded=LastAction.Discard),
-    expected_exceptions=(RuntimeError,),
+    silenced_exceptions=(RuntimeError,),
 )
-def will_fail_with_expected_exception() -> None:
+def will_fail_with_silenced_exception() -> None:
     raise RuntimeError("oh no")
 
 
 @exampletasks.register(
-    name="examples.will_fail_with_expected_ignored_exception",
+    name="examples.will_fail_with_silenced_ignored_exception",
     retry=Retry(times=2, on=(RuntimeError,), times_exceeded=LastAction.Discard),
-    expected_exceptions=(RuntimeError,),
+    silenced_exceptions=(RuntimeError,),
 )
-def will_fail_with_expected_ignored_exception() -> None:
+def will_fail_with_silenced_ignored_exception() -> None:
     raise RuntimeError("oh no")
 
 
