@@ -1,3 +1,4 @@
+use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -187,7 +188,7 @@ impl PushPool {
 
                                 match push_task(
                                     worker,
-                                    activation,
+                                    activation.clone(),
                                     callback_url,
                                     timeout,
                                     grpc_shared_secret.as_slice(),
@@ -197,6 +198,18 @@ impl PushPool {
                                     Ok(_) => {
                                         metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                         debug!(task_id = %id, "Activation sent to worker");
+
+                                        if activation.processing_attempts < 1 {
+                                            let received_to_push_latency = activation.received_latency(Utc::now());
+                                            if received_to_push_latency > 0 {
+                                                metrics::histogram!(
+                                                    "push.received_to_push.latency",
+                                                    "namespace" => activation.namespace,
+                                                    "taskname" => activation.taskname,
+                                                )
+                                                .record(received_to_push_latency as f64);
+                                            }
+                                        }
 
                                         let start = Instant::now();
                                         let result = store.mark_activation_processing(&id).await;

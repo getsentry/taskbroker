@@ -1,5 +1,6 @@
 local taskbroker = import './pipelines/taskbroker.libsonnet';
 local pipedream = import 'github.com/getsentry/gocd-jsonnet/libs/pipedream.libsonnet';
+local include_regions = ['control'];
 
 // Pipedream can be configured using this object, you can learn more about the
 // configuration options here: https://github.com/getsentry/gocd-jsonnet#readme
@@ -19,6 +20,7 @@ local pipedream_config = {
     stage: 'deploy-primary',
     elastic_profile_id: 'taskbroker',
   },
+  include_regions: include_regions,
 };
 
 pipedream.render(pipedream_config, taskbroker)
