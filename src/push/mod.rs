@@ -168,7 +168,7 @@ impl PushPool {
                                     Ok(a) => a,
 
                                     // Channel closed
-                                    Err(_) => break
+                                    Err(_) => break,
                                 };
 
                                 let id = activation.id.clone();
@@ -183,7 +183,7 @@ impl PushPool {
                                         "Task application has no worker pool mapping"
                                     );
 
-                                    continue
+                                    continue;
                                 };
 
                                 match push_task(
@@ -211,7 +211,12 @@ impl PushPool {
                                             }
                                         }
 
-                                        if let Err(e) = store.mark_activation_processing(&id).await {
+                                        let start = Instant::now();
+                                        let result = store.mark_activation_processing(&id).await;
+                                        metrics::histogram!("push.mark_activation_processing.duration")
+                                            .record(start.elapsed());
+
+                                        if let Err(e) = result {
                                             metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
 
                                             error!(
@@ -267,7 +272,12 @@ impl PushPool {
                                 metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                 debug!(task_id = %id, "Activation sent to worker");
 
-                                if let Err(e) = store.mark_activation_processing(&id).await {
+                                let start = Instant::now();
+                                let result = store.mark_activation_processing(&id).await;
+                                metrics::histogram!("push.mark_activation_processing.duration")
+                                    .record(start.elapsed());
+
+                                if let Err(e) = result {
                                     metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
 
                                     error!(

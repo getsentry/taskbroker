@@ -122,6 +122,18 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
+    async fn set_status_batch(
+        &self,
+        _ids: &[String],
+        _status: InflightActivationStatus,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    async fn delete_activation_batch(&self, _ids: &[String]) -> Result<u64, Error> {
+        Ok(0)
+    }
+
     async fn set_processing_deadline(
         &self,
         _id: &str,

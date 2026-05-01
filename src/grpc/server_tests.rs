@@ -21,11 +21,17 @@ async fn test_get_task_push_mode_returns_permission_denied() {
         ..Config::default()
     });
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
 
     assert!(response.is_err());
@@ -42,11 +48,17 @@ async fn test_get_task(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let config = create_config();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_err());
     let e = response.unwrap_err();
@@ -63,12 +75,18 @@ async fn test_set_task_status(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let config = create_config();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -84,12 +102,18 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let config = create_config();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_err());
     let e = response.unwrap_err();
@@ -115,11 +139,14 @@ async fn test_get_task_success(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store: store.clone(),
         config,
+        status_tx: None,
     };
+
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -149,11 +176,17 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: None,
         application: Some("hammers".into()),
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -177,11 +210,17 @@ async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: Some(namespace),
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
 
     assert!(response.is_err());
@@ -201,12 +240,17 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
 
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -248,7 +292,12 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
@@ -257,6 +306,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
             namespace: None,
         }),
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
 
@@ -287,7 +337,12 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     // Request a task from an application without any activations.
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
@@ -297,6 +352,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
             namespace: None,
         }),
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     assert!(response.unwrap().get_ref().task.is_none());
@@ -316,7 +372,12 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        status_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
@@ -325,6 +386,7 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
             namespace: Some(namespace),
         }),
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     assert!(

@@ -707,6 +707,33 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     #[instrument(skip_all)]
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<(), Error> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+
+        let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 2)).collect();
+        let sql = format!(
+            "UPDATE inflight_taskactivations SET status = ?1 WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut q = sqlx::query(&sql).bind(status);
+        for id in ids {
+            q = q.bind(id);
+        }
+
+        q.execute(&mut *conn).await?;
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
     async fn set_processing_deadline(
         &self,
         id: &str,
@@ -731,6 +758,32 @@ impl InflightActivationStore for SqliteActivationStore {
             .execute(&mut *conn)
             .await?;
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self
+            .acquire_write_conn_metric("delete_activations_by_id")
+            .await?;
+
+        let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+
+        let sql = format!(
+            "DELETE FROM inflight_taskactivations WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut q = sqlx::query(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+
+        let result = q.execute(&mut *conn).await?;
+        Ok(result.rows_affected())
     }
 
     #[instrument(skip_all)]
