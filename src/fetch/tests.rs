@@ -79,7 +79,6 @@ impl InflightActivationStore for MockStore {
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
-        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
@@ -87,15 +86,15 @@ impl InflightActivationStore for MockStore {
 
         Ok(match self.pending.lock().await.take() {
             Some(mut a) => {
-                a.status = if mark_processing {
-                    InflightActivationStatus::Processing
-                } else {
-                    InflightActivationStatus::Claimed
-                };
+                a.status = InflightActivationStatus::Processing;
                 vec![a]
             }
             None => vec![],
         })
+    }
+
+    async fn undo_claim_activation(&self, _id: &str) -> Result<(), Error> {
+        Ok(())
     }
 
     async fn mark_activation_processing(&self, _id: &str) -> Result<(), Error> {

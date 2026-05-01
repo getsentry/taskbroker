@@ -386,17 +386,17 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     // Use `claim_activations` so upkeep-style `None` application + namespaces is allowed (not `claim_activations_for_push`).
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .claim_activations(None, Some(&namespaces), None, None, false)
+        .claim_activations(None, Some(&namespaces), None, None)
         .await
         .unwrap();
 
     assert_eq!(result.len(), 2);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
-    assert_eq!(result[1].status, InflightActivationStatus::Claimed);
+    assert_eq!(result[1].status, InflightActivationStatus::Processing);
     assert_eq!(result[0].id, "id_1");
     assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Claimed);
+    assert_eq!(result[0].status, InflightActivationStatus::Processing);
     store.remove_db().await.unwrap();
 }
 
@@ -422,7 +422,7 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .claim_activations(None, Some(&namespaces), Some(2), None, false)
+        .claim_activations(None, Some(&namespaces), Some(2), None)
         .await
         .unwrap();
     assert_eq!(
@@ -610,13 +610,13 @@ async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
     assert_eq!(got.len(), N);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Claimed)
+            .all(|a| a.status == InflightActivationStatus::Processing)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            claimed: N,
+            processing: N,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -644,7 +644,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert_eq!(got.len(), X as usize);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Claimed)
+            .all(|a| a.status == InflightActivationStatus::Processing)
     );
     assert_eq!(
         store.count_pending_activations().await.unwrap(),
@@ -653,7 +653,7 @@ async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str)
     assert_counts(
         StatusCount {
             pending: N - X as usize,
-            claimed: X as usize,
+            processing: X as usize,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -681,13 +681,13 @@ async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str)
     assert_eq!(got.len(), Y);
     assert!(
         got.iter()
-            .all(|a| a.status == InflightActivationStatus::Claimed)
+            .all(|a| a.status == InflightActivationStatus::Processing)
     );
     assert_eq!(store.count_pending_activations().await.unwrap(), 0);
     assert_counts(
         StatusCount {
             pending: 0,
-            claimed: Y,
+            processing: Y,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -890,7 +890,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .claim_activations(None, None, Some(1), None, true)
+            .claim_activations(None, None, Some(1), None)
             .await
             .unwrap()
             .is_empty()

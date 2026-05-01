@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use tracing::{instrument, warn};
 
-use crate::config::Config;
+use crate::config::{Config, DeliveryMode};
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
@@ -151,6 +151,18 @@ impl PostgresActivationStoreConfig {
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
             conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
         }
+
+        let mut processing_deadline_grace_sec = config.processing_deadline_grace_sec;
+
+        if config.delivery_mode == DeliveryMode::Push {
+            // Account for queueing time
+            processing_deadline_grace_sec += config.push_queue_timeout_ms.div_ceil(1000);
+
+            // Account for the time required to send every task in a full queue
+            let send_time_ms = (config.push_queue_size * config.push_timeout_ms as usize) as u64;
+            processing_deadline_grace_sec += send_time_ms.div_ceil(1000);
+        }
+
         Self {
             pg_connection: conn_opts,
             pg_database_name: config.pg_database_name.clone(),
@@ -158,7 +170,7 @@ impl PostgresActivationStoreConfig {
             run_migrations: config.run_migrations,
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
-            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            processing_deadline_grace_sec,
             claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
@@ -399,6 +411,41 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(result.rows_affected())
     }
 
+    /// Revert a `Processing` activation back to `Pending` without incrementing processing attempts.
+    #[instrument(skip_all)]
+    async fn undo_claim_activation(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("undo_claim_activation")
+            .await?;
+
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations SET
+                 status = $1,
+                 processing_deadline = NULL,
+                 claim_expires_at = NULL
+             WHERE id = $2
+                 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending.to_string())
+        .bind(id)
+        .bind(InflightActivationStatus::Processing.to_string())
+        .execute(&mut *conn)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            metrics::counter!("store.undo_claim_activation", "result" => "not_found").increment(1);
+
+            warn!(
+                task_id = %id,
+                "Activation could not be unclaimed, it may be missing or not processing"
+            );
+        } else {
+            metrics::counter!("push.undo_claim_activation", "result" => "ok").increment(1);
+        }
+
+        Ok(())
+    }
+
     #[instrument(skip_all)]
     async fn claim_activations(
         &self,
@@ -406,12 +453,9 @@ impl InflightActivationStore for PostgresActivationStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
-
         let grace_period = self.config.processing_deadline_grace_sec;
-        let claim_lease_ms = self.config.claim_lease_ms as i64;
 
         let mut query_builder = QueryBuilder::<Postgres>::new(
             "WITH selected_activations AS (
@@ -457,25 +501,14 @@ impl InflightActivationStore for PostgresActivationStore {
         }
         query_builder.push(" FOR UPDATE SKIP LOCKED)");
 
-        if mark_processing {
-            query_builder.push(format!(
-                "UPDATE inflight_taskactivations
-                 SET processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
-                     claim_expires_at = NULL,
-                     status = "
-            ));
+        query_builder.push(format!(
+            "UPDATE inflight_taskactivations
+                SET processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                    claim_expires_at = NULL,
+                    status = "
+        ));
 
-            query_builder.push_bind(InflightActivationStatus::Processing.to_string());
-        } else {
-            query_builder.push(format!(
-                "UPDATE inflight_taskactivations
-                 SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond') + (interval '{grace_period} seconds'),
-                     processing_deadline = NULL,
-                     status = "
-            ));
-
-            query_builder.push_bind(InflightActivationStatus::Claimed.to_string());
-        }
+        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
 
         query_builder.push(" FROM selected_activations ");
         query_builder.push(" WHERE inflight_taskactivations.id = selected_activations.id");

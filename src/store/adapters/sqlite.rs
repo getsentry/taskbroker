@@ -532,27 +532,17 @@ impl InflightActivationStore for SqliteActivationStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
         let grace_period = self.config.processing_deadline_grace_sec;
 
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
 
-        if mark_processing {
-            query_builder.push(format!(
-                "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
-            ));
+        query_builder.push(format!(
+            "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
+        ));
 
-            query_builder.push_bind(InflightActivationStatus::Processing);
-        } else {
-            query_builder.push(format!(
-                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
-                self.config.claim_lease_ms as f64 / 1000.0,
-            ));
-
-            query_builder.push_bind(InflightActivationStatus::Claimed);
-        }
+        query_builder.push_bind(InflightActivationStatus::Processing);
 
         query_builder.push(" WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
         query_builder.push_bind(InflightActivationStatus::Pending);
@@ -594,6 +584,41 @@ impl InflightActivationStore for SqliteActivationStore {
             .await?;
 
         Ok(rows.into_iter().map(|row| row.into()).collect())
+    }
+
+    /// Revert a `Processing` activation back to `Pending` without incrementing processing attempts.
+    #[instrument(skip_all)]
+    async fn undo_claim_activation(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("undo_claim_activation")
+            .await?;
+
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations SET
+                status = $1,
+                processing_deadline = NULL,
+                claim_expires_at = NULL
+            WHERE id = $2
+              AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(id)
+        .bind(InflightActivationStatus::Processing)
+        .execute(&mut *conn)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            metrics::counter!("store.undo_claim_activation", "result" => "not_found").increment(1);
+
+            warn!(
+                task_id = %id,
+                "Activation could not be unclaimed, it may be missing or not processing"
+            );
+        } else {
+            metrics::counter!("store.undo_claim_activation", "result" => "ok").increment(1);
+        }
+
+        Ok(())
     }
 
     #[instrument(skip_all)]
