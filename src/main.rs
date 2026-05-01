@@ -193,7 +193,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Status flusher
-    let (status_tx, flush_task) = if config.delivery_mode == DeliveryMode::Push {
+    let (status_tx, status_flush_task) = if config.delivery_mode == DeliveryMode::Push {
         let (tx, rx) = tokio::sync::mpsc::channel(config.status_flush_batch_size);
 
         let flusher_store = store.clone();
@@ -302,8 +302,8 @@ async fn main() -> Result<(), Error> {
         departure = departure.on_completion(log_task_completion("fetch_task", task));
     }
 
-    if let Some(task) = flush_task {
-        departure = departure.on_completion(log_task_completion("fetch_task", task));
+    if let Some(task) = status_flush_task {
+        departure = departure.on_completion(log_task_completion("status_flush_task", task));
     }
 
     departure.await;
