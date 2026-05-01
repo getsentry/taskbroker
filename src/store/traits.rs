@@ -26,7 +26,7 @@ pub trait InflightActivationStore: Send + Sync {
         bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error>;
 
-    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
+    /// Claims `limit` activations within the `bucket` range.
     async fn claim_activations_for_push(
         &self,
         limit: Option<i32>,

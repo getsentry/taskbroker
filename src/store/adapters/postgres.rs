@@ -440,7 +440,7 @@ impl InflightActivationStore for PostgresActivationStore {
                 "Activation could not be unclaimed, it may be missing or not processing"
             );
         } else {
-            metrics::counter!("push.undo_claim_activation", "result" => "ok").increment(1);
+            metrics::counter!("store.undo_claim_activation", "result" => "ok").increment(1);
         }
 
         Ok(())
