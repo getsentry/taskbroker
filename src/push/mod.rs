@@ -210,16 +210,6 @@ impl PushPool {
                                                 .record(received_to_push_latency as f64);
                                             }
                                         }
-
-                                        if let Err(e) = store.mark_activation_processing(&id).await {
-                                            metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
-
-                                            error!(
-                                                task_id = %id,
-                                                error = ?e,
-                                                "Failed to mark activation as sent after push"
-                                            );
-                                        }
                                     }
 
                                     // Once claim expires, status will be set back to pending
@@ -230,7 +220,15 @@ impl PushPool {
                                             task_id = %id,
                                             error = ?e,
                                             "Failed to send activation to worker"
-                                        )
+                                        );
+
+                                        if let Err(e) = store.undo_claim_activation(&id).await {
+                                            error!(
+                                                task_id = %id,
+                                                error = ?e,
+                                                "Failed to revert processing activation back to pending"
+                                            );
+                                        }
                                     }
                                 };
                             }
@@ -266,16 +264,6 @@ impl PushPool {
                             Ok(_) => {
                                 metrics::counter!("push.delivery", "result" => "ok").increment(1);
                                 debug!(task_id = %id, "Activation sent to worker");
-
-                                if let Err(e) = store.mark_activation_processing(&id).await {
-                                    metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
-
-                                    error!(
-                                        task_id = %id,
-                                        error = ?e,
-                                        "Failed to mark activation as processing after push"
-                                    );
-                                }
                             }
 
                             // Once processing deadline expires, status will be set back to pending
@@ -287,7 +275,15 @@ impl PushPool {
                                     task_id = %id,
                                     error = ?e,
                                     "Failed to send activation to worker"
-                                )
+                                );
+
+                                if let Err(e) = store.undo_claim_activation(&id).await {
+                                    error!(
+                                        task_id = %id,
+                                        error = ?e,
+                                        "Failed to revert processing activation back to pending"
+                                    );
+                                }
                             }
                         };
                     }

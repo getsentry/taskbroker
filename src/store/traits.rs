@@ -24,18 +24,18 @@ pub trait InflightActivationStore: Send + Sync {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error>;
 
-    /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
+    /// Claims `limit` activations within the `bucket` range.
     async fn claim_activations_for_push(
         &self,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
     ) -> Result<Vec<InflightActivation>, Error> {
-        self.claim_activations(None, None, limit, bucket, false)
-            .await
+        self.claim_activations(None, None, limit, bucket).await
     }
+
+    async fn undo_claim_activation(&self, id: &str) -> Result<(), Error>;
 
     /// Claims `limit` activations with application `application` and namespace `namespace`.
     async fn claim_activation_for_pull(
@@ -57,7 +57,7 @@ pub trait InflightActivationStore: Send + Sync {
         }
 
         let mut rows = self
-            .claim_activations(application, namespaces.as_deref(), Some(1), None, true)
+            .claim_activations(application, namespaces.as_deref(), Some(1), None)
             .await?;
 
         // If we are getting more than one task here, something is broken
