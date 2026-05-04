@@ -33,7 +33,7 @@ where
                     Some(v) => {
                         buffer.push(v);
 
-                        while let Ok(update) = rx.try_recv() {
+                        while buffer.len() < batch_size && let Ok(update) = rx.try_recv() {
                             buffer.push(update);
                         }
 

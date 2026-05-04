@@ -642,20 +642,21 @@ impl InflightActivationStore for PostgresActivationStore {
         &self,
         ids: &[String],
         status: InflightActivationStatus,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         if ids.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
 
-        sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
-            .bind(status.to_string())
-            .bind(ids)
-            .execute(&mut *conn)
-            .await?;
+        let result =
+            sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
+                .bind(status.to_string())
+                .bind(ids)
+                .execute(&mut *conn)
+                .await?;
 
-        Ok(())
+        Ok(result.rows_affected())
     }
 
     #[instrument(skip_all)]
@@ -683,28 +684,6 @@ impl InflightActivationStore for PostgresActivationStore {
             .execute(&mut *conn)
             .await?;
         Ok(())
-    }
-
-    #[instrument(skip_all)]
-    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error> {
-        if ids.is_empty() {
-            return Ok(0);
-        }
-
-        let mut conn = self
-            .acquire_write_conn_metric("delete_activations_by_id")
-            .await?;
-
-        let mut query_builder =
-            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE id = ANY(");
-
-        query_builder.push_bind(ids);
-        query_builder.push(")");
-
-        self.add_partition_condition(&mut query_builder, false);
-
-        let result = query_builder.build().execute(&mut *conn).await?;
-        Ok(result.rows_affected())
     }
 
     #[instrument(skip_all)]
