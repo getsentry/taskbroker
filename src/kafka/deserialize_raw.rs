@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Error, anyhow};
+use anyhow::Error;
 use chrono::{DateTime, Utc};
 use prost::Message as _;
 use rdkafka::Message;
