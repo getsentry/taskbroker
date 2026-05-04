@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Error, anyhow};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use prost::Message as _;
 use rdkafka::Message;
 use rdkafka::message::OwnedMessage;
@@ -14,38 +14,38 @@ use crate::store::activation::{InflightActivation, InflightActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
 
-pub struct PassthroughConfig {
+pub struct RawConfig {
     pub namespace: String,
     pub application: String,
     pub taskname: String,
     pub processing_deadline_duration: u64,
 }
 
-impl PassthroughConfig {
+impl RawConfig {
     pub fn from_config(config: &Config) -> Option<Self> {
-        if !config.passthrough_mode {
+        if !config.raw_mode {
             return None;
         }
         Some(Self {
             namespace: config
-                .passthrough_namespace
+                .raw_namespace
                 .clone()
-                .expect("passthrough_namespace required when passthrough_mode is enabled"),
+                .expect("raw_namespace required when raw_mode is enabled"),
             application: config
-                .passthrough_application
+                .raw_application
                 .clone()
-                .expect("passthrough_application required when passthrough_mode is enabled"),
+                .expect("raw_application required when raw_mode is enabled"),
             taskname: config
-                .passthrough_taskname
+                .raw_taskname
                 .clone()
-                .expect("passthrough_taskname required when passthrough_mode is enabled"),
-            processing_deadline_duration: config.passthrough_processing_deadline_duration,
+                .expect("raw_taskname required when raw_mode is enabled"),
+            processing_deadline_duration: config.raw_processing_deadline_duration,
         })
     }
 }
 
 /// Encode raw bytes into msgpack format: {"args": [raw_bytes], "kwargs": {}}
-fn encode_passthrough_params(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
+fn encode_raw_params(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
     use serde::Serialize;
 
     #[derive(Serialize)]
@@ -59,25 +59,30 @@ fn encode_passthrough_params(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
         kwargs: HashMap::new(),
     };
 
+    // TODO: send to DLQ instead of skipping
     rmp_serde::to_vec_named(&params).map_err(|e| anyhow!("Failed to encode msgpack: {}", e))
 }
 
-/// Create a deserializer closure for passthrough mode.
+/// Create a deserializer closure for raw mode.
 /// Wraps raw Kafka message bytes into a TaskActivation with msgpack-encoded parameters_bytes.
-pub fn new(
-    config: PassthroughConfig,
-) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
+pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
     move |msg: Arc<OwnedMessage>| {
         let Some(payload) = msg.payload() else {
+            // TODO: send to DLQ instead of skipping
             return Err(anyhow!("Message has no payload"));
         };
 
         let id = Uuid::new_v4().to_string();
-        let parameters_bytes = encode_passthrough_params(payload)?;
+        let parameters_bytes = encode_raw_params(payload)?;
         let now = Utc::now();
+        let received_at_time = msg
+            .timestamp()
+            .to_millis()
+            .and_then(DateTime::from_timestamp_millis)
+            .unwrap_or(now);
         let received_at = prost_types::Timestamp {
-            seconds: now.timestamp(),
-            nanos: 0,
+            seconds: received_at_time.timestamp(),
+            nanos: received_at_time.timestamp_subsec_nanos() as i32,
         };
 
         let activation = TaskActivation {
@@ -100,7 +105,7 @@ pub fn new(
         let bucket = bucket_from_id(&id);
 
         metrics::histogram!(
-            "consumer.passthrough.payload_size_bytes",
+            "consumer.raw.payload_size_bytes",
             "namespace" => config.namespace.clone(),
             "taskname" => config.taskname.clone()
         )
@@ -113,7 +118,7 @@ pub fn new(
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: now,
-            received_at: now,
+            received_at: received_at_time,
             processing_deadline: None,
             claim_expires_at: None,
             processing_deadline_duration: config.processing_deadline_duration as i32,
@@ -140,7 +145,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_encode_passthrough_params() {
+    fn test_encode_raw_params() {
         use serde::Deserialize;
 
         #[derive(Deserialize, Debug)]
@@ -150,7 +155,7 @@ mod tests {
         }
 
         let raw_bytes = b"hello world";
-        let encoded = encode_passthrough_params(raw_bytes).unwrap();
+        let encoded = encode_raw_params(raw_bytes).unwrap();
 
         // Decode and verify
         let decoded: Params = rmp_serde::from_slice(&encoded).unwrap();
@@ -159,8 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_deserializer() {
-        let config = PassthroughConfig {
+    fn test_raw_deserializer() {
+        let config = RawConfig {
             namespace: "test-namespace".to_string(),
             application: "test-app".to_string(),
             taskname: "test-task".to_string(),
@@ -200,8 +205,8 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_deserializer_empty_payload() {
-        let config = PassthroughConfig {
+    fn test_raw_deserializer_empty_payload() {
+        let config = RawConfig {
             namespace: "test-namespace".to_string(),
             application: "test-app".to_string(),
             taskname: "test-task".to_string(),
