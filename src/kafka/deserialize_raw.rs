@@ -46,7 +46,7 @@ impl RawConfig {
                 .raw_taskname
                 .clone()
                 .expect("raw_taskname required when raw_mode is enabled"),
-            processing_deadline_duration: config.raw_processing_deadline_duration.into(),
+            processing_deadline_duration: config.raw_processing_deadline_duration,
         })
     }
 }
