@@ -294,7 +294,13 @@ mod tests {
         let inflight = result.unwrap();
         let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
 
-        assert_eq!(activation.headers.get("trace-id"), Some(&"abc123".to_string()));
-        assert_eq!(activation.headers.get("request-id"), Some(&"req-456".to_string()));
+        assert_eq!(
+            activation.headers.get("trace-id"),
+            Some(&"abc123".to_string())
+        );
+        assert_eq!(
+            activation.headers.get("request-id"),
+            Some(&"req-456".to_string())
+        );
     }
 }
