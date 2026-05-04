@@ -16,7 +16,7 @@ use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
 use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
-use taskbroker::grpc::server::{TaskbrokerServer, flush_status_updates};
+use taskbroker::grpc::server::{self, TaskbrokerServer};
 use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
 use taskbroker::kafka::deserialize_activation;
@@ -28,7 +28,6 @@ use taskbroker::kafka::inflight_activation_writer::{
     ActivationWriterConfig, InflightActivationWriter,
 };
 use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
-use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
@@ -41,6 +40,7 @@ use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
 use taskbroker::{SERVICE_NAME, flusher};
+use taskbroker::{logging, push};
 
 async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -192,19 +192,19 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Status flusher
-    let (status_tx, status_flush_task) = if config.delivery_mode == DeliveryMode::Push {
-        let (tx, rx) = tokio::sync::mpsc::channel(config.status_flush_batch_size);
+    // Server status update flusher
+    let (server_update_tx, server_update_task) = if config.batch_server_updates {
+        let (tx, rx) = tokio::sync::mpsc::channel(config.server_update_batch_size);
 
-        let flusher_store = store.clone();
-        let flusher_config = config.clone();
+        let store = store.clone();
+        let config = config.clone();
 
         let handle = tokio::spawn(async move {
             flusher::run_flusher(
                 rx,
-                flusher_config.status_flush_batch_size,
-                flusher_config.status_flush_interval_ms,
-                move |buffer| Box::pin(flush_status_updates(flusher_store.clone(), buffer)),
+                config.server_update_batch_size,
+                config.server_update_interval_ms,
+                move |buffer| Box::pin(server::flush_updates(store.clone(), buffer)),
             )
             .await
         });
@@ -218,7 +218,7 @@ async fn main() -> Result<(), Error> {
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
-        let grpc_status_tx = status_tx.clone();
+        let grpc_status_tx = server_update_tx.clone();
 
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
@@ -235,7 +235,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                     config: grpc_config,
-                    status_tx: grpc_status_tx,
+                    update_tx: grpc_status_tx,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -266,8 +266,30 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Push status update flusher
+    let (push_update_tx, push_update_task) = if config.batch_push_updates {
+        let (tx, rx) = tokio::sync::mpsc::channel(config.push_update_batch_size);
+
+        let store = store.clone();
+        let config = config.clone();
+
+        let handle = tokio::spawn(async move {
+            flusher::run_flusher(
+                rx,
+                config.push_update_batch_size,
+                config.push_update_interval_ms,
+                move |buffer| Box::pin(push::flush_updates(store.clone(), buffer)),
+            )
+            .await
+        });
+
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
+    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone(), push_update_tx));
     let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
     // Initialize push threads
@@ -302,8 +324,12 @@ async fn main() -> Result<(), Error> {
         departure = departure.on_completion(log_task_completion("fetch_task", task));
     }
 
-    if let Some(task) = status_flush_task {
-        departure = departure.on_completion(log_task_completion("status_flush_task", task));
+    if let Some(task) = server_update_task {
+        departure = departure.on_completion(log_task_completion("server_flush_task", task));
+    }
+
+    if let Some(task) = push_update_task {
+        departure = departure.on_completion(log_task_completion("push_flush_task", task));
     }
 
     departure.await;

@@ -631,6 +631,38 @@ impl InflightActivationStore for SqliteActivationStore {
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    async fn mark_activation_processing_batch(&self, id: &[String]) -> Result<u64, Error> {
+        if id.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self
+            .acquire_write_conn_metric("mark_activation_processing_batch")
+            .await?;
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let id_placeholders: Vec<String> = (0..id.len()).map(|i| format!("?{}", i + 2)).collect();
+        let claimed_placeholder = id.len() + 2;
+        let sql = format!(
+            "UPDATE inflight_taskactivations SET
+                status = ?1,
+                processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'),
+                claim_expires_at = NULL
+            WHERE id IN ({}) AND status = ?{claimed_placeholder}",
+            id_placeholders.join(", ")
+        );
+
+        let mut q = sqlx::query(&sql).bind(InflightActivationStatus::Processing);
+        for single_id in id {
+            q = q.bind(single_id);
+        }
+        q = q.bind(InflightActivationStatus::Claimed);
+
+        let result = q.execute(&mut *conn).await?;
+        Ok(result.rows_affected())
+    }
+
     /// Get the age of the oldest pending activation in seconds.
     /// Only activations with status=pending and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
@@ -711,9 +743,9 @@ impl InflightActivationStore for SqliteActivationStore {
         &self,
         ids: &[String],
         status: InflightActivationStatus,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         if ids.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
@@ -729,8 +761,8 @@ impl InflightActivationStore for SqliteActivationStore {
             q = q.bind(id);
         }
 
-        q.execute(&mut *conn).await?;
-        Ok(())
+        let result = q.execute(&mut *conn).await?;
+        Ok(result.rows_affected())
     }
 
     #[instrument(skip_all)]

@@ -71,6 +71,8 @@ pub trait InflightActivationStore: Send + Sync {
     /// Record successful push.
     async fn mark_activation_processing(&self, id: &str) -> Result<(), Error>;
 
+    async fn mark_activation_processing_batch(&self, id: &[String]) -> Result<u64, Error>;
+
     /// Update the status of a specific activation
     async fn set_status(
         &self,
@@ -83,7 +85,7 @@ pub trait InflightActivationStore: Send + Sync {
         &self,
         ids: &[String],
         status: InflightActivationStatus,
-    ) -> Result<(), Error>;
+    ) -> Result<u64, Error>;
 
     /// COUNT OPERATIONS
     /// Get the age of the oldest pending activation in seconds

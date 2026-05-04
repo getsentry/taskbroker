@@ -119,7 +119,7 @@ async fn push_pool_submit_enqueues_item() {
     });
 
     let store = create_test_store("sqlite").await;
-    let pool = PushPool::new(config, store);
+    let pool = PushPool::new(config, store, None);
     let activation = make_activations(1).remove(0);
 
     let result = pool.submit(activation).await;
@@ -134,7 +134,7 @@ async fn push_pool_submit_backpressures_when_queue_full() {
     });
 
     let store = create_test_store("sqlite").await;
-    let pool = PushPool::new(config, store);
+    let pool = PushPool::new(config, store, None);
 
     let first = make_activations(1).remove(0);
     let second = make_activations(1).remove(0);

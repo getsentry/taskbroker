@@ -102,6 +102,10 @@ impl InflightActivationStore for MockStore {
         Ok(())
     }
 
+    async fn mark_activation_processing_batch(&self, _id: &[String]) -> Result<u64, Error> {
+        Ok(0)
+    }
+
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
         unimplemented!()
     }
@@ -126,8 +130,8 @@ impl InflightActivationStore for MockStore {
         &self,
         _ids: &[String],
         _status: InflightActivationStatus,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> Result<u64, Error> {
+        Ok(0)
     }
 
     async fn delete_activation_batch(&self, _ids: &[String]) -> Result<u64, Error> {

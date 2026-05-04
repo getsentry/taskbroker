@@ -11,11 +11,12 @@ use prost::Message;
 use sentry_protos::taskbroker::v1::worker_service_client::WorkerServiceClient;
 use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
 use sha2::Sha256;
+use tokio::sync::mpsc::Sender as TokioSender;
 use tokio::task::JoinSet;
 use tonic::async_trait;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::store::activation::InflightActivation;
@@ -94,11 +95,17 @@ pub struct PushPool {
 
     /// Activation store, which we need for marking tasks as sent.
     store: Arc<dyn InflightActivationStore>,
+
+    update_tx: Option<TokioSender<String>>,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        store: Arc<dyn InflightActivationStore>,
+        update_tx: Option<TokioSender<String>>,
+    ) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
@@ -106,6 +113,7 @@ impl PushPool {
             receiver,
             config,
             store,
+            update_tx,
         }
     }
 
@@ -128,6 +136,7 @@ impl PushPool {
 
                 let timeout = Duration::from_millis(self.config.push_timeout_ms);
                 let grpc_shared_secret = self.config.grpc_shared_secret.clone();
+                let update_tx = self.update_tx.clone();
 
                 async move {
                     metrics::counter!("push.worker.connect.attempt").increment(1);
@@ -211,19 +220,43 @@ impl PushPool {
                                             }
                                         }
 
-                                        let start = Instant::now();
-                                        let result = store.mark_activation_processing(&id).await;
-                                        metrics::histogram!("push.mark_activation_processing.duration")
-                                            .record(start.elapsed());
+                                        // Buffer updates if `update_tx` was provided
+                                        match update_tx {
+                                            Some(ref tx) => {
+                                                let start = Instant::now();
+                                                let result = tx.send(id.clone()).await;
 
-                                        if let Err(e) = result {
-                                            metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+                                                metrics::histogram!("push.buffer_update.duration")
+                                                    .record(start.elapsed());
 
-                                            error!(
-                                                task_id = %id,
-                                                error = ?e,
-                                                "Failed to mark activation as sent after push"
-                                            );
+                                                if let Err(e) = result {
+                                                    metrics::counter!("push.buffer_update", "result" => "error").increment(1);
+
+                                                    error!(
+                                                        task_id = %id,
+                                                        error = ?e,
+                                                        "Failed to buffer sent activation"
+                                                    );
+                                                }
+                                            }
+
+                                            None => {
+                                                let start = Instant::now();
+                                                let result = store.mark_activation_processing(&id).await;
+
+                                                metrics::histogram!("push.mark_activation_processing.duration")
+                                                    .record(start.elapsed());
+
+                                                if let Err(e) = result {
+                                                    metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+
+                                                    error!(
+                                                        task_id = %id,
+                                                        error = ?e,
+                                                        "Failed to mark activation as sent after push"
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
 
@@ -383,6 +416,52 @@ async fn push_task<W: WorkerClient + Send>(
 
     metrics::histogram!("push.push_task.duration").record(start.elapsed());
     result
+}
+
+pub async fn flush_updates(store: Arc<dyn InflightActivationStore>, buffer: &mut Vec<String>) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let ids = std::mem::take(buffer);
+    let requested = ids.len() as u64;
+
+    metrics::histogram!("push.flush_updates.ids").record(requested as f64);
+
+    match store.mark_activation_processing_batch(&ids).await {
+        Ok(affected) => {
+            metrics::histogram!("push.flush_updates.affected").record(affected as f64);
+            metrics::counter!("push.flush_updates.updated").increment(affected);
+
+            metrics::counter!("push.flush_updates", "result" => "ok").increment(1);
+
+            if affected < requested {
+                metrics::counter!("push.flush_updates.partial").increment(1);
+
+                warn!(
+                    requested,
+                    affected, "Updated fewer rows than IDs requested from push pool"
+                );
+            }
+
+            debug!(affected, requested, "Flushed update batch from push pool");
+        }
+
+        Err(e) => {
+            metrics::counter!("push.flush_updates.batch", "result" => "error").increment(1);
+
+            error!(
+                requested,
+                error = ?e,
+                "Failed to flush update batch from push pool"
+            );
+
+            // Push failed updates back into the buffer so they can be retried on next flush
+            for id in ids {
+                buffer.push(id);
+            }
+        }
+    };
 }
 
 #[cfg(test)]

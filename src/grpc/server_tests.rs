@@ -24,7 +24,7 @@ async fn test_get_task_push_mode_returns_permission_denied() {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = GetTaskRequest {
@@ -51,7 +51,7 @@ async fn test_get_task(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = GetTaskRequest {
@@ -78,7 +78,7 @@ async fn test_set_task_status(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = SetTaskStatusRequest {
@@ -105,7 +105,7 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = SetTaskStatusRequest {
@@ -139,7 +139,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store: store.clone(),
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = GetTaskRequest {
@@ -179,7 +179,7 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = GetTaskRequest {
@@ -213,7 +213,7 @@ async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = GetTaskRequest {
@@ -243,7 +243,7 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = GetTaskRequest {
@@ -295,7 +295,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = SetTaskStatusRequest {
@@ -340,7 +340,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     // Request a task from an application without any activations.
@@ -375,7 +375,7 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
     let service = TaskbrokerServer {
         store,
         config,
-        status_tx: None,
+        update_tx: None,
     };
 
     let request = SetTaskStatusRequest {

@@ -10,7 +10,7 @@ use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivation, TaskActivationStatus,
 };
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::Sender;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, instrument, warn};
 
@@ -21,7 +21,7 @@ use crate::store::traits::InflightActivationStore;
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
     pub config: Arc<Config>,
-    pub status_tx: Option<mpsc::Sender<StatusUpdate>>,
+    pub update_tx: Option<Sender<StatusUpdate>>,
 }
 
 #[tonic::async_trait]
@@ -106,7 +106,7 @@ impl ConsumerService for TaskbrokerServer {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
-        if let Some(ref tx) = self.status_tx {
+        if let Some(ref tx) = self.update_tx {
             tx.send((id, status))
                 .await
                 .map_err(|_| Status::internal("Status update channel closed"))?;
@@ -211,7 +211,7 @@ impl ConsumerService for TaskbrokerServer {
 
 pub type StatusUpdate = (String, InflightActivationStatus);
 
-pub async fn flush_status_updates(
+pub async fn flush_updates(
     store: Arc<dyn InflightActivationStore>,
     buffer: &mut Vec<StatusUpdate>,
 ) {
@@ -226,30 +226,56 @@ pub async fn flush_status_updates(
         by_status.entry(status).or_default().push(id);
     }
 
-    let mut success = 0;
-    let mut fail = 0;
-
     for (status, ids) in by_status {
-        let count = ids.len() as u64;
+        let requested = ids.len() as u64;
+        let st = status.to_string();
 
-        match store
-            .set_status_batch(&ids, status)
-            .await
-            .map(|()| ids.len() as u64)
-        {
-            Ok(count) => {
-                success += count;
-                debug!(?status, ?count, "Flushed status batch");
+        metrics::histogram!("grpc_server.flush_updates.requested", "status" => st.clone())
+            .record(requested as f64);
+
+        match store.set_status_batch(&ids, status).await {
+            Ok(affected) => {
+                metrics::histogram!(
+                    "grpc_server.flush_updates.affected",
+                    "status" => st.clone()
+                )
+                .record(affected as f64);
+
+                metrics::counter!(
+                    "grpc_server.flush_updates.updated",
+                    "status" => st.clone()
+                )
+                .increment(affected);
+
+                metrics::counter!("grpc_server.flush_updates", "result" => "ok").increment(1);
+
+                if affected < requested {
+                    metrics::counter!(
+                        "grpc_server.flush_updates.partial",
+                        "status" => st.clone()
+                    )
+                    .increment(1);
+
+                    warn!(
+                        ?status,
+                        requested, affected, "Updated fewer rows than IDs requested from server"
+                    );
+                }
+
+                debug!(
+                    ?status,
+                    affected, requested, "Flushed status batch from server"
+                );
             }
 
             Err(e) => {
-                fail += count;
+                metrics::counter!("grpc_server.flush_updates", "result" => "error").increment(1);
 
                 error!(
                     ?status,
-                    ?count,
+                    requested,
                     error = ?e,
-                    "Failed to flush status batch"
+                    "Failed to flush status batch from server"
                 );
 
                 // Push failed updates back into the buffer so they can be retried on next flush
@@ -259,7 +285,4 @@ pub async fn flush_status_updates(
             }
         }
     }
-
-    metrics::gauge!(format!("grpc_server.flush_status_updates.success")).set(success as f64);
-    metrics::gauge!(format!("grpc_server.flush_status_updates.fail")).set(fail as f64);
 }

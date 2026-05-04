@@ -293,11 +293,23 @@ pub struct Config {
     /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     pub push_timeout_ms: u64,
 
-    /// The size of a batch of status updates. Only active in push mode.
-    pub status_flush_batch_size: usize,
+    /// Should status updates initiated by the server be batched?
+    pub batch_server_updates: bool,
 
-    /// Maximum milliseconds to wait before flushing a batch of status updates.
-    pub status_flush_interval_ms: u64,
+    /// The size of a batch of status updates from the server.
+    pub server_update_batch_size: usize,
+
+    /// Maximum milliseconds to wait before flushing a batch of status updates from the server.
+    pub server_update_interval_ms: u64,
+
+    /// Should status updates initiated by the push pool be batched?
+    pub batch_push_updates: bool,
+
+    /// The size of a batch of status updates from the push pool.
+    pub push_update_batch_size: usize,
+
+    /// Maximum milliseconds to wait before flushing a batch of status updates from the push pool.
+    pub push_update_interval_ms: u64,
 
     /// The hostname used to construct `callback_url` for task push requests.
     pub callback_addr: String,
@@ -389,8 +401,12 @@ impl Default for Config {
             push_queue_size: 1,
             push_queue_timeout_ms: 5000,
             push_timeout_ms: 30000,
-            status_flush_batch_size: 1,
-            status_flush_interval_ms: 100,
+            batch_server_updates: false,
+            server_update_batch_size: 1,
+            server_update_interval_ms: 100,
+            batch_push_updates: false,
+            push_update_batch_size: 1,
+            push_update_interval_ms: 100,
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
