@@ -180,7 +180,7 @@ mod tests {
         }
 
         let raw_bytes = b"hello world";
-        let encoded = encode_raw_params(raw_bytes).unwrap();
+        let encoded = encode_raw_params(raw_bytes);
 
         // Verify msgpack uses binary format (0xc4 = bin8), not array format (0x9x). Array format
         // is easy to accidentally serialize to with Vec<u8>.
