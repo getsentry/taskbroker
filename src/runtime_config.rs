@@ -92,8 +92,12 @@ impl Drop for RuntimeConfigManager {
 
 #[cfg(test)]
 mod tests {
-    use super::RuntimeConfigManager;
+    use std::io::Write;
+
+    use tempfile::NamedTempFile;
     use tokio::fs;
+
+    use super::RuntimeConfigManager;
 
     #[tokio::test]
     async fn test_runtime_config_manager() {
@@ -103,15 +107,16 @@ drop_task_killswitch:
 demoted_namespaces:
   -"#;
 
-        let test_path = "test_runtime_config_manager.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let runtime_config =
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
+                .await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
-
-        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]
@@ -131,14 +136,15 @@ droop_task_killswitch:
 demoted_namespaces:
   -"#;
 
-        let test_path = "test_invalid_runtime_config_file.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let runtime_config =
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
+                .await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 0);
-
-        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]
@@ -149,10 +155,12 @@ drop_task_killswitch:
 demoted_namespaces:
   -"#;
 
-        let test_path = "test_preserve_runtime_config_file.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+        let test_path = config_file.path().to_str().unwrap().to_string();
 
-        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let runtime_config = RuntimeConfigManager::new(Some(test_path.clone())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
@@ -163,14 +171,11 @@ droop_task_killswitch:
 demoted_namespaces:
   -"#;
 
-        fs::write(test_path, invalid_yaml).await.unwrap();
-        RuntimeConfigManager::reload_config(&Some(test_path.to_string()), &runtime_config.config)
-            .await;
+        fs::write(&test_path, invalid_yaml).await.unwrap();
+        RuntimeConfigManager::reload_config(&Some(test_path), &runtime_config.config).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
-
-        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]
@@ -183,10 +188,13 @@ demoted_namespaces:
 demoted_topic_cluster: kafka:9092
 demoted_topic: taskworker-demoted-topic"#;
 
-        let test_path = "test_demoted_namespaces.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let runtime_config =
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
+                .await;
         let config = runtime_config.read().await;
         assert_eq!(
             config.demoted_topic_cluster.as_deref().unwrap(),
@@ -202,8 +210,6 @@ demoted_topic: taskworker-demoted-topic"#;
             config.demoted_topic.as_deref().unwrap_or("taskworker-long"),
             "taskworker-demoted-topic"
         );
-
-        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]
@@ -214,15 +220,17 @@ drop_task_killswitch:
 demoted_namespaces:
   - bad_namespace"#;
 
-        let test_path = "test_killswitch_and_demoted_namespaces.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = RuntimeConfigManager::new(Some(test_path.to_string())).await;
+        let runtime_config =
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
+                .await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
         assert_eq!(config.demoted_namespaces.len(), 1);
         assert_eq!(config.demoted_namespaces[0], "bad_namespace");
-        fs::remove_file(test_path).await.unwrap();
     }
 }

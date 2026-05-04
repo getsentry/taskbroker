@@ -523,6 +523,7 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
     use std::time::Instant;
@@ -532,7 +533,7 @@ mod tests {
     use prost_types::Timestamp;
     use rstest::rstest;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
-    use tokio::fs;
+    use tempfile::NamedTempFile;
     use tokio::time::sleep;
 
     use crate::config::Config;
@@ -1256,9 +1257,12 @@ demoted_namespaces:
   - bad_namespace1
   - bad_namespace2"#;
 
-        let test_path = "test_forward_demoted_namespaces.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
-        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
         let producer = create_producer(config.clone());
         let store = create_test_store(adapter).await;
         let start_time = Utc::now();
@@ -1297,7 +1301,6 @@ demoted_namespaces:
             2,
             "two tasks should be marked as complete"
         );
-        let _ = fs::remove_file(test_path).await;
     }
 
     #[tokio::test]
@@ -1312,10 +1315,13 @@ drop_task_killswitch:
 demoted_namespaces:
   -"#;
 
-        let test_path = "test_drop_task_due_to_killswitch.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
         let producer = create_producer(config.clone());
         let store = create_test_store(adapter).await;
         let start_time = Utc::now();
@@ -1347,8 +1353,6 @@ demoted_namespaces:
                 .unwrap(),
             3
         );
-
-        let _ = fs::remove_file(test_path).await;
     }
 
     #[tokio::test]
