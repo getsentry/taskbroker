@@ -59,10 +59,10 @@ fn extract_headers(msg: &OwnedMessage) -> HashMap<String, String> {
     let mut result = HashMap::new();
     for i in 0..headers.count() {
         let header = headers.get(i);
-        if let Some(value) = header.value {
-            if let Ok(value_str) = std::str::from_utf8(value) {
-                result.insert(header.key.to_string(), value_str.to_string());
-            }
+        if let Some(value) = header.value
+            && let Ok(value_str) = std::str::from_utf8(value)
+        {
+            result.insert(header.key.to_string(), value_str.to_string());
         }
     }
     result
