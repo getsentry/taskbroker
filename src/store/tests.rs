@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Error;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +8,7 @@ use rstest::rstest;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
 use sqlx::postgres::PgSslMode;
 use sqlx::{QueryBuilder, Sqlite};
+use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
@@ -1966,53 +1965,14 @@ async fn test_db_status_calls_ok() {
     }
 }
 
-struct TestFolders {
-    parent_folder: String,
-    initial_folder: String,
-    other_folder: String,
-}
-
-impl TestFolders {
-    fn new() -> Result<Self, Error> {
-        let parent_folder = "./testmigrations".to_string();
-        let parent = fs::create_dir(&parent_folder);
-        if parent.is_err() {
-            return Err(parent.err().unwrap());
-        }
-
-        let initial_folder = parent_folder.clone() + "/initial_migrations";
-        let other_folder = parent_folder.clone() + "/other_migrations";
-
-        let initial = fs::create_dir(&initial_folder);
-        if initial.is_err() {
-            return Err(initial.err().unwrap());
-        }
-        let other = fs::create_dir(&other_folder);
-        if other.is_err() {
-            return Err(other.err().unwrap());
-        }
-
-        Ok(TestFolders {
-            parent_folder,
-            initial_folder,
-            other_folder,
-        })
-    }
-}
-
-impl Drop for TestFolders {
-    fn drop(&mut self) {
-        let parent = fs::remove_dir_all(Path::new(&self.parent_folder));
-        if parent.is_err() {
-            println!("Could not remove dir {}, {:?}", self.parent_folder, parent);
-        }
-    }
-}
-
 #[tokio::test]
 async fn test_migrations() {
-    // Create the folders that will be used
-    let folders = TestFolders::new().unwrap();
+    // Create temp folders that auto-cleanup on drop
+    let temp_dir = TempDir::new().unwrap();
+    let initial_folder = temp_dir.path().join("initial_migrations");
+    let other_folder = temp_dir.path().join("other_migrations");
+    fs::create_dir(&initial_folder).unwrap();
+    fs::create_dir(&other_folder).unwrap();
 
     // Move migrations to different folders
     let orig = fs::read_dir("./migrations/sqlite");
@@ -2025,20 +1985,17 @@ async fn test_migrations() {
         let filename = entry.file_name().into_string().unwrap();
         // Write the initial migration to a separate folder, so the table can be initialized without any migrations.
         if filename.starts_with("0001") {
-            let result = fs::copy(
-                entry.path(),
-                folders.initial_folder.clone() + "/" + &filename,
-            );
+            let result = fs::copy(entry.path(), initial_folder.join(&filename));
             assert!(result.is_ok(), "{result:?}");
         }
 
-        let result = fs::copy(entry.path(), folders.other_folder.clone() + "/" + &filename);
+        let result = fs::copy(entry.path(), other_folder.join(&filename));
         assert!(result.is_ok(), "{result:?}");
     }
 
     // Run initial migration
     let (_read_pool, write_pool) = create_sqlite_pool(&generate_temp_filename()).await.unwrap();
-    let result = sqlx::migrate::Migrator::new(Path::new(&folders.initial_folder))
+    let result = sqlx::migrate::Migrator::new(initial_folder.as_path())
         .await
         .unwrap()
         .run(&write_pool)
@@ -2092,7 +2049,7 @@ async fn test_migrations() {
     assert_eq!(result.rows_affected(), 2);
 
     // Run other migrations
-    let result = sqlx::migrate::Migrator::new(Path::new(&folders.other_folder))
+    let result = sqlx::migrate::Migrator::new(other_folder.as_path())
         .await
         .unwrap()
         .run(&write_pool)

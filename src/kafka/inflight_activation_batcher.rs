@@ -213,10 +213,11 @@ impl Reducer for InflightActivationBatcher {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::sync::Arc;
 
     use chrono::Utc;
-    use tokio::fs;
+    use tempfile::NamedTempFile;
 
     use crate::store::activation::InflightActivationBuilder;
     use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
@@ -233,10 +234,13 @@ drop_task_killswitch:
 demoted_namespaces:
   -"#;
 
-        let test_path = "test_drop_task_due_to_killswitch.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
         let config = Arc::new(Config::default());
         let mut batcher = InflightActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -253,8 +257,6 @@ demoted_namespaces:
 
         batcher.reduce(inflight_activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
-
-        fs::remove_file(test_path).await.unwrap();
     }
 
     #[tokio::test]
@@ -352,10 +354,13 @@ demoted_namespaces:
 demoted_topic_cluster: 0.0.0.0:9092
 demoted_topic: taskworker-demoted"#;
 
-        let test_path = "test_forward_task_due_to_demoted_namespace.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
         let config = Arc::new(Config::default());
         let mut batcher = InflightActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -393,7 +398,5 @@ demoted_topic: taskworker-demoted"#;
         assert_eq!(batcher.batch.len(), 0);
         assert_eq!(batcher.forward_batch.len(), 0);
         assert_eq!(batcher.producer_cluster, "0.0.0.0:9092");
-
-        fs::remove_file(test_path).await.unwrap();
     }
 }

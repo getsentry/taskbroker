@@ -64,6 +64,7 @@ uuid = { version = "1.11.0", features = ["v4"] }
 [dev-dependencies]
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 rstest = "0.23"
+tempfile = "3"
 
 [[bench]]
 name = "store_bench"
