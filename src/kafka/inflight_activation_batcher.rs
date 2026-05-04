@@ -239,8 +239,7 @@ demoted_namespaces:
         config_file.flush().unwrap();
 
         let runtime_config = Arc::new(
-            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
-                .await,
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
         let config = Arc::new(Config::default());
         let mut batcher = InflightActivationBatcher::new(
@@ -360,8 +359,7 @@ demoted_topic: taskworker-demoted"#;
         config_file.flush().unwrap();
 
         let runtime_config = Arc::new(
-            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
-                .await,
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
         let config = Arc::new(Config::default());
         let mut batcher = InflightActivationBatcher::new(

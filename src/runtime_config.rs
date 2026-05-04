@@ -112,8 +112,7 @@ demoted_namespaces:
         config_file.flush().unwrap();
 
         let runtime_config =
-            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
-                .await;
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
@@ -141,8 +140,7 @@ demoted_namespaces:
         config_file.flush().unwrap();
 
         let runtime_config =
-            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
-                .await;
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 0);
     }
@@ -193,8 +191,7 @@ demoted_topic: taskworker-demoted-topic"#;
         config_file.flush().unwrap();
 
         let runtime_config =
-            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
-                .await;
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(
             config.demoted_topic_cluster.as_deref().unwrap(),
@@ -225,8 +222,7 @@ demoted_namespaces:
         config_file.flush().unwrap();
 
         let runtime_config =
-            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string()))
-                .await;
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
         assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
