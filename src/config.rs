@@ -316,7 +316,10 @@ pub struct Config {
     pub raw_taskname: Option<String>,
 
     /// Processing deadline duration in seconds for raw mode activations.
-    pub raw_processing_deadline_duration: u64,
+    ///
+    /// This is an u16 because 1) we don't want to allow signed numbers 2) it can be cast into i32
+    /// (which we use elsewhere) without error conditions. It doesn't actually have to be that small.
+    pub raw_processing_deadline_duration: u16,
 }
 
 impl Default for Config {

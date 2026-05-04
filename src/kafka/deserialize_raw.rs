@@ -25,7 +25,7 @@ pub struct RawConfig {
     pub namespace: String,
     pub application: String,
     pub taskname: String,
-    pub processing_deadline_duration: u64,
+    pub processing_deadline_duration: u16,
 }
 
 impl RawConfig {
@@ -46,7 +46,7 @@ impl RawConfig {
                 .raw_taskname
                 .clone()
                 .expect("raw_taskname required when raw_mode is enabled"),
-            processing_deadline_duration: config.raw_processing_deadline_duration,
+            processing_deadline_duration: config.raw_processing_deadline_duration.into(),
         })
     }
 }
@@ -112,7 +112,7 @@ pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightAc
             headers: extract_headers(&msg),
             received_at: Some(received_at),
             retry_state: None,
-            processing_deadline_duration: config.processing_deadline_duration,
+            processing_deadline_duration: config.processing_deadline_duration.into(),
             expires: None,
             delay: None,
         };
@@ -137,7 +137,7 @@ pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightAc
             received_at: received_at_time,
             processing_deadline: None,
             claim_expires_at: None,
-            processing_deadline_duration: config.processing_deadline_duration as i32,
+            processing_deadline_duration: config.processing_deadline_duration.into(),
             processing_attempts: 0,
             expires_at: None,
             delay_until: None,
