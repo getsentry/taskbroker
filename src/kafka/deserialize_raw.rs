@@ -77,27 +77,28 @@ fn extract_headers(msg: &OwnedMessage) -> HashMap<String, String> {
 }
 
 /// Encode raw bytes into msgpack format: {"args": [raw_bytes], "kwargs": {}}
-fn encode_raw_params(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
+fn encode_raw_params(raw_bytes: &[u8]) -> Vec<u8> {
     let params = RawParams {
         args: (serde_bytes::Bytes::new(raw_bytes),),
         kwargs: HashMap::new(),
     };
 
-    // TODO: send to DLQ instead of skipping
-    rmp_serde::to_vec_named(&params).map_err(|e| anyhow!("Failed to encode msgpack: {}", e))
+    // The only condition where this would fail should be a bug in msgpack or taskbroker. In this
+    // case it's better to stop the world instead of trying to recover externally.
+    rmp_serde::to_vec_named(&params).expect("Failed to encode msgpack")
 }
 
 /// Create a deserializer closure for raw mode.
 /// Wraps raw Kafka message bytes into a TaskActivation with msgpack-encoded parameters_bytes.
 pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
     move |msg: Arc<OwnedMessage>| {
-        let Some(payload) = msg.payload() else {
-            // TODO: send to DLQ instead of skipping
-            return Err(anyhow!("Message has no payload"));
-        };
+        // Whether a message without payload is valid is technically not up to taskbroker, and we
+        // can't DLQ messages here. It's easier to convert it to an empty bytestring and let the
+        // task fail. Failed tasks can be DLQed in upkeep.rs
+        let payload = msg.payload().unwrap_or(b"");
 
         let id = Uuid::new_v4().to_string();
-        let parameters_bytes = encode_raw_params(payload)?;
+        let parameters_bytes = encode_raw_params(payload);
         let now = Utc::now();
         let received_at_time = msg
             .timestamp()
@@ -239,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn test_raw_deserializer_empty_payload() {
+    fn test_raw_deserializer_null_payload() {
         let config = RawConfig {
             namespace: "test-namespace".to_string(),
             application: "test-app".to_string(),
@@ -260,8 +261,19 @@ mod tests {
         );
 
         let result = deserializer(Arc::new(message));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("no payload"));
+        assert!(result.is_ok());
+
+        let inflight = result.unwrap();
+        let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
+
+        // Verify empty payload is encoded as empty bytes
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct Params {
+            args: (Vec<u8>,),
+        }
+        let params: Params = rmp_serde::from_slice(&activation.parameters_bytes).unwrap();
+        assert!(params.args.0.is_empty());
     }
 
     #[test]
