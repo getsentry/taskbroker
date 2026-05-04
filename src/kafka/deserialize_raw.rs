@@ -33,15 +33,23 @@ impl RawConfig {
         if !config.raw_mode {
             return None;
         }
+        let application = config
+            .raw_application
+            .clone()
+            .expect("raw_application required when raw_mode is enabled");
+
+        assert!(
+            config.worker_map.contains_key(&application),
+            "raw_application '{}' must exist in worker_map",
+            application
+        );
+
         Some(Self {
             namespace: config
                 .raw_namespace
                 .clone()
                 .expect("raw_namespace required when raw_mode is enabled"),
-            application: config
-                .raw_application
-                .clone()
-                .expect("raw_application required when raw_mode is enabled"),
+            application,
             taskname: config
                 .raw_taskname
                 .clone()
