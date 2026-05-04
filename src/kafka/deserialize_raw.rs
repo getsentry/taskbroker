@@ -58,9 +58,10 @@ fn extract_headers(msg: &OwnedMessage) -> HashMap<String, String> {
 
     let mut result = HashMap::new();
     for i in 0..headers.count() {
-        if let Some((key, value)) = headers.get(i) {
+        let header = headers.get(i);
+        if let Some(value) = header.value {
             if let Ok(value_str) = std::str::from_utf8(value) {
-                result.insert(key.to_string(), value_str.to_string());
+                result.insert(header.key.to_string(), value_str.to_string());
             }
         }
     }
@@ -155,7 +156,7 @@ mod tests {
     use std::sync::Arc;
 
     use rdkafka::Timestamp;
-    use rdkafka::message::OwnedMessage;
+    use rdkafka::message::{Header, OwnedHeaders, OwnedMessage};
 
     use super::*;
 
@@ -253,5 +254,47 @@ mod tests {
         let result = deserializer(Arc::new(message));
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("no payload"));
+    }
+
+    #[test]
+    fn test_raw_deserializer_with_headers() {
+        let config = RawConfig {
+            namespace: "test-namespace".to_string(),
+            application: "test-app".to_string(),
+            taskname: "test-task".to_string(),
+            processing_deadline_duration: 60,
+        };
+
+        let deserializer = new(config);
+
+        let headers = OwnedHeaders::new()
+            .insert(Header {
+                key: "trace-id",
+                value: Some("abc123"),
+            })
+            .insert(Header {
+                key: "request-id",
+                value: Some("req-456"),
+            });
+
+        let raw_payload = b"raw kafka message bytes";
+        let message = OwnedMessage::new(
+            Some(raw_payload.to_vec()),
+            None,
+            "legacy-topic".into(),
+            Timestamp::now(),
+            0,
+            42,
+            Some(headers),
+        );
+
+        let result = deserializer(Arc::new(message));
+        assert!(result.is_ok());
+
+        let inflight = result.unwrap();
+        let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
+
+        assert_eq!(activation.headers.get("trace-id"), Some(&"abc123".to_string()));
+        assert_eq!(activation.headers.get("request-id"), Some(&"req-456".to_string()));
     }
 }
