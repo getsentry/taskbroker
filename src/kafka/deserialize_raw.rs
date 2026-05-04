@@ -5,6 +5,7 @@ use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message as _;
 use rdkafka::Message;
+use rdkafka::message::Headers;
 use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use uuid::Uuid;
@@ -50,6 +51,22 @@ impl RawConfig {
     }
 }
 
+fn extract_headers(msg: &OwnedMessage) -> HashMap<String, String> {
+    let Some(headers) = msg.headers() else {
+        return HashMap::new();
+    };
+
+    let mut result = HashMap::new();
+    for i in 0..headers.count() {
+        if let Some((key, value)) = headers.get(i) {
+            if let Ok(value_str) = std::str::from_utf8(value) {
+                result.insert(key.to_string(), value_str.to_string());
+            }
+        }
+    }
+    result
+}
+
 /// Encode raw bytes into msgpack format: {"args": [raw_bytes], "kwargs": {}}
 fn encode_raw_params(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let params = RawParams {
@@ -91,7 +108,7 @@ pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightAc
             #[allow(deprecated)]
             parameters: String::new(),
             parameters_bytes,
-            headers: HashMap::new(),
+            headers: extract_headers(&msg),
             received_at: Some(received_at),
             retry_state: None,
             processing_deadline_duration: config.processing_deadline_duration,
