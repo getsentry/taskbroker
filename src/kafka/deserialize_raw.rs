@@ -14,6 +14,12 @@ use crate::store::activation::{InflightActivation, InflightActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
 
+#[derive(serde::Serialize)]
+struct RawParams<'a> {
+    args: (&'a serde_bytes::Bytes,),
+    kwargs: HashMap<(), ()>,
+}
+
 pub struct RawConfig {
     pub namespace: String,
     pub application: String,
@@ -46,16 +52,8 @@ impl RawConfig {
 
 /// Encode raw bytes into msgpack format: {"args": [raw_bytes], "kwargs": {}}
 fn encode_raw_params(raw_bytes: &[u8]) -> Result<Vec<u8>, Error> {
-    use serde::Serialize;
-
-    #[derive(Serialize)]
-    struct Params<'a> {
-        args: (&'a [u8],),
-        kwargs: HashMap<(), ()>,
-    }
-
-    let params = Params {
-        args: (raw_bytes,),
+    let params = RawParams {
+        args: (serde_bytes::Bytes::new(raw_bytes),),
         kwargs: HashMap::new(),
     };
 
@@ -156,6 +154,16 @@ mod tests {
 
         let raw_bytes = b"hello world";
         let encoded = encode_raw_params(raw_bytes).unwrap();
+
+        // Verify msgpack uses binary format (0xc4 = bin8), not array format (0x9x). Array format
+        // is easy to accidentally serialize to with Vec<u8>.
+        // Python's msgpack decodes binary to `bytes` but array to `list[int]`.
+        // The encoded format should contain 0xc4 (bin8) followed by length 0x0b (11).
+        assert!(
+            encoded.windows(2).any(|w| w == [0xc4, 0x0b]),
+            "Expected binary format (c4 0b), got: {:02x?}",
+            encoded
+        );
 
         // Decode and verify
         let decoded: Params = rmp_serde::from_slice(&encoded).unwrap();
