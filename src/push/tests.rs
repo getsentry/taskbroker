@@ -323,9 +323,6 @@ async fn push_pool_start_worker_connect_failure_returns_error() {
 
 /// After a successful push for a first-attempt activation (processing_attempts == 0),
 /// mark_activation_processing must be called on the store.
-/// This test currently FAILS because the panic at push/mod.rs:204 fires before
-/// mark_activation_processing is reached. Remove the panic and replace it with real
-/// metric recording to make this test pass.
 #[tokio::test]
 async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let notify = Arc::new(Notify::new());

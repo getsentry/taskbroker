@@ -1,4 +1,5 @@
 use chrono::Utc;
+use std::cmp::max;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -225,7 +226,7 @@ impl PushPool {
                                         debug!(task_id = %id, "Activation sent to worker");
 
                                         if activation.processing_attempts < 1 {
-                                            let received_to_push_latency = activation.received_latency(Utc::now());
+                                            let received_to_push_latency = max(0, activation.received_latency(Utc::now()));
                                             metrics::histogram!(
                                                 "push.received_to_push.latency",
                                                 "namespace" => activation.namespace,
