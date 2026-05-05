@@ -20,8 +20,7 @@ use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::TaskbrokerServer;
 use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
-use taskbroker::kafka::deserialize_activation;
-use taskbroker::kafka::deserialize_activation::DeserializeActivationConfig;
+use taskbroker::kafka::deserialize::{self, DeserializeConfig};
 use taskbroker::kafka::inflight_activation_batcher::{
     ActivationBatcherConfig, InflightActivationBatcher,
 };
@@ -174,7 +173,7 @@ async fn main() -> Result<(), Error> {
                         ),
 
                     map:
-                        deserialize_activation::new(DeserializeActivationConfig::from_config(&consumer_config)),
+                        deserialize::new(DeserializeConfig::from_config(&consumer_config)),
 
                     reduce:
                         InflightActivationBatcher::new(
