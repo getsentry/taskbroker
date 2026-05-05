@@ -1,4 +1,25 @@
 # Changelog
+## 26.4.2
+
+### New Features ✨
+
+- (iswf) Adds silenced_exceptions parameter to tasks, exposes this and report_timeout_errors in task registration by @GabeVillalobos in [#608](https://github.com/getsentry/taskbroker/pull/608)
+
+### Bug Fixes 🐛
+
+- Add a received->pushed latency metric by @evanh in [#613](https://github.com/getsentry/taskbroker/pull/613)
+- Updates file style after Black version update by @GabeVillalobos in [#614](https://github.com/getsentry/taskbroker/pull/614)
+
+### Internal Changes 🔧
+
+- (control) Turn on deployment in sentry-control by @dmajere in [#616](https://github.com/getsentry/taskbroker/pull/616)
+- (gocd) Gocd-jsonnet 3.0.1 by @dmajere in [#615](https://github.com/getsentry/taskbroker/pull/615)
+- (tests) Use tempfile everywhere by @untitaker in [#620](https://github.com/getsentry/taskbroker/pull/620)
+
+### Other
+
+- feat(client) Improve import ergonomics for scheduler by @markstory in [#611](https://github.com/getsentry/taskbroker/pull/611)
+
 ## 26.4.1
 
 ### New Features ✨
