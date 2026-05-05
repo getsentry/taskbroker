@@ -1,6 +1,6 @@
 [project]
 name = "taskbroker-client"
-version = "0.1.12"
+version = "0.1.13"
 description = "Taskbroker python client and worker runtime"
 readme = "README.md"
 dependencies = [
