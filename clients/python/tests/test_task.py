@@ -501,6 +501,17 @@ def test_pass_headers_rejects_positional_only_headers(task_namespace: TaskNamesp
             pass
 
 
+def test_pass_headers_rejects_incompatible_type_annotation(
+    task_namespace: TaskNamespace,
+) -> None:
+    """Tasks with pass_headers=True must have a dict-like type annotation for 'headers'."""
+    with pytest.raises(TypeError, match="Expected one of: dict"):
+
+        @task_namespace.register(name="test.wrong_type_headers", pass_headers=True)
+        def wrong_type_headers(org_id: int, headers: str) -> None:
+            pass
+
+
 def test_delay_immediate_mode_with_pass_headers(task_namespace: TaskNamespace) -> None:
     """In ALWAYS_EAGER mode, tasks with pass_headers=True receive empty headers."""
     calls: list[dict[str, Any]] = []

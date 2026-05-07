@@ -7,7 +7,7 @@ import os
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
-from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, get_origin
 from uuid import uuid4
 
 import msgpack
@@ -55,6 +55,42 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
+def assert_typed_kwarg(
+    func: Callable[..., Any],
+    param_name: str,
+    expected_types: tuple[type, ...],
+    context: str,
+) -> None:
+    """
+    Validate that a function has a keyword argument with a compatible type annotation.
+
+    Raises TypeError if:
+    - The parameter does not exist
+    - The parameter is positional-only
+    - The parameter has a type annotation that is not in expected_types
+    """
+    sig = inspect.signature(func)
+    if param_name not in sig.parameters:
+        raise TypeError(f"{context}: function does not have a {param_name!r} parameter")
+
+    param = sig.parameters[param_name]
+    if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+        raise TypeError(
+            f"{context}: {param_name!r} parameter is positional-only. "
+            f"It must be a keyword argument."
+        )
+
+    if param.annotation is not inspect.Parameter.empty:
+        origin = get_origin(param.annotation)
+        if origin is None:
+            origin = param.annotation
+        if origin not in expected_types:
+            raise TypeError(
+                f"{context}: {param_name!r} parameter has type {param.annotation!r}. "
+                f"Expected one of: {', '.join(t.__name__ for t in expected_types)}."
+            )
+
+
 class Task(Generic[P, R]):
     def __init__(
         self,
@@ -93,18 +129,12 @@ class Task(Generic[P, R]):
         self.pass_headers = pass_headers
 
         if pass_headers:
-            sig = inspect.signature(func)
-            if "headers" not in sig.parameters:
-                raise TypeError(
-                    f"Task {name!r} has pass_headers=True but the function "
-                    f"does not have a 'headers' parameter"
-                )
-            param = sig.parameters["headers"]
-            if param.kind == inspect.Parameter.POSITIONAL_ONLY:
-                raise TypeError(
-                    f"Task {name!r} has pass_headers=True but the 'headers' parameter "
-                    f"is positional-only. It must be a keyword argument."
-                )
+            assert_typed_kwarg(
+                func,
+                "headers",
+                (dict, Mapping, MutableMapping, Any),
+                f"Task {name!r} with pass_headers=True",
+            )
 
         update_wrapper(self, func)
 
