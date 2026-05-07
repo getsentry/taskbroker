@@ -101,6 +101,12 @@ See the [python client README](./clients/python/README.md) for more information.
 
 ### Releasing clients
 
+**Note:** Clients are separately released from the broker. The broker follows
+self-hosted style calver releases (`26.4.0`), and clients are released using
+regular semver (`0.1.8`). They share tags and release branches though, so the
+latest release you see on GitHub may not be the one you have to base your
+version number on.
+
 1. Use the [release client libraries workflow](https://github.com/getsentry/taskbroker/actions/workflows/release-client.yml)
 2. Choose 'Run workflow' and enter a version number in.
 3. This will use craft + getsentry/publish to add packages to both internal and public pypi.
