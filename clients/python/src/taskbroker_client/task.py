@@ -69,7 +69,7 @@ def assert_typed_kwarg(
     - The parameter is positional-only
     - The parameter has a type annotation that is not in expected_types
     """
-    sig = inspect.signature(func)
+    sig = inspect.signature(func, eval_str=True)
     if param_name not in sig.parameters:
         raise TypeError(f"{context}: function does not have a {param_name!r} parameter")
 
