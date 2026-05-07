@@ -112,7 +112,7 @@ class Task(Generic[P, R]):
         """
         Schedule a task to run later with a set of arguments.
 
-        The provided parameters will be JSON encoded and stored within
+        The provided parameters will be msgpack encoded and stored within
         a `TaskActivation` protobuf that is appended to kafka
         """
         self.apply_async(args=args, kwargs=kwargs)
@@ -129,7 +129,7 @@ class Task(Generic[P, R]):
         """
         Schedule a task to run later with a set of arguments.
 
-        The provided parameters will be JSON encoded and stored within
+        The provided parameters will be msgpack encoded and stored within
         a `TaskActivation` protobuf that is appended to kafka.
         """
         if args is None:
