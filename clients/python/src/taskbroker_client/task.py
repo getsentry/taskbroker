@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import inspect
 import os
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
@@ -90,6 +91,21 @@ class Task(Generic[P, R]):
         self.report_timeout_errors = report_timeout_errors
         self.silenced_exceptions = silenced_exceptions or ()
         self.pass_headers = pass_headers
+
+        if pass_headers:
+            sig = inspect.signature(func)
+            if "headers" not in sig.parameters:
+                raise TypeError(
+                    f"Task {name!r} has pass_headers=True but the function "
+                    f"does not have a 'headers' parameter"
+                )
+            param = sig.parameters["headers"]
+            if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+                raise TypeError(
+                    f"Task {name!r} has pass_headers=True but the 'headers' parameter "
+                    f"is positional-only. It must be a keyword argument."
+                )
+
         update_wrapper(self, func)
 
     @property

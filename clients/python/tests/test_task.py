@@ -483,6 +483,24 @@ def test_task_pass_headers_attribute(task_namespace: TaskNamespace) -> None:
     assert without_headers.pass_headers is False
 
 
+def test_pass_headers_requires_headers_parameter(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True must have a 'headers' parameter."""
+    with pytest.raises(TypeError, match="does not have a 'headers' parameter"):
+
+        @task_namespace.register(name="test.missing_headers", pass_headers=True)
+        def missing_headers(org_id: int) -> None:
+            pass
+
+
+def test_pass_headers_rejects_positional_only_headers(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True cannot have a positional-only 'headers' parameter."""
+    with pytest.raises(TypeError, match="positional-only"):
+
+        @task_namespace.register(name="test.positional_headers", pass_headers=True)
+        def positional_headers(org_id: int, headers: dict[str, str], /) -> None:
+            pass
+
+
 def test_delay_immediate_mode_with_pass_headers(task_namespace: TaskNamespace) -> None:
     """In ALWAYS_EAGER mode, tasks with pass_headers=True receive empty headers."""
     calls: list[dict[str, Any]] = []
