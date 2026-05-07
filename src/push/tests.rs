@@ -1,30 +1,30 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::anyhow;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::PushTaskRequest;
+use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
-use tonic::async_trait;
 
 use crate::config::Config;
+use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::traits::InflightActivationStore;
+use crate::store::types::FailedTasksForwarder;
 use crate::test_utils::{create_test_store, make_activations};
 
 use super::*;
 
-/// Fake worker client for unit testing.
+/// Fake worker client that records requests and optionally fails.
 struct MockWorkerClient {
-    /// Capture all received requests so we can assert things about them.
     captured_requests: Vec<PushTaskRequest>,
-
-    /// Should requests to the worker client fail?
     should_fail: bool,
 }
 
 impl MockWorkerClient {
     fn new(should_fail: bool) -> Self {
-        let captured_requests = vec![];
-
         Self {
-            captured_requests,
+            captured_requests: vec![],
             should_fail,
         }
     }
@@ -38,13 +38,156 @@ impl WorkerClient for MockWorkerClient {
         _grpc_shared_secret: &[String],
     ) -> Result<()> {
         self.captured_requests.push(request);
-
         if self.should_fail {
             return Err(anyhow!("mock send failure"));
         }
-
         Ok(())
     }
+}
+
+/// Fake worker client that fires a Notify when send() is called.
+struct NotifyingWorkerClient {
+    should_fail: bool,
+    notify: Arc<Notify>,
+}
+
+#[async_trait]
+impl WorkerClient for NotifyingWorkerClient {
+    async fn send(&mut self, _request: PushTaskRequest, _: &[String]) -> Result<()> {
+        self.notify.notify_one();
+        if self.should_fail {
+            return Err(anyhow!("mock send failure"));
+        }
+        Ok(())
+    }
+}
+
+/// Minimal fake store that records which activation IDs have been marked as processing.
+#[derive(Default, Clone)]
+struct MockStore {
+    marked_processing: Arc<Mutex<Vec<String>>>,
+}
+
+impl MockStore {
+    fn marked_ids(&self) -> Vec<String> {
+        self.marked_processing.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl InflightActivationStore for MockStore {
+    async fn store(&self, _batch: Vec<InflightActivation>) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    fn assign_partitions(&self, _partitions: Vec<i32>) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn claim_activations(
+        &self,
+        _application: Option<&str>,
+        _namespaces: Option<&[String]>,
+        _limit: Option<i32>,
+        _bucket: Option<crate::store::types::BucketRange>,
+        _mark_processing: bool,
+    ) -> anyhow::Result<Vec<InflightActivation>> {
+        Ok(vec![])
+    }
+    async fn mark_activation_processing(&self, id: &str) -> anyhow::Result<()> {
+        self.marked_processing.lock().unwrap().push(id.to_string());
+        Ok(())
+    }
+    async fn set_status(
+        &self,
+        _id: &str,
+        _status: InflightActivationStatus,
+    ) -> anyhow::Result<Option<InflightActivation>> {
+        Ok(None)
+    }
+    async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
+        0.0
+    }
+    async fn count_by_status(&self, _status: InflightActivationStatus) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+    async fn count(&self) -> anyhow::Result<usize> {
+        Ok(0)
+    }
+    async fn get_by_id(&self, _id: &str) -> anyhow::Result<Option<InflightActivation>> {
+        Ok(None)
+    }
+    async fn set_processing_deadline(
+        &self,
+        _id: &str,
+        _deadline: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn delete_activation(&self, _id: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn vacuum_db(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn full_vacuum_db(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn db_size(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn get_retry_activations(&self) -> anyhow::Result<Vec<InflightActivation>> {
+        Ok(vec![])
+    }
+    async fn handle_claim_expiration(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn handle_processing_deadline(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn handle_processing_attempts(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn handle_expires_at(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn handle_delay_until(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn handle_failed_tasks(&self) -> anyhow::Result<FailedTasksForwarder> {
+        Ok(FailedTasksForwarder {
+            to_discard: vec![],
+            to_deadletter: vec![],
+        })
+    }
+    async fn mark_completed(&self, _ids: Vec<String>) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn remove_completed(&self) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn remove_killswitched(&self, _killswitched_tasks: Vec<String>) -> anyhow::Result<u64> {
+        Ok(0)
+    }
+    async fn clear(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// Factory that fires `notify` when send() is called, then succeeds or fails per `should_fail`.
+fn notifying_factory(should_fail: bool, notify: Arc<Notify>) -> WorkerFactory {
+    Arc::new(move |_: String| {
+        let notify = notify.clone();
+        Box::pin(async move {
+            Ok(Box::new(NotifyingWorkerClient {
+                should_fail,
+                notify,
+            }) as Box<dyn WorkerClient + Send>)
+        })
+    })
+}
+
+/// Factory that always fails to connect (simulates a broken endpoint).
+fn failing_connect_factory() -> WorkerFactory {
+    Arc::new(|_: String| Box::pin(async { Err(anyhow::anyhow!("simulated connect failure")) }))
 }
 
 #[tokio::test]
@@ -156,5 +299,141 @@ fn sentry_signature_hex_matches_hmac_contract() {
     assert_eq!(
         digest,
         "6408482d9e6d4975ada4c0302fda813c5718e571e6f9a2d6e2803cb48528044e"
+    );
+}
+
+/// When the worker factory fails to connect, start() returns an error immediately.
+#[tokio::test]
+async fn push_pool_start_worker_connect_failure_returns_error() {
+    let config = Arc::new(Config {
+        worker_map: [("sentry".into(), "unused".into())].into(),
+        push_threads: 1,
+        push_queue_size: 10,
+        ..Config::default()
+    });
+    let store = Arc::new(MockStore::default());
+    let pool = PushPool::new_with_factory(config, store, failing_connect_factory());
+
+    let result = pool.start().await;
+    assert!(
+        result.is_err(),
+        "start() should return Err when the worker factory fails to connect"
+    );
+}
+
+/// After a successful push for a first-attempt activation (processing_attempts == 0),
+/// mark_activation_processing must be called on the store.
+#[tokio::test]
+async fn push_pool_start_marks_activation_processing_on_first_attempt() {
+    let notify = Arc::new(Notify::new());
+    let config = Arc::new(Config {
+        worker_map: [("sentry".into(), "unused".into())].into(),
+        push_threads: 1,
+        push_queue_size: 10,
+        ..Config::default()
+    });
+    let store = Arc::new(MockStore::default());
+    let pool = Arc::new(PushPool::new_with_factory(
+        config,
+        store.clone(),
+        notifying_factory(false, notify.clone()),
+    ));
+
+    let pool_start = pool.clone();
+    tokio::spawn(async move { pool_start.start().await });
+
+    let activation = make_activations(1).remove(0);
+    assert_eq!(activation.processing_attempts, 0);
+    let id = activation.id.clone();
+    pool.submit(activation)
+        .await
+        .expect("submit should succeed");
+
+    // Wait for the worker to call send(), then give it time to call mark_activation_processing
+    timeout(Duration::from_secs(2), notify.notified())
+        .await
+        .expect("timed out waiting for push to be delivered");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(
+        store.marked_ids(),
+        vec![id],
+        "mark_activation_processing should be called after a successful first-attempt push"
+    );
+}
+
+/// After a successful push for a retried activation (processing_attempts > 0),
+/// mark_activation_processing must be called and latency recording is skipped.
+#[tokio::test]
+async fn push_pool_start_marks_activation_processing_on_retry() {
+    let notify = Arc::new(Notify::new());
+    let config = Arc::new(Config {
+        worker_map: [("sentry".into(), "unused".into())].into(),
+        push_threads: 1,
+        push_queue_size: 10,
+        ..Config::default()
+    });
+    let store = Arc::new(MockStore::default());
+    let pool = Arc::new(PushPool::new_with_factory(
+        config,
+        store.clone(),
+        notifying_factory(false, notify.clone()),
+    ));
+
+    let pool_start = pool.clone();
+    tokio::spawn(async move { pool_start.start().await });
+
+    let mut activation = make_activations(1).remove(0);
+    activation.processing_attempts = 1;
+    let id = activation.id.clone();
+    pool.submit(activation)
+        .await
+        .expect("submit should succeed");
+
+    timeout(Duration::from_secs(2), notify.notified())
+        .await
+        .expect("timed out waiting for push to be delivered");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(
+        store.marked_ids(),
+        vec![id],
+        "mark_activation_processing should be called after a successful retry push"
+    );
+}
+
+/// When the worker fails to deliver an activation, mark_activation_processing must NOT be called.
+#[tokio::test]
+async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
+    let notify = Arc::new(Notify::new());
+    let config = Arc::new(Config {
+        worker_map: [("sentry".into(), "unused".into())].into(),
+        push_threads: 1,
+        push_queue_size: 10,
+        ..Config::default()
+    });
+    let store = Arc::new(MockStore::default());
+    let pool = Arc::new(PushPool::new_with_factory(
+        config,
+        store.clone(),
+        notifying_factory(true, notify.clone()),
+    ));
+
+    let pool_start = pool.clone();
+    tokio::spawn(async move { pool_start.start().await });
+
+    let activation = make_activations(1).remove(0);
+    pool.submit(activation)
+        .await
+        .expect("submit should succeed");
+
+    timeout(Duration::from_secs(2), notify.notified())
+        .await
+        .expect("timed out waiting for push attempt");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert!(
+        store.marked_ids().is_empty(),
+        "mark_activation_processing should not be called when push fails"
     );
 }

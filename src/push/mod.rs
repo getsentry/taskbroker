@@ -1,5 +1,8 @@
 use chrono::Utc;
+use std::cmp::max;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,6 +25,12 @@ use crate::store::activation::InflightActivation;
 use crate::store::traits::InflightActivationStore;
 
 type HmacSha256 = Hmac<Sha256>;
+
+type WorkerFactory = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Box<dyn WorkerClient + Send>>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// gRPC path for `WorkerService::PushTask` — keep in sync with `sentry_protos` generated client.
 const WORKER_PUSH_TASK_PATH: &str = "/sentry_protos.taskbroker.v1.WorkerService/PushTask";
@@ -94,30 +103,48 @@ pub struct PushPool {
 
     /// Activation store, which we need for marking tasks as sent.
     store: Arc<dyn InflightActivationStore>,
+
+    worker_factory: WorkerFactory,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
     pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
-        let (sender, receiver) = flume::bounded(config.push_queue_size);
+        let worker_factory: WorkerFactory = Arc::new(|endpoint: String| {
+            Box::pin(async move {
+                let client = WorkerServiceClient::connect(endpoint).await?;
+                Ok(Box::new(client) as Box<dyn WorkerClient + Send>)
+            })
+        });
+        Self::new_with_factory(config, store, worker_factory)
+    }
 
+    fn new_with_factory(
+        config: Arc<Config>,
+        store: Arc<dyn InflightActivationStore>,
+        worker_factory: WorkerFactory,
+    ) -> Self {
+        let (sender, receiver) = flume::bounded(config.push_queue_size);
         Self {
             sender,
             receiver,
             config,
             store,
+            worker_factory,
         }
     }
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     pub async fn start(&self) -> Result<()> {
         let store = self.store.clone();
+        let worker_factory = self.worker_factory.clone();
         let mut push_pool: JoinSet<Result<()>> = crate::tokio::spawn_pool(
             self.config.push_threads,
             |_| {
                 let worker_map = self.config.worker_map.clone();
                 let receiver = self.receiver.clone();
                 let store = store.clone();
+                let worker_factory = worker_factory.clone();
 
                 let guard = get_shutdown_guard().shutdown_on_drop();
 
@@ -132,10 +159,10 @@ impl PushPool {
                 async move {
                     metrics::counter!("push.worker.connect.attempt").increment(1);
 
-                    let mut workers = HashMap::new();
+                    let mut workers: HashMap<String, Box<dyn WorkerClient + Send>> = HashMap::new();
 
                     for (application, endpoint) in worker_map.clone() {
-                        let worker = match WorkerServiceClient::connect(endpoint).await {
+                        let worker = match worker_factory(endpoint).await {
                             Ok(w) => {
                                 metrics::counter!("push.worker.connect", "result" => "ok", "application" => application.clone())
                                     .increment(1);
@@ -147,8 +174,7 @@ impl PushPool {
                                     .increment(1);
                                 error!(error = ?e, "Failed to connect to worker");
 
-                                // When we fail to connect, the taskbroker will shut down, but this may change in the future
-                                return Err(e.into());
+                                return Err(e);
                             }
                         };
 
@@ -187,7 +213,7 @@ impl PushPool {
                                 };
 
                                 match push_task(
-                                    worker,
+                                    worker.as_mut(),
                                     activation.clone(),
                                     callback_url,
                                     timeout,
@@ -200,15 +226,15 @@ impl PushPool {
                                         debug!(task_id = %id, "Activation sent to worker");
 
                                         if activation.processing_attempts < 1 {
-                                            let received_to_push_latency = activation.received_latency(Utc::now());
-                                            if received_to_push_latency > 0 {
-                                                metrics::histogram!(
-                                                    "push.received_to_push.latency",
-                                                    "namespace" => activation.namespace,
-                                                    "taskname" => activation.taskname,
-                                                )
-                                                .record(received_to_push_latency as f64);
-                                            }
+                                            let received_to_push_latency = max(0, activation.received_latency(Utc::now()));
+                                            metrics::histogram!(
+                                                "push.received_to_push.latency",
+                                                "namespace" => activation.namespace,
+                                                "taskname" => activation.taskname,
+                                            )
+                                            .record(received_to_push_latency as f64);
+                                        } else {
+                                            debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping latency recording");
                                         }
 
                                         if let Err(e) = store.mark_activation_processing(&id).await {
@@ -255,7 +281,7 @@ impl PushPool {
                         };
 
                         match push_task(
-                            worker,
+                            worker.as_mut(),
                             activation,
                             callback_url,
                             timeout,
@@ -341,8 +367,8 @@ impl PushPool {
 }
 
 /// Decode task activation and push it to a worker.
-async fn push_task<W: WorkerClient + Send>(
-    worker: &mut W,
+async fn push_task(
+    worker: &mut (dyn WorkerClient + Send),
     activation: InflightActivation,
     callback_url: String,
     timeout: Duration,
