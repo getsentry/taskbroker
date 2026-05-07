@@ -68,6 +68,7 @@ class Task(Generic[P, R]):
         compression_type: CompressionType = CompressionType.PLAINTEXT,
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
+        pass_headers: bool = False,
     ):
         self.name = name
         self._func = func
@@ -88,6 +89,7 @@ class Task(Generic[P, R]):
         self.compression_type = compression_type
         self.report_timeout_errors = report_timeout_errors
         self.silenced_exceptions = silenced_exceptions or ()
+        self.pass_headers = pass_headers
         update_wrapper(self, func)
 
     @property
@@ -154,7 +156,10 @@ class Task(Generic[P, R]):
 
     def _call_func(self, *args: Any, **kwargs: Any) -> None:
         # Overridden in ExternalTask
-        self._func(*args, **kwargs)
+        if self.pass_headers:
+            self._func(*args, headers={}, **kwargs)  # type: ignore[arg-type]
+        else:
+            self._func(*args, **kwargs)
 
     def _signal_send(self, task: Task[Any, Any], args: Any, kwargs: Any) -> None:
         """

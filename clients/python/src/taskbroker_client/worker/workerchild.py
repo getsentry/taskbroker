@@ -402,7 +402,10 @@ def child_process(
                         ):
                             for hook in context_hooks:
                                 stack.enter_context(hook.on_execute(headers))
-                        task_func(*args, **kwargs)
+                        if task_func.pass_headers:
+                            task_func(*args, headers=headers, **kwargs)
+                        else:
+                            task_func(*args, **kwargs)
                     transaction.set_status(SPANSTATUS.OK)
                 except Exception:
                     transaction.set_status(SPANSTATUS.INTERNAL_ERROR)

@@ -269,6 +269,22 @@ RETRY_TASK_ON_DEADLINE_EXCEEDED = InflightTaskActivation(
     ),
 )
 
+TASK_WITH_HEADERS = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="headers_task_123",
+        taskname="examples.task_with_headers",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": ["test_value"], "kwargs": {}}, use_bin_type=True),
+        headers={
+            "x-custom-header": "custom_value",
+            "sentry-trace": "trace-id",
+        },
+        processing_deadline_duration=2,
+    ),
+)
+
 
 class TestTaskWorker(TestCase):
     def test_fetch_task(self) -> None:
@@ -812,6 +828,34 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
         duration=mock.ANY,
         status=MonitorStatus.OK,
     )
+
+
+def test_child_process_pass_headers() -> None:
+    """Task with pass_headers=True receives headers from the activation."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(TASK_WITH_HEADERS)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == TASK_WITH_HEADERS.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+    redis = StrictRedis(host="localhost", port=6379, decode_responses=True)
+    assert redis.get("task-headers-value") == "test_value"
+    assert redis.get("task-headers-custom") == "custom_value"
+    redis.delete("task-headers-value", "task-headers-count", "task-headers-custom")
 
 
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
