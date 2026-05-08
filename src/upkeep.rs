@@ -30,6 +30,8 @@ pub async fn upkeep(
     runtime_config_manager: Arc<RuntimeConfigManager>,
     health_reporter: HealthReporter,
 ) -> Result<(), anyhow::Error> {
+    const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
+
     let kafka_config = config.kafka_producer_config();
     let producer: Arc<FutureProducer> = Arc::new(
         kafka_config
@@ -42,6 +44,7 @@ pub async fn upkeep(
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
+    let mut last_backtrace_log = Instant::now();
     loop {
         select! {
             _ = timer.tick() => {
@@ -54,6 +57,14 @@ pub async fn upkeep(
                     &mut last_vacuum,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
+
+                if config.log_async_backtrace
+                    && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
+                {
+                    let tree = async_backtrace::taskdump_tree(false);
+                    debug!(backtrace = %tree, "async backtrace dump");
+                    last_backtrace_log = Instant::now();
+                }
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
