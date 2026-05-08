@@ -402,7 +402,15 @@ def child_process(
                         ):
                             for hook in context_hooks:
                                 stack.enter_context(hook.on_execute(headers))
-                        task_func(*args, **kwargs)
+                        if task_func.pass_headers:
+                            if "headers" in kwargs:
+                                raise TypeError(
+                                    f"Task '{task_func.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
+                                    "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
+                                )
+                            task_func(*args, headers=headers, **kwargs)
+                        else:
+                            task_func(*args, **kwargs)
                     transaction.set_status(SPANSTATUS.OK)
                 except Exception:
                     transaction.set_status(SPANSTATUS.INTERNAL_ERROR)

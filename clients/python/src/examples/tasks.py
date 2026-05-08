@@ -109,3 +109,12 @@ def will_fail_with_silenced_ignored_exception() -> None:
 )
 def will_retry_on_deadline_exceeded() -> None:
     timed_task(sleep_seconds=2)
+
+
+@exampletasks.register(name="examples.task_with_headers", pass_headers=True)
+def task_with_headers(value: str, headers: dict[str, str]) -> None:
+    redis = StrictRedis(host="localhost", port=6379, decode_responses=True)
+    redis.set("task-headers-value", value)
+    redis.set("task-headers-count", str(len(headers)))
+    if "x-custom-header" in headers:
+        redis.set("task-headers-custom", headers["x-custom-header"])

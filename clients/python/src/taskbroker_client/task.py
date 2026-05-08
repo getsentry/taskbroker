@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import base64
 import datetime
+import inspect
 import os
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
-from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, get_origin
 from uuid import uuid4
 
 import msgpack
@@ -54,6 +55,42 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
+def assert_typed_kwarg(
+    func: Callable[..., Any],
+    param_name: str,
+    expected_types: tuple[type, ...],
+    context: str,
+) -> None:
+    """
+    Validate that a function has a keyword argument with a compatible type annotation.
+
+    Raises TypeError if:
+    - The parameter does not exist
+    - The parameter is positional-only
+    - The parameter has a type annotation that is not in expected_types
+    """
+    sig = inspect.signature(func, eval_str=True)
+    if param_name not in sig.parameters:
+        raise TypeError(f"{context}: function does not have a {param_name!r} parameter")
+
+    param = sig.parameters[param_name]
+    if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+        raise TypeError(
+            f"{context}: {param_name!r} parameter is positional-only. "
+            f"It must be a keyword argument."
+        )
+
+    if param.annotation is not inspect.Parameter.empty:
+        origin = get_origin(param.annotation)
+        if origin is None:
+            origin = param.annotation
+        if origin not in expected_types:
+            raise TypeError(
+                f"{context}: {param_name!r} parameter has type {param.annotation!r}. "
+                f"Expected one of: {', '.join(t.__name__ for t in expected_types)}."
+            )
+
+
 class Task(Generic[P, R]):
     def __init__(
         self,
@@ -68,6 +105,7 @@ class Task(Generic[P, R]):
         compression_type: CompressionType = CompressionType.PLAINTEXT,
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
+        pass_headers: bool = False,
     ):
         self.name = name
         self._func = func
@@ -88,6 +126,16 @@ class Task(Generic[P, R]):
         self.compression_type = compression_type
         self.report_timeout_errors = report_timeout_errors
         self.silenced_exceptions = silenced_exceptions or ()
+        self.pass_headers = pass_headers
+
+        if pass_headers:
+            assert_typed_kwarg(
+                func,
+                "headers",
+                (dict, Mapping, MutableMapping, Any),
+                f"Task {name!r} with pass_headers=True",
+            )
+
         update_wrapper(self, func)
 
     @property
@@ -154,7 +202,15 @@ class Task(Generic[P, R]):
 
     def _call_func(self, *args: Any, **kwargs: Any) -> None:
         # Overridden in ExternalTask
-        self._func(*args, **kwargs)
+        if self.pass_headers:
+            if "headers" in kwargs:
+                raise TypeError(
+                    f"Task '{self.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
+                    "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
+                )
+            self._func(*args, headers={}, **kwargs)  # type: ignore[arg-type]
+        else:
+            self._func(*args, **kwargs)
 
     def _signal_send(self, task: Task[Any, Any], args: Any, kwargs: Any) -> None:
         """

@@ -8,6 +8,9 @@ from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation, TaskActivationStatus
 
+TaskHeaders = dict[str, str]
+"""Headers passed to a task function when pass_headers=True is set."""
+
 
 class ContextHook(Protocol):
     """

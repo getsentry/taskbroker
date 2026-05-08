@@ -90,6 +90,7 @@ class TaskNamespace:
         compression_type: CompressionType = CompressionType.PLAINTEXT,
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
+        pass_headers: bool = False,
     ) -> Callable[[Callable[P, R]], Task[P, R]]:
         """
         Register a task.
@@ -121,6 +122,9 @@ class TaskNamespace:
             Enable reporting of ProcessingDeadlineExceededError to Sentry.
         silenced_exceptions: tuple[type[BaseException], ...] | None
             A tuple of exception types that will not be reported by Sentry.
+        pass_headers: bool
+            If True, the task function will receive task activation headers
+            as a keyword argument named `headers` (dict[str, str]).
         """
 
         def wrapped(func: Callable[P, R]) -> Task[P, R]:
@@ -141,6 +145,7 @@ class TaskNamespace:
                 compression_type=compression_type,
                 report_timeout_errors=report_timeout_errors,
                 silenced_exceptions=silenced_exceptions,
+                pass_headers=pass_headers,
             )
             # TODO(taskworker) tasks should be registered into the registry
             # so that we can ensure task names are globally unique
@@ -234,6 +239,7 @@ class ExternalNamespace(TaskNamespace):
         compression_type: CompressionType = CompressionType.PLAINTEXT,
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
+        pass_headers: bool = False,
     ) -> Callable[[Callable[P, R]], ExternalTask[P, R]]:
         """
         Register an external task stub.
@@ -285,6 +291,7 @@ class ExternalNamespace(TaskNamespace):
                 compression_type=compression_type,
                 report_timeout_errors=report_timeout_errors,
                 silenced_exceptions=silenced_exceptions,
+                pass_headers=pass_headers,
             )
             self._registered_tasks[name] = task
             return task
