@@ -203,6 +203,11 @@ class Task(Generic[P, R]):
     def _call_func(self, *args: Any, **kwargs: Any) -> None:
         # Overridden in ExternalTask
         if self.pass_headers:
+            if "headers" in kwargs:
+                raise TypeError(
+                    f"Task '{self.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
+                    "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
+                )
             self._func(*args, headers={}, **kwargs)  # type: ignore[arg-type]
         else:
             self._func(*args, **kwargs)

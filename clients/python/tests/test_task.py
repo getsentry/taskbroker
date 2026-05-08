@@ -528,6 +528,18 @@ def test_delay_immediate_mode_with_pass_headers(task_namespace: TaskNamespace) -
     assert calls[0]["headers"] == {}
 
 
+def test_pass_headers_rejects_headers_in_kwargs(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True reject 'headers' passed in kwargs."""
+
+    @task_namespace.register(name="test.headers_collision", pass_headers=True)
+    def headers_task(value: str, headers: dict[str, str]) -> None:
+        pass
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        with pytest.raises(TypeError, match="cannot be passed by the caller"):
+            headers_task.delay("test", headers={"x-custom": "value"})
+
+
 def test_delay_immediate_mode_without_pass_headers(task_namespace: TaskNamespace) -> None:
     """In ALWAYS_EAGER mode, tasks without pass_headers do not receive headers kwarg."""
     calls: list[dict[str, Any]] = []
