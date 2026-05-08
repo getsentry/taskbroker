@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use async_backtrace::framed;
 use elegant_departure::get_shutdown_guard;
 use flume::{Receiver, SendError, Sender};
 use hmac::{Hmac, Mac};
@@ -67,6 +68,7 @@ trait WorkerClient {
 
 #[async_trait]
 impl WorkerClient for WorkerServiceClient<Channel> {
+    #[framed]
     async fn send(
         &mut self,
         request: PushTaskRequest,
@@ -135,6 +137,7 @@ impl PushPool {
     }
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
+    #[framed]
     pub async fn start(&self) -> Result<()> {
         let store = self.store.clone();
         let worker_factory = self.worker_factory.clone();
@@ -156,7 +159,7 @@ impl PushPool {
                 let timeout = Duration::from_millis(self.config.push_timeout_ms);
                 let grpc_shared_secret = self.config.grpc_shared_secret.clone();
 
-                async move {
+                async_backtrace::frame!(async move {
                     metrics::counter!("push.worker.connect.attempt").increment(1);
 
                     let mut workers: HashMap<String, Box<dyn WorkerClient + Send>> = HashMap::new();
@@ -319,7 +322,7 @@ impl PushPool {
                     }
 
                     Ok(())
-                }
+                })
             },
         );
 
@@ -339,6 +342,7 @@ impl PushPool {
     }
 
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
+    #[framed]
     pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
         let start = Instant::now();
@@ -367,6 +371,7 @@ impl PushPool {
 }
 
 /// Decode task activation and push it to a worker.
+#[framed]
 async fn push_task(
     worker: &mut (dyn WorkerClient + Send),
     activation: InflightActivation,

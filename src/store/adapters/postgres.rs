@@ -8,6 +8,7 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use sqlx::{FromRow, Pool, Postgres, QueryBuilder};
 
 use anyhow::{Error, anyhow};
+use async_backtrace::framed;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
@@ -96,6 +97,7 @@ impl From<TableRow> for InflightActivation {
     }
 }
 
+#[framed]
 pub async fn create_postgres_pool(
     connection: &PgConnectOptions,
     database_name: &str,
@@ -113,6 +115,7 @@ pub async fn create_postgres_pool(
     Ok((read_pool, write_pool))
 }
 
+#[framed]
 pub async fn create_default_postgres_pool(
     connection: &PgConnectOptions,
     default_database_name: &str,
@@ -173,6 +176,7 @@ pub struct PostgresActivationStore {
 }
 
 impl PostgresActivationStore {
+    #[framed]
     async fn acquire_write_conn_metric(
         &self,
         caller: &'static str,
@@ -183,6 +187,7 @@ impl PostgresActivationStore {
         Ok(conn)
     }
 
+    #[framed]
     pub async fn new(config: PostgresActivationStoreConfig) -> Result<Self, Error> {
         if config.run_migrations {
             let default_pool = create_default_postgres_pool(
@@ -255,18 +260,21 @@ impl InflightActivationStore for PostgresActivationStore {
     /// Depending on config data, will either vacuum a set number of
     /// pages or attempt to reclaim all free pages.
     #[instrument(skip_all)]
+    #[framed]
     async fn vacuum_db(&self) -> Result<(), Error> {
         // TODO: Remove
         Ok(())
     }
 
     /// Perform a full vacuum on the database.
+    #[framed]
     async fn full_vacuum_db(&self) -> Result<(), Error> {
         // TODO: Remove
         Ok(())
     }
 
     /// Get the size of the database in bytes based on SQLite metadata queries.
+    #[framed]
     async fn db_size(&self) -> Result<u64, Error> {
         let row_result: (i64,) = sqlx::query_as("SELECT pg_database_size($1) as size")
             .bind(&self.config.pg_database_name)
@@ -279,6 +287,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     /// Get an activation by id. Primarily used for testing
+    #[framed]
     async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
         let row_result: Option<TableRow> = sqlx::query_as(
             "
@@ -324,6 +333,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
         if batch.is_empty() {
             return Ok(0);
@@ -400,6 +410,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn claim_activations(
         &self,
         application: Option<&str>,
@@ -491,6 +502,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
         let mut conn = self
             .acquire_write_conn_metric("mark_activation_processing")
@@ -530,6 +542,7 @@ impl InflightActivationStore for PostgresActivationStore {
     /// as we are interested in latency to the *first* attempt.
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
+    #[framed]
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
         let mut query_builder = QueryBuilder::new(
             "SELECT received_at, delay_until
@@ -564,6 +577,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
         let mut query_builder = QueryBuilder::new(
             "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = ",
@@ -577,6 +591,7 @@ impl InflightActivationStore for PostgresActivationStore {
         Ok(result.0 as usize)
     }
 
+    #[framed]
     async fn count(&self) -> Result<usize, Error> {
         let mut query_builder =
             QueryBuilder::new("SELECT COUNT(*) as count FROM inflight_taskactivations");
@@ -589,6 +604,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
         // Notice that statuses are embedded into the query for simplicity - if the enum is every changed, this must change too!
         let mut query_builder = QueryBuilder::new(
@@ -616,6 +632,7 @@ impl InflightActivationStore for PostgresActivationStore {
 
     /// Update the status of a specific activation
     #[instrument(skip_all)]
+    #[framed]
     async fn set_status(
         &self,
         id: &str,
@@ -638,6 +655,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn set_processing_deadline(
         &self,
         id: &str,
@@ -655,6 +673,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
         sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
@@ -665,6 +684,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     #[instrument(skip_all)]
+    #[framed]
     async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
         let mut query_builder = QueryBuilder::new(
             "SELECT id,
@@ -702,6 +722,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     // Used in tests
+    #[framed]
     async fn clear(&self) -> Result<(), Error> {
         let mut conn = self.acquire_write_conn_metric("clear").await?;
         sqlx::query("TRUNCATE TABLE inflight_taskactivations")
@@ -713,6 +734,7 @@ impl InflightActivationStore for PostgresActivationStore {
 
     /// Revert expired push claims back to pending status.
     #[instrument(skip_all)]
+    #[framed]
     async fn handle_claim_expiration(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut conn = self
@@ -743,6 +765,7 @@ impl InflightActivationStore for PostgresActivationStore {
     /// Exceeding a processing deadline does not consume a retry as we don't know
     /// if a worker took the task and was killed, or failed.
     #[instrument(skip_all)]
+    #[framed]
     async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
@@ -797,6 +820,7 @@ impl InflightActivationStore for PostgresActivationStore {
     /// Update tasks that have exceeded their max processing attempts.
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
     #[instrument(skip_all)]
+    #[framed]
     async fn handle_processing_attempts(&self) -> Result<u64, Error> {
         let mut conn = self
             .acquire_write_conn_metric("handle_processing_attempts")
@@ -827,6 +851,7 @@ impl InflightActivationStore for PostgresActivationStore {
     ///
     /// The number of impacted records is returned in a Result.
     #[instrument(skip_all)]
+    #[framed]
     async fn handle_expires_at(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut conn = self.acquire_write_conn_metric("handle_expires_at").await?;
@@ -848,6 +873,7 @@ impl InflightActivationStore for PostgresActivationStore {
     ///
     /// The number of impacted records is returned in a Result.
     #[instrument(skip_all)]
+    #[framed]
     async fn handle_delay_until(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut conn = self.acquire_write_conn_metric("handle_delay_until").await?;
@@ -874,6 +900,7 @@ impl InflightActivationStore for PostgresActivationStore {
     /// Once dead-lettered tasks have been added to Kafka those tasks can have their status set to
     /// complete.
     #[instrument(skip_all)]
+    #[framed]
     async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
         let mut atomic = self.write_pool.begin().await?;
 
@@ -930,6 +957,7 @@ impl InflightActivationStore for PostgresActivationStore {
 
     /// Mark a collection of tasks as complete by id
     #[instrument(skip_all)]
+    #[framed]
     async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
         query_builder
@@ -951,6 +979,7 @@ impl InflightActivationStore for PostgresActivationStore {
     /// Remove completed tasks.
     /// This method is a garbage collector for the inflight task store.
     #[instrument(skip_all)]
+    #[framed]
     async fn remove_completed(&self) -> Result<u64, Error> {
         let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
         let mut query_builder =
@@ -964,6 +993,7 @@ impl InflightActivationStore for PostgresActivationStore {
 
     /// Remove killswitched tasks.
     #[instrument(skip_all)]
+    #[framed]
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
         let mut query_builder =
             QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE taskname IN (");
@@ -982,6 +1012,7 @@ impl InflightActivationStore for PostgresActivationStore {
     }
 
     // Used in tests
+    #[framed]
     async fn remove_db(&self) -> Result<(), Error> {
         self.read_pool.close().await;
         self.write_pool.close().await;

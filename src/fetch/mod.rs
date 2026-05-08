@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use async_backtrace::framed;
 use elegant_departure::get_shutdown_guard;
 use tokio::time::sleep;
 use tonic::async_trait;
@@ -54,6 +55,7 @@ pub trait TaskPusher {
 
 #[async_trait]
 impl TaskPusher for PushPool {
+    #[framed]
     async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError> {
         self.submit(activation).await
     }
@@ -86,6 +88,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
     }
 
     /// Spawns one task per effective fetch thread ([`normalize_fetch_threads`]), each claiming pending work only in its bucket subrange.
+    #[framed]
     pub async fn start(&self) -> Result<()> {
         let fetch_wait_ms = self.config.fetch_wait_ms;
         let fetch_threads = normalize_fetch_threads(self.config.fetch_threads);
@@ -100,7 +103,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
 
             let guard = get_shutdown_guard().shutdown_on_drop();
 
-            async move {
+            async_backtrace::frame!(async move {
                 loop {
                     tokio::select! {
                         _ = guard.wait() => {
@@ -190,7 +193,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                         } => {}
                     }
                 }
-            }
+            })
         });
 
         while let Some(res) = fetch_pool.join_next().await {
