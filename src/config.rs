@@ -268,6 +268,12 @@ pub struct Config {
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
 
+    /// When true, the upkeep loop emits the current `async_backtrace::taskdump_tree`
+    /// snapshot at `debug!` every 30 seconds. Useful for diagnosing hangs in the
+    /// store / fetch / push pipelines; off by default because the tree can be
+    /// large and noisy.
+    pub log_async_backtrace: bool,
+
     /// How to deliver tasks to workers: "push" or "pull".
     pub delivery_mode: DeliveryMode,
 
@@ -394,6 +400,7 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            log_async_backtrace: false,
             delivery_mode: DeliveryMode::Pull,
             fetch_threads: 1,
             fetch_wait_ms: 100,

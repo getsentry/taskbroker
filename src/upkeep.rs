@@ -58,7 +58,9 @@ pub async fn upkeep(
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
-                if last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL {
+                if config.log_async_backtrace
+                    && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
+                {
                     let tree = async_backtrace::taskdump_tree(false);
                     debug!(backtrace = %tree, "async backtrace dump");
                     last_backtrace_log = Instant::now();
