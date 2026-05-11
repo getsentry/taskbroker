@@ -127,7 +127,7 @@ impl InflightActivationStore for MockStore {
         _ids: &[String],
         _status: InflightActivationStatus,
     ) -> Result<u64, Error> {
-        Ok(0)
+        unimplemented!()
     }
 
     async fn set_processing_deadline(
