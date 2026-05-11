@@ -682,7 +682,8 @@ impl InflightActivationStore for PostgresActivationStore {
             delay_on_retry: None,
             at_most_once: Some(false),
         });
-        retry_state.max_attempts = max_retries;
+        // max_retries excludes initial attempt, max_attempts includes it
+        retry_state.max_attempts = max_retries + 1;
 
         let updated_bytes = activation.encode_to_vec();
 
