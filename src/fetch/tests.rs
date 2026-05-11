@@ -200,7 +200,7 @@ impl TaskPusher for RecordingPusher {
     async fn submit_task(
         &self,
         activation: InflightActivation,
-        _start: Instant,
+        _time: Instant,
     ) -> Result<(), PushError> {
         self.pushed_ids.lock().await.push(activation.id.clone());
 
