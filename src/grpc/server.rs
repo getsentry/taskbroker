@@ -219,10 +219,9 @@ pub async fn flush_updates(
         return;
     }
 
-    let updates = std::mem::take(buffer);
     let mut by_status: HashMap<InflightActivationStatus, Vec<String>> = HashMap::new();
 
-    for (id, status) in updates {
+    for (id, status) in buffer.drain(..) {
         by_status.entry(status).or_default().push(id);
     }
 
