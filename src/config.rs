@@ -299,7 +299,10 @@ pub struct Config {
     /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     pub push_timeout_ms: u64,
 
-    /// The size of a batch of status updates. Only active in push mode.
+    /// Update statuses from the gRPC server in batches?
+    pub batch_status_updates: bool,
+
+    /// The size of a batch of status updates.
     pub status_update_batch_size: usize,
 
     /// Maximum milliseconds to wait before flushing a batch of status updates.
@@ -415,6 +418,7 @@ impl Default for Config {
             push_queue_size: 1,
             push_queue_timeout_ms: 5000,
             push_timeout_ms: 30000,
+            batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
             callback_addr: "0.0.0.0".into(),
