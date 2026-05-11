@@ -54,7 +54,7 @@ pub enum PushError {
     Timeout,
 
     /// Channel disconnected (no receivers) or another failure.
-    Channel(SendError<InflightActivation>),
+    Channel(SendError<(InflightActivation, Instant)>),
 }
 
 /// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
@@ -95,10 +95,10 @@ impl WorkerClient for WorkerServiceClient<Channel> {
 /// Wrapper around `config.push_threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
 pub struct PushPool {
     /// The sending end of a channel that accepts task activations.
-    sender: Sender<InflightActivation>,
+    sender: Sender<(InflightActivation, Instant)>,
 
     /// The receiving end of a channel that accepts task activations.
-    receiver: Receiver<InflightActivation>,
+    receiver: Receiver<(InflightActivation, Instant)>,
 
     /// Taskbroker configuration.
     config: Arc<Config>,
@@ -192,13 +192,15 @@ impl PushPool {
                             }
 
                             message = receiver.recv_async() => {
-                                let activation = match message {
+                                let (activation, time) = match message {
                                     // Received activation from fetch thread
                                     Ok(a) => a,
 
                                     // Channel closed
                                     Err(_) => break
                                 };
+
+                                metrics::histogram!("push.queue.latency").record(time.elapsed());
 
                                 let id = activation.id.clone();
                                 let callback_url = callback_url.clone();
@@ -225,22 +227,27 @@ impl PushPool {
                                 .await
                                 {
                                     Ok(_) => {
-                                        metrics::counter!("push.delivery", "result" => "ok").increment(1);
+                                        metrics::counter!("push.push_task", "result" => "ok").increment(1);
                                         debug!(task_id = %id, "Activation sent to worker");
 
                                         if activation.processing_attempts < 1 {
-                                            let received_to_push_latency = max(0, activation.received_latency(Utc::now()));
+                                            let latency = max(0, activation.received_latency(Utc::now()));
+
                                             metrics::histogram!(
                                                 "push.received_to_push.latency",
                                                 "namespace" => activation.namespace,
                                                 "taskname" => activation.taskname,
                                             )
-                                            .record(received_to_push_latency as f64);
+                                            .record(latency as f64);
                                         } else {
-                                            debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping latency recording");
+                                            debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → push latency recording");
                                         }
 
-                                        if let Err(e) = store.mark_activation_processing(&id).await {
+                                        let start = Instant::now();
+                                        let result = store.mark_activation_processing(&id).await;
+                                        metrics::histogram!("push.mark_activation_processing.durtaion").record(start.elapsed());
+
+                                        if let Err(e) = result {
                                             metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
 
                                             error!(
@@ -253,7 +260,7 @@ impl PushPool {
 
                                     // Once claim expires, status will be set back to pending
                                     Err(e) => {
-                                        metrics::counter!("push.delivery", "result" => "error").increment(1);
+                                        metrics::counter!("push.push_task", "result" => "error").increment(1);
 
                                         error!(
                                             task_id = %id,
@@ -266,8 +273,8 @@ impl PushPool {
                         }
                     }
 
-                    // Drain channel before exiting
-                    for activation in receiver.drain() {
+                    // Drain channel before exiting without recording duration metrics since they don't matter at this time
+                    for (activation, _) in receiver.drain() {
                         let id = activation.id.clone();
                         let callback_url = callback_url.clone();
 
@@ -293,7 +300,7 @@ impl PushPool {
                         .await
                         {
                             Ok(_) => {
-                                metrics::counter!("push.delivery", "result" => "ok").increment(1);
+                                metrics::counter!("push.push_task", "result" => "ok").increment(1);
                                 debug!(task_id = %id, "Activation sent to worker");
 
                                 if let Err(e) = store.mark_activation_processing(&id).await {
@@ -309,7 +316,7 @@ impl PushPool {
 
                             // Once processing deadline expires, status will be set back to pending
                             Err(e) => {
-                                metrics::counter!("push.delivery", "result" => "error")
+                                metrics::counter!("push.push_task", "result" => "error")
                                     .increment(1);
 
                                 error!(
@@ -343,13 +350,17 @@ impl PushPool {
 
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
     #[framed]
-    pub async fn submit(&self, activation: InflightActivation) -> Result<(), PushError> {
+    pub async fn submit(
+        &self,
+        activation: InflightActivation,
+        time: Instant,
+    ) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
         let start = Instant::now();
 
         metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
 
-        match tokio::time::timeout(duration, self.sender.send_async(activation)).await {
+        match tokio::time::timeout(duration, self.sender.send_async((activation, time))).await {
             Ok(Ok(())) => {
                 metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
                 Ok(())
@@ -380,7 +391,7 @@ async fn push_task(
     grpc_shared_secret: &[String],
 ) -> Result<()> {
     let start = Instant::now();
-    metrics::counter!("push.push_task.attempt").increment(1);
+    metrics::counter!("push.push_task.attempts").increment(1);
 
     // Try to decode activation (if it fails, we will see the error where `push_task` is called)
     let task = match TaskActivation::decode(&activation.activation as &[u8]) {
