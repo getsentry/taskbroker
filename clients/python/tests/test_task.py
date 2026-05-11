@@ -465,3 +465,91 @@ def test_context_hook_multiple_hooks() -> None:
     activation = multi_task.create_activation([], {})
     assert activation.headers["x-test-context"] == "dispatched"
     assert activation.headers["x-another"] == "also-here"
+
+
+def test_task_pass_headers_attribute(task_namespace: TaskNamespace) -> None:
+    """Tasks can opt into receiving headers via pass_headers=True."""
+
+    @task_namespace.register(name="test.with_headers", pass_headers=True)
+    def with_headers(org_id: int, headers: dict[str, str]) -> None:
+        pass
+
+    assert with_headers.pass_headers is True
+
+    @task_namespace.register(name="test.without_headers")
+    def without_headers(org_id: int) -> None:
+        pass
+
+    assert without_headers.pass_headers is False
+
+
+def test_pass_headers_requires_headers_parameter(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True must have a 'headers' parameter."""
+    with pytest.raises(TypeError, match="does not have a 'headers' parameter"):
+
+        @task_namespace.register(name="test.missing_headers", pass_headers=True)
+        def missing_headers(org_id: int) -> None:
+            pass
+
+
+def test_pass_headers_rejects_positional_only_headers(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True cannot have a positional-only 'headers' parameter."""
+    with pytest.raises(TypeError, match="positional-only"):
+
+        @task_namespace.register(name="test.positional_headers", pass_headers=True)
+        def positional_headers(org_id: int, headers: dict[str, str], /) -> None:
+            pass
+
+
+def test_pass_headers_rejects_incompatible_type_annotation(
+    task_namespace: TaskNamespace,
+) -> None:
+    """Tasks with pass_headers=True must have a dict-like type annotation for 'headers'."""
+    with pytest.raises(TypeError, match="Expected one of: dict"):
+
+        @task_namespace.register(name="test.wrong_type_headers", pass_headers=True)
+        def wrong_type_headers(org_id: int, headers: str) -> None:
+            pass
+
+
+def test_delay_immediate_mode_with_pass_headers(task_namespace: TaskNamespace) -> None:
+    """In ALWAYS_EAGER mode, tasks with pass_headers=True receive empty headers."""
+    calls: list[dict[str, Any]] = []
+
+    @task_namespace.register(name="test.headers_task", pass_headers=True)
+    def headers_task(value: str, headers: dict[str, str]) -> None:
+        calls.append({"value": value, "headers": headers})
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        headers_task.delay("test")  # type: ignore[call-arg]
+
+    assert len(calls) == 1
+    assert calls[0]["value"] == "test"
+    assert calls[0]["headers"] == {}
+
+
+def test_pass_headers_rejects_headers_in_kwargs(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True reject 'headers' passed in kwargs."""
+
+    @task_namespace.register(name="test.headers_collision", pass_headers=True)
+    def headers_task(value: str, headers: dict[str, str]) -> None:
+        pass
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        with pytest.raises(TypeError, match="cannot be passed by the caller"):
+            headers_task.delay("test", headers={"x-custom": "value"})
+
+
+def test_delay_immediate_mode_without_pass_headers(task_namespace: TaskNamespace) -> None:
+    """In ALWAYS_EAGER mode, tasks without pass_headers do not receive headers kwarg."""
+    calls: list[dict[str, Any]] = []
+
+    @task_namespace.register(name="test.no_headers_task")
+    def no_headers_task(value: str) -> None:
+        calls.append({"value": value})
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        no_headers_task.delay("test")
+
+    assert len(calls) == 1
+    assert calls[0] == {"value": "test"}

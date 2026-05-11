@@ -13,6 +13,7 @@ from redis import StrictRedis
 from examples.app import app
 from taskbroker_client.retry import LastAction, NoRetriesRemainingError, Retry, RetryTaskError
 from taskbroker_client.retry import retry_task as retry_task_helper
+from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -72,3 +73,48 @@ def will_retry(failure: str) -> None:
 def timed_task(sleep_seconds: float | str, *args: list[Any], **kwargs: dict[str, Any]) -> None:
     sleep(float(sleep_seconds))
     logger.debug("timed_task complete")
+
+
+@exampletasks.register(
+    name="examples.will_timeout_without_reporting",
+    processing_deadline_duration=1,
+    report_timeout_errors=False,
+)
+def will_timeout_without_reporting() -> None:
+    timed_task(sleep_seconds=2)
+
+
+@exampletasks.register(
+    name="examples.will_fail_with_silenced_exception",
+    retry=Retry(times=2, times_exceeded=LastAction.Discard),
+    silenced_exceptions=(RuntimeError,),
+)
+def will_fail_with_silenced_exception() -> None:
+    raise RuntimeError("oh no")
+
+
+@exampletasks.register(
+    name="examples.will_fail_with_silenced_ignored_exception",
+    retry=Retry(times=2, on=(RuntimeError,), times_exceeded=LastAction.Discard),
+    silenced_exceptions=(RuntimeError,),
+)
+def will_fail_with_silenced_ignored_exception() -> None:
+    raise RuntimeError("oh no")
+
+
+@exampletasks.register(
+    name="examples.will_retry_on_deadline_exceeded",
+    processing_deadline_duration=1,
+    retry=Retry(times=2, on=(ProcessingDeadlineExceeded,), times_exceeded=LastAction.Discard),
+)
+def will_retry_on_deadline_exceeded() -> None:
+    timed_task(sleep_seconds=2)
+
+
+@exampletasks.register(name="examples.task_with_headers", pass_headers=True)
+def task_with_headers(value: str, headers: dict[str, str]) -> None:
+    redis = StrictRedis(host="localhost", port=6379, decode_responses=True)
+    redis.set("task-headers-value", value)
+    redis.set("task-headers-count", str(len(headers)))
+    if "x-custom-header" in headers:
+        redis.set("task-headers-custom", headers["x-custom-header"])

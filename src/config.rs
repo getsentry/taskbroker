@@ -268,6 +268,12 @@ pub struct Config {
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: bool,
 
+    /// When true, the upkeep loop emits the current `async_backtrace::taskdump_tree`
+    /// snapshot at `debug!` every 30 seconds. Useful for diagnosing hangs in the
+    /// store / fetch / push pipelines; off by default because the tree can be
+    /// large and noisy.
+    pub log_async_backtrace: bool,
+
     /// How to deliver tasks to workers: "push" or "pull".
     pub delivery_mode: DeliveryMode,
 
@@ -307,6 +313,25 @@ pub struct Config {
 
     /// Maps every application to its worker endpoint, both represented as strings.
     pub worker_map: BTreeMap<String, String>,
+
+    /// Enable raw mode for consuming unstructured Kafka messages.
+    /// In raw mode, Kafka message bytes are wrapped into TaskActivation.
+    pub raw_mode: bool,
+
+    /// The namespace to assign to raw mode activations.
+    pub raw_namespace: Option<String>,
+
+    /// The application to assign to raw mode activations.
+    pub raw_application: Option<String>,
+
+    /// The taskname to assign to raw mode activations.
+    pub raw_taskname: Option<String>,
+
+    /// Processing deadline duration in seconds for raw mode activations.
+    ///
+    /// This is an u16 because 1) we don't want to allow signed numbers 2) it can be cast into i32
+    /// (which we use elsewhere) without error conditions. It doesn't actually have to be that small.
+    pub raw_processing_deadline_duration: u16,
 }
 
 impl Default for Config {
@@ -381,6 +406,7 @@ impl Default for Config {
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             enable_sqlite_status_metrics: true,
+            log_async_backtrace: false,
             delivery_mode: DeliveryMode::Pull,
             fetch_threads: 1,
             fetch_wait_ms: 100,
@@ -394,6 +420,11 @@ impl Default for Config {
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
+            raw_mode: false,
+            raw_namespace: None,
+            raw_application: None,
+            raw_taskname: None,
+            raw_processing_deadline_duration: 30,
         }
     }
 }
