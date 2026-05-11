@@ -245,7 +245,7 @@ impl PushPool {
 
                                         let start = Instant::now();
                                         let result = store.mark_activation_processing(&id).await;
-                                        metrics::histogram!("push.mark_activation_processing.durtaion").record(start.elapsed());
+                                        metrics::histogram!("push.mark_activation_processing.duration").record(start.elapsed());
 
                                         if let Err(e) = result {
                                             metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
