@@ -10,7 +10,7 @@ dev = [
     "black==26.3.1",
     "devservices>=1.2.1",
     "pre-commit>=4.2.0",
-    "pytest>=8.3.3",
+    "pytest>=9.0.3",
     "sentry-devenv>=1.22.2",
     "confluent_kafka>=2.3.0",
     "grpcio>=1.67.0",
