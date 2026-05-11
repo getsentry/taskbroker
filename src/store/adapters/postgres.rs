@@ -11,7 +11,8 @@ use anyhow::{Error, anyhow};
 use async_backtrace::framed;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
+use prost::Message;
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
@@ -652,6 +653,46 @@ impl InflightActivationStore for PostgresActivationStore {
         };
 
         Ok(Some(row.into()))
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
+    async fn update_retry_state(&self, id: &str, max_retries: u32) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("update_retry_state").await?;
+
+        // Fetch the current activation
+        let row: Option<TableRow> = sqlx::query_as(
+            "SELECT *, kafka_offset AS offset FROM inflight_taskactivations WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(());
+        };
+
+        // Decode the activation, update retry_state, re-encode
+        let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+
+        let retry_state = activation.retry_state.get_or_insert_with(|| RetryState {
+            attempts: 0,
+            max_attempts: 0,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+            delay_on_retry: None,
+            at_most_once: Some(false),
+        });
+        retry_state.max_attempts = max_retries;
+
+        let updated_bytes = activation.encode_to_vec();
+
+        sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
+            .bind(updated_bytes)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+
+        Ok(())
     }
 
     #[instrument(skip_all)]

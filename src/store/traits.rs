@@ -78,6 +78,10 @@ pub trait InflightActivationStore: Send + Sync {
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error>;
 
+    /// Update the retry_state in the activation blob.
+    /// Called when worker provides max_retries with a Retry status.
+    async fn update_retry_state(&self, id: &str, max_retries: u32) -> Result<(), Error>;
+
     /// COUNT OPERATIONS
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;

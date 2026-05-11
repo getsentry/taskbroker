@@ -129,6 +129,11 @@ pub struct Config {
     /// The location to the DLQ private key file
     pub kafka_deadletter_ssl_key_location: Option<String>,
 
+    /// The topic to publish retry task activations to.
+    /// When set, retries go to this topic instead of kafka_topic.
+    /// Required for raw_mode where the main topic has other consumers.
+    pub kafka_retry_topic: Option<String>,
+
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
 
@@ -362,6 +367,7 @@ impl Default for Config {
             kafka_deadletter_ssl_ca_location: None,
             kafka_deadletter_ssl_certificate_location: None,
             kafka_deadletter_ssl_key_location: None,
+            kafka_retry_topic: None,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,

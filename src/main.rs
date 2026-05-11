@@ -86,11 +86,21 @@ async fn main() -> Result<(), Error> {
     if config.create_missing_topics {
         let kafka_client_config = config.kafka_consumer_config();
         create_missing_topics(
-            kafka_client_config,
+            kafka_client_config.clone(),
             &config.kafka_topic,
             config.default_topic_partitions,
         )
         .await?;
+
+        // Create retry topic if configured
+        if let Some(ref retry_topic) = config.kafka_retry_topic {
+            create_missing_topics(
+                kafka_client_config,
+                retry_topic,
+                config.default_topic_partitions,
+            )
+            .await?;
+        }
     }
 
     if config.full_vacuum_on_start {
@@ -158,11 +168,19 @@ async fn main() -> Result<(), Error> {
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
+
+        // Build list of topics to consume from
+        let mut topics_to_consume = vec![consumer_config.kafka_topic.clone()];
+        if let Some(ref retry_topic) = consumer_config.kafka_retry_topic {
+            topics_to_consume.push(retry_topic.clone());
+        }
+
         async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
+            let topic_refs: Vec<&str> = topics_to_consume.iter().map(|s| s.as_str()).collect();
             start_consumer(
-                &[&consumer_config.kafka_topic],
+                &topic_refs,
                 &consumer_config.kafka_consumer_config(),
                 consumer_store.clone(),
                 processing_strategy!({

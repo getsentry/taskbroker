@@ -122,6 +122,10 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
+    async fn update_retry_state(&self, _id: &str, _max_retries: u32) -> Result<(), Error> {
+        unimplemented!()
+    }
+
     async fn set_processing_deadline(
         &self,
         _id: &str,
