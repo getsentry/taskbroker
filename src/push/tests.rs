@@ -265,7 +265,8 @@ async fn push_pool_submit_enqueues_item() {
     let pool = PushPool::new(config, store);
     let activation = make_activations(1).remove(0);
 
-    let result = pool.submit(activation).await;
+    let time = Instant::now();
+    let result = pool.submit(activation, time).await;
     assert!(result.is_ok(), "submit should enqueue activation");
 }
 
@@ -279,14 +280,15 @@ async fn push_pool_submit_backpressures_when_queue_full() {
     let store = create_test_store("sqlite").await;
     let pool = PushPool::new(config, store);
 
+    let time = Instant::now();
     let first = make_activations(1).remove(0);
     let second = make_activations(1).remove(0);
 
-    pool.submit(first)
+    pool.submit(first, time)
         .await
         .expect("first submit should fill queue");
 
-    let second_submit = timeout(Duration::from_millis(50), pool.submit(second)).await;
+    let second_submit = timeout(Duration::from_millis(50), pool.submit(second, time)).await;
     assert!(
         second_submit.is_err(),
         "second submit should block when queue is full"
@@ -344,8 +346,11 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
 
     let activation = make_activations(1).remove(0);
     assert_eq!(activation.processing_attempts, 0);
+
     let id = activation.id.clone();
-    pool.submit(activation)
+    let time = Instant::now();
+
+    pool.submit(activation, time)
         .await
         .expect("submit should succeed");
 
@@ -385,8 +390,11 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
 
     let mut activation = make_activations(1).remove(0);
     activation.processing_attempts = 1;
+
     let id = activation.id.clone();
-    pool.submit(activation)
+    let time = Instant::now();
+
+    pool.submit(activation, time)
         .await
         .expect("submit should succeed");
 
@@ -423,7 +431,9 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     tokio::spawn(async move { pool_start.start().await });
 
     let activation = make_activations(1).remove(0);
-    pool.submit(activation)
+    let time = Instant::now();
+
+    pool.submit(activation, time)
         .await
         .expect("submit should succeed");
 
