@@ -193,7 +193,7 @@ async fn main() -> Result<(), Error> {
 
     // Status update flush task
     let (status_update_tx, status_update_task) = if config.batch_status_updates {
-        let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size);
+        let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size.max(1));
 
         let flusher_store = store.clone();
         let flusher_config = config.clone();
