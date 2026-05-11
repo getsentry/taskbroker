@@ -140,7 +140,7 @@ impl Reducer for InflightActivationWriter {
         }
 
         // I suspect that 'store' occasionally hangs and want to confirm
-        let insert_id = Utc::now().timestamp();
+        let insert_id = Utc::now().timestamp_millis();
         debug!("Preparing insert {:?}", insert_id);
 
         let batch = self.batch.clone().unwrap();
