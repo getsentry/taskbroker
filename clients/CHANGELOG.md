@@ -1,4 +1,14 @@
 # Changelog
+## 0.1.14
+
+### New Features ✨
+
+- (taskbroker-client) Add pass_headers option to task registration by @untitaker in [#623](https://github.com/getsentry/taskbroker/pull/623)
+
+### Bug Fixes 🐛
+
+- (taskbroker-client) Update docstrings to reflect msgpack serialization by @untitaker in [#624](https://github.com/getsentry/taskbroker/pull/624)
+
 ## 0.1.13
 
 - No documented changes.
