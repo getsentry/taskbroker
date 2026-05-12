@@ -37,6 +37,7 @@ use taskbroker::store::adapters::postgres::{
     PostgresActivationStore, PostgresActivationStoreConfig,
 };
 use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::retry::RetryStore;
 use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
@@ -68,7 +69,7 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
-    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
+    let inner_store: Arc<dyn InflightActivationStore> = match config.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
             SqliteActivationStore::new(
                 &config.db_path,
@@ -81,6 +82,8 @@ async fn main() -> Result<(), Error> {
                 .await?,
         ),
     };
+    let store: Arc<dyn InflightActivationStore> =
+        Arc::new(RetryStore::new(inner_store, config.db_query_max_retries));
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
