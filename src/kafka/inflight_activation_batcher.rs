@@ -88,6 +88,8 @@ impl Reducer for InflightActivationBatcher {
     type Output = Vec<InflightActivation>;
 
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
+        metrics::counter!("consumer.inflight_activation_batcher.reduce").increment(1);
+
         let runtime_config = self.runtime_config_manager.read().await;
         let forward_topic = runtime_config
             .demoted_topic
@@ -136,7 +138,11 @@ impl Reducer for InflightActivationBatcher {
     }
 
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
+        metrics::counter!("consumer.inflight_activation_batcher.flush").increment(1);
+
         if self.batch.is_empty() && self.forward_batch.is_empty() {
+            metrics::counter!("consumer.inflight_activation_batcher.flush.batch.empty")
+                .increment(1);
             return Ok(None);
         }
 

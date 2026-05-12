@@ -60,6 +60,8 @@ impl Reducer for InflightActivationWriter {
     type Output = ();
 
     async fn reduce(&mut self, batch: Self::Input) -> Result<(), anyhow::Error> {
+        metrics::counter!("consumer.inflight_activation_writer.reduce").increment(1);
+
         assert!(self.batch.is_none());
         self.batch = Some(batch);
         Ok(())
@@ -67,13 +69,18 @@ impl Reducer for InflightActivationWriter {
 
     #[instrument(skip_all)]
     async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
+        metrics::counter!("consumer.inflight_activation_writer.flush").increment(1);
+
         let Some(ref batch) = self.batch else {
+            metrics::counter!("consumer.inflight_activation_writer.flush.batch.none").increment(1);
             return Ok(None);
         };
 
         // If batch is empty (all tasks were forwarded), just mark as complete
         if batch.is_empty() {
             self.batch.take();
+
+            metrics::counter!("consumer.inflight_activation_writer.flush.batch.empty").increment(1);
             return Ok(Some(()));
         }
 

@@ -92,6 +92,8 @@ pub fn poll_consumer_client(
                         break;
                     }
                     msg = consumer.recv() => {
+                        metrics::counter!("consumer.recv").increment(1);
+
                         if let Err(KafkaError::MessageConsumption(RDKafkaErrorCode::BrokerTransportFailure)) = msg {
                             error!("Failed to connect to broker, retrying...")
                         } else {
