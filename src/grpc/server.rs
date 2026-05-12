@@ -101,6 +101,16 @@ impl ConsumerService for TaskbrokerServer {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
+        // If status is Retry and max_retries is provided, update the activation's retry_state.
+        // This allows workers to communicate retry policy for tasks from raw topics.
+        if status == InflightActivationStatus::Retry {
+            if let Some(max_retries) = request.get_ref().max_retries {
+                if let Err(e) = self.store.update_retry_state(&id, max_retries).await {
+                    error!(?id, ?max_retries, "Failed to update retry state: {:?}", e);
+                }
+            }
+        }
+
         match self.store.set_status(&id, status).await {
             Ok(Some(_)) => metrics::counter!(
                 "grpc_server.set_status",

@@ -151,20 +151,26 @@ pub async fn do_upkeep(
     // 1. Handle retry tasks
     let handle_retries_start = Instant::now();
     if let Ok(retries) = store.get_retry_activations().await {
+        // Use retry topic if configured, otherwise fall back to main topic
+        let retry_target_topic = config
+            .kafka_retry_topic
+            .as_ref()
+            .unwrap_or(&config.kafka_topic);
+
         // 2. Append retries to kafka
         let deliveries = retries
             .into_iter()
             .map(|inflight| {
                 let producer = producer.clone();
                 let config = config.clone();
+                let target_topic = retry_target_topic.clone();
 
                 async move {
                     let activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
                     let serialized = create_retry_activation(&activation).encode_to_vec();
                     let delivery = producer
                         .send(
-                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
-                                .payload(&serialized),
+                            FutureRecord::<(), Vec<u8>>::to(&target_topic).payload(&serialized),
                             Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
                         )
                         .await;

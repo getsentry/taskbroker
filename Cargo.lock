@@ -1459,7 +1459,7 @@ checksum = "e04d7f318608d35d4b61ddd75cbdaee86b023ebe2bd5a66ee0915f0bf93095a9"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2677,9 +2677,8 @@ dependencies = [
 
 [[package]]
 name = "sentry_protos"
-version = "0.8.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60dfb8c1b03c3f6e800a91eca7daea05205dd87f63b8d70b50b7e2211a2e0be2"
+version = "0.8.29"
+source = "git+https://github.com/getsentry/sentry-protos?branch=feat%2Ftaskbroker-max-retries#fb9fadfa88bf6ea3eff26b7d5b068b4e6c3869f1"
 dependencies = [
  "prost",
  "prost-types",

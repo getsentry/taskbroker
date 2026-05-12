@@ -103,6 +103,9 @@ impl InflightActivationStore for MockStore {
     ) -> anyhow::Result<Option<InflightActivation>> {
         Ok(None)
     }
+    async fn update_retry_state(&self, _id: &str, _max_retries: u32) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
         0.0
     }

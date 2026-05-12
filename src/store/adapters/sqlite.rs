@@ -20,7 +20,8 @@ use libsqlite3_sys::{
     SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
     SQLITE_OK, sqlite3_db_status,
 };
-use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
+use prost::Message;
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
@@ -704,6 +705,45 @@ impl InflightActivationStore for SqliteActivationStore {
         };
 
         Ok(Some(row.into()))
+    }
+
+    #[instrument(skip_all)]
+    async fn update_retry_state(&self, id: &str, max_retries: u32) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("update_retry_state").await?;
+
+        // Fetch the current activation
+        let row: Option<TableRow> =
+            sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *conn)
+                .await?;
+
+        let Some(row) = row else {
+            return Ok(());
+        };
+
+        // Decode the activation, update retry_state, re-encode
+        let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+
+        let retry_state = activation.retry_state.get_or_insert_with(|| RetryState {
+            attempts: 0,
+            max_attempts: 0,
+            on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
+            delay_on_retry: None,
+            at_most_once: Some(false),
+        });
+        // max_retries excludes initial attempt, max_attempts includes it
+        retry_state.max_attempts = max_retries + 1;
+
+        let updated_bytes = activation.encode_to_vec();
+
+        sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
+            .bind(updated_bytes)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+
+        Ok(())
     }
 
     #[instrument(skip_all)]

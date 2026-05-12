@@ -68,6 +68,7 @@ async fn test_set_task_status(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
+        max_retries: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -89,6 +90,7 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
+        max_retries: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_err());
@@ -221,6 +223,7 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
             namespace: None,
             application: None,
         }),
+        max_retries: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -256,6 +259,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
             application: Some("hammers".into()),
             namespace: None,
         }),
+        max_retries: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -296,6 +300,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
             application: Some("no-matches".into()),
             namespace: None,
         }),
+        max_retries: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -324,6 +329,7 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
             application: None,
             namespace: Some(namespace),
         }),
+        max_retries: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
