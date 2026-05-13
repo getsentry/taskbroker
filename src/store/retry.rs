@@ -18,13 +18,13 @@ const MAX_BACKOFF_MS: u64 = 5000;
 /// that is likely to succeed on retry. Downcasts the anyhow::Error to
 /// sqlx::Error to match on structured variants rather than parsing strings.
 fn is_retryable_error(err: &Error) -> bool {
-    match err.downcast_ref::<sqlx::Error>() {
-        Some(sqlx::Error::Io(_)) => true,
-        Some(sqlx::Error::PoolTimedOut) => true,
-        Some(sqlx::Error::PoolClosed) => true,
-        Some(sqlx::Error::WorkerCrashed) => true,
-        _ => false,
-    }
+    matches!(
+        err.downcast_ref::<sqlx::Error>(),
+        Some(sqlx::Error::Io(_))
+            | Some(sqlx::Error::PoolTimedOut)
+            | Some(sqlx::Error::PoolClosed)
+            | Some(sqlx::Error::WorkerCrashed)
+    )
 }
 
 /// Calculates the backoff duration for a given attempt using exponential backoff.
