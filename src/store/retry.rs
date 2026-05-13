@@ -14,16 +14,17 @@ use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 const BASE_BACKOFF_MS: u64 = 100;
 const MAX_BACKOFF_MS: u64 = 5000;
 
-/// Returns true if the error message indicates a transient database error
-/// that is likely to succeed on retry.
-fn is_transient_error(err: &Error) -> bool {
-    let msg = err.to_string();
-    msg.contains("server conn crashed")
-        || msg.contains("server shutting down")
-        || msg.contains("connection reset")
-        || msg.contains("broken pipe")
-        || msg.contains("connection refused")
-        || msg.contains("pool timed out")
+/// Returns true if the error is a transient database/connection error
+/// that is likely to succeed on retry. Downcasts the anyhow::Error to
+/// sqlx::Error to match on structured variants rather than parsing strings.
+fn is_retryable_error(err: &Error) -> bool {
+    match err.downcast_ref::<sqlx::Error>() {
+        Some(sqlx::Error::Io(_)) => true,
+        Some(sqlx::Error::PoolTimedOut) => true,
+        Some(sqlx::Error::PoolClosed) => true,
+        Some(sqlx::Error::WorkerCrashed) => true,
+        _ => false,
+    }
 }
 
 /// Calculates the backoff duration for a given attempt using exponential backoff.
@@ -34,8 +35,8 @@ fn backoff_duration(attempt: u32) -> Duration {
     Duration::from_millis(ms)
 }
 
-/// A wrapper around an `InflightActivationStore` that retries transient
-/// database errors with exponential backoff.
+/// A wrapper around an `InflightActivationStore` that retries failed
+/// database queries with exponential backoff.
 pub struct RetryStore {
     inner: Arc<dyn InflightActivationStore>,
     max_retries: u32,
@@ -48,7 +49,7 @@ impl RetryStore {
 }
 
 /// Macro to reduce boilerplate for delegating trait methods with retry logic.
-/// For each method call, if the inner store returns a transient error,
+/// For each method call, if the inner store returns a retryable error,
 /// we retry up to `self.max_retries` times with exponential backoff.
 macro_rules! retry_method {
     ($self:ident, $method:ident ( $($arg:expr),* $(,)? )) => {{
@@ -70,14 +71,14 @@ macro_rules! retry_method {
                     }
                     return Ok(val);
                 }
-                Err(err) if attempt < $self.max_retries && is_transient_error(&err) => {
+                Err(err) if attempt < $self.max_retries && is_retryable_error(&err) => {
                     let backoff = backoff_duration(attempt);
                     warn!(
                         method = stringify!($method),
                         attempt,
                         backoff_ms = backoff.as_millis() as u64,
                         error = %err,
-                        "Transient database error, retrying"
+                        "Retryable database error, retrying"
                     );
                     metrics::counter!(
                         "store.retry.attempt",
@@ -125,14 +126,14 @@ macro_rules! retry_method_clone {
                     }
                     return Ok(val);
                 }
-                Err(err) if attempt < $self.max_retries && is_transient_error(&err) => {
+                Err(err) if attempt < $self.max_retries && is_retryable_error(&err) => {
                     let backoff = backoff_duration(attempt);
                     warn!(
                         method = stringify!($method),
                         attempt,
                         backoff_ms = backoff.as_millis() as u64,
                         error = %err,
-                        "Transient database error, retrying"
+                        "Retryable database error, retrying"
                     );
                     metrics::counter!(
                         "store.retry.attempt",
@@ -289,29 +290,40 @@ impl InflightActivationStore for RetryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::anyhow;
+    use rstest::rstest;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    /// A mock store that fails with a configurable error a set number of
-    /// times before succeeding.
+    /// Helper to create a retryable error (sqlx transient error wrapped in anyhow).
+    fn retryable_error() -> Error {
+        Error::from(sqlx::Error::PoolTimedOut)
+    }
+
+    /// Helper to create a non-retryable error (sqlx database/logic error wrapped in anyhow).
+    fn non_retryable_error() -> Error {
+        Error::from(sqlx::Error::RowNotFound)
+    }
+
+    /// A mock store that fails a set number of times before succeeding.
+    /// The `retryable` flag controls whether errors are transient (retryable)
+    /// or permanent (non-retryable).
     struct MockFailingStore {
         fail_count: AtomicU32,
-        transient: bool,
+        retryable: bool,
     }
 
     impl MockFailingStore {
-        fn new(fail_count: u32, transient: bool) -> Self {
+        fn new(fail_count: u32, retryable: bool) -> Self {
             Self {
                 fail_count: AtomicU32::new(fail_count),
-                transient,
+                retryable,
             }
         }
 
         fn make_error(&self) -> Error {
-            if self.transient {
-                anyhow!("error returned from database: server conn crashed?")
+            if self.retryable {
+                retryable_error()
             } else {
-                anyhow!("some non-transient error")
+                non_retryable_error()
             }
         }
 
@@ -470,7 +482,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_succeeds_after_transient_errors() {
+    async fn test_retry_succeeds_after_retryable_errors() {
         let mock = Arc::new(MockFailingStore::new(2, true));
         let store = RetryStore::new(mock, 3);
 
@@ -486,28 +498,21 @@ mod tests {
 
         let result = store.store(vec![]).await;
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("server conn crashed")
-        );
     }
 
     #[tokio::test]
-    async fn test_non_transient_error_not_retried() {
+    async fn test_non_retryable_error_not_retried() {
         let mock = Arc::new(MockFailingStore::new(1, false));
         let store = RetryStore::new(mock.clone(), 3);
 
         let result = store.store(vec![]).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("non-transient"));
         // The fail count was decremented once (the initial attempt), no retries
         assert_eq!(mock.fail_count.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
-    async fn test_set_status_retries_on_transient_error() {
+    async fn test_set_status_retries_on_retryable_error() {
         let mock = Arc::new(MockFailingStore::new(1, true));
         let store = RetryStore::new(mock, 3);
 
@@ -518,7 +523,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_claim_activations_retries_on_transient_error() {
+    async fn test_claim_activations_retries_on_retryable_error() {
         let mock = Arc::new(MockFailingStore::new(2, true));
         let store = RetryStore::new(mock, 3);
 
@@ -529,7 +534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mark_activation_processing_retries_on_transient_error() {
+    async fn test_mark_activation_processing_retries_on_retryable_error() {
         let mock = Arc::new(MockFailingStore::new(2, true));
         let store = RetryStore::new(mock, 3);
 
@@ -546,20 +551,49 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Mirrors the main.rs wiring: when max_retries is None, RetryStore is not
+    /// used and the inner store is called directly — retryable errors surface
+    /// immediately. When Some, RetryStore wraps the inner store and retries.
+    #[rstest]
+    #[case::none_bypasses_retry(None, true)]
+    #[case::some_enables_retry(Some(3), false)]
+    #[tokio::test]
+    async fn test_config_retry_wiring(
+        #[case] max_retries: Option<u32>,
+        #[case] expect_err: bool,
+    ) {
+        // Mock fails once with a retryable error then succeeds
+        let inner: Arc<dyn InflightActivationStore> =
+            Arc::new(MockFailingStore::new(1, true));
+
+        // Simulate main.rs wiring
+        let store: Arc<dyn InflightActivationStore> = match max_retries {
+            Some(n) => Arc::new(RetryStore::new(inner, n)),
+            None => inner,
+        };
+
+        let result = store.store(vec![]).await;
+        assert_eq!(result.is_err(), expect_err);
+    }
+
     #[test]
-    fn test_is_transient_error() {
-        assert!(is_transient_error(&anyhow!(
-            "Unable to write to sqlite: error returned from database: server conn crashed?"
+    fn test_is_retryable_error() {
+        // Retryable: transient connection/pool errors
+        assert!(is_retryable_error(&Error::from(sqlx::Error::PoolTimedOut)));
+        assert!(is_retryable_error(&Error::from(sqlx::Error::PoolClosed)));
+        assert!(is_retryable_error(&Error::from(sqlx::Error::WorkerCrashed)));
+        assert!(is_retryable_error(&Error::from(sqlx::Error::Io(
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset")
+        ))));
+
+        // Not retryable: logic/schema errors
+        assert!(!is_retryable_error(&Error::from(sqlx::Error::RowNotFound)));
+        assert!(!is_retryable_error(&Error::from(
+            sqlx::Error::ColumnNotFound("id".into())
         )));
-        assert!(is_transient_error(&anyhow!(
-            "error returned from database: server shutting down"
+        assert!(!is_retryable_error(&Error::from(
+            sqlx::Error::Protocol("unexpected".into())
         )));
-        assert!(is_transient_error(&anyhow!("connection reset")));
-        assert!(is_transient_error(&anyhow!("broken pipe")));
-        assert!(is_transient_error(&anyhow!("connection refused")));
-        assert!(is_transient_error(&anyhow!("pool timed out")));
-        assert!(!is_transient_error(&anyhow!("unique constraint violation")));
-        assert!(!is_transient_error(&anyhow!("syntax error in SQL")));
     }
 
     #[test]

@@ -82,8 +82,10 @@ async fn main() -> Result<(), Error> {
                 .await?,
         ),
     };
-    let store: Arc<dyn InflightActivationStore> =
-        Arc::new(RetryStore::new(inner_store, config.db_query_max_retries));
+    let store: Arc<dyn InflightActivationStore> = match config.db_query_max_retries {
+        Some(max_retries) => Arc::new(RetryStore::new(inner_store, max_retries)),
+        None => inner_store,
+    };
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
