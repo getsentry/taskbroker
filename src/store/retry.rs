@@ -391,10 +391,7 @@ mod tests {
             0.0
         }
 
-        async fn count_by_status(
-            &self,
-            _status: InflightActivationStatus,
-        ) -> Result<usize, Error> {
+        async fn count_by_status(&self, _status: InflightActivationStatus) -> Result<usize, Error> {
             Ok(0)
         }
 
@@ -558,13 +555,9 @@ mod tests {
     #[case::none_bypasses_retry(None, true)]
     #[case::some_enables_retry(Some(3), false)]
     #[tokio::test]
-    async fn test_config_retry_wiring(
-        #[case] max_retries: Option<u32>,
-        #[case] expect_err: bool,
-    ) {
+    async fn test_config_retry_wiring(#[case] max_retries: Option<u32>, #[case] expect_err: bool) {
         // Mock fails once with a retryable error then succeeds
-        let inner: Arc<dyn InflightActivationStore> =
-            Arc::new(MockFailingStore::new(1, true));
+        let inner: Arc<dyn InflightActivationStore> = Arc::new(MockFailingStore::new(1, true));
 
         // Simulate main.rs wiring
         let store: Arc<dyn InflightActivationStore> = match max_retries {
@@ -591,9 +584,9 @@ mod tests {
         assert!(!is_retryable_error(&Error::from(
             sqlx::Error::ColumnNotFound("id".into())
         )));
-        assert!(!is_retryable_error(&Error::from(
-            sqlx::Error::Protocol("unexpected".into())
-        )));
+        assert!(!is_retryable_error(&Error::from(sqlx::Error::Protocol(
+            "unexpected".into()
+        ))));
     }
 
     #[test]
