@@ -99,63 +99,10 @@ macro_rules! retry_method {
     }};
 }
 
-/// Same as `retry_method!` but clones an owned argument before each attempt,
-/// since the inner method consumes it.
-macro_rules! retry_method_clone {
-    ($self:ident, $method:ident, $owned_arg:expr $(,)?) => {{
-        let mut attempt = 0u32;
-        loop {
-            let cloned = $owned_arg.clone();
-            match $self.inner.$method(cloned).await {
-                Ok(val) => {
-                    if attempt > 0 {
-                        info!(
-                            method = stringify!($method),
-                            attempt,
-                            "Query succeeded after retry"
-                        );
-                        metrics::counter!(
-                            "store.retry.succeeded",
-                            "method" => stringify!($method),
-                        )
-                        .increment(1);
-                    }
-                    return Ok(val);
-                }
-                Err(err) if attempt < $self.max_retries && is_retryable_error(&err) => {
-                    warn!(
-                        method = stringify!($method),
-                        attempt,
-                        error = %err,
-                        "Retryable database error, retrying"
-                    );
-                    metrics::counter!(
-                        "store.retry.attempt",
-                        "method" => stringify!($method),
-                    )
-                    .increment(1);
-                    sleep($self.retry_delay).await;
-                    attempt += 1;
-                }
-                Err(err) => {
-                    if attempt > 0 {
-                        metrics::counter!(
-                            "store.retry.exhausted",
-                            "method" => stringify!($method),
-                        )
-                        .increment(1);
-                    }
-                    return Err(err);
-                }
-            }
-        }
-    }};
-}
-
 #[async_trait]
 impl InflightActivationStore for RetryStore {
     async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
-        retry_method_clone!(self, store, batch)
+        retry_method!(self, store(batch.clone()))
     }
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
@@ -261,7 +208,7 @@ impl InflightActivationStore for RetryStore {
     }
 
     async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
-        retry_method_clone!(self, mark_completed, ids)
+        retry_method!(self, mark_completed(ids.clone()))
     }
 
     async fn remove_completed(&self) -> Result<u64, Error> {
@@ -269,7 +216,7 @@ impl InflightActivationStore for RetryStore {
     }
 
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
-        retry_method_clone!(self, remove_killswitched, killswitched_tasks)
+        retry_method!(self, remove_killswitched(killswitched_tasks.clone()))
     }
 
     async fn clear(&self) -> Result<(), Error> {
