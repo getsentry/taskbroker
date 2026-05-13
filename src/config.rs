@@ -182,7 +182,7 @@ pub struct Config {
 
     /// The maximum number of times to retry a transient database query error
     /// before surfacing the error. Uses exponential backoff between retries.
-    /// When None, queries are not retried.
+    /// When None, queries are not retried. Must not exceed 63 retries although something else must be wrong if it goes that high.
     pub db_query_max_retries: Option<u32>,
 
     /// The maximum number of tasks that are buffered
