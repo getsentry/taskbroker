@@ -11,9 +11,6 @@ use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
-const BASE_BACKOFF_MS: u64 = 100;
-const MAX_BACKOFF_MS: u64 = 5000;
-
 /// Returns true if the error is a transient database/connection error
 /// that is likely to succeed on retry. Downcasts the anyhow::Error to
 /// sqlx::Error to match on structured variants rather than parsing strings.
@@ -27,30 +24,31 @@ fn is_retryable_error(err: &Error) -> bool {
     )
 }
 
-/// Calculates the backoff duration for a given attempt using exponential backoff.
-fn backoff_duration(attempt: u32) -> Duration {
-    let ms = BASE_BACKOFF_MS
-        .saturating_mul(1 << attempt)
-        .min(MAX_BACKOFF_MS);
-    Duration::from_millis(ms)
-}
-
 /// A wrapper around an `InflightActivationStore` that retries failed
-/// database queries with exponential backoff.
+/// database queries with a fixed delay between attempts.
 pub struct RetryStore {
     inner: Arc<dyn InflightActivationStore>,
     max_retries: u32,
+    retry_delay: Duration,
 }
 
 impl RetryStore {
-    pub fn new(inner: Arc<dyn InflightActivationStore>, max_retries: u32) -> Self {
-        Self { inner, max_retries }
+    pub fn new(
+        inner: Arc<dyn InflightActivationStore>,
+        max_retries: u32,
+        retry_delay_ms: u64,
+    ) -> Self {
+        Self {
+            inner,
+            max_retries,
+            retry_delay: Duration::from_millis(retry_delay_ms),
+        }
     }
 }
 
 /// Macro to reduce boilerplate for delegating trait methods with retry logic.
 /// For each method call, if the inner store returns a retryable error,
-/// we retry up to `self.max_retries` times with exponential backoff.
+/// we retry up to `self.max_retries` times with a fixed delay.
 macro_rules! retry_method {
     ($self:ident, $method:ident ( $($arg:expr),* $(,)? )) => {{
         let mut attempt = 0u32;
@@ -72,11 +70,9 @@ macro_rules! retry_method {
                     return Ok(val);
                 }
                 Err(err) if attempt < $self.max_retries && is_retryable_error(&err) => {
-                    let backoff = backoff_duration(attempt);
                     warn!(
                         method = stringify!($method),
                         attempt,
-                        backoff_ms = backoff.as_millis() as u64,
                         error = %err,
                         "Retryable database error, retrying"
                     );
@@ -85,7 +81,7 @@ macro_rules! retry_method {
                         "method" => stringify!($method),
                     )
                     .increment(1);
-                    sleep(backoff).await;
+                    sleep($self.retry_delay).await;
                     attempt += 1;
                 }
                 Err(err) => {
@@ -127,11 +123,9 @@ macro_rules! retry_method_clone {
                     return Ok(val);
                 }
                 Err(err) if attempt < $self.max_retries && is_retryable_error(&err) => {
-                    let backoff = backoff_duration(attempt);
                     warn!(
                         method = stringify!($method),
                         attempt,
-                        backoff_ms = backoff.as_millis() as u64,
                         error = %err,
                         "Retryable database error, retrying"
                     );
@@ -140,7 +134,7 @@ macro_rules! retry_method_clone {
                         "method" => stringify!($method),
                     )
                     .increment(1);
-                    sleep(backoff).await;
+                    sleep($self.retry_delay).await;
                     attempt += 1;
                 }
                 Err(err) => {
@@ -481,7 +475,7 @@ mod tests {
     #[tokio::test]
     async fn test_retry_succeeds_after_retryable_errors() {
         let mock = Arc::new(MockFailingStore::new(2, true));
-        let store = RetryStore::new(mock, 3);
+        let store = RetryStore::new(mock, 3, 0);
 
         let result = store.store(vec![]).await;
         assert!(result.is_ok());
@@ -491,7 +485,7 @@ mod tests {
     #[tokio::test]
     async fn test_retry_exhausted_surfaces_error() {
         let mock = Arc::new(MockFailingStore::new(5, true));
-        let store = RetryStore::new(mock, 3);
+        let store = RetryStore::new(mock, 3, 0);
 
         let result = store.store(vec![]).await;
         assert!(result.is_err());
@@ -500,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn test_non_retryable_error_not_retried() {
         let mock = Arc::new(MockFailingStore::new(1, false));
-        let store = RetryStore::new(mock.clone(), 3);
+        let store = RetryStore::new(mock.clone(), 3, 0);
 
         let result = store.store(vec![]).await;
         assert!(result.is_err());
@@ -511,7 +505,7 @@ mod tests {
     #[tokio::test]
     async fn test_set_status_retries_on_retryable_error() {
         let mock = Arc::new(MockFailingStore::new(1, true));
-        let store = RetryStore::new(mock, 3);
+        let store = RetryStore::new(mock, 3, 0);
 
         let result = store
             .set_status("test-id", InflightActivationStatus::Complete)
@@ -522,7 +516,7 @@ mod tests {
     #[tokio::test]
     async fn test_claim_activations_retries_on_retryable_error() {
         let mock = Arc::new(MockFailingStore::new(2, true));
-        let store = RetryStore::new(mock, 3);
+        let store = RetryStore::new(mock, 3, 0);
 
         let result = store
             .claim_activations(None, None, Some(1), None, true)
@@ -533,7 +527,7 @@ mod tests {
     #[tokio::test]
     async fn test_mark_activation_processing_retries_on_retryable_error() {
         let mock = Arc::new(MockFailingStore::new(2, true));
-        let store = RetryStore::new(mock, 3);
+        let store = RetryStore::new(mock, 3, 0);
 
         let result = store.mark_activation_processing("test-id").await;
         assert!(result.is_ok());
@@ -542,7 +536,7 @@ mod tests {
     #[tokio::test]
     async fn test_zero_retries_surfaces_immediately() {
         let mock = Arc::new(MockFailingStore::new(1, true));
-        let store = RetryStore::new(mock, 0);
+        let store = RetryStore::new(mock, 0, 0);
 
         let result = store.store(vec![]).await;
         assert!(result.is_err());
@@ -561,7 +555,7 @@ mod tests {
 
         // Simulate main.rs wiring
         let store: Arc<dyn InflightActivationStore> = match max_retries {
-            Some(n) => Arc::new(RetryStore::new(inner, n)),
+            Some(n) => Arc::new(RetryStore::new(inner, n, 0)),
             None => inner,
         };
 
@@ -587,15 +581,5 @@ mod tests {
         assert!(!is_retryable_error(&Error::from(sqlx::Error::Protocol(
             "unexpected".into()
         ))));
-    }
-
-    #[test]
-    fn test_backoff_duration() {
-        assert_eq!(backoff_duration(0), Duration::from_millis(100));
-        assert_eq!(backoff_duration(1), Duration::from_millis(200));
-        assert_eq!(backoff_duration(2), Duration::from_millis(400));
-        assert_eq!(backoff_duration(3), Duration::from_millis(800));
-        // Should cap at MAX_BACKOFF_MS
-        assert_eq!(backoff_duration(10), Duration::from_millis(MAX_BACKOFF_MS));
     }
 }

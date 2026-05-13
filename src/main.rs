@@ -83,7 +83,11 @@ async fn main() -> Result<(), Error> {
         ),
     };
     let store: Arc<dyn InflightActivationStore> = match config.db_query_max_retries {
-        Some(max_retries) => Arc::new(RetryStore::new(inner_store, max_retries)),
+        Some(max_retries) => Arc::new(RetryStore::new(
+            inner_store,
+            max_retries,
+            config.db_query_retry_delay_ms,
+        )),
         None => inner_store,
     };
 

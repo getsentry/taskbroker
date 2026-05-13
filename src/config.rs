@@ -181,9 +181,11 @@ pub struct Config {
     pub db_write_failure_backoff_ms: u64,
 
     /// The maximum number of times to retry a transient database query error
-    /// before surfacing the error. Uses exponential backoff between retries.
-    /// When None, queries are not retried. Must not exceed 63 retries although something else must be wrong if it goes that high.
+    /// before surfacing the error. When None, queries are not retried.
     pub db_query_max_retries: Option<u32>,
+
+    /// The delay in milliseconds between query retry attempts.
+    pub db_query_retry_delay_ms: u64,
 
     /// The maximum number of tasks that are buffered
     /// before being written to InflightTaskStore (sqlite).
@@ -384,6 +386,7 @@ impl Default for Config {
             pg_extra_query_params: None,
             db_write_failure_backoff_ms: 4000,
             db_query_max_retries: None,
+            db_query_retry_delay_ms: 100,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
             db_insert_batch_max_time_ms: 1000,
