@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use tokio::sync::mpsc::Receiver;
+use tracing::debug;
 
 /// Run flusher that receives values of type T from a channel and flushes
 /// them using the provided async `flush` function either when the batch is
@@ -31,6 +32,8 @@ where
         tokio::select! {
             // When the buffer is NOT full, try to receive another message
             msg = rx.recv(), if buffer.len() < batch_size => {
+                debug!("Buffer is NOT full, receiving a message...");
+
                 match msg {
                     Some(v) => {
                         buffer.push(v);
@@ -40,12 +43,14 @@ where
                         }
 
                         if buffer.len() >= batch_size {
+                            debug!("Flushing full buffer...");
                             flush(&mut buffer).await;
                         }
                     }
 
                     None => {
                         // Channel closed (shutdown), flush remaining and exit
+                        debug!("Channel closed due to shutdown, flushing remaining before exit...");
                         flush(&mut buffer).await;
                         break;
                     }
@@ -55,6 +60,8 @@ where
             // If the buffer IS full, the branch above will never execute, and we will never
             // discover that the channel is now closed, which is why this branch is necessary
             _ = std::future::ready(()), if rx.is_closed() => {
+                debug!("Channel is closed and buffer is full, draining channel before exiting...");
+
                 while let Ok(update) = rx.try_recv() {
                     // Buffer may grow beyond configured limit, which is OK because we are shutting down
                     buffer.push(update);
@@ -66,6 +73,8 @@ where
 
             // Otherwise, try flushing whatever is in the buffer every `interval_ms` milliseconds
             _ = interval.tick() => {
+                debug!("Performing periodic flush...");
+
                 if !buffer.is_empty() {
                     flush(&mut buffer).await;
                 }
