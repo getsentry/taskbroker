@@ -27,7 +27,7 @@ def test_taskregistry_router_str() -> None:
         router_class="taskbroker_client.router.DefaultRouter",
     )
     ns = app.taskregistry.create_namespace("test")
-    assert ns.topic == "taskbroker"
+    assert ns.topic == "taskworker"
 
 
 def test_set_config() -> None:
