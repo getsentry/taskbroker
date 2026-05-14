@@ -7,7 +7,8 @@ use tokio::sync::mpsc::Receiver;
 
 /// Run flusher that receives values of type T from a channel and flushes
 /// them using the provided async `flush` function either when the batch is
-/// full or when the max flush interval has elapsed.
+/// full or when the max flush interval has elapsed. This function is **not**
+/// responsible for draining the buffer - `flush` does that.
 pub async fn run_flusher<T, F>(
     mut rx: Receiver<T>,
     batch_size: usize,
