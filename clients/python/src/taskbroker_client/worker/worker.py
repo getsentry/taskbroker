@@ -695,6 +695,7 @@ class TaskWorkerProcessingPool:
         Shutdown cleanly
         Activate the shutdown event and drain results before terminating children.
         """
+        CHILD_JOIN_TIMEOUT_SEC = 5
         logger.info("taskworker.worker.shutdown.start")
         self._shutdown_event.set()
 
@@ -706,7 +707,10 @@ class TaskWorkerProcessingPool:
         for child in self._children:
             child.terminate()
         for child in self._children:
-            child.join()
+            child.join(CHILD_JOIN_TIMEOUT_SEC)
+            if child.is_alive():
+                child.kill()
+                child.join()
 
         logger.info("taskworker.worker.shutdown.result")
         if self._result_thread:

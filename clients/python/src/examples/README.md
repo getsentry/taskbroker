@@ -24,7 +24,7 @@ With all of those pre-requisites complete, you can run the example application:
 
 ```bash
 # Generate 5 tasks
-python src/examples/cli.py generate --count 5
+python src/examples/cli.py spawn --count 5
 
 # Run the scheduler which emits a task every 1m
 python src/examples/cli.py scheduler
