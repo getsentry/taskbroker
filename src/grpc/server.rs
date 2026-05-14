@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Result;
 use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -8,8 +10,9 @@ use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
     TaskActivation, TaskActivationStatus,
 };
+use tokio::sync::mpsc::Sender;
 use tonic::{Request, Response, Status};
-use tracing::{error, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use crate::config::{Config, DeliveryMode};
 use crate::store::activation::InflightActivationStatus;
@@ -18,6 +21,7 @@ use crate::store::traits::InflightActivationStore;
 pub struct TaskbrokerServer {
     pub store: Arc<dyn InflightActivationStore>,
     pub config: Arc<Config>,
+    pub update_tx: Option<Sender<StatusUpdate>>,
 }
 
 #[tonic::async_trait]
@@ -97,8 +101,18 @@ impl ConsumerService for TaskbrokerServer {
                 "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {status:?}"
             )));
         }
+
         if status == InflightActivationStatus::Failure {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
+        }
+
+        if let Some(ref tx) = self.update_tx {
+            tx.send((id, status))
+                .await
+                .map_err(|_| Status::internal("Status update channel closed"))?;
+
+            metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 
         match self.store.set_status(&id, status).await {
@@ -192,5 +206,82 @@ impl ConsumerService for TaskbrokerServer {
         };
         metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
         res
+    }
+}
+
+pub type StatusUpdate = (String, InflightActivationStatus);
+
+pub async fn flush_updates(
+    store: Arc<dyn InflightActivationStore>,
+    buffer: &mut Vec<StatusUpdate>,
+) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let mut by_status: HashMap<InflightActivationStatus, Vec<String>> = HashMap::new();
+
+    for (id, status) in buffer.drain(..) {
+        by_status.entry(status).or_default().push(id);
+    }
+
+    for (status, ids) in by_status {
+        let requested = ids.len() as u64;
+        let st = status.to_string();
+
+        metrics::histogram!("grpc_server.flush_updates.requested", "status" => st.clone())
+            .record(requested as f64);
+
+        match store.set_status_batch(&ids, status).await {
+            Ok(affected) => {
+                metrics::histogram!(
+                    "grpc_server.flush_updates.affected",
+                    "status" => st.clone()
+                )
+                .record(affected as f64);
+
+                metrics::counter!(
+                    "grpc_server.flush_updates.updated",
+                    "status" => st.clone()
+                )
+                .increment(affected);
+
+                metrics::counter!("grpc_server.flush_updates", "result" => "ok").increment(1);
+
+                if affected < requested {
+                    metrics::counter!(
+                        "grpc_server.flush_updates.partial",
+                        "status" => st.clone()
+                    )
+                    .increment(1);
+
+                    warn!(
+                        ?status,
+                        requested, affected, "Updated fewer rows than IDs requested from server"
+                    );
+                }
+
+                debug!(
+                    ?status,
+                    affected, requested, "Flushed status batch from server"
+                );
+            }
+
+            Err(e) => {
+                metrics::counter!("grpc_server.flush_updates", "result" => "error").increment(1);
+
+                error!(
+                    ?status,
+                    requested,
+                    error = ?e,
+                    "Failed to flush status batch from server"
+                );
+
+                // Push failed updates back into the buffer so they can be retried on next flush
+                for id in ids {
+                    buffer.push((id, status));
+                }
+            }
+        }
     }
 }

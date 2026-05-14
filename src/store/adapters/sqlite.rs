@@ -707,6 +707,37 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     #[instrument(skip_all)]
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
+
+        query_builder
+            .push("SET status = ")
+            .push_bind(status)
+            .push(" WHERE id IN (");
+
+        let mut separated = query_builder.separated(", ");
+
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+
+        separated.push_unseparated(")");
+
+        let result = query_builder.build().execute(&mut *conn).await?;
+        Ok(result.rows_affected())
+    }
+
+    #[instrument(skip_all)]
     async fn set_processing_deadline(
         &self,
         id: &str,
