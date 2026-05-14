@@ -141,13 +141,13 @@ def test_namespace_send_task_no_retry() -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DISCARD
 
     mock_producer = Mock()
-    namespace._producers["taskbroker"] = mock_producer
+    namespace._producers["taskworker"] = mock_producer
 
     namespace.send_task(activation)
     assert mock_producer.produce.call_count == 1
 
     mock_call = mock_producer.produce.call_args
-    assert mock_call[0][0].name == "taskbroker"
+    assert mock_call[0][0].name == "taskworker"
 
     proto_message = mock_call[0][1].value
     assert proto_message == activation.SerializeToString()
@@ -238,7 +238,7 @@ def test_namespace_send_task_with_retry() -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DEADLETTER
 
     mock_producer = Mock()
-    namespace._producers["taskbroker"] = mock_producer
+    namespace._producers["taskworker"] = mock_producer
 
     namespace.send_task(activation)
     assert mock_producer.produce.call_count == 1
@@ -268,13 +268,13 @@ def test_namespace_with_retry_send_task() -> None:
     assert activation.retry_state.on_attempts_exceeded == ON_ATTEMPTS_EXCEEDED_DISCARD
 
     mock_producer = Mock()
-    namespace._producers["taskbroker"] = mock_producer
+    namespace._producers["taskworker"] = mock_producer
 
     namespace.send_task(activation)
     assert mock_producer.produce.call_count == 1
 
     mock_call = mock_producer.produce.call_args
-    assert mock_call[0][0].name == "taskbroker"
+    assert mock_call[0][0].name == "taskworker"
 
     proto_message = mock_call[0][1].value
     assert proto_message == activation.SerializeToString()
@@ -297,7 +297,7 @@ def test_namespace_with_wait_for_delivery_send_task() -> None:
     activation = simple_task.create_activation([], {})
 
     mock_producer = Mock()
-    namespace._producers["taskbroker"] = mock_producer
+    namespace._producers["taskworker"] = mock_producer
 
     ret_value: Future[None] = Future()
     ret_value.set_result(None)
@@ -306,7 +306,7 @@ def test_namespace_with_wait_for_delivery_send_task() -> None:
     assert mock_producer.produce.call_count == 1
 
     mock_call = mock_producer.produce.call_args
-    assert mock_call[0][0].name == "taskbroker"
+    assert mock_call[0][0].name == "taskworker"
 
     proto_message = mock_call[0][1].value
     assert proto_message == activation.SerializeToString()
@@ -370,7 +370,7 @@ def test_registry_create_namespace_simple() -> None:
     assert ns.default_processing_deadline_duration == 10
     assert ns.application == "acme"
     assert ns.name == "tests"
-    assert ns.topic == "taskbroker"
+    assert ns.topic == "taskworker"
     assert ns.app_feature == "tests"
 
     retry = Retry(times=3)
@@ -386,7 +386,7 @@ def test_registry_create_namespace_simple() -> None:
     assert ns.default_expires == 60 * 10
     assert ns.name == "test-two"
     assert ns.application == "acme"
-    assert ns.topic == "taskbroker"
+    assert ns.topic == "taskworker"
     assert ns.app_feature == "anvils"
 
 
