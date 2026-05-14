@@ -29,7 +29,8 @@ where
 
     loop {
         tokio::select! {
-            msg = rx.recv() => {
+            // When the buffer is NOT full, try to receive another message
+            msg = rx.recv(), if buffer.len() < batch_size => {
                 match msg {
                     Some(v) => {
                         buffer.push(v);
@@ -51,6 +52,19 @@ where
                 }
             }
 
+            // If the buffer IS full, the branch above will never execute, and we will never
+            // discover that the channel is now closed, which is why this branch is necessary
+            _ = std::future::ready(()), if rx.is_closed() => {
+                while let Ok(update) = rx.try_recv() {
+                    // Buffer may grow beyond configured limit, which is OK because we are shutting down
+                    buffer.push(update);
+                }
+
+                flush(&mut buffer).await;
+                break;
+            }
+
+            // Otherwise, try flushing whatever is in the buffer every `interval_ms` milliseconds
             _ = interval.tick() => {
                 if !buffer.is_empty() {
                     flush(&mut buffer).await;

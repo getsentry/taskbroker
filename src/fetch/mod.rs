@@ -122,11 +122,10 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                         }
 
                         _ = async {
-                            let start = Instant::now();
-
                             debug!("Fetching next batch of pending activations...");
                             metrics::counter!("fetch.loop.count").increment(1);
 
+                            let start = Instant::now();
                             let mut backoff = false;
 
                             let result = store.claim_activations_for_push(limit, bucket).await;

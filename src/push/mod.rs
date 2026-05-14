@@ -337,6 +337,8 @@ impl PushPool {
                                 debug!(task_id = %id, "Activation sent to worker");
 
                                 let start = Instant::now();
+
+                                // We won't batch these updates to keep things simple during shutdown
                                 let result = store.mark_processing(&id).await;
                                 metrics::histogram!("push.mark_processing.duration")
                                     .record(start.elapsed());
