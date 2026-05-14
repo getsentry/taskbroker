@@ -1,8 +1,10 @@
+use std::cmp;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_backtrace::framed;
+use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
 use tokio::time::sleep;
 use tonic::async_trait;
@@ -50,14 +52,22 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
 #[async_trait]
 pub trait TaskPusher {
     /// Submit a single task to the push pool.
-    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError>;
+    async fn submit_task(
+        &self,
+        activation: InflightActivation,
+        time: Instant,
+    ) -> Result<(), PushError>;
 }
 
 #[async_trait]
 impl TaskPusher for PushPool {
     #[framed]
-    async fn submit_task(&self, activation: InflightActivation) -> Result<(), PushError> {
-        self.submit(activation).await
+    async fn submit_task(
+        &self,
+        activation: InflightActivation,
+        time: Instant,
+    ) -> Result<(), PushError> {
+        self.submit(activation, time).await
     }
 }
 
@@ -119,10 +129,8 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
 
                             let mut backoff = false;
 
-                            let start_claim = Instant::now();
                             let result = store.claim_activations_for_push(limit, bucket).await;
-                            metrics::histogram!("fetch.claim_activations_for_push.duration")
-                                .record(start_claim.elapsed());
+                            metrics::histogram!("fetch.claim_activations_for_push.duration").record(start.elapsed());
 
                             match result {
                                 Ok(activations) if activations.is_empty() => {
@@ -141,10 +149,26 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
 
                                     debug!("Fetched {} activations", activations.len());
 
+                                    // Use this instant to track claimed → pushed latency
+                                    let start = Instant::now();
+
                                     for activation in activations {
                                         let id = activation.id.clone();
 
-                                        match pusher.submit_task(activation).await {
+                                        if activation.processing_attempts < 1 {
+                                            let latency = cmp::max(0, activation.received_latency(Utc::now()));
+
+                                            metrics::histogram!(
+                                                "push.received_to_claimed.latency",
+                                                "namespace" => activation.namespace.clone(),
+                                                "taskname" => activation.taskname.clone(),
+                                            )
+                                            .record(latency as f64);
+                                        } else {
+                                            debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → claimed latency recording");
+                                        }
+
+                                        match pusher.submit_task(activation, start).await {
                                             Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
 
                                             Err(PushError::Timeout) => {
