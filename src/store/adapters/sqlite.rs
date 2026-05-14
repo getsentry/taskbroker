@@ -597,10 +597,8 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
-        let mut conn = self
-            .acquire_write_conn_metric("mark_activation_processing")
-            .await?;
+    async fn mark_processing(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("mark_processing").await?;
 
         let grace_period = self.config.processing_deadline_grace_sec;
         let result = sqlx::query(&format!(
@@ -617,18 +615,46 @@ impl InflightActivationStore for SqliteActivationStore {
         .await?;
 
         if result.rows_affected() == 0 {
-            metrics::counter!("push.mark_activation_processing", "result" => "not_found")
-                .increment(1);
+            metrics::counter!("push.mark_processing", "result" => "not_found").increment(1);
 
             warn!(
                 task_id = %id,
                 "Activation could not be marked as sent, it may be missing or its status may have already changed"
             );
         } else {
-            metrics::counter!("push.mark_activation_processing", "result" => "ok").increment(1);
+            metrics::counter!("push.mark_processing", "result" => "ok").increment(1);
         }
 
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self
+            .acquire_write_conn_metric("mark_processing_batch")
+            .await?;
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET status = ");
+        query_builder.push_bind(InflightActivationStatus::Processing);
+        query_builder.push(format!(
+            ", processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL WHERE status = ",
+        ));
+        query_builder.push_bind(InflightActivationStatus::Claimed);
+        query_builder.push(" AND id IN (");
+
+        let mut separated = query_builder.separated(", ");
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+
+        let result = query_builder.build().execute(&mut *conn).await?;
+        Ok(result.rows_affected())
     }
 
     /// Get the age of the oldest pending activation in seconds.

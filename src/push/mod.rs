@@ -1,4 +1,3 @@
-use chrono::Utc;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::future::Future;
@@ -8,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_backtrace::framed;
+use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
 use flume::{Receiver, SendError, Sender};
 use hmac::{Hmac, Mac};
@@ -15,11 +15,12 @@ use prost::Message;
 use sentry_protos::taskbroker::v1::worker_service_client::WorkerServiceClient;
 use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
 use sha2::Sha256;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tonic::async_trait;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
 use crate::store::activation::InflightActivation;
@@ -100,6 +101,9 @@ pub struct PushPool {
     /// The receiving end of a channel that accepts task activations.
     receiver: Receiver<(InflightActivation, Instant)>,
 
+    /// Queue for batching claimed → processing updates.
+    update_tx: Option<mpsc::Sender<String>>,
+
     /// Taskbroker configuration.
     config: Arc<Config>,
 
@@ -111,28 +115,36 @@ pub struct PushPool {
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        store: Arc<dyn InflightActivationStore>,
+        update_tx: Option<mpsc::Sender<String>>,
+    ) -> Self {
         let worker_factory: WorkerFactory = Arc::new(|endpoint: String| {
             Box::pin(async move {
                 let client = WorkerServiceClient::connect(endpoint).await?;
                 Ok(Box::new(client) as Box<dyn WorkerClient + Send>)
             })
         });
-        Self::new_with_factory(config, store, worker_factory)
+
+        Self::new_with_factory(config, store, worker_factory, update_tx)
     }
 
     fn new_with_factory(
         config: Arc<Config>,
         store: Arc<dyn InflightActivationStore>,
         worker_factory: WorkerFactory,
+        update_tx: Option<mpsc::Sender<String>>,
     ) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
+
         Self {
             sender,
             receiver,
             config,
             store,
             worker_factory,
+            update_tx,
         }
     }
 
@@ -148,6 +160,7 @@ impl PushPool {
                 let receiver = self.receiver.clone();
                 let store = store.clone();
                 let worker_factory = worker_factory.clone();
+                let update_tx = self.update_tx.clone();
 
                 let guard = get_shutdown_guard().shutdown_on_drop();
 
@@ -244,11 +257,31 @@ impl PushPool {
                                         }
 
                                         let start = Instant::now();
-                                        let result = store.mark_activation_processing(&id).await;
-                                        metrics::histogram!("push.mark_activation_processing.duration").record(start.elapsed());
+
+                                        // Are we batching claimed → processing updates?
+                                        if let Some(ref tx) = update_tx {
+                                            let result = tx.send(id.clone()).await;
+                                            metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
+
+                                            if let Err(e) = result {
+                                                metrics::counter!("push.mark_processing", "result" => "error").increment(1);
+
+                                                error!(
+                                                    task_id = %id,
+                                                    error = ?e,
+                                                    "Failed to enqueue push update"
+                                                );
+                                            }
+
+                                            continue;
+                                        }
+
+                                        // Fall back to individual updates
+                                        let result = store.mark_processing(&id).await;
+                                        metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
 
                                         if let Err(e) = result {
-                                            metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+                                            metrics::counter!("push.mark_processing", "result" => "error").increment(1);
 
                                             error!(
                                                 task_id = %id,
@@ -304,12 +337,13 @@ impl PushPool {
                                 debug!(task_id = %id, "Activation sent to worker");
 
                                 let start = Instant::now();
-                                let result = store.mark_activation_processing(&id).await;
-                                metrics::histogram!("push.mark_activation_processing.duration")
+                                let result = store.mark_processing(&id).await;
+                                metrics::histogram!("push.mark_processing.duration")
                                     .record(start.elapsed());
 
                                 if let Err(e) = result {
-                                    metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+                                    metrics::counter!("push.mark_processing", "result" => "error")
+                                        .increment(1);
 
                                     error!(
                                         task_id = %id,
@@ -420,6 +454,57 @@ async fn push_task(
 
     metrics::histogram!("push.push_task.duration").record(start.elapsed());
     result
+}
+
+pub async fn flush_updates(store: Arc<dyn InflightActivationStore>, buffer: &mut Vec<String>) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let start = Instant::now();
+
+    let ids = std::mem::take(buffer);
+
+    let requested = ids.len() as u64;
+    metrics::histogram!("push.flush_updates.requested").record(requested as f64);
+
+    let result = store.mark_processing_batch(&ids).await;
+    metrics::histogram!("push.mark_processing_batch.duration").record(start.elapsed());
+
+    match result {
+        Ok(affected) => {
+            metrics::histogram!("push.flush_updates.affected").record(affected as f64);
+
+            metrics::counter!("push.flush_updates.updated").increment(affected);
+            metrics::counter!("push.flush_updates", "result" => "ok").increment(1);
+
+            if affected < requested {
+                metrics::counter!("push.flush_updates.partial").increment(1);
+
+                warn!(
+                    requested,
+                    affected, "Updated fewer rows than IDs requested from push pool"
+                );
+            }
+
+            debug!(affected, requested, "Flushed update batch from push pool");
+        }
+
+        Err(e) => {
+            metrics::counter!("push.flush_updates", "result" => "error").increment(1);
+
+            error!(
+                requested,
+                error = ?e,
+                "Failed to flush update batch from push pool"
+            );
+
+            // Push failed updates back into the buffer so they can be retried on next flush
+            for id in ids {
+                buffer.push(id);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
