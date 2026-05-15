@@ -1,4 +1,3 @@
-use std::cmp::max;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -7,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_backtrace::framed;
-use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
 use flume::{Receiver, SendError, Sender};
 use hmac::{Hmac, Mac};
@@ -164,11 +162,6 @@ impl PushPool {
 
                 let guard = get_shutdown_guard().shutdown_on_drop();
 
-                let callback_url = format!(
-                    "{}:{}",
-                    self.config.callback_addr, self.config.callback_port
-                );
-
                 let timeout = Duration::from_millis(self.config.push_timeout_ms);
                 let grpc_shared_secret = self.config.grpc_shared_secret.clone();
 
@@ -215,174 +208,22 @@ impl PushPool {
 
                                 metrics::histogram!("push.queue.latency").record(time.elapsed());
 
-                                let id = activation.id.clone();
-                                let callback_url = callback_url.clone();
-
-                                let Some(worker) = workers.get_mut(&activation.application) else {
-                                    metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
-
-                                    error!(
-                                        task_id = %id,
-                                        application = activation.application,
-                                        "Task application has no worker pool mapping"
-                                    );
-
-                                    continue;
-                                };
-
-                                match push_task(
-                                    worker.as_mut(),
-                                    activation.clone(),
-                                    callback_url,
-                                    timeout,
-                                    grpc_shared_secret.as_slice(),
-                                )
-                                .await
-                                {
-                                    Ok(_) => {
-                                        metrics::counter!("push.push_task", "result" => "ok").increment(1);
-                                        debug!(task_id = %id, "Activation sent to worker");
-
-                                        if activation.processing_attempts < 1 {
-                                            let latency = max(0, activation.received_latency(Utc::now()));
-
-                                            metrics::histogram!(
-                                                "push.received_to_push.latency",
-                                                "namespace" => activation.namespace,
-                                                "taskname" => activation.taskname,
-                                            )
-                                            .record(latency as f64);
-                                        } else {
-                                            debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → push latency recording");
-                                        }
-
-                                        let start = Instant::now();
-
-                                        // Are we batching claimed → processing updates?
-                                        if let Some(ref tx) = update_tx {
-                                            let result = tx.send(id.clone()).await;
-                                            metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
-
-                                            if let Err(e) = result {
-                                                metrics::counter!("push.mark_processing", "result" => "error").increment(1);
-
-                                                error!(
-                                                    task_id = %id,
-                                                    error = ?e,
-                                                    "Failed to enqueue push update"
-                                                );
-                                            }
-
-                                            continue;
-                                        }
-
-                                        // Fall back to individual updates
-                                        let result = store.mark_processing(&id).await;
-                                        metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
-
-                                        if let Err(e) = result {
-                                            metrics::counter!("push.mark_processing", "result" => "error").increment(1);
-
-                                            error!(
-                                                task_id = %id,
-                                                error = ?e,
-                                                "Failed to mark activation as sent after push"
-                                            );
-                                        }
-                                    }
-
-                                    // Once claim expires, status will be set back to pending
-                                    Err(e) => {
-                                        metrics::counter!("push.push_task", "result" => "error").increment(1);
-
-                                        error!(
-                                            task_id = %id,
-                                            error = ?e,
-                                            "Failed to send activation to worker"
-                                        )
-                                    }
-                                };
+                                push_task(store.clone(), update_tx.as_ref(), activation, &mut workers, timeout, grpc_shared_secret.as_slice()).await;
                             }
                         }
                     }
 
                     // Drain channel before exiting without recording duration metrics since they don't matter at this time
                     for (activation, _) in receiver.drain() {
-                        let id = activation.id.clone();
-                        let callback_url = callback_url.clone();
-
-                        let Some(worker) = workers.get_mut(&activation.application) else {
-                            metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
-
-                            error!(
-                                task_id = %id,
-                                application = activation.application,
-                                "Task application has no worker pool mapping"
-                            );
-
-                            continue;
-                        };
-
-                        match push_task(
-                            worker.as_mut(),
+                        push_task(
+                            store.clone(),
+                            update_tx.as_ref(),
                             activation,
-                            callback_url,
+                            &mut workers,
                             timeout,
                             grpc_shared_secret.as_slice(),
                         )
-                        .await
-                        {
-                            Ok(_) => {
-                                metrics::counter!("push.push_task", "result" => "ok").increment(1);
-                                debug!(task_id = %id, "Activation sent to worker");
-
-                                let start = Instant::now();
-
-                                if let Some(ref tx) = update_tx {
-                                    let result = tx.send(id.clone()).await;
-                                    metrics::histogram!("push.mark_processing.duration")
-                                        .record(start.elapsed());
-
-                                    if let Err(e) = result {
-                                        metrics::counter!("push.mark_processing", "result" => "error")
-                                            .increment(1);
-
-                                        error!(
-                                            task_id = %id,
-                                            error = ?e,
-                                            "Failed to enqueue push update during shutdown drain"
-                                        );
-                                    }
-                                } else {
-                                    let result = store.mark_processing(&id).await;
-                                    metrics::histogram!("push.mark_processing.duration")
-                                        .record(start.elapsed());
-
-                                    if let Err(e) = result {
-                                        metrics::counter!("push.mark_processing", "result" => "error")
-                                            .increment(1);
-
-                                        error!(
-                                            task_id = %id,
-                                            error = ?e,
-                                            "Failed to mark activation as processing after push"
-                                        );
-                                    }
-                                }
-                            }
-
-                            // Once processing deadline expires, status will be set back to pending
-                            Err(e) => {
-                                metrics::counter!("push.push_task", "result" => "error")
-                                    .increment(1);
-
-                                error!(
-                                    task_id = %id,
-                                    error = ?e,
-                                    "Failed to send activation to worker"
-                                )
-                            }
-                        };
+                        .await;
                     }
 
                     Ok(())
@@ -438,12 +279,86 @@ impl PushPool {
     }
 }
 
-/// Decode task activation and push it to a worker.
-#[framed]
+/// Determine which worker should receive an activation, send the activation, and update its status.
 async fn push_task(
+    store: Arc<dyn InflightActivationStore>,
+    update_tx: Option<&mpsc::Sender<String>>,
+    activation: InflightActivation,
+    workers: &mut HashMap<String, Box<dyn WorkerClient + Send>>,
+    timeout: Duration,
+    grpc_shared_secret: &[String],
+) {
+    let id = activation.id.clone();
+
+    let Some(worker) = workers.get_mut(&activation.application) else {
+        metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
+
+        error!(
+            task_id = %id,
+            application = activation.application,
+            "Task application has no worker pool mapping"
+        );
+
+        return;
+    };
+
+    match send_task(worker.as_mut(), activation, timeout, grpc_shared_secret).await {
+        Ok(_) => {
+            metrics::counter!("push.push_task", "result" => "ok").increment(1);
+            debug!(task_id = %id, "Activation sent to worker");
+
+            let start = Instant::now();
+
+            if let Some(tx) = update_tx {
+                let depth = tx.max_capacity() - tx.capacity();
+                metrics::gauge!("push.update_queue.depth").set(depth as f64);
+
+                let result = tx.send(id.clone()).await;
+                metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
+
+                if let Err(e) = result {
+                    metrics::counter!("push.mark_processing", "result" => "error").increment(1);
+
+                    error!(
+                        task_id = %id,
+                        error = ?e,
+                        "Failed to enqueue push update during shutdown drain"
+                    );
+                }
+            } else {
+                let result = store.mark_processing(&id).await;
+                metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
+
+                if let Err(e) = result {
+                    metrics::counter!("push.mark_processing", "result" => "error").increment(1);
+
+                    error!(
+                        task_id = %id,
+                        error = ?e,
+                        "Failed to mark activation as processing after push"
+                    );
+                }
+            }
+        }
+
+        // Once processing deadline expires, status will be set back to pending
+        Err(e) => {
+            metrics::counter!("push.push_task", "result" => "error").increment(1);
+
+            error!(
+                task_id = %id,
+                error = ?e,
+                "Failed to send activation to worker"
+            )
+        }
+    };
+}
+
+/// Decode task activation and send it to the worker service for a particular application.
+#[framed]
+async fn send_task(
     worker: &mut (dyn WorkerClient + Send),
     activation: InflightActivation,
-    callback_url: String,
     timeout: Duration,
     grpc_shared_secret: &[String],
 ) -> Result<()> {
@@ -461,7 +376,7 @@ async fn push_task(
 
     let request = PushTaskRequest {
         task: Some(task),
-        callback_url,
+        callback_url: "".into(),
     };
 
     let result = match tokio::time::timeout(timeout, worker.send(request, grpc_shared_secret)).await

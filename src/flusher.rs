@@ -30,6 +30,8 @@ where
 
     loop {
         tokio::select! {
+            biased;
+
             // When the buffer is NOT full, try to receive another message
             msg = rx.recv(), if buffer.len() < batch_size => {
                 debug!("Buffer is NOT full, receiving a message...");
