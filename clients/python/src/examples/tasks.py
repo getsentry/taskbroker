@@ -5,14 +5,18 @@ Used in tests for the worker.
 """
 
 import logging
+import random
 from time import sleep
 from typing import Any
 
+from arroyo.backends.kafka import KafkaPayload, KafkaProducer
+from arroyo.types import Topic
 from redis import StrictRedis
 
 from examples.app import app
 from taskbroker_client.retry import LastAction, NoRetriesRemainingError, Retry, RetryTaskError
 from taskbroker_client.retry import retry_task as retry_task_helper
+from taskbroker_client.worker.producer import TaskProducer
 from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded
 
 logger = logging.getLogger(__name__)
@@ -118,3 +122,21 @@ def task_with_headers(value: str, headers: dict[str, str]) -> None:
     redis.set("task-headers-count", str(len(headers)))
     if "x-custom-header" in headers:
         redis.set("task-headers-custom", headers["x-custom-header"])
+
+
+@exampletasks.register(name="examples.task_that_produces")
+def task_that_produces(
+    payload: bytes,
+    destination_topic: str = "test-topic",
+    bootstrap_servers: str = "localhost:9092",
+    production_count: int = 1,
+    random_count: bool = False,
+) -> None:
+    producer = TaskProducer(KafkaProducer({"bootstrap.servers": bootstrap_servers}))
+    production_count = random.randint(1, 50) if random_count else production_count
+    for i in range(production_count):
+        logger.debug(f"Producing message {i} onto topic {destination_topic}...")
+        producer.produce(
+            topic=Topic(destination_topic),
+            payload=KafkaPayload(key=None, value=payload, headers=[]),
+        )
