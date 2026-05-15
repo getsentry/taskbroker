@@ -277,14 +277,12 @@ fn failing_connect_factory() -> WorkerFactory {
 async fn push_task_returns_ok_on_client_success() {
     let activation = make_activations(1).remove(0);
     let mut worker = MockWorkerClient::new(false);
-    let callback_url = "taskbroker:50051".to_string();
 
     let result = send_task(&mut worker, activation.clone(), Duration::from_secs(5), &[]).await;
     assert!(result.is_ok(), "push_task should succeed");
     assert_eq!(worker.captured_requests.len(), 1);
 
     let request = &worker.captured_requests[0];
-    assert_eq!(request.callback_url, callback_url);
     assert_eq!(
         request.task.as_ref().map(|task| task.id.as_str()),
         Some(activation.id.as_str())

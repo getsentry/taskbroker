@@ -317,10 +317,10 @@ pub struct Config {
     /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
     pub push_update_interval_ms: u64,
 
-    /// The hostname used to construct `callback_url` for task push requests.
+    /// (DEPRECATED) The hostname used to construct `callback_url` for task push requests.
     pub callback_addr: String,
 
-    /// The port used to construct `callback_url` for task push requests.
+    /// (DEPRECATED) The port used to construct `callback_url` for task push requests.
     pub callback_port: u32,
 
     /// Maps every application to its worker endpoint, both represented as strings.

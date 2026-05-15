@@ -374,6 +374,7 @@ async fn send_task(
         }
     };
 
+    // The callback URL isn't used by push taskworkers anymore, so we can use an empty string until it's removed from the schema
     let request = PushTaskRequest {
         task: Some(task),
         callback_url: "".into(),
