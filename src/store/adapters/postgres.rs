@@ -265,21 +265,15 @@ impl InflightActivationStore for PostgresActivationStore {
     #[instrument(skip_all)]
     #[framed]
     async fn vacuum_db(&self) -> Result<(), Error> {
-        retry_query(&self.config.retry_config, "vacuum_db", || async {
-            // TODO: Remove
-            Ok(())
-        })
-        .await
+        // TODO: Remove
+        Ok(())
     }
 
     /// Perform a full vacuum on the database.
     #[framed]
     async fn full_vacuum_db(&self) -> Result<(), Error> {
-        retry_query(&self.config.retry_config, "full_vacuum_db", || async {
-            // TODO: Remove
-            Ok(())
-        })
-        .await
+        // TODO: Remove
+        Ok(())
     }
 
     /// Get the size of the database in bytes based on SQLite metadata queries.

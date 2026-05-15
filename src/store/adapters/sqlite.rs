@@ -346,40 +346,31 @@ impl InflightActivationStore for SqliteActivationStore {
     async fn vacuum_db(&self) -> Result<(), Error> {
         let timer = Instant::now();
 
-        retry_query(&self.config.retry_config, "vacuum_db", || async {
-            if let Some(page_count) = self.config.vacuum_page_count {
-                let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
-                sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
-                    .execute(&mut *conn)
-                    .await?;
-            } else {
-                let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
-                sqlx::query("PRAGMA incremental_vacuum")
-                    .execute(&mut *conn)
-                    .await?;
-            }
-            let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
-                .fetch_one(&self.read_pool)
-                .await?
-                .get("freelist_count");
-
-            metrics::gauge!("store.vacuum.freelist", "database" => "meta").set(freelist_count);
-            Ok(())
-        })
-        .await?;
+        if let Some(page_count) = self.config.vacuum_page_count {
+            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
+            sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
+                .execute(&mut *conn)
+                .await?;
+        } else {
+            let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
+            sqlx::query("PRAGMA incremental_vacuum")
+                .execute(&mut *conn)
+                .await?;
+        }
+        let freelist_count: i32 = sqlx::query("PRAGMA freelist_count")
+            .fetch_one(&self.read_pool)
+            .await?
+            .get("freelist_count");
 
         metrics::histogram!("store.vacuum", "database" => "meta").record(timer.elapsed());
+        metrics::gauge!("store.vacuum.freelist", "database" => "meta").set(freelist_count);
         Ok(())
     }
 
     /// Perform a full vacuum on the database.
     async fn full_vacuum_db(&self) -> Result<(), Error> {
-        retry_query(&self.config.retry_config, "full_vacuum_db", || async {
-            let mut conn = self.acquire_write_conn_metric("full_vacuum_db").await?;
-            sqlx::query("VACUUM").execute(&mut *conn).await?;
-            Ok(())
-        })
-        .await?;
+        let mut conn = self.acquire_write_conn_metric("full_vacuum_db").await?;
+        sqlx::query("VACUUM").execute(&mut *conn).await?;
         self.emit_db_status_metrics().await;
         Ok(())
     }
@@ -455,7 +446,7 @@ impl InflightActivationStore for SqliteActivationStore {
             .map(TableRow::try_from)
             .collect::<Result<Vec<TableRow>, _>>()?;
 
-        retry_query(&self.config.retry_config, "store", || async {
+        let rows_affected = retry_query(&self.config.retry_config, "store", || async {
             let mut query_builder = QueryBuilder::<Sqlite>::new(
                 "
                 INSERT INTO inflight_taskactivations
@@ -519,30 +510,32 @@ impl InflightActivationStore for SqliteActivationStore {
                 .build();
             let mut conn = self.acquire_write_conn_metric("store").await?;
             let result = query.execute(&mut *conn).await?;
-
-            // Sync the WAL into the main database so we don't lose data on host failure.
-            // Best-effort — errors are swallowed and only recorded as metrics.
-            let checkpoint_timer = Instant::now();
-            let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-                .fetch_one(&mut *conn)
-                .await;
-            match checkpoint_result {
-                Ok(row) => {
-                    metrics::gauge!("store.passive_checkpoint_busy").set(row.get::<i32, _>("busy"));
-                    metrics::gauge!("store.pages_written_to_wal").set(row.get::<i32, _>("log"));
-                    metrics::gauge!("store.pages_committed_to_db")
-                        .set(row.get::<i32, _>("checkpointed"));
-                    metrics::gauge!("store.checkpoint.failed").set(0);
-                }
-                Err(_e) => {
-                    metrics::gauge!("store.checkpoint.failed").set(1);
-                }
-            }
-            metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
-
             Ok(result.rows_affected())
         })
-        .await
+        .await?;
+
+        // Sync the WAL into the main database so we don't lose data on host failure.
+        // Best-effort — errors are swallowed and only recorded as metrics.
+        let checkpoint_timer = Instant::now();
+        let mut conn = self.acquire_write_conn_metric("store_checkpoint").await?;
+        let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
+            .fetch_one(&mut *conn)
+            .await;
+        match checkpoint_result {
+            Ok(row) => {
+                metrics::gauge!("store.passive_checkpoint_busy").set(row.get::<i32, _>("busy"));
+                metrics::gauge!("store.pages_written_to_wal").set(row.get::<i32, _>("log"));
+                metrics::gauge!("store.pages_committed_to_db")
+                    .set(row.get::<i32, _>("checkpointed"));
+                metrics::gauge!("store.checkpoint.failed").set(0);
+            }
+            Err(_e) => {
+                metrics::gauge!("store.checkpoint.failed").set(1);
+            }
+        }
+        metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
+
+        Ok(rows_affected)
     }
 
     #[instrument(skip_all)]
