@@ -449,29 +449,29 @@ impl InflightActivationStore for SqliteActivationStore {
         let rows_affected = retry_query(&self.config.retry_config, "store", || async {
             let mut query_builder = QueryBuilder::<Sqlite>::new(
                 "
-                INSERT INTO inflight_taskactivations
-                    (
-                        id,
-                        activation,
-                        partition,
-                        offset,
-                        added_at,
-                        received_at,
-                        processing_attempts,
-                        expires_at,
-                        delay_until,
-                        processing_deadline_duration,
-                        processing_deadline,
-                        claim_expires_at,
-                        status,
-                        at_most_once,
-                        application,
-                        namespace,
-                        taskname,
-                        on_attempts_exceeded,
-                        bucket
-                    )
-                ",
+                    INSERT INTO inflight_taskactivations
+                        (
+                            id,
+                            activation,
+                            partition,
+                            offset,
+                            added_at,
+                            received_at,
+                            processing_attempts,
+                            expires_at,
+                            delay_until,
+                            processing_deadline_duration,
+                            processing_deadline,
+                            claim_expires_at,
+                            status,
+                            at_most_once,
+                            application,
+                            namespace,
+                            taskname,
+                            on_attempts_exceeded,
+                            bucket
+                        )
+                    ",
             );
             let query = query_builder
                 .push_values(rows.clone(), |mut b, row: TableRow| {
