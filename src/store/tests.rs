@@ -1928,6 +1928,10 @@ async fn test_db_status_calls_ok() {
             claim_lease_ms: 5000,
             vacuum_page_count: None,
             enable_sqlite_status_metrics: false,
+            retry_config: crate::store::retry::RetryConfig {
+                max_retries: 0,
+                retry_delay: std::time::Duration::from_millis(0),
+            },
         },
     )
     .await
