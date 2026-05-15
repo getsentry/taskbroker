@@ -78,6 +78,13 @@ pub trait InflightActivationStore: Send + Sync {
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error>;
 
+    /// Update the status of multiple activations in one batch.
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<u64, Error>;
+
     /// COUNT OPERATIONS
     /// Get the age of the oldest pending activation in seconds
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;

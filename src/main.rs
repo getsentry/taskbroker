@@ -12,12 +12,11 @@ use tonic::transport::Server;
 use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
 
-use taskbroker::SERVICE_NAME;
 use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
 use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
-use taskbroker::grpc::server::TaskbrokerServer;
+use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
 use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
 use taskbroker::kafka::deserialize::{self, DeserializeConfig};
@@ -40,6 +39,7 @@ use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteA
 use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
+use taskbroker::{SERVICE_NAME, flusher};
 
 async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -191,10 +191,33 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Status update flush task
+    let (status_update_tx, status_update_task) = if config.batch_status_updates {
+        let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size.max(1));
+
+        let flusher_store = store.clone();
+        let flusher_config = config.clone();
+
+        let handle = tokio::spawn(async move {
+            flusher::run_flusher(
+                rx,
+                flusher_config.status_update_batch_size,
+                flusher_config.status_update_interval_ms,
+                move |buffer| Box::pin(flush_updates(flusher_store.clone(), buffer)),
+            )
+            .await
+        });
+
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     // GRPC server
     let grpc_server_task = tokio::spawn({
         let grpc_store = store.clone();
         let grpc_config = config.clone();
+        let grpc_status_tx = status_update_tx.clone();
 
         async move {
             let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
@@ -211,6 +234,7 @@ async fn main() -> Result<(), Error> {
                 .add_service(ConsumerServiceServer::new(TaskbrokerServer {
                     store: grpc_store,
                     config: grpc_config,
+                    update_tx: grpc_status_tx,
                 }))
                 .add_service(health_service.clone())
                 .serve(addr);
@@ -275,6 +299,10 @@ async fn main() -> Result<(), Error> {
 
     if let Some(task) = fetch_task {
         departure = departure.on_completion(log_task_completion("fetch_task", task));
+    }
+
+    if let Some(task) = status_update_task {
+        departure = departure.on_completion(log_task_completion("status_update_task", task));
     }
 
     departure.await;

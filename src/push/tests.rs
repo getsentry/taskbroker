@@ -103,6 +103,13 @@ impl InflightActivationStore for MockStore {
     ) -> anyhow::Result<Option<InflightActivation>> {
         Ok(None)
     }
+    async fn set_status_batch(
+        &self,
+        _ids: &[String],
+        _status: InflightActivationStatus,
+    ) -> anyhow::Result<u64> {
+        Ok(0)
+    }
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
         0.0
     }
