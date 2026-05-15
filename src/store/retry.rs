@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::Error;
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 use crate::config::Config;
 
@@ -54,7 +54,7 @@ where
         match f().await {
             Ok(val) => {
                 if attempt > 0 {
-                    info!(label, attempt, "Query succeeded after retry");
+                    debug!(label, attempt, "Query succeeded after retry");
                     metrics::counter!("store.retry.succeeded", "method" => label).increment(1);
                 }
                 return Ok(val);
