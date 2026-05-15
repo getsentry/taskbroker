@@ -32,6 +32,10 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
                 processing_deadline_grace_sec: 3,
                 claim_lease_ms: 5000,
                 enable_sqlite_status_metrics: false,
+                retry_config: taskbroker::store::retry::RetryConfig {
+                    max_retries: 0,
+                    retry_delay: std::time::Duration::from_millis(0),
+                },
             },
         )
         .await
@@ -97,6 +101,10 @@ async fn set_status(num_activations: u32, num_workers: u32) {
                 processing_deadline_grace_sec: 3,
                 claim_lease_ms: 5000,
                 enable_sqlite_status_metrics: false,
+                retry_config: taskbroker::store::retry::RetryConfig {
+                    max_retries: 0,
+                    retry_delay: std::time::Duration::from_millis(0),
+                },
             },
         )
         .await
