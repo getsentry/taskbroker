@@ -534,9 +534,7 @@ async fn push_pool_start_does_not_mark_processing_on_push_failure() {
     );
 }
 
-/// With `update_tx` set, a successful push on the main loop enqueues the task ID on the channel.
-/// Shutdown drain does not use batching - it applies `mark_processing` per activation, so this test
-/// does not assert on direct `mark_processing` calls (those can appear only from drain under shutdown).
+/// With `update_tx` set, a successful push enqueues the task ID on the channel.
 #[tokio::test]
 async fn push_pool_forwards_successful_push_to_update_channel() {
     let notify = Arc::new(Notify::new());
@@ -618,9 +616,8 @@ async fn flush_updates_restores_buffer_on_batch_error() {
     assert!(store.marked_ids().is_empty());
 }
 
-/// After a successful worker push, a closed `update_tx` receiver means the main loop cannot enqueue
-/// the id (no `mark_processing` there). Shutdown drain still uses individual `mark_processing` for
-/// any remaining queue items, so this test does not assert the mock store stayed untouched.
+/// After a successful worker push, a closed `update_tx` receiver means neither the main loop nor
+/// shutdown drain can enqueue the ID.
 #[tokio::test]
 async fn push_pool_does_not_fallback_to_mark_processing_when_update_channel_closed() {
     let notify = Arc::new(Notify::new());
@@ -657,4 +654,6 @@ async fn push_pool_does_not_fallback_to_mark_processing_when_update_channel_clos
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     assert!(store.mark_processing_batch_calls().is_empty());
+    assert!(store.mark_processing_direct_calls().is_empty());
+    assert!(store.marked_ids().is_empty());
 }

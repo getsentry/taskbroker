@@ -338,20 +338,36 @@ impl PushPool {
 
                                 let start = Instant::now();
 
-                                // We won't batch these updates to keep things simple during shutdown
-                                let result = store.mark_processing(&id).await;
-                                metrics::histogram!("push.mark_processing.duration")
-                                    .record(start.elapsed());
+                                if let Some(ref tx) = update_tx {
+                                    let result = tx.send(id.clone()).await;
+                                    metrics::histogram!("push.mark_processing.duration")
+                                        .record(start.elapsed());
 
-                                if let Err(e) = result {
-                                    metrics::counter!("push.mark_processing", "result" => "error")
-                                        .increment(1);
+                                    if let Err(e) = result {
+                                        metrics::counter!("push.mark_processing", "result" => "error")
+                                            .increment(1);
 
-                                    error!(
-                                        task_id = %id,
-                                        error = ?e,
-                                        "Failed to mark activation as processing after push"
-                                    );
+                                        error!(
+                                            task_id = %id,
+                                            error = ?e,
+                                            "Failed to enqueue push update during shutdown drain"
+                                        );
+                                    }
+                                } else {
+                                    let result = store.mark_processing(&id).await;
+                                    metrics::histogram!("push.mark_processing.duration")
+                                        .record(start.elapsed());
+
+                                    if let Err(e) = result {
+                                        metrics::counter!("push.mark_processing", "result" => "error")
+                                            .increment(1);
+
+                                        error!(
+                                            task_id = %id,
+                                            error = ?e,
+                                            "Failed to mark activation as processing after push"
+                                        );
+                                    }
                                 }
                             }
 
@@ -464,7 +480,7 @@ pub async fn flush_updates(store: Arc<dyn InflightActivationStore>, buffer: &mut
     }
 
     let start = Instant::now();
-    let ids = std::mem::take(buffer);
+    let ids: Vec<_> = std::mem::take(buffer);
 
     let requested = ids.len() as u64;
     metrics::histogram!("push.flush_updates.requested").record(requested as f64);
