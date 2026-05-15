@@ -1,3 +1,4 @@
+use std::cmp::max;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -6,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_backtrace::framed;
+use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
 use flume::{Receiver, SendError, Sender};
 use hmac::{Hmac, Mac};
@@ -302,10 +304,30 @@ async fn push_task(
         return;
     };
 
-    match send_task(worker.as_mut(), activation, timeout, grpc_shared_secret).await {
+    match send_task(
+        worker.as_mut(),
+        activation.clone(),
+        timeout,
+        grpc_shared_secret,
+    )
+    .await
+    {
         Ok(_) => {
             metrics::counter!("push.push_task", "result" => "ok").increment(1);
             debug!(task_id = %id, "Activation sent to worker");
+
+            if activation.processing_attempts < 1 {
+                let latency = max(0, activation.received_latency(Utc::now()));
+
+                metrics::histogram!(
+                    "push.received_to_push.latency",
+                    "namespace" => activation.namespace,
+                    "taskname" => activation.taskname,
+                )
+                .record(latency as f64);
+            } else {
+                debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → push latency recording");
+            }
 
             let start = Instant::now();
 
@@ -322,7 +344,7 @@ async fn push_task(
                     error!(
                         task_id = %id,
                         error = ?e,
-                        "Failed to enqueue push update during shutdown drain"
+                        "Failed to enqueue push update"
                     );
                 }
             } else {
