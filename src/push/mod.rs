@@ -464,7 +464,6 @@ pub async fn flush_updates(store: Arc<dyn InflightActivationStore>, buffer: &mut
     }
 
     let start = Instant::now();
-
     let ids = std::mem::take(buffer);
 
     let requested = ids.len() as u64;
