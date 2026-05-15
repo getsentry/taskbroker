@@ -869,51 +869,44 @@ impl InflightActivationStore for SqliteActivationStore {
     /// if a worker took the task and was killed, or failed.
     #[instrument(skip_all)]
     async fn handle_processing_deadline(&self) -> Result<u64, Error> {
-        retry_query(
-            &self.config.retry_config,
-            "handle_processing_deadline",
-            || async {
-                let now = Utc::now();
-                let mut atomic = self.write_pool.begin().await?;
+        let now = Utc::now();
+        let mut atomic = self.write_pool.begin().await?;
 
-                let most_once_result = sqlx::query(
-                    "UPDATE inflight_taskactivations
-                    SET processing_deadline = null, status = $1
-                    WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
-                )
-                .bind(InflightActivationStatus::Failure)
-                .bind(now.timestamp())
-                .bind(InflightActivationStatus::Processing)
-                .execute(&mut *atomic)
-                .await;
-
-                let mut processing_deadline_modified_rows = 0;
-                if let Ok(query_res) = most_once_result {
-                    processing_deadline_modified_rows = query_res.rows_affected();
-                }
-
-                let result = sqlx::query(
-                    "UPDATE inflight_taskactivations
-                    SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
-                    WHERE processing_deadline < $2 AND status = $3",
-                )
-                .bind(InflightActivationStatus::Pending)
-                .bind(now.timestamp())
-                .bind(InflightActivationStatus::Processing)
-                .execute(&mut *atomic)
-                .await;
-
-                atomic.commit().await?;
-
-                if let Ok(query_res) = result {
-                    processing_deadline_modified_rows += query_res.rows_affected();
-                    return Ok(processing_deadline_modified_rows);
-                }
-
-                Err(anyhow!("Could not update tasks past processing_deadline"))
-            },
+        let most_once_result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = $1
+            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
         )
-        .await
+        .bind(InflightActivationStatus::Failure)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Processing)
+        .execute(&mut *atomic)
+        .await;
+
+        let mut processing_deadline_modified_rows = 0;
+        if let Ok(query_res) = most_once_result {
+            processing_deadline_modified_rows = query_res.rows_affected();
+        }
+
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
+            WHERE processing_deadline < $2 AND status = $3",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Processing)
+        .execute(&mut *atomic)
+        .await;
+
+        atomic.commit().await?;
+
+        if let Ok(query_res) = result {
+            processing_deadline_modified_rows += query_res.rows_affected();
+            return Ok(processing_deadline_modified_rows);
+        }
+
+        Err(anyhow!("Could not update tasks past processing_deadline"))
     }
 
     /// Update tasks that have exceeded their max processing attempts.

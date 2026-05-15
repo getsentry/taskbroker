@@ -832,61 +832,54 @@ impl InflightActivationStore for PostgresActivationStore {
     #[instrument(skip_all)]
     #[framed]
     async fn handle_processing_deadline(&self) -> Result<u64, Error> {
-        retry_query(
-            &self.config.retry_config,
-            "handle_processing_deadline",
-            || async {
-                let now = Utc::now();
-                let mut atomic = self.write_pool.begin().await?;
+        let now = Utc::now();
+        let mut atomic = self.write_pool.begin().await?;
 
-                // At-most-once tasks that fail their processing deadlines go directly to failure
-                // there are no retries, as the worker will reject the task due to at_most_once keys.
-                let mut query_builder = QueryBuilder::new(
-                    "UPDATE inflight_taskactivations
-                    SET processing_deadline = null, status = ",
-                );
-                query_builder.push_bind(InflightActivationStatus::Failure.to_string());
-                query_builder.push(" WHERE processing_deadline < ");
-                query_builder.push_bind(now);
-                query_builder.push(" AND at_most_once = TRUE AND status = ");
-                query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+        // At-most-once tasks that fail their processing deadlines go directly to failure
+        // there are no retries, as the worker will reject the task due to at_most_once keys.
+        let mut query_builder = QueryBuilder::new(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Failure.to_string());
+        query_builder.push(" WHERE processing_deadline < ");
+        query_builder.push_bind(now);
+        query_builder.push(" AND at_most_once = TRUE AND status = ");
+        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
 
-                self.add_partition_condition(&mut query_builder, false);
+        self.add_partition_condition(&mut query_builder, false);
 
-                let most_once_result = query_builder.build().execute(&mut *atomic).await;
+        let most_once_result = query_builder.build().execute(&mut *atomic).await;
 
-                let mut processing_deadline_modified_rows = 0;
-                if let Ok(query_res) = most_once_result {
-                    processing_deadline_modified_rows = query_res.rows_affected();
-                }
+        let mut processing_deadline_modified_rows = 0;
+        if let Ok(query_res) = most_once_result {
+            processing_deadline_modified_rows = query_res.rows_affected();
+        }
 
-                // Update regular tasks.
-                // Increment processing_attempts by 1 and reset processing_deadline to null.
-                let mut query_builder = QueryBuilder::new(
-                    "UPDATE inflight_taskactivations
-                    SET processing_deadline = null, status = ",
-                );
-                query_builder.push_bind(InflightActivationStatus::Pending.to_string());
-                query_builder.push(", processing_attempts = processing_attempts + 1");
-                query_builder.push(" WHERE processing_deadline < ");
-                query_builder.push_bind(now);
-                query_builder.push(" AND status = ");
-                query_builder.push_bind(InflightActivationStatus::Processing.to_string());
-                self.add_partition_condition(&mut query_builder, false);
+        // Update regular tasks.
+        // Increment processing_attempts by 1 and reset processing_deadline to null.
+        let mut query_builder = QueryBuilder::new(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, status = ",
+        );
+        query_builder.push_bind(InflightActivationStatus::Pending.to_string());
+        query_builder.push(", processing_attempts = processing_attempts + 1");
+        query_builder.push(" WHERE processing_deadline < ");
+        query_builder.push_bind(now);
+        query_builder.push(" AND status = ");
+        query_builder.push_bind(InflightActivationStatus::Processing.to_string());
+        self.add_partition_condition(&mut query_builder, false);
 
-                let result = query_builder.build().execute(&mut *atomic).await;
+        let result = query_builder.build().execute(&mut *atomic).await;
 
-                atomic.commit().await?;
+        atomic.commit().await?;
 
-                if let Ok(query_res) = result {
-                    processing_deadline_modified_rows += query_res.rows_affected();
-                    return Ok(processing_deadline_modified_rows);
-                }
+        if let Ok(query_res) = result {
+            processing_deadline_modified_rows += query_res.rows_affected();
+            return Ok(processing_deadline_modified_rows);
+        }
 
-                Err(anyhow!("Could not update tasks past processing_deadline"))
-            },
-        )
-        .await
+        Err(anyhow!("Could not update tasks past processing_deadline"))
     }
 
     /// Update tasks that have exceeded their max processing attempts.
