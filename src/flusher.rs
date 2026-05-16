@@ -3,6 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::Result;
+use elegant_departure::get_shutdown_guard;
 use tokio::sync::mpsc::Receiver;
 use tracing::debug;
 
@@ -28,6 +29,8 @@ where
 
     let mut buffer: Vec<T> = Vec::with_capacity(batch_size);
 
+    let guard = get_shutdown_guard().shutdown_on_drop();
+
     loop {
         tokio::select! {
             biased;
@@ -51,38 +54,37 @@ where
                     }
 
                     None => {
-                        // Channel closed (shutdown), flush remaining and exit
-                        debug!("Channel closed due to shutdown, flushing remaining before exit...");
-                        flush(&mut buffer).await;
+                        // Channel closed
+                        debug!("Channel closed!");
                         break;
                     }
                 }
-            }
-
-            // If the buffer IS full, the branch above will never execute, and we will never
-            // discover that the channel is now closed, which is why this branch is necessary
-            _ = std::future::ready(()), if rx.is_closed() => {
-                debug!("Channel is closed and buffer is full, draining channel before exiting...");
-
-                while let Ok(update) = rx.try_recv() {
-                    // Buffer may grow beyond configured limit, which is OK because we are shutting down
-                    buffer.push(update);
-                }
-
-                flush(&mut buffer).await;
-                break;
             }
 
             // Otherwise, try flushing whatever is in the buffer every `interval_ms` milliseconds
             _ = interval.tick() => {
                 debug!("Performing periodic flush...");
 
-                if !buffer.is_empty() {
-                    flush(&mut buffer).await;
+                if rx.is_closed() {
+                    debug!("Channel closed on tick!");
+                    break;
                 }
+
+                flush(&mut buffer).await;
+            }
+
+            _ = guard.wait() => {
+                debug!("Shutdown guard triggered!");
+                break;
             }
         }
     }
 
+    // Drain and flush before exit
+    while let Ok(update) = rx.try_recv() {
+        buffer.push(update);
+    }
+
+    flush(&mut buffer).await;
     Ok(())
 }
