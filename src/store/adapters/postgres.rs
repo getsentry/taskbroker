@@ -503,10 +503,8 @@ impl InflightActivationStore for PostgresActivationStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
-        let mut conn = self
-            .acquire_write_conn_metric("mark_activation_processing")
-            .await?;
+    async fn mark_processing(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self.acquire_write_conn_metric("mark_processing").await?;
 
         let grace_period = self.config.processing_deadline_grace_sec;
         let result = sqlx::query(&format!(
@@ -523,18 +521,45 @@ impl InflightActivationStore for PostgresActivationStore {
         .await?;
 
         if result.rows_affected() == 0 {
-            metrics::counter!("push.mark_activation_processing", "result" => "not_found")
-                .increment(1);
+            metrics::counter!("push.mark_processing", "result" => "not_found").increment(1);
 
             warn!(
                 task_id = %id,
                 "Activation could not be marked as processing, it may be missing or its status may have already changed"
             );
         } else {
-            metrics::counter!("push.mark_activation_processing", "result" => "ok").increment(1);
+            metrics::counter!("push.mark_processing", "result" => "ok").increment(1);
         }
 
         Ok(())
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self
+            .acquire_write_conn_metric("mark_processing_batch")
+            .await?;
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let result = sqlx::query(&format!(
+            "UPDATE inflight_taskactivations SET
+                status = $1,
+                processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                claim_expires_at = NULL
+            WHERE id = ANY($2) AND status = $3",
+        ))
+        .bind(InflightActivationStatus::Processing.to_string())
+        .bind(ids)
+        .bind(InflightActivationStatus::Claimed.to_string())
+        .execute(&mut *conn)
+        .await?;
+
+        Ok(result.rows_affected())
     }
 
     /// Get the age of the oldest pending activation in seconds.

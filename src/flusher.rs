@@ -3,7 +3,9 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::Result;
+use elegant_departure::get_shutdown_guard;
 use tokio::sync::mpsc::Receiver;
+use tracing::debug;
 
 /// Run flusher that receives values of type T from a channel and flushes
 /// them using the provided async `flush` function either when the batch is
@@ -27,9 +29,16 @@ where
 
     let mut buffer: Vec<T> = Vec::with_capacity(batch_size);
 
+    let guard = get_shutdown_guard().shutdown_on_drop();
+
     loop {
         tokio::select! {
-            msg = rx.recv() => {
+            biased;
+
+            // When the buffer is NOT full, try to receive another message
+            msg = rx.recv(), if buffer.len() < batch_size => {
+                debug!("Buffer is NOT full, receiving a message...");
+
                 match msg {
                     Some(v) => {
                         buffer.push(v);
@@ -39,25 +48,43 @@ where
                         }
 
                         if buffer.len() >= batch_size {
+                            debug!("Flushing full buffer...");
                             flush(&mut buffer).await;
                         }
                     }
 
                     None => {
-                        // Channel closed (shutdown), flush remaining and exit
-                        flush(&mut buffer).await;
+                        // Channel closed
+                        debug!("Channel closed!");
                         break;
                     }
                 }
             }
 
+            // Otherwise, try flushing whatever is in the buffer every `interval_ms` milliseconds
             _ = interval.tick() => {
-                if !buffer.is_empty() {
-                    flush(&mut buffer).await;
+                debug!("Performing periodic flush...");
+
+                if rx.is_closed() {
+                    debug!("Channel closed on tick!");
+                    break;
                 }
+
+                flush(&mut buffer).await;
+            }
+
+            _ = guard.wait() => {
+                debug!("Shutdown guard triggered!");
+                break;
             }
         }
     }
 
+    // Drain and flush before exit
+    while let Ok(update) = rx.try_recv() {
+        buffer.push(update);
+    }
+
+    flush(&mut buffer).await;
     Ok(())
 }

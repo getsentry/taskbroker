@@ -308,10 +308,19 @@ pub struct Config {
     /// Maximum milliseconds to wait before flushing a batch of status updates.
     pub status_update_interval_ms: u64,
 
-    /// The hostname used to construct `callback_url` for task push requests.
+    /// Update claimed → processing (dispatch) updates in batches?
+    pub batch_push_updates: bool,
+
+    /// The size of a batch of dispatch updates.
+    pub push_update_batch_size: usize,
+
+    /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
+    pub push_update_interval_ms: u64,
+
+    /// (DEPRECATED) The hostname used to construct `callback_url` for task push requests.
     pub callback_addr: String,
 
-    /// The port used to construct `callback_url` for task push requests.
+    /// (DEPRECATED) The port used to construct `callback_url` for task push requests.
     pub callback_port: u32,
 
     /// Maps every application to its worker endpoint, both represented as strings.
@@ -421,6 +430,9 @@ impl Default for Config {
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
+            batch_push_updates: false,
+            push_update_batch_size: 1,
+            push_update_interval_ms: 100,
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),

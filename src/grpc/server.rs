@@ -107,6 +107,9 @@ impl ConsumerService for TaskbrokerServer {
         }
 
         if let Some(ref tx) = self.update_tx {
+            let depth = tx.max_capacity() - tx.capacity();
+            metrics::gauge!("grpc_server.update_queue.depth").set(depth as f64);
+
             tx.send((id, status))
                 .await
                 .map_err(|_| Status::internal("Status update channel closed"))?;
