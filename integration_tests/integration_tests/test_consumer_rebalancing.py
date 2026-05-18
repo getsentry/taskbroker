@@ -89,8 +89,7 @@ def test_tasks_written_once_during_rebalancing() -> None:
     grpc_ports = get_available_ports(num_consumers)
     curr_time = int(time.time())
 
-    print(
-        f"""
+    print(f"""
 Running test with the following configuration:
         num of consumers: {num_consumers},
         num of messages: {num_messages},
@@ -101,8 +100,7 @@ Running test with the following configuration:
         topic name: {topic_name},
         grpc ports: {grpc_ports},
         random seed value: 42
-    """
-    )
+    """)
     random.seed(42)
 
     # Ensure topic exists and has correct number of partitions
