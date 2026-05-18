@@ -118,11 +118,8 @@ impl InflightActivationStore for MockStore {
         &self,
         _id: &str,
         _status: InflightActivationStatus,
+        _max_attempts: Option<u32>,
     ) -> Result<Option<InflightActivation>, Error> {
-        unimplemented!()
-    }
-
-    async fn update_retry_state(&self, _id: &str, _max_retries: u32) -> Result<(), Error> {
         unimplemented!()
     }
 

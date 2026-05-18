@@ -234,7 +234,7 @@ def child_process(
             set_current_task(inflight.activation)
 
             next_state = TASK_ACTIVATION_STATUS_FAILURE
-            max_retries_val: int | None = None
+            max_attempts_val: int | None = None
             # Use time.time() so we can measure against activation.received_at
             execution_start_time = time.time()
             try:
@@ -262,7 +262,7 @@ def child_process(
                 retry = task_func.retry
                 if retry and retry.should_retry(inflight.activation.retry_state, err):
                     next_state = TASK_ACTIVATION_STATUS_RETRY
-                    max_retries_val = retry._times
+                    max_attempts_val = retry._times + 1
                 else:
                     next_state = TASK_ACTIVATION_STATUS_FAILURE
             except Exception as err:
@@ -281,7 +281,6 @@ def child_process(
                             },
                         )
                         next_state = TASK_ACTIVATION_STATUS_RETRY
-                        max_retries_val = retry._times
                     elif retry.max_attempts_reached(inflight.activation.retry_state):
                         with sentry_sdk.isolation_scope() as scope:
                             if should_capture_error:
@@ -324,7 +323,7 @@ def child_process(
                         status=next_state,
                         host=inflight.host,
                         receive_timestamp=inflight.receive_timestamp,
-                        max_retries=max_retries_val,
+                        max_attempts=max_attempts_val,
                     )
                 )
 

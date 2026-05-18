@@ -445,7 +445,7 @@ class TaskbrokerClient:
             id=processing_result.task_id,
             status=processing_result.status,
             fetch_next_task=fetch_next_task,
-            max_retries=processing_result.max_retries,  # type: ignore[call-arg]
+            max_attempts=processing_result.max_attempts,  # type: ignore[call-arg]
         )
 
         try:
@@ -567,7 +567,7 @@ class PushTaskbrokerClient:
             id=processing_result.task_id,
             status=processing_result.status,
             fetch_next_task=None,
-            max_retries=processing_result.max_retries,  # type: ignore[call-arg]
+            max_attempts=processing_result.max_attempts,  # type: ignore[call-arg]
         )
 
         retries = 0

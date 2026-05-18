@@ -21,7 +21,7 @@ use libsqlite3_sys::{
     SQLITE_OK, sqlite3_db_status,
 };
 use prost::Message;
-use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
@@ -684,14 +684,17 @@ impl InflightActivationStore for SqliteActivationStore {
         Ok(result.get::<u64, _>("count") as usize)
     }
 
-    /// Update the status of a specific activation
+    /// Update the status of a specific activation.
+    /// If max_attempts is provided (for Retry status), also updates the activation's retry_state.
     #[instrument(skip_all)]
     async fn set_status(
         &self,
         id: &str,
         status: InflightActivationStatus,
+        max_attempts: Option<u32>,
     ) -> Result<Option<InflightActivation>, Error> {
         let mut conn = self.acquire_write_conn_metric("set_status").await?;
+
         let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
         )
@@ -704,46 +707,31 @@ impl InflightActivationStore for SqliteActivationStore {
             return Ok(None);
         };
 
+        if let Some(max_attempts) = max_attempts {
+            let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+
+            // Only update the blob if max_attempts actually changed. This should rarely
+            // happen after the first retry, since max_attempts comes from the task's
+            // retry decorator which stays constant across retries.
+            // For raw topics, retry_state starts as None so we create it on first retry.
+            let needs_update = activation
+                .retry_state
+                .as_ref()
+                .is_none_or(|rs| rs.max_attempts != max_attempts);
+
+            if needs_update {
+                let retry_state = activation.retry_state.get_or_insert_default();
+                retry_state.max_attempts = max_attempts;
+
+                sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
+                    .bind(activation.encode_to_vec())
+                    .bind(id)
+                    .execute(&mut *conn)
+                    .await?;
+            }
+        }
+
         Ok(Some(row.into()))
-    }
-
-    #[instrument(skip_all)]
-    async fn update_retry_state(&self, id: &str, max_retries: u32) -> Result<(), Error> {
-        let mut conn = self.acquire_write_conn_metric("update_retry_state").await?;
-
-        // Fetch the current activation
-        let row: Option<TableRow> =
-            sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&mut *conn)
-                .await?;
-
-        let Some(row) = row else {
-            return Ok(());
-        };
-
-        // Decode the activation, update retry_state, re-encode
-        let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
-
-        let retry_state = activation.retry_state.get_or_insert_with(|| RetryState {
-            attempts: 0,
-            max_attempts: 0,
-            on_attempts_exceeded: OnAttemptsExceeded::Discard.into(),
-            delay_on_retry: None,
-            at_most_once: Some(false),
-        });
-        // max_retries excludes initial attempt, max_attempts includes it
-        retry_state.max_attempts = max_retries + 1;
-
-        let updated_bytes = activation.encode_to_vec();
-
-        sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
-            .bind(updated_bytes)
-            .bind(id)
-            .execute(&mut *conn)
-            .await?;
-
-        Ok(())
     }
 
     #[instrument(skip_all)]

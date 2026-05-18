@@ -132,15 +132,15 @@ async fn test_count_depths(#[case] adapter: &str) {
     assert!(store.store(batch).await.is_ok());
 
     store
-        .set_status("id_0", InflightActivationStatus::Processing)
+        .set_status("id_0", InflightActivationStatus::Processing, None)
         .await
         .unwrap();
     store
-        .set_status("id_1", InflightActivationStatus::Delay)
+        .set_status("id_1", InflightActivationStatus::Delay, None)
         .await
         .unwrap();
     store
-        .set_status("id_2", InflightActivationStatus::Complete)
+        .set_status("id_2", InflightActivationStatus::Complete, None)
         .await
         .unwrap();
 
@@ -739,7 +739,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", InflightActivationStatus::Failure, None)
             .await
             .is_ok()
     );
@@ -755,7 +755,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Pending)
+            .set_status("id_0", InflightActivationStatus::Pending, None)
             .await
             .is_ok()
     );
@@ -769,13 +769,13 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", InflightActivationStatus::Failure, None)
             .await
             .is_ok()
     );
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Failure)
+            .set_status("id_1", InflightActivationStatus::Failure, None)
             .await
             .is_ok()
     );
@@ -797,7 +797,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     );
 
     let result = store
-        .set_status("not_there", InflightActivationStatus::Complete)
+        .set_status("not_there", InflightActivationStatus::Complete, None)
         .await;
     assert!(result.is_ok(), "no query error");
 
@@ -805,7 +805,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     assert!(activation.is_none(), "no activation found");
 
     let result = store
-        .set_status("id_0", InflightActivationStatus::Complete)
+        .set_status("id_0", InflightActivationStatus::Complete, None)
         .await;
     assert!(result.is_ok(), "no query error");
 
@@ -837,7 +837,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", InflightActivationStatus::Failure, None)
             .await
             .is_ok()
     );
@@ -852,7 +852,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Pending)
+            .set_status("id_0", InflightActivationStatus::Pending, None)
             .await
             .is_ok()
     );
@@ -866,13 +866,13 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", InflightActivationStatus::Failure, None)
             .await
             .is_ok()
     );
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Failure)
+            .set_status("id_1", InflightActivationStatus::Failure, None)
             .await
             .is_ok()
     );
@@ -896,7 +896,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     );
 
     let result = store
-        .set_status("not_there", InflightActivationStatus::Complete)
+        .set_status("not_there", InflightActivationStatus::Complete, None)
         .await;
     assert!(result.is_ok(), "no query error");
 
@@ -904,7 +904,7 @@ async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
     assert!(activation.is_none(), "no activation found");
 
     let result = store
-        .set_status("id_0", InflightActivationStatus::Complete)
+        .set_status("id_0", InflightActivationStatus::Complete, None)
         .await;
     assert!(result.is_ok(), "no query error");
 
@@ -985,7 +985,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Retry)
+            .set_status("id_0", InflightActivationStatus::Retry, None)
             .await
             .is_ok()
     );
@@ -1001,7 +1001,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Retry)
+            .set_status("id_1", InflightActivationStatus::Retry, None)
             .await
             .is_ok()
     );

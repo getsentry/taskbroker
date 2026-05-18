@@ -71,16 +71,14 @@ pub trait InflightActivationStore: Send + Sync {
     /// Record successful push.
     async fn mark_activation_processing(&self, id: &str) -> Result<(), Error>;
 
-    /// Update the status of a specific activation
+    /// Update the status of a specific activation.
+    /// If max_attempts is provided (for Retry status), also updates the activation's retry_state.
     async fn set_status(
         &self,
         id: &str,
         status: InflightActivationStatus,
+        max_attempts: Option<u32>,
     ) -> Result<Option<InflightActivation>, Error>;
-
-    /// Update the retry_state in the activation blob.
-    /// Called when worker provides max_retries with a Retry status.
-    async fn update_retry_state(&self, id: &str, max_retries: u32) -> Result<(), Error>;
 
     /// COUNT OPERATIONS
     /// Get the age of the oldest pending activation in seconds
