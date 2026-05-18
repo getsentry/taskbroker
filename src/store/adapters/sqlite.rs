@@ -139,7 +139,6 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
 pub struct InflightActivationStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
-    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
     pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
