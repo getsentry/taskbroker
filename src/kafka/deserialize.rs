@@ -40,10 +40,10 @@ pub fn new(
 
     move |msg: Arc<OwnedMessage>| {
         // Messages from the retry topic are always activations
-        if let Some(ref retry_topic) = retry_topic {
-            if msg.topic() == retry_topic {
-                return activation_deserializer(msg);
-            }
+        if let Some(ref retry_topic) = retry_topic
+            && msg.topic() == retry_topic
+        {
+            return activation_deserializer(msg);
         }
 
         // For main topic: use raw deserializer in raw_mode, else activation deserializer

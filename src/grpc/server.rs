@@ -115,15 +115,15 @@ impl ConsumerService for TaskbrokerServer {
         };
 
         // Use batching channel if available and we don't need to update retry state
-        if let Some(ref tx) = self.update_tx {
-            if max_attempts.is_none() {
-                tx.send((id, status))
-                    .await
-                    .map_err(|_| Status::internal("Status update channel closed"))?;
+        if let Some(ref tx) = self.update_tx
+            && max_attempts.is_none()
+        {
+            tx.send((id, status))
+                .await
+                .map_err(|_| Status::internal("Status update channel closed"))?;
 
-                metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
-                return Ok(Response::new(SetTaskStatusResponse { task: None }));
-            }
+            metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 
         match self.store.set_status(&id, status, max_attempts).await {
