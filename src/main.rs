@@ -213,57 +213,62 @@ async fn main() -> Result<(), Error> {
         (None, None)
     };
 
-    // GRPC server
-    let grpc_server_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
-        let grpc_status_tx = status_update_tx.clone();
+    // GRPC server - only start if port is configured (port 0 disables it)
+    let grpc_server_task = if config.grpc_port > 0 {
+        Some(tokio::spawn({
+            let grpc_store = store.clone();
+            let grpc_config = config.clone();
+            let grpc_status_tx = status_update_tx.clone();
 
-        async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
-                .parse()
-                .expect("Failed to parse address");
+            async move {
+                let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
+                    .parse()
+                    .expect("Failed to parse address");
 
-            let layers = tower::ServiceBuilder::new()
-                .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&grpc_config))
-                .into_inner();
+                let layers = tower::ServiceBuilder::new()
+                    .layer(MetricsLayer::default())
+                    .layer(AuthLayer::new(&grpc_config))
+                    .into_inner();
 
-            let server = Server::builder()
-                .layer(layers)
-                .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store: grpc_store,
-                    config: grpc_config,
-                    update_tx: grpc_status_tx,
-                }))
-                .add_service(health_service.clone())
-                .serve(addr);
+                let server = Server::builder()
+                    .layer(layers)
+                    .add_service(ConsumerServiceServer::new(TaskbrokerServer {
+                        store: grpc_store,
+                        config: grpc_config,
+                        update_tx: grpc_status_tx,
+                    }))
+                    .add_service(health_service.clone())
+                    .serve(addr);
 
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            info!("GRPC server listening on {}", addr);
-            select! {
-                biased;
+                let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+                info!("GRPC server listening on {}", addr);
+                select! {
+                    biased;
 
-                res = server => {
-                    info!("GRPC server task failed, shutting down");
+                    res = server => {
+                        info!("GRPC server task failed, shutting down");
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    match res {
-                        Ok(()) => Ok(()),
-                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        match res {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                        }
+                    }
+                    _ = guard.wait() => {
+                        info!("Cancellation token received, shutting down GRPC server");
+
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        Ok(())
                     }
                 }
-                _ = guard.wait() => {
-                    info!("Cancellation token received, shutting down GRPC server");
-
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok(())
-                }
             }
-        }
-    });
+        }))
+    } else {
+        info!("GRPC server disabled (grpc_port=0)");
+        None
+    };
 
     // Initialize push and fetch pools
     let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
@@ -289,9 +294,12 @@ async fn main() -> Result<(), Error> {
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
-        .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task));
+
+    if let Some(task) = grpc_server_task {
+        departure = departure.on_completion(log_task_completion("grpc_server", task));
+    }
 
     if let Some(task) = push_task {
         departure = departure.on_completion(log_task_completion("push_task", task));
