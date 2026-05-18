@@ -326,7 +326,13 @@ async fn push_task(
                 )
                 .record(latency as f64);
             } else {
-                debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → push latency recording");
+                debug!(
+                    task_id = %id,
+                    namespace = activation.namespace,
+                    taskname = activation.taskname,
+                    "Activation already processed, skipping \
+                     received → push latency recording"
+                );
             }
 
             let start = Instant::now();

@@ -48,7 +48,8 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
     (low, high)
 }
 
-/// Thin interface for the push pool. It mostly serves to enable proper unit testing, but it also decouples fetch logic from push logic even further.
+/// Thin interface for the push pool. It mostly serves to enable proper unit testing,
+/// but it also decouples fetch logic from push logic even further.
 #[async_trait]
 pub trait TaskPusher {
     /// Submit a single task to the push pool.
@@ -164,7 +165,13 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                             )
                                             .record(latency as f64);
                                         } else {
-                                            debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → claimed latency recording");
+                                            debug!(
+                                                task_id = %id,
+                                                namespace = activation.namespace,
+                                                taskname = activation.taskname,
+                                                "Activation already processed, skipping \
+                                                 received → claimed latency recording"
+                                            );
                                         }
 
                                         match pusher.submit_task(activation, start).await {
