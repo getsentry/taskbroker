@@ -6,10 +6,11 @@ use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivation,
 };
+use tokio::sync::mpsc;
 use tonic::{Code, Request};
 
 use crate::config::{Config, DeliveryMode};
-use crate::grpc::server::TaskbrokerServer;
+use crate::grpc::server::{StatusUpdate, TaskbrokerServer};
 use crate::store::activation::InflightActivationStatus;
 use crate::test_utils::{create_config, create_test_store, make_activations};
 
@@ -21,11 +22,17 @@ async fn test_get_task_push_mode_returns_permission_denied() {
         ..Config::default()
     });
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
 
     assert!(response.is_err());
@@ -42,11 +49,17 @@ async fn test_get_task(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let config = create_config();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_err());
     let e = response.unwrap_err();
@@ -63,13 +76,19 @@ async fn test_set_task_status(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let config = create_config();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
         max_attempts: None,
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -85,13 +104,19 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let config = create_config();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
         max_attempts: None,
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_err());
     let e = response.unwrap_err();
@@ -117,11 +142,14 @@ async fn test_get_task_success(#[case] adapter: &str) {
     let service = TaskbrokerServer {
         store: store.clone(),
         config,
+        update_tx: None,
     };
+
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -151,11 +179,17 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: None,
         application: Some("hammers".into()),
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -179,11 +213,17 @@ async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = GetTaskRequest {
         namespace: Some(namespace),
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
 
     assert!(response.is_err());
@@ -203,12 +243,17 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
     let activations = make_activations(2);
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
 
     let request = GetTaskRequest {
         namespace: None,
         application: None,
     };
+
     let response = service.get_task(Request::new(request)).await;
     assert!(response.is_ok());
     let resp = response.unwrap();
@@ -251,7 +296,12 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
@@ -261,6 +311,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
         }),
         max_attempts: None,
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
 
@@ -291,7 +342,12 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     // Request a task from an application without any activations.
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
@@ -302,6 +358,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
         }),
         max_attempts: None,
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     assert!(response.unwrap().get_ref().task.is_none());
@@ -321,7 +378,12 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
 
     store.store(activations).await.unwrap();
 
-    let service = TaskbrokerServer { store, config };
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
     let request = SetTaskStatusRequest {
         id: "id_0".to_string(),
         status: 5, // Complete
@@ -331,10 +393,102 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
         }),
         max_attempts: None,
     };
+
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
     assert!(
         response.unwrap().get_ref().task.is_none(),
         "namespace without application yields no next task in response"
     );
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+#[allow(deprecated)]
+async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let config = create_config();
+
+    let (update_tx, mut update_rx) = mpsc::channel::<StatusUpdate>(8);
+
+    let activations = make_activations(2);
+    store.store(activations).await.unwrap();
+
+    let service = TaskbrokerServer {
+        store: store.clone(),
+        config,
+        update_tx: Some(update_tx),
+    };
+
+    let response = service
+        .get_task(Request::new(GetTaskRequest {
+            namespace: None,
+            application: None,
+        }))
+        .await
+        .unwrap();
+    assert_eq!(response.get_ref().task.as_ref().unwrap().id, "id_0");
+
+    let response = service
+        .set_task_status(Request::new(SetTaskStatusRequest {
+            id: "id_0".to_string(),
+            status: 5, // Complete
+            fetch_next_task: Some(FetchNextTask {
+                namespace: None,
+                application: None,
+            }),
+            max_attempts: None,
+        }))
+        .await
+        .unwrap();
+
+    assert!(
+        response.get_ref().task.is_none(),
+        "push path returns no next task from the store"
+    );
+
+    let (id, status) = update_rx.recv().await.expect("status update on channel");
+    assert_eq!(id, "id_0");
+    assert_eq!(status, InflightActivationStatus::Complete);
+
+    let row = store.get_by_id("id_0").await.unwrap().expect("row exists");
+    assert_eq!(
+        row.status,
+        InflightActivationStatus::Processing,
+        "handler does not write status; flush_updates applies channel batches"
+    );
+}
+
+#[tokio::test]
+async fn test_set_task_status_update_channel_closed_returns_internal() {
+    let store = create_test_store("sqlite").await;
+    let config = create_config();
+
+    let (update_tx, update_rx) = mpsc::channel::<StatusUpdate>(8);
+    drop(update_rx);
+
+    let activations = make_activations(1);
+    store.store(activations).await.unwrap();
+
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: Some(update_tx),
+    };
+
+    let response = service
+        .set_task_status(Request::new(SetTaskStatusRequest {
+            id: "id_0".to_string(),
+            status: 5,
+            fetch_next_task: None,
+            max_attempts: None,
+        }))
+        .await;
+
+    assert!(response.is_err());
+    let e = response.unwrap_err();
+    assert_eq!(e.code(), Code::Internal);
+    assert_eq!(e.message(), "Status update channel closed");
 }

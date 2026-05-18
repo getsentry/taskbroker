@@ -1,4 +1,26 @@
 # Changelog
+## 0.1.15
+
+### New Features ✨
+
+- (client) Add TaskProducer by @bmckerry in [#633](https://github.com/getsentry/taskbroker/pull/633)
+- (examples) Add task that produces by @bmckerry in [#638](https://github.com/getsentry/taskbroker/pull/638)
+
+### Bug Fixes 🐛
+
+- (client) Use correct default topic name by @bmckerry in [#636](https://github.com/getsentry/taskbroker/pull/636)
+- (iswf) Reverts change to reporting logic that silences NoRetriesRemaining exceptions by @GabeVillalobos in [#627](https://github.com/getsentry/taskbroker/pull/627)
+
+## 0.1.14
+
+### New Features ✨
+
+- (taskbroker-client) Add pass_headers option to task registration by @untitaker in [#623](https://github.com/getsentry/taskbroker/pull/623)
+
+### Bug Fixes 🐛
+
+- (taskbroker-client) Update docstrings to reflect msgpack serialization by @untitaker in [#624](https://github.com/getsentry/taskbroker/pull/624)
+
 ## 0.1.13
 
 - No documented changes.

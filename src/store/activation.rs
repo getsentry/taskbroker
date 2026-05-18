@@ -8,7 +8,7 @@ use sqlx::Type;
 
 /// The members of this enum should be a superset of the members
 /// of `InflightActivationStatus` in `sentry_protos`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Type)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Type, Hash)]
 pub enum InflightActivationStatus {
     /// Unused but necessary to align with sentry-protos
     Unspecified,
@@ -166,8 +166,7 @@ pub struct InflightActivation {
 }
 
 impl InflightActivation {
-    /// The number of milliseconds between an activation's received timestamp
-    /// and the provided datetime
+    /// The number of milliseconds between an activation's received timestamp and the provided datetime.
     pub fn received_latency(&self, now: DateTime<Utc>) -> i64 {
         now.signed_duration_since(self.received_at)
             .num_milliseconds()
