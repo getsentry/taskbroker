@@ -1,4 +1,28 @@
 # Changelog
+## 26.5.0
+
+### New Features ✨
+
+#### Taskbroker
+
+- Batch Status Updates by @george-sentry in [#618](https://github.com/getsentry/taskbroker/pull/618)
+- More Push Taskbroker Metrics by @george-sentry in [#631](https://github.com/getsentry/taskbroker/pull/631)
+
+#### Other
+
+- (client) Add TaskProducer by @bmckerry in [#633](https://github.com/getsentry/taskbroker/pull/633)
+- (examples) Add task that produces by @bmckerry in [#638](https://github.com/getsentry/taskbroker/pull/638)
+
+### Bug Fixes 🐛
+
+- (client) Use correct default topic name by @bmckerry in [#636](https://github.com/getsentry/taskbroker/pull/636)
+- (iswf) Reverts change to reporting logic that silences NoRetriesRemaining exceptions by @GabeVillalobos in [#627](https://github.com/getsentry/taskbroker/pull/627)
+
+### Internal Changes 🔧
+
+- (deps) Bump urllib3 from 2.6.3 to 2.7.0 by @dependabot in [#632](https://github.com/getsentry/taskbroker/pull/632)
+- (deps-dev) Bump pytest from 8.3.3 to 9.0.3 by @dependabot in [#629](https://github.com/getsentry/taskbroker/pull/629)
+
 ## 26.4.2
 
 ### New Features ✨

@@ -1,4 +1,16 @@
 # Changelog
+## 0.1.15
+
+### New Features ✨
+
+- (client) Add TaskProducer by @bmckerry in [#633](https://github.com/getsentry/taskbroker/pull/633)
+- (examples) Add task that produces by @bmckerry in [#638](https://github.com/getsentry/taskbroker/pull/638)
+
+### Bug Fixes 🐛
+
+- (client) Use correct default topic name by @bmckerry in [#636](https://github.com/getsentry/taskbroker/pull/636)
+- (iswf) Reverts change to reporting logic that silences NoRetriesRemaining exceptions by @GabeVillalobos in [#627](https://github.com/getsentry/taskbroker/pull/627)
+
 ## 0.1.14
 
 ### New Features ✨
