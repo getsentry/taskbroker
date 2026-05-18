@@ -222,6 +222,11 @@ pub struct Config {
     /// brokers are under load, or there are small networking delays.
     pub processing_deadline_grace_sec: u64,
 
+    /// The number of additional seconds that claim expirations
+    /// are extended by. This helps reduce claim expirations when
+    /// brokers are under load, or there are small networking delays.
+    pub claim_expiration_grace_sec: u64,
+
     /// The frequency at which upkeep tasks
     /// (discarding, retrying activations, etc.) are executed.
     pub upkeep_task_interval_ms: u64,
@@ -406,6 +411,7 @@ impl Default for Config {
             max_processing_count: 2048,
             max_processing_attempts: 5,
             processing_deadline_grace_sec: 3,
+            claim_expiration_grace_sec: 3,
             upkeep_task_interval_ms: 1000,
             upkeep_unhealthy_interval_ms: 5000,
             health_check_killswitched: false,

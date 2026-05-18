@@ -154,6 +154,29 @@ impl PostgresActivationStoreConfig {
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
             conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
         }
+
+        // Compute the longest amount of time an activation may be claimed
+        let claim_lease_ms = {
+            // In the worst case, every activation in the batch will time out when appending to the push queue
+            let queue_ms = config.fetch_batch_size as u64 * config.push_queue_timeout_ms;
+
+            // In the worst case, every activation in the push queue will time out when sending
+            let send_ms = config.push_queue_size as u64 * config.push_timeout_ms;
+
+            let update_ms = if config.batch_push_updates {
+                // In the worst case, we will need to wait an entire interval before flushing a batch of push updates
+                config.push_update_interval_ms
+            } else {
+                // Grace seconds will cover the update query duration until we decide to implement query timeouts
+                0
+            };
+
+            // Account for grace seconds specified in configuration
+            let grace_ms = config.claim_expiration_grace_sec * 1000;
+
+            queue_ms + send_ms + update_ms + grace_ms
+        };
+
         Self {
             pg_connection: conn_opts,
             pg_database_name: config.pg_database_name.clone(),
@@ -161,9 +184,9 @@ impl PostgresActivationStoreConfig {
             run_migrations: config.run_migrations,
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
-            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
+            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            claim_lease_ms,
         }
     }
 }
@@ -505,7 +528,6 @@ impl InflightActivationStore for PostgresActivationStore {
     #[framed]
     async fn mark_processing(&self, id: &str) -> Result<(), Error> {
         let mut conn = self.acquire_write_conn_metric("mark_processing").await?;
-
         let grace_period = self.config.processing_deadline_grace_sec;
         let result = sqlx::query(&format!(
             "UPDATE inflight_taskactivations SET
