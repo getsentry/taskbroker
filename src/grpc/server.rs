@@ -106,15 +106,11 @@ impl ConsumerService for TaskbrokerServer {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
-        // If status is Retry and max_attempts is provided, pass it to set_status
-        // to update the activation's retry_state in the same DB operation.
-        let max_attempts = if status == InflightActivationStatus::Retry {
-            request.get_ref().max_attempts
-        } else {
-            None
-        };
+        let max_attempts = request.get_ref().max_attempts;
 
-        // Use batching channel if available and we don't need to update retry state
+        // Use batching channel if available and we don't need to update retry state.
+        // If max_attempts is Some, we can't use batching API to update the activation, and have to
+        // fall back to individual set_status.
         if let Some(ref tx) = self.update_tx
             && max_attempts.is_none()
         {
