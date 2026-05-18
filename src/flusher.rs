@@ -28,8 +28,7 @@ where
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut buffer: Vec<T> = Vec::with_capacity(batch_size);
-
-    let guard = get_shutdown_guard().shutdown_on_drop();
+    let guard = get_shutdown_guard();
 
     loop {
         tokio::select! {
@@ -54,7 +53,7 @@ where
                     }
 
                     None => {
-                        // Channel closed
+                        // Channel closed because all senders were dropped
                         debug!("Channel closed!");
                         break;
                     }
@@ -66,16 +65,12 @@ where
                 debug!("Performing periodic flush...");
 
                 if rx.is_closed() {
+                    // Channel closed because all senders were dropped
                     debug!("Channel closed on tick!");
                     break;
                 }
 
                 flush(&mut buffer).await;
-            }
-
-            _ = guard.wait() => {
-                debug!("Shutdown guard triggered!");
-                break;
             }
         }
     }
@@ -85,6 +80,9 @@ where
         buffer.push(update);
     }
 
+    // Delay shutdown until we have flushed everything in the buffer
     flush(&mut buffer).await;
+    drop(guard);
+
     Ok(())
 }
