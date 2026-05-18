@@ -31,6 +31,12 @@ pub enum DeliveryMode {
     Push,
 }
 
+impl DeliveryMode {
+    pub fn is_push(self) -> bool {
+        self == DeliveryMode::Push
+    }
+}
+
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct Config {
     /// The sentry DSN to use for error reporting.
@@ -304,7 +310,7 @@ pub struct Config {
     /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     pub push_timeout_ms: u64,
 
-    /// Update statuses from the gRPC server in batches?
+    /// Update statuses from the gRPC server in batches? Only applies in PUSH mode.
     pub batch_status_updates: bool,
 
     /// The size of a batch of status updates.
@@ -313,7 +319,7 @@ pub struct Config {
     /// Maximum milliseconds to wait before flushing a batch of status updates.
     pub status_update_interval_ms: u64,
 
-    /// Update claimed → processing (dispatch) updates in batches?
+    /// Update claimed → processing (dispatch) updates in batches? Only applies in PUSH mode.
     pub batch_push_updates: bool,
 
     /// The size of a batch of dispatch updates.

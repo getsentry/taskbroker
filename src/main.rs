@@ -12,7 +12,7 @@ use tonic::transport::Server;
 use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
 
-use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
+use taskbroker::config::{Config, DatabaseAdapter};
 use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
@@ -192,7 +192,9 @@ async fn main() -> Result<(), Error> {
     });
 
     // Status update flush task
-    let (status_update_tx, status_update_task) = if config.batch_status_updates {
+    let (status_update_tx, status_update_task) = if config.batch_status_updates
+        && config.delivery_mode.is_push()
+    {
         let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size.max(1));
 
         let flusher_store = store.clone();
@@ -265,40 +267,41 @@ async fn main() -> Result<(), Error> {
     });
 
     // Push update flush task
-    let (push_update_tx, push_update_task) = if config.batch_push_updates {
-        let (tx, rx) = tokio::sync::mpsc::channel(config.push_update_batch_size.max(1));
+    let (push_update_tx, push_update_task) =
+        if config.batch_push_updates && config.delivery_mode.is_push() {
+            let (tx, rx) = tokio::sync::mpsc::channel(config.push_update_batch_size.max(1));
 
-        let flusher_store = store.clone();
-        let flusher_config = config.clone();
+            let flusher_store = store.clone();
+            let flusher_config = config.clone();
 
-        let handle = tokio::spawn(async move {
-            flusher::run_flusher(
-                rx,
-                flusher_config.push_update_batch_size,
-                flusher_config.push_update_interval_ms,
-                move |buffer| Box::pin(push::flush_updates(flusher_store.clone(), buffer)),
-            )
-            .await
-        });
+            let handle = tokio::spawn(async move {
+                flusher::run_flusher(
+                    rx,
+                    flusher_config.push_update_batch_size,
+                    flusher_config.push_update_interval_ms,
+                    move |buffer| Box::pin(push::flush_updates(flusher_store.clone(), buffer)),
+                )
+                .await
+            });
 
-        (Some(tx), Some(handle))
-    } else {
-        (None, None)
-    };
+            (Some(tx), Some(handle))
+        } else {
+            (None, None)
+        };
 
     // Initialize push and fetch pools
     let push_pool = Arc::new(PushPool::new(config.clone(), store.clone(), push_update_tx));
     let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
     // Initialize push threads
-    let push_task = if config.delivery_mode == DeliveryMode::Push {
+    let push_task = if config.delivery_mode.is_push() {
         Some(tokio::spawn(async move { push_pool.start().await }))
     } else {
         None
     };
 
     // Initialize fetch threads
-    let fetch_task = if config.delivery_mode == DeliveryMode::Push {
+    let fetch_task = if config.delivery_mode.is_push() {
         Some(tokio::spawn(async move { fetch_pool.start().await }))
     } else {
         None
