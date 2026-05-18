@@ -557,20 +557,22 @@ impl InflightActivationStore for SqliteActivationStore {
         mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
-        let grace_period = self.config.processing_deadline_grace_sec;
 
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
 
         if mark_processing {
+            let grace_period = self.config.processing_deadline_grace_sec;
+
             query_builder.push(format!(
                 "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
             ));
 
             query_builder.push_bind(InflightActivationStatus::Processing);
         } else {
+            let claim_lease = self.config.claim_lease_ms as f64 / 1000.0;
+
             query_builder.push(format!(
-                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
-                self.config.claim_lease_ms as f64 / 1000.0,
+                "claim_expires_at = unixepoch('now', '+' || {claim_lease:.3} || ' seconds'), processing_deadline = NULL, status = "
             ));
 
             query_builder.push_bind(InflightActivationStatus::Claimed);

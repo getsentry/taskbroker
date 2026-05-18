@@ -444,9 +444,6 @@ impl InflightActivationStore for PostgresActivationStore {
     ) -> Result<Vec<InflightActivation>, Error> {
         let now = Utc::now();
 
-        let grace_period = self.config.processing_deadline_grace_sec;
-        let claim_lease_ms = self.config.claim_lease_ms as i64;
-
         let mut query_builder = QueryBuilder::<Postgres>::new(
             "WITH selected_activations AS (
                 SELECT id
@@ -492,6 +489,8 @@ impl InflightActivationStore for PostgresActivationStore {
         query_builder.push(" FOR UPDATE SKIP LOCKED)");
 
         if mark_processing {
+            let grace_period = self.config.processing_deadline_grace_sec;
+
             query_builder.push(format!(
                 "UPDATE inflight_taskactivations
                  SET processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
@@ -501,9 +500,11 @@ impl InflightActivationStore for PostgresActivationStore {
 
             query_builder.push_bind(InflightActivationStatus::Processing.to_string());
         } else {
+            let claim_lease = self.config.claim_lease_ms as i64;
+
             query_builder.push(format!(
                 "UPDATE inflight_taskactivations
-                 SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond') + (interval '{grace_period} seconds'),
+                 SET claim_expires_at = now() + ({claim_lease} * interval '1 millisecond'),
                      processing_deadline = NULL,
                      status = "
             ));
