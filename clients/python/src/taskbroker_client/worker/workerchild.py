@@ -95,6 +95,21 @@ def status_name(status: TaskActivationStatus.ValueType) -> str:
     return f"unknown-{status}"
 
 
+def _task_failure_extra(
+    activation: TaskActivation,
+    err: BaseException,
+    processing_pool_name: str,
+) -> dict[str, Any]:
+    return {
+        "task_id": activation.id,
+        "taskname": activation.taskname,
+        "namespace": activation.namespace,
+        "processing_pool": processing_pool_name,
+        "exception_type": type(err).__name__,
+        "exception_message": str(err),
+    }
+
+
 def _log_task_failed(
     activation: TaskActivation,
     err: BaseException,
@@ -109,13 +124,26 @@ def _log_task_failed(
     """
     logger.exception(
         "taskworker.task.failed",
+        extra=_task_failure_extra(activation, err, processing_pool_name),
+    )
+
+
+def _log_task_retry_exhausted(
+    activation: TaskActivation,
+    err: BaseException,
+    processing_pool_name: str,
+) -> None:
+    """
+    Emit a structured retry-exhausted log without logger.exception so the
+    explicit NoRetriesRemainingError capture remains the only Sentry error
+    event from this branch.
+    """
+    logger.warning(
+        "taskworker.task.retry_exhausted",
         extra={
-            "task_id": activation.id,
-            "taskname": activation.taskname,
-            "namespace": activation.namespace,
-            "processing_pool": processing_pool_name,
-            "exception_type": type(err).__name__,
-            "exception_message": str(err),
+            **_task_failure_extra(activation, err, processing_pool_name),
+            "retry_attempts": activation.retry_state.attempts,
+            "retry_max_attempts": activation.retry_state.max_attempts,
         },
     )
 
@@ -317,10 +345,11 @@ def child_process(
                             ]
                             scope.set_transaction_name(inflight.activation.taskname)
                             sentry_sdk.capture_exception(retry_error)
-                            # Also emit structured stdout log for retry-exhausted failures.
-                            # Uses the original err, not the synthetic retry_error, so the log
-                            # carries the actual exception that exhausted retries.
-                            _log_task_failed(inflight.activation, err, processing_pool_name)
+                            # Emit a structured worker log without logger.exception so this
+                            # branch does not create a second Sentry error event.
+                            _log_task_retry_exhausted(
+                                inflight.activation, err, processing_pool_name
+                            )
                         # In this branch, all exceptions should be either
                         #  captured or silenced.
                         captured_error = True

@@ -703,17 +703,18 @@ def test_child_process_retry_task_max_attempts(
     assert isinstance(capture_call[0], NoRetriesRemainingError)
     assert isinstance(capture_call[0].__cause__, RuntimeError)
 
-    # Structured worker log fires for retry-exhausted failures, with the
-    # original exception (not the synthetic NoRetriesRemainingError).
-    failed_calls = [
-        c
-        for c in mock_logger.exception.call_args_list
-        if c.args and c.args[0] == "taskworker.task.failed"
-    ]
-    assert len(failed_calls) == 1
-    extra = failed_calls[0].kwargs["extra"]
+    # Retry-exhausted emits a structured worker log, but not via
+    # logger.exception; the explicit NoRetriesRemainingError capture above
+    # remains the only Sentry error event from this branch.
+    mock_logger.exception.assert_not_called()
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert args[0] == "taskworker.task.retry_exhausted"
+    extra = kwargs["extra"]
     assert extra["exception_type"] == "RuntimeError"
     assert extra["taskname"] == "examples.will_retry"
+    assert extra["retry_attempts"] == 2
+    assert extra["retry_max_attempts"] == 3
 
 
 def test_child_process_failure_task() -> None:
