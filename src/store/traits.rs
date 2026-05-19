@@ -154,7 +154,7 @@ pub trait InflightActivationStore: Send + Sync {
     async fn handle_processing_deadline(&self) -> Result<u64, Error>;
 
     /// Update tasks that exceeded max processing attempts
-    async fn handle_processing_attempts(&self) -> Result<u64, Error>;
+    async fn handle_processing_attempts(&self, max: i32) -> Result<u64, Error>;
 
     /// Delete tasks past their expires_at deadline
     async fn handle_expires_at(&self) -> Result<u64, Error>;

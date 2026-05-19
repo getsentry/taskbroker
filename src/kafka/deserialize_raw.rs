@@ -10,7 +10,7 @@ use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::config::raw::RawConfig;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
@@ -19,44 +19,6 @@ use super::deserialize_activation::bucket_from_id;
 struct RawParams<'a> {
     args: (&'a serde_bytes::Bytes,),
     kwargs: HashMap<(), ()>,
-}
-
-pub struct RawConfig {
-    pub namespace: String,
-    pub application: String,
-    pub taskname: String,
-    pub processing_deadline_duration: u16,
-}
-
-impl RawConfig {
-    pub fn from_config(config: &Config) -> Option<Self> {
-        if !config.raw_mode {
-            return None;
-        }
-        let application = config
-            .raw_application
-            .clone()
-            .expect("raw_application required when raw_mode is enabled");
-
-        assert!(
-            config.worker_map.contains_key(&application),
-            "raw_application '{}' must exist in worker_map",
-            application
-        );
-
-        Some(Self {
-            namespace: config
-                .raw_namespace
-                .clone()
-                .expect("raw_namespace required when raw_mode is enabled"),
-            application,
-            taskname: config
-                .raw_taskname
-                .clone()
-                .expect("raw_taskname required when raw_mode is enabled"),
-            processing_deadline_duration: config.raw_processing_deadline_duration,
-        })
-    }
 }
 
 fn extract_headers(msg: &OwnedMessage) -> HashMap<String, String> {

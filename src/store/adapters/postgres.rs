@@ -2,7 +2,6 @@ use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
 
-use sqlx::ConnectOptions;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use sqlx::{FromRow, Pool, Postgres, QueryBuilder};
@@ -14,7 +13,7 @@ use chrono::{DateTime, Utc};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use tracing::{instrument, warn};
 
-use crate::config::Config;
+use crate::config::store::StoreConfig;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
@@ -128,50 +127,51 @@ pub async fn create_default_postgres_pool(
     Ok(default_pool)
 }
 
-pub struct PostgresActivationStoreConfig {
-    pub pg_connection: PgConnectOptions,
-    pub pg_database_name: String,
-    pub pg_default_database_name: String,
-    pub run_migrations: bool,
-    pub max_processing_attempts: usize,
-    pub processing_deadline_grace_sec: u64,
-    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
-    pub claim_lease_ms: u64,
-    pub vacuum_page_count: Option<usize>,
-    pub enable_sqlite_status_metrics: bool,
-}
+// pub struct PostgresActivationStoreConfig {
+//     pub pg_connection: PgConnectOptions,
+//     pub pg_database_name: String,
+//     pub pg_default_database_name: String,
+//     pub run_migrations: bool,
+//     pub max_processing_attempts: usize,
+//     pub processing_deadline_grace_sec: u64,
+//     /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
+//     pub claim_lease_ms: u64,
+//     pub vacuum_page_count: Option<usize>,
+//     pub enable_sqlite_status_metrics: bool,
+// }
 
-impl PostgresActivationStoreConfig {
-    pub fn from_config(config: &Config) -> Self {
-        let mut conn_opts = PgConnectOptions::new()
-            .username(&config.pg_username)
-            .password(&config.pg_password)
-            .host(&config.pg_host)
-            .port(config.pg_port);
-        if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
-            let url = conn_opts.to_url_lossy();
-            let new_url =
-                url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
-            conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
-        }
-        Self {
-            pg_connection: conn_opts,
-            pg_database_name: config.pg_database_name.clone(),
-            pg_default_database_name: config.pg_default_database_name.clone(),
-            run_migrations: config.run_migrations,
-            max_processing_attempts: config.max_processing_attempts,
-            vacuum_page_count: config.vacuum_page_count,
-            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
-            enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
-        }
-    }
-}
+// impl PostgresActivationStoreConfig {
+//     pub fn from_config(config: &Config) -> Self {
+//         let mut conn_opts = PgConnectOptions::new()
+//             .username(&config.pg_username)
+//             .password(&config.pg_password)
+//             .host(&config.pg_host)
+//             .port(config.pg_port);
+//         if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
+//             let url = conn_opts.to_url_lossy();
+//             let new_url =
+//                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
+//             conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
+//         }
+//         Self {
+//             pg_connection: conn_opts,
+//             pg_database_name: config.pg_database_name.clone(),
+//             pg_default_database_name: config.pg_default_database_name.clone(),
+//             run_migrations: config.run_migrations,
+//             max_processing_attempts: config.max_processing_attempts,
+//             vacuum_page_count: config.vacuum_page_count,
+//             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+//             claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
+//             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
+//         }
+//     }
+// }
 
 pub struct PostgresActivationStore {
+    conn_opts: PgConnectOptions,
     read_pool: PgPool,
     write_pool: PgPool,
-    config: PostgresActivationStoreConfig,
+    config: StoreConfig,
     partitions: RwLock<Vec<i32>>,
 }
 
@@ -188,26 +188,38 @@ impl PostgresActivationStore {
     }
 
     #[framed]
-    pub async fn new(config: PostgresActivationStoreConfig) -> Result<Self, Error> {
-        if config.run_migrations {
-            let default_pool = create_default_postgres_pool(
-                &config.pg_connection,
-                &config.pg_default_database_name,
-            )
-            .await?;
+    pub async fn new(config: StoreConfig) -> Result<Self, Error> {
+        let options: Vec<_> = config
+            .pg
+            .options
+            .split(',')
+            .map(|pair| pair.trim().split_once(':').unwrap())
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        let conn_opts = PgConnectOptions::new()
+            .username(&config.pg.username)
+            .password(&config.pg.password)
+            .host(&config.pg.host)
+            .port(config.pg.port)
+            .options(options);
+
+        if config.pg.run_migrations {
+            let default_pool =
+                create_default_postgres_pool(&conn_opts, &config.pg.default_database_name).await?;
 
             // Create the database if it doesn't exist
             let row: (bool,) = sqlx::query_as(
                 "SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )",
             )
-            .bind(&config.pg_database_name)
+            .bind(&config.pg.database_name)
             .fetch_one(&default_pool)
             .await?;
 
             if !row.0 {
-                println!("Creating database {}", &config.pg_database_name);
-                sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
-                    .bind(&config.pg_database_name)
+                println!("Creating database {}", &config.pg.database_name);
+                sqlx::query(format!("CREATE DATABASE {}", &config.pg.database_name).as_str())
+                    .bind(&config.pg.database_name)
                     .execute(&default_pool)
                     .await?;
             }
@@ -216,9 +228,9 @@ impl PostgresActivationStore {
         }
 
         let (read_pool, write_pool) =
-            create_postgres_pool(&config.pg_connection, &config.pg_database_name).await?;
+            create_postgres_pool(&conn_opts, &config.pg.database_name).await?;
 
-        if config.run_migrations {
+        if config.pg.run_migrations {
             println!("Running migrations on database");
             sqlx::migrate!("./migrations/postgres")
                 .run(&write_pool)
@@ -226,6 +238,7 @@ impl PostgresActivationStore {
         }
 
         Ok(Self {
+            conn_opts,
             read_pool,
             write_pool,
             config,
@@ -277,7 +290,7 @@ impl InflightActivationStore for PostgresActivationStore {
     #[framed]
     async fn db_size(&self) -> Result<u64, Error> {
         let row_result: (i64,) = sqlx::query_as("SELECT pg_database_size($1) as size")
-            .bind(&self.config.pg_database_name)
+            .bind(&self.config.pg.database_name)
             .fetch_one(&self.read_pool)
             .await?;
         if row_result.0 < 0 {
@@ -844,7 +857,7 @@ impl InflightActivationStore for PostgresActivationStore {
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
     #[instrument(skip_all)]
     #[framed]
-    async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+    async fn handle_processing_attempts(&self, max: i32) -> Result<u64, Error> {
         let mut conn = self
             .acquire_write_conn_metric("handle_processing_attempts")
             .await?;
@@ -854,7 +867,7 @@ impl InflightActivationStore for PostgresActivationStore {
         );
         query_builder.push_bind(InflightActivationStatus::Failure.to_string());
         query_builder.push(" WHERE processing_attempts >= ");
-        query_builder.push_bind(self.config.max_processing_attempts as i32);
+        query_builder.push_bind(max);
         query_builder.push(" AND status = ");
         query_builder.push_bind(InflightActivationStatus::Pending.to_string());
         self.add_partition_condition(&mut query_builder, false);
@@ -1039,13 +1052,11 @@ impl InflightActivationStore for PostgresActivationStore {
     async fn remove_db(&self) -> Result<(), Error> {
         self.read_pool.close().await;
         self.write_pool.close().await;
-        let default_pool = create_default_postgres_pool(
-            &self.config.pg_connection,
-            &self.config.pg_default_database_name,
-        )
-        .await?;
-        let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg_database_name).as_str())
-            .bind(&self.config.pg_database_name)
+        let default_pool =
+            create_default_postgres_pool(&self.conn_opts, &self.config.pg.default_database_name)
+                .await?;
+        let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg.database_name).as_str())
+            .bind(&self.config.pg.database_name)
             .execute(&default_pool)
             .await;
         let _ = default_pool.close().await;

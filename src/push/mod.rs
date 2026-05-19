@@ -21,7 +21,7 @@ use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
-use crate::config::Config;
+use crate::config::push::PushConfig;
 use crate::store::activation::InflightActivation;
 use crate::store::traits::InflightActivationStore;
 
@@ -101,7 +101,7 @@ pub struct PushPool {
     receiver: Receiver<(InflightActivation, Instant)>,
 
     /// Taskbroker configuration.
-    config: Arc<Config>,
+    config: PushConfig,
 
     /// Activation store, which we need for marking tasks as sent.
     store: Arc<dyn InflightActivationStore>,
@@ -111,7 +111,7 @@ pub struct PushPool {
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
+    pub fn new(config: PushConfig, store: Arc<dyn InflightActivationStore>) -> Self {
         let worker_factory: WorkerFactory = Arc::new(|endpoint: String| {
             Box::pin(async move {
                 let client = WorkerServiceClient::connect(endpoint).await?;
@@ -122,11 +122,11 @@ impl PushPool {
     }
 
     fn new_with_factory(
-        config: Arc<Config>,
+        config: PushConfig,
         store: Arc<dyn InflightActivationStore>,
         worker_factory: WorkerFactory,
     ) -> Self {
-        let (sender, receiver) = flume::bounded(config.push_queue_size);
+        let (sender, receiver) = flume::bounded(config.queue.size);
         Self {
             sender,
             receiver,
@@ -138,11 +138,11 @@ impl PushPool {
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     #[framed]
-    pub async fn start(&self) -> Result<()> {
+    pub async fn start(&self, secrets: Vec<String>) -> Result<()> {
         let store = self.store.clone();
         let worker_factory = self.worker_factory.clone();
         let mut push_pool: JoinSet<Result<()>> = crate::tokio::spawn_pool(
-            self.config.push_threads,
+            self.config.threads,
             |_| {
                 let worker_map = self.config.worker_map.clone();
                 let receiver = self.receiver.clone();
@@ -151,13 +151,8 @@ impl PushPool {
 
                 let guard = get_shutdown_guard().shutdown_on_drop();
 
-                let callback_url = format!(
-                    "{}:{}",
-                    self.config.callback_addr, self.config.callback_port
-                );
-
-                let timeout = Duration::from_millis(self.config.push_timeout_ms);
-                let grpc_shared_secret = self.config.grpc_shared_secret.clone();
+                let secrets = secrets.clone();
+                let timeout = Duration::from_millis(self.config.timeout_ms);
 
                 async_backtrace::frame!(async move {
                     metrics::counter!("push.worker.connect.attempt").increment(1);
@@ -203,7 +198,6 @@ impl PushPool {
                                 metrics::histogram!("push.queue.latency").record(time.elapsed());
 
                                 let id = activation.id.clone();
-                                let callback_url = callback_url.clone();
 
                                 let Some(worker) = workers.get_mut(&activation.application) else {
                                     metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
@@ -220,9 +214,8 @@ impl PushPool {
                                 match push_task(
                                     worker.as_mut(),
                                     activation.clone(),
-                                    callback_url,
                                     timeout,
-                                    grpc_shared_secret.as_slice(),
+                                    secrets.as_slice(),
                                 )
                                 .await
                                 {
@@ -276,7 +269,6 @@ impl PushPool {
                     // Drain channel before exiting without recording duration metrics since they don't matter at this time
                     for (activation, _) in receiver.drain() {
                         let id = activation.id.clone();
-                        let callback_url = callback_url.clone();
 
                         let Some(worker) = workers.get_mut(&activation.application) else {
                             metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
@@ -290,14 +282,8 @@ impl PushPool {
                             continue;
                         };
 
-                        match push_task(
-                            worker.as_mut(),
-                            activation,
-                            callback_url,
-                            timeout,
-                            grpc_shared_secret.as_slice(),
-                        )
-                        .await
+                        match push_task(worker.as_mut(), activation, timeout, secrets.as_slice())
+                            .await
                         {
                             Ok(_) => {
                                 metrics::counter!("push.push_task", "result" => "ok").increment(1);
@@ -360,7 +346,7 @@ impl PushPool {
         activation: InflightActivation,
         time: Instant,
     ) -> Result<(), PushError> {
-        let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
+        let duration = Duration::from_millis(self.config.queue.timeout_ms);
         let start = Instant::now();
 
         metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
@@ -391,7 +377,6 @@ impl PushPool {
 async fn push_task(
     worker: &mut (dyn WorkerClient + Send),
     activation: InflightActivation,
-    callback_url: String,
     timeout: Duration,
     grpc_shared_secret: &[String],
 ) -> Result<()> {
@@ -409,7 +394,7 @@ async fn push_task(
 
     let request = PushTaskRequest {
         task: Some(task),
-        callback_url,
+        callback_url: "".into(),
     };
 
     let result = match tokio::time::timeout(timeout, worker.send(request, grpc_shared_secret)).await

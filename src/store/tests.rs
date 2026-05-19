@@ -14,10 +14,7 @@ use tokio::task::JoinSet;
 
 use crate::config::Config;
 use crate::store::activation::{InflightActivationBuilder, InflightActivationStatus};
-use crate::store::adapters::postgres::PostgresActivationStoreConfig;
-use crate::store::adapters::sqlite::{
-    InflightActivationStoreConfig, SqliteActivationStore, create_sqlite_pool,
-};
+use crate::store::adapters::sqlite::{SqliteActivationStore, create_sqlite_pool};
 use crate::store::traits::InflightActivationStore;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
@@ -67,14 +64,10 @@ fn test_inflightactivation_status_from() {
 
 #[tokio::test]
 async fn test_sqlite_create_db() {
-    assert!(
-        SqliteActivationStore::new(
-            &generate_temp_filename(),
-            InflightActivationStoreConfig::from_config(&create_integration_config())
-        )
-        .await
-        .is_ok()
-    )
+    let mut config = create_integration_config();
+    config.store.sqlite.path = generate_temp_filename();
+
+    assert!(SqliteActivationStore::new(config.store).await.is_ok())
 }
 
 #[test]
@@ -1337,14 +1330,14 @@ async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     let mut batch = make_activations(3);
     batch[0].status = InflightActivationStatus::Pending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[0].processing_attempts = config.max_processing_attempts as i32;
+    batch[0].processing_attempts = config.upkeep.max_processing_attempts as i32;
 
     batch[1].status = InflightActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
     batch[2].status = InflightActivationStatus::Pending;
     batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[2].processing_attempts = config.max_processing_attempts as i32;
+    batch[2].processing_attempts = config.upkeep.max_processing_attempts as i32;
 
     assert!(store.store(batch.clone()).await.is_ok());
     assert_counts(
@@ -1357,7 +1350,9 @@ async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     )
     .await;
 
-    let count = store.handle_processing_attempts().await;
+    let count = store
+        .handle_processing_attempts(config.upkeep.max_processing_attempts as i32)
+        .await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 2);
     assert_counts(

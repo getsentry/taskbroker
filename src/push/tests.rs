@@ -7,7 +7,6 @@ use sentry_protos::taskbroker::v1::PushTaskRequest;
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
-use crate::config::Config;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::FailedTasksForwarder;
@@ -150,7 +149,7 @@ impl InflightActivationStore for MockStore {
     async fn handle_processing_deadline(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-    async fn handle_processing_attempts(&self) -> anyhow::Result<u64> {
+    async fn handle_processing_attempts(&self, _max: i32) -> anyhow::Result<u64> {
         Ok(0)
     }
     async fn handle_expires_at(&self) -> anyhow::Result<u64> {
@@ -201,21 +200,12 @@ fn failing_connect_factory() -> WorkerFactory {
 async fn push_task_returns_ok_on_client_success() {
     let activation = make_activations(1).remove(0);
     let mut worker = MockWorkerClient::new(false);
-    let callback_url = "taskbroker:50051".to_string();
 
-    let result = push_task(
-        &mut worker,
-        activation.clone(),
-        callback_url.clone(),
-        Duration::from_secs(5),
-        &[],
-    )
-    .await;
+    let result = push_task(&mut worker, activation.clone(), Duration::from_secs(5), &[]).await;
     assert!(result.is_ok(), "push_task should succeed");
     assert_eq!(worker.captured_requests.len(), 1);
 
     let request = &worker.captured_requests[0];
-    assert_eq!(request.callback_url, callback_url);
     assert_eq!(
         request.task.as_ref().map(|task| task.id.as_str()),
         Some(activation.id.as_str())
@@ -228,14 +218,7 @@ async fn push_task_returns_err_on_invalid_payload() {
     activation.activation = vec![1, 2, 3, 4];
 
     let mut worker = MockWorkerClient::new(false);
-    let result = push_task(
-        &mut worker,
-        activation,
-        "taskbroker:50051".to_string(),
-        Duration::from_secs(5),
-        &[],
-    )
-    .await;
+    let result = push_task(&mut worker, activation, Duration::from_secs(5), &[]).await;
 
     assert!(result.is_err(), "invalid payload should fail decoding");
     assert!(
@@ -249,24 +232,15 @@ async fn push_task_propagates_client_error() {
     let activation = make_activations(1).remove(0);
     let mut worker = MockWorkerClient::new(true);
 
-    let result = push_task(
-        &mut worker,
-        activation,
-        "taskbroker:50051".to_string(),
-        Duration::from_secs(5),
-        &[],
-    )
-    .await;
+    let result = push_task(&mut worker, activation, Duration::from_secs(5), &[]).await;
     assert!(result.is_err(), "worker send errors should propagate");
     assert_eq!(worker.captured_requests.len(), 1);
 }
 
 #[tokio::test]
 async fn push_pool_submit_enqueues_item() {
-    let config = Arc::new(Config {
-        push_queue_size: 2,
-        ..Config::default()
-    });
+    let mut config = PushConfig::default();
+    config.queue.size = 2;
 
     let store = create_test_store("sqlite").await;
     let pool = PushPool::new(config, store);
@@ -279,10 +253,7 @@ async fn push_pool_submit_enqueues_item() {
 
 #[tokio::test]
 async fn push_pool_submit_backpressures_when_queue_full() {
-    let config = Arc::new(Config {
-        push_queue_size: 1,
-        ..Config::default()
-    });
+    let config = PushConfig::default();
 
     let store = create_test_store("sqlite").await;
     let pool = PushPool::new(config, store);
@@ -314,16 +285,14 @@ fn sentry_signature_hex_matches_hmac_contract() {
 /// When the worker factory fails to connect, start() returns an error immediately.
 #[tokio::test]
 async fn push_pool_start_worker_connect_failure_returns_error() {
-    let config = Arc::new(Config {
-        worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
-    });
+    let mut config = PushConfig::default();
+    config.worker_map = [("sentry".into(), "unused".into())].into();
+    config.queue.size = 10;
+
     let store = Arc::new(MockStore::default());
     let pool = PushPool::new_with_factory(config, store, failing_connect_factory());
 
-    let result = pool.start().await;
+    let result = pool.start([].into()).await;
     assert!(
         result.is_err(),
         "start() should return Err when the worker factory fails to connect"
@@ -335,12 +304,10 @@ async fn push_pool_start_worker_connect_failure_returns_error() {
 #[tokio::test]
 async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let notify = Arc::new(Notify::new());
-    let config = Arc::new(Config {
-        worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
-    });
+    let mut config = PushConfig::default();
+    config.worker_map = [("sentry".into(), "unused".into())].into();
+    config.queue.size = 10;
+
     let store = Arc::new(MockStore::default());
     let pool = Arc::new(PushPool::new_with_factory(
         config,
@@ -349,7 +316,7 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     ));
 
     let pool_start = pool.clone();
-    tokio::spawn(async move { pool_start.start().await });
+    tokio::spawn(async move { pool_start.start([].into()).await });
 
     let activation = make_activations(1).remove(0);
     assert_eq!(activation.processing_attempts, 0);
@@ -379,12 +346,10 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
 #[tokio::test]
 async fn push_pool_start_marks_activation_processing_on_retry() {
     let notify = Arc::new(Notify::new());
-    let config = Arc::new(Config {
-        worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
-    });
+    let mut config = PushConfig::default();
+    config.worker_map = [("sentry".into(), "unused".into())].into();
+    config.queue.size = 10;
+
     let store = Arc::new(MockStore::default());
     let pool = Arc::new(PushPool::new_with_factory(
         config,
@@ -393,7 +358,7 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     ));
 
     let pool_start = pool.clone();
-    tokio::spawn(async move { pool_start.start().await });
+    tokio::spawn(async move { pool_start.start([].into()).await });
 
     let mut activation = make_activations(1).remove(0);
     activation.processing_attempts = 1;
@@ -421,12 +386,10 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
 #[tokio::test]
 async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     let notify = Arc::new(Notify::new());
-    let config = Arc::new(Config {
-        worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
-    });
+    let mut config = PushConfig::default();
+    config.worker_map = [("sentry".into(), "unused".into())].into();
+    config.queue.size = 10;
+
     let store = Arc::new(MockStore::default());
     let pool = Arc::new(PushPool::new_with_factory(
         config,
@@ -435,7 +398,7 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     ));
 
     let pool_start = pool.clone();
-    tokio::spawn(async move { pool_start.start().await });
+    tokio::spawn(async move { pool_start.start([].into()).await });
 
     let activation = make_activations(1).remove(0);
     let time = Instant::now();

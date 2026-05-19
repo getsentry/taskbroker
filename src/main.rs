@@ -69,13 +69,7 @@ async fn main() -> Result<(), Error> {
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
     let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
-        DatabaseAdapter::Sqlite => Arc::new(
-            SqliteActivationStore::new(
-                &config.db_path,
-                InflightActivationStoreConfig::from_config(&config),
-            )
-            .await?,
-        ),
+        DatabaseAdapter::Sqlite => Arc::new(SqliteActivationStore::new(config.store).await?),
         DatabaseAdapter::Postgres => Arc::new(
             PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
                 .await?,
@@ -266,12 +260,14 @@ async fn main() -> Result<(), Error> {
     });
 
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
-    let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
+    let push_pool = Arc::new(PushPool::new(config.push, store.clone()));
+    let fetch_pool = FetchPool::new(store.clone(), config.fetch, push_pool.clone());
 
     // Initialize push threads
     let push_task = if config.delivery_mode == DeliveryMode::Push {
-        Some(tokio::spawn(async move { push_pool.start().await }))
+        Some(tokio::spawn(async move {
+            push_pool.start(config.secrets).await
+        }))
     } else {
         None
     };
