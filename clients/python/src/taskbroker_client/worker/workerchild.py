@@ -153,7 +153,6 @@ def child_process(
         local_shutdown.set()
 
     signal.signal(signal.SIGTERM, handle_sigterm)
-    # Ignore
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     def _get_known_task(activation: TaskActivation) -> Task[Any, Any] | None:
