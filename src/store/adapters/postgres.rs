@@ -781,14 +781,11 @@ impl InflightActivationStore for PostgresActivationStore {
     // Used in tests
     #[framed]
     async fn clear(&self) -> Result<(), Error> {
-        retry_query(&self.config.retry_config, "clear", || async {
-            let mut conn = self.acquire_write_conn_metric("clear").await?;
-            sqlx::query("TRUNCATE TABLE inflight_taskactivations")
-                .execute(&mut *conn)
-                .await?;
-            Ok(())
-        })
-        .await
+        let mut conn = self.acquire_write_conn_metric("clear").await?;
+        sqlx::query("TRUNCATE TABLE inflight_taskactivations")
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     /// Revert expired push claims back to pending status.

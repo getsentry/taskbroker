@@ -822,14 +822,11 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     async fn clear(&self) -> Result<(), Error> {
-        retry_query(&self.config.retry_config, "clear", || async {
-            let mut conn = self.acquire_write_conn_metric("clear").await?;
-            sqlx::query("DELETE FROM inflight_taskactivations")
-                .execute(&mut *conn)
-                .await?;
-            Ok(())
-        })
-        .await
+        let mut conn = self.acquire_write_conn_metric("clear").await?;
+        sqlx::query("DELETE FROM inflight_taskactivations")
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     /// Expired push claims (`Claimed` + past `claim_expires_at`).
