@@ -274,7 +274,6 @@ def child_process(
                     if not task_func.retry.max_attempts_reached(retry_state):
                         task.status = TASK_ACTIVATION_STATUS_RETRY
             pending_task_futures.remove(task)
-            logging.info("Completing task with futures...")
             _task_execution_complete(
                 inflight=task.inflight,
                 next_state=task.status,
@@ -447,7 +446,6 @@ def child_process(
                 task_produced_futures = set()
 
             if len(task_produced_futures) == 0:
-                logging.info("Completing task with no futures")
                 _task_execution_complete(
                     inflight,
                     next_state,
@@ -672,7 +670,6 @@ def child_process(
             inflight.host,
             futures_start_time,
         )
-        logging.info("Execution recorded")
 
     # Run the worker loop
     run_worker(
