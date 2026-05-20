@@ -7,7 +7,7 @@ use sqlx::sqlite::{
     SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteRow,
     SqliteSynchronous,
 };
-use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite};
+use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Transaction};
 
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -185,8 +185,20 @@ impl SqliteActivationStore {
     ) -> Result<PoolConnection<Sqlite>, Error> {
         let start = Instant::now();
         let conn = self.write_pool.acquire().await?;
-        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller).record(start.elapsed());
+        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller, "mode" => "conn")
+            .record(start.elapsed());
         Ok(conn)
+    }
+
+    async fn begin_write_tx_metric(
+        &self,
+        caller: &'static str,
+    ) -> Result<Transaction<'_, Sqlite>, Error> {
+        let start = Instant::now();
+        let tx = self.write_pool.begin().await?;
+        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller, "mode" => "begin")
+            .record(start.elapsed());
+        Ok(tx)
     }
 
     async fn emit_db_status_metrics(&self) {
@@ -693,17 +705,17 @@ impl InflightActivationStore for SqliteActivationStore {
         status: InflightActivationStatus,
         max_attempts: Option<u32>,
     ) -> Result<Option<InflightActivation>, Error> {
-        let mut conn = self.acquire_write_conn_metric("set_status").await?;
+        let mut tx = self.begin_write_tx_metric("set_status").await?;
 
         let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
         )
         .bind(status)
         .bind(id)
-        .fetch_optional(&mut *conn)
+        .fetch_optional(&mut *tx)
         .await?;
 
-        let Some(row) = result else {
+        let Some(mut row) = result else {
             return Ok(None);
         };
 
@@ -723,13 +735,18 @@ impl InflightActivationStore for SqliteActivationStore {
                 let retry_state = activation.retry_state.get_or_insert_default();
                 retry_state.max_attempts = max_attempts;
 
+                let updated_activation = activation.encode_to_vec();
                 sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
-                    .bind(activation.encode_to_vec())
+                    .bind(&updated_activation)
                     .bind(id)
-                    .execute(&mut *conn)
+                    .execute(&mut *tx)
                     .await?;
+
+                row.activation = updated_activation;
             }
         }
+
+        tx.commit().await?;
 
         Ok(Some(row.into()))
     }

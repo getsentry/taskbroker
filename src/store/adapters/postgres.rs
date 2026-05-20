@@ -5,7 +5,7 @@ use std::time::Instant;
 use sqlx::ConnectOptions;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
-use sqlx::{FromRow, Pool, Postgres, QueryBuilder};
+use sqlx::{FromRow, Pool, Postgres, QueryBuilder, Transaction};
 
 use anyhow::{Error, anyhow};
 use async_backtrace::framed;
@@ -184,8 +184,21 @@ impl PostgresActivationStore {
     ) -> Result<PoolConnection<Postgres>, Error> {
         let start = Instant::now();
         let conn = self.write_pool.acquire().await?;
-        metrics::histogram!("postgres.write.acquire_conn", "fn" => caller).record(start.elapsed());
+        metrics::histogram!("postgres.write.acquire_conn", "fn" => caller, "mode" => "conn")
+            .record(start.elapsed());
         Ok(conn)
+    }
+
+    #[framed]
+    async fn begin_write_tx_metric(
+        &self,
+        caller: &'static str,
+    ) -> Result<Transaction<'_, Postgres>, Error> {
+        let start = Instant::now();
+        let tx = self.write_pool.begin().await?;
+        metrics::histogram!("postgres.write.acquire_conn", "fn" => caller, "mode" => "begin")
+            .record(start.elapsed());
+        Ok(tx)
     }
 
     #[framed]
@@ -641,17 +654,17 @@ impl InflightActivationStore for PostgresActivationStore {
         status: InflightActivationStatus,
         max_attempts: Option<u32>,
     ) -> Result<Option<InflightActivation>, Error> {
-        let mut conn = self.acquire_write_conn_metric("set_status").await?;
+        let mut tx = self.begin_write_tx_metric("set_status").await?;
 
         let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *, kafka_offset AS offset",
         )
         .bind(status.to_string())
         .bind(id)
-        .fetch_optional(&mut *conn)
+        .fetch_optional(&mut *tx)
         .await?;
 
-        let Some(row) = result else {
+        let Some(mut row) = result else {
             return Ok(None);
         };
 
@@ -671,13 +684,18 @@ impl InflightActivationStore for PostgresActivationStore {
                 let retry_state = activation.retry_state.get_or_insert_default();
                 retry_state.max_attempts = max_attempts;
 
+                let updated_activation = activation.encode_to_vec();
                 sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
-                    .bind(activation.encode_to_vec())
+                    .bind(&updated_activation)
                     .bind(id)
-                    .execute(&mut *conn)
+                    .execute(&mut *tx)
                     .await?;
+
+                row.activation = updated_activation;
             }
         }
+
+        tx.commit().await?;
 
         Ok(Some(row.into()))
     }
