@@ -1,104 +1,50 @@
-use std::cmp::max;
-use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::Result;
 use async_backtrace::framed;
-use chrono::Utc;
-use elegant_departure::get_shutdown_guard;
-use flume::{Receiver, SendError, Sender};
-use hmac::{Hmac, Mac};
-use prost::Message;
-use sentry_protos::taskbroker::v1::worker_service_client::WorkerServiceClient;
-use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
-use sha2::Sha256;
-use tokio::sync::mpsc;
+use flume::{Receiver, Sender};
 use tokio::task::JoinSet;
-use tonic::metadata::MetadataValue;
-use tonic::transport::Channel;
-use tonic::{Request, async_trait};
-use tracing::{debug, error, info, warn};
+use tonic::async_trait;
 
 use crate::config::Config;
 use crate::push::thread::PushThread;
+use crate::push::updater::Updater;
 use crate::store::activation::InflightActivation;
 use crate::store::traits::InflightActivationStore;
+use crate::worker::WorkerMap;
 
 pub mod thread;
+pub mod updater;
 
-type HmacSha256 = Hmac<Sha256>;
+// Helper to compute the longest number of milliseconds an activation may be claimed.
+pub fn compute_claim_lease_ms(config: &Config) -> u64 {
+    // In the worst case, every activation in the batch will time out when appending to the push queue
+    let queue_ms = config.fetch_batch_size as u64 * config.push_queue_timeout_ms;
 
-pub type WorkerMap = HashMap<String, Box<dyn WorkerClient>>;
+    // In the worst case, every activation in the push queue will time out when sending
+    let send_ms = config.push_queue_size as u64 * config.push_timeout_ms;
 
-/// gRPC path for `WorkerService::PushTask` — keep in sync with `sentry_protos` generated client.
-const WORKER_PUSH_TASK_PATH: &str = "/sentry_protos.taskbroker.v1.WorkerService/PushTask";
+    let update_ms = if config.batch_push_updates {
+        // In the worst case, we will need to wait an entire interval before flushing a batch of push updates
+        config.push_update_interval_ms as u64
+    } else {
+        // Grace seconds will cover the update query duration until we decide to implement query timeouts
+        0
+    };
 
-/// HMAC-SHA256(secret, grpc_path + ":" + message), hex-encoded. Matches Python `RequestSignatureInterceptor` and broker [`crate::grpc::auth_middleware`].
-fn sentry_signature_hex(secret: &str, grpc_path: &str, message: &[u8]) -> String {
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
-    mac.update(grpc_path.as_bytes());
-    mac.update(b":");
-    mac.update(message);
-    hex::encode(mac.finalize().into_bytes())
+    // Account for grace seconds specified in configuration
+    let grace_ms = config.claim_expiration_grace_sec * 1000;
+
+    queue_ms + send_ms + update_ms + grace_ms
 }
 
-/// Thin interface for the worker client. It mostly serves to enable proper unit testing,
-/// but it also decouples the actual client implementation from our pushing logic.
+/// Thin interface for the push pool. It mostly serves to enable proper unit testing,
+/// but it also decouples fetch logic from push logic even further.
 #[async_trait]
-trait WorkerClient: Send + Sync {
-    /// Send a single `PushTaskRequest` to the worker service.
-    async fn push_task(&mut self, activation: InflightActivation) -> Result<()>;
-}
-
-/// Wrapper around worker connection that provides authentication and timeouts.
-struct Worker {
-    /// Connection to the worker service.
-    client: WorkerServiceClient<Channel>,
-
-    /// List of shared secrets.
-    secrets: Vec<String>,
-
-    /// Wait this much time on push.
-    timeout: Duration,
-}
-
-#[async_trait]
-impl WorkerClient for Worker {
-    #[framed]
-    async fn push_task(&mut self, activation: InflightActivation) -> Result<()> {
-        // Try to decode activation
-        let task =
-            TaskActivation::decode(&activation.activation as &[u8]).map_err(|e| anyhow!(e))?;
-
-        // The callback URL isn't used by push taskworkers anymore, so we can use an empty string until it's removed from the schema
-        let request = PushTaskRequest {
-            task: Some(task),
-            callback_url: "".into(),
-        };
-
-        // Wrap inside a Tonic request
-        let mut request = Request::new(request);
-
-        // Sign if secrets are present
-        if let Some(secret) = self.secrets.first() {
-            let body = request.get_ref().encode_to_vec();
-            let signature = sentry_signature_hex(secret, WORKER_PUSH_TASK_PATH, &body);
-            let value = MetadataValue::try_from(signature.as_str())
-                .context("sentry-signature metadata value must be valid ASCII")?;
-
-            request.metadata_mut().insert("sentry-signature", value);
-        }
-
-        // Push with timeout
-        let future = self.client.push_task(request);
-        tokio::time::timeout(self.timeout, future).await??;
-
-        Ok(())
-    }
+pub trait Pusher {
+    /// Submit a single task to the push pool.
+    async fn push_task(&self, activation: InflightActivation, time: Instant) -> Result<()>;
 }
 
 /// Wrapper around `config.push_threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
@@ -131,22 +77,32 @@ impl PushPool {
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     #[framed]
-    pub async fn start(&self, workers: Vec<WorkerMap>) -> Result<()> {
+    pub async fn start(&self, workers: Vec<WorkerMap>, updater: Arc<dyn Updater>) -> Result<()> {
         let mut workers = workers.into_iter();
 
-        let mut push_pool: JoinSet<Result<()>> =
-            crate::tokio::spawn_pool(self.config.push_threads, |_| {
-                let mut thread = PushThread::new(
-                    self.config.clone(),
-                    self.store.clone(),
-                    workers.next().unwrap(),
-                    self.receiver.clone(),
-                );
+        // Group the asynchronous tasks we spawn in this method using a `JoinSet`
+        let mut tasks = JoinSet::new();
+
+        tasks.spawn({
+            let updater = updater.clone();
+            async move { updater.start().await }
+        });
+
+        for _ in 0..self.config.push_threads {
+            tasks.spawn({
+                let mut thread = PushThread {
+                    config: self.config.clone(),
+                    store: self.store.clone(),
+                    workers: workers.next().unwrap(),
+                    receiver: self.receiver.clone(),
+                    updater: updater.clone(),
+                };
 
                 async move { thread.start().await }
             });
+        }
 
-        while let Some(result) = push_pool.join_next().await {
+        while let Some(result) = tasks.join_next().await {
             match result {
                 Ok(r) => r?,
                 Err(e) => return Err(e.into()),
@@ -155,35 +111,33 @@ impl PushPool {
 
         Ok(())
     }
+}
 
-    /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
+#[async_trait]
+impl Pusher for PushPool {
     #[framed]
-    pub async fn submit(
-        &self,
-        activation: InflightActivation,
-        time: Instant,
-    ) -> Result<(), PushError> {
+    async fn push_task(&self, activation: InflightActivation, time: Instant) -> Result<()> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
         let start = Instant::now();
 
         metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
 
         match tokio::time::timeout(duration, self.sender.send_async((activation, time))).await {
-            Ok(Ok(())) => {
+            // The channel has closed because all receivers were dropped
+            Ok(Err(e)) => {
+                // The only way this can happen is if the push threads have already exited, which is an invalid state
+                unreachable!("{}", e);
+            }
+
+            // The channel was full so the pushing timed out
+            Err(e) => {
+                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+                Err(e.into())
+            }
+
+            Ok(_) => {
                 metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
                 Ok(())
-            }
-
-            // The channel has a problem
-            Ok(Err(e)) => {
-                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
-                Err(PushError::Channel(e))
-            }
-
-            // The channel was full so the send timed out
-            Err(_elapsed) => {
-                metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
-                Err(PushError::Timeout)
             }
         }
     }

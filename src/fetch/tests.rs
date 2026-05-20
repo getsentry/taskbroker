@@ -7,7 +7,6 @@ use tokio::time::{Duration, sleep};
 use tonic::async_trait;
 
 use crate::config::Config;
-use crate::push::PushError;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};

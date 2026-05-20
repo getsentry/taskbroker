@@ -11,7 +11,7 @@ use tonic::async_trait;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::{PushError, PushPool};
+use crate::push::{PushPool, Pusher};
 use crate::store::activation::InflightActivation;
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::BucketRange;
@@ -48,48 +48,24 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
     (low, high)
 }
 
-/// Thin interface for the push pool. It mostly serves to enable proper unit testing,
-/// but it also decouples fetch logic from push logic even further.
-#[async_trait]
-pub trait TaskPusher {
-    /// Submit a single task to the push pool.
-    async fn submit_task(
-        &self,
-        activation: InflightActivation,
-        time: Instant,
-    ) -> Result<(), PushError>;
-}
-
-#[async_trait]
-impl TaskPusher for PushPool {
-    #[framed]
-    async fn submit_task(
-        &self,
-        activation: InflightActivation,
-        time: Instant,
-    ) -> Result<(), PushError> {
-        self.submit(activation, time).await
-    }
-}
-
 /// Wrapper around `config.fetch_threads` asynchronous tasks, each of which fetches batches of pending activations from the store, passes them to the push pool, and repeats.
-pub struct FetchPool<T: TaskPusher> {
+pub struct FetchPool<P: Pusher> {
     /// Inflight activation store.
     store: Arc<dyn InflightActivationStore>,
 
     /// Pool of push threads that push activations to the worker service.
-    pusher: Arc<T>,
+    pusher: Arc<P>,
 
     /// Taskbroker configuration.
     config: Arc<Config>,
 }
 
-impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
+impl<P: Pusher + Send + Sync + 'static> FetchPool<P> {
     /// Initialize a new fetch pool.
     pub fn new(
         store: Arc<dyn InflightActivationStore>,
         config: Arc<Config>,
-        pusher: Arc<T>,
+        pusher: Arc<P>,
     ) -> Self {
         Self {
             store,
@@ -174,10 +150,10 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                             );
                                         }
 
-                                        match pusher.submit_task(activation, start).await {
+                                        match pusher.push_task(activation, start).await {
                                             Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
 
-                                            Err(PushError::Timeout) => {
+                                            Err(_) => {
                                                 metrics::counter!("fetch.submit", "result" => "timeout")
                                                     .increment(1);
 
@@ -188,20 +164,6 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                                 );
 
                                                 // Wait for push queue to empty
-                                                backoff = true;
-                                            }
-
-                                            Err(PushError::Channel(e)) => {
-                                                metrics::counter!("fetch.submit", "result" => "channel_error")
-                                                    .increment(1);
-
-                                                warn!(
-                                                    task_id = %id,
-                                                    error = ?e,
-                                                    "Submit to push pool failed due to channel error",
-                                                );
-
-                                                // Wait before trying again
                                                 backoff = true;
                                             }
                                         }

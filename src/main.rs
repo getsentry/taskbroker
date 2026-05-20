@@ -6,6 +6,7 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
+use taskbroker::push::updater::LazyUpdater;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -325,7 +326,16 @@ async fn main() -> Result<(), Error> {
             workers.push(map);
         }
 
-        Some(tokio::spawn(async move { push_pool.start(workers).await }))
+        // Create the correct kind of push updater
+        let updater = if config.batch_push_updates {
+            Arc::new(LazyUpdater::new(config.clone(), store.clone()))
+        } else {
+            Arc::new(EagerUpdater::new(store.clone()))
+        };
+
+        Some(tokio::spawn(async move {
+            push_pool.start(workers, updater).await
+        }))
     } else {
         None
     };
