@@ -326,7 +326,7 @@ pub struct Config {
     pub push_update_batch_size: usize,
 
     /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
-    pub push_update_interval_ms: u64,
+    pub push_update_interval_ms: u32,
 
     /// (DEPRECATED) The hostname used to construct `callback_url` for task push requests.
     pub callback_addr: String,

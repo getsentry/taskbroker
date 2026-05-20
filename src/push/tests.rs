@@ -33,7 +33,7 @@ impl MockWorkerClient {
 
 #[async_trait]
 impl WorkerClient for MockWorkerClient {
-    async fn send(
+    async fn push_task(
         &mut self,
         request: PushTaskRequest,
         _grpc_shared_secret: &[String],
@@ -54,7 +54,7 @@ struct NotifyingWorkerClient {
 
 #[async_trait]
 impl WorkerClient for NotifyingWorkerClient {
-    async fn send(&mut self, _request: PushTaskRequest, _: &[String]) -> Result<()> {
+    async fn push_task(&mut self, _request: PushTaskRequest, _: &[String]) -> Result<()> {
         self.notify.notify_one();
         if self.should_fail {
             return Err(anyhow!("mock send failure"));

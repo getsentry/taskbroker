@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_backtrace::framed;
 use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
@@ -17,22 +17,21 @@ use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
 use sha2::Sha256;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tonic::async_trait;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
+use tonic::{Request, async_trait};
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
+use crate::push::thread::PushThread;
 use crate::store::activation::InflightActivation;
 use crate::store::traits::InflightActivationStore;
 
+pub mod thread;
+
 type HmacSha256 = Hmac<Sha256>;
 
-type WorkerFactory = Arc<
-    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<Box<dyn WorkerClient + Send>>> + Send>>
-        + Send
-        + Sync,
->;
+pub type WorkerMap = HashMap<String, Box<dyn WorkerClient>>;
 
 /// gRPC path for `WorkerService::PushTask` — keep in sync with `sentry_protos` generated client.
 const WORKER_PUSH_TASK_PATH: &str = "/sentry_protos.taskbroker.v1.WorkerService/PushTask";
@@ -47,47 +46,56 @@ fn sentry_signature_hex(secret: &str, grpc_path: &str, message: &[u8]) -> String
     hex::encode(mac.finalize().into_bytes())
 }
 
-/// Error returned when enqueueing an activation for the push workers fails.
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub enum PushError {
-    /// The bounded queue stayed full until `push_queue_timeout_ms` elapsed.
-    Timeout,
-
-    /// Channel disconnected (no receivers) or another failure.
-    Channel(SendError<(InflightActivation, Instant)>),
-}
-
-/// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
+/// Thin interface for the worker client. It mostly serves to enable proper unit testing,
+/// but it also decouples the actual client implementation from our pushing logic.
 #[async_trait]
-trait WorkerClient {
+trait WorkerClient: Send + Sync {
     /// Send a single `PushTaskRequest` to the worker service.
-    /// When `grpc_shared_secret` is not empty, it signs the request with `grpc_shared_secret[0]` and sets `sentry-signature` metadata (same scheme as Python pull client and broker `AuthLayer`).
-    async fn send(&mut self, request: PushTaskRequest, grpc_shared_secret: &[String])
-    -> Result<()>;
+    async fn push_task(&mut self, activation: InflightActivation) -> Result<()>;
+}
+
+/// Wrapper around worker connection that provides authentication and timeouts.
+struct Worker {
+    /// Connection to the worker service.
+    client: WorkerServiceClient<Channel>,
+
+    /// List of shared secrets.
+    secrets: Vec<String>,
+
+    /// Wait this much time on push.
+    timeout: Duration,
 }
 
 #[async_trait]
-impl WorkerClient for WorkerServiceClient<Channel> {
+impl WorkerClient for Worker {
     #[framed]
-    async fn send(
-        &mut self,
-        request: PushTaskRequest,
-        grpc_shared_secret: &[String],
-    ) -> Result<()> {
-        let mut req = tonic::Request::new(request);
+    async fn push_task(&mut self, activation: InflightActivation) -> Result<()> {
+        // Try to decode activation
+        let task =
+            TaskActivation::decode(&activation.activation as &[u8]).map_err(|e| anyhow!(e))?;
 
-        if let Some(secret) = grpc_shared_secret.first() {
-            let body = req.get_ref().encode_to_vec();
+        // The callback URL isn't used by push taskworkers anymore, so we can use an empty string until it's removed from the schema
+        let request = PushTaskRequest {
+            task: Some(task),
+            callback_url: "".into(),
+        };
+
+        // Wrap inside a Tonic request
+        let mut request = Request::new(request);
+
+        // Sign if secrets are present
+        if let Some(secret) = self.secrets.first() {
+            let body = request.get_ref().encode_to_vec();
             let signature = sentry_signature_hex(secret, WORKER_PUSH_TASK_PATH, &body);
             let value = MetadataValue::try_from(signature.as_str())
                 .context("sentry-signature metadata value must be valid ASCII")?;
-            req.metadata_mut().insert("sentry-signature", value);
+
+            request.metadata_mut().insert("sentry-signature", value);
         }
 
-        self.push_task(req)
-            .await
-            .map_err(|status| anyhow::anyhow!(status))?;
+        // Push with timeout
+        let future = self.client.push_task(request);
+        tokio::time::timeout(self.timeout, future).await??;
 
         Ok(())
     }
@@ -101,41 +109,16 @@ pub struct PushPool {
     /// The receiving end of a channel that accepts task activations.
     receiver: Receiver<(InflightActivation, Instant)>,
 
-    /// Queue for batching claimed → processing updates.
-    update_tx: Option<mpsc::Sender<String>>,
-
     /// Taskbroker configuration.
     config: Arc<Config>,
 
     /// Activation store, which we need for marking tasks as sent.
     store: Arc<dyn InflightActivationStore>,
-
-    worker_factory: WorkerFactory,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(
-        config: Arc<Config>,
-        store: Arc<dyn InflightActivationStore>,
-        update_tx: Option<mpsc::Sender<String>>,
-    ) -> Self {
-        let worker_factory: WorkerFactory = Arc::new(|endpoint: String| {
-            Box::pin(async move {
-                let client = WorkerServiceClient::connect(endpoint).await?;
-                Ok(Box::new(client) as Box<dyn WorkerClient + Send>)
-            })
-        });
-
-        Self::new_with_factory(config, store, worker_factory, update_tx)
-    }
-
-    fn new_with_factory(
-        config: Arc<Config>,
-        store: Arc<dyn InflightActivationStore>,
-        worker_factory: WorkerFactory,
-        update_tx: Option<mpsc::Sender<String>>,
-    ) -> Self {
+    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
@@ -143,104 +126,29 @@ impl PushPool {
             receiver,
             config,
             store,
-            worker_factory,
-            update_tx,
         }
     }
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     #[framed]
-    pub async fn start(&self) -> Result<()> {
-        let store = self.store.clone();
-        let worker_factory = self.worker_factory.clone();
-        let mut push_pool: JoinSet<Result<()>> = crate::tokio::spawn_pool(
-            self.config.push_threads,
-            |_| {
-                let worker_map = self.config.worker_map.clone();
-                let receiver = self.receiver.clone();
-                let store = store.clone();
-                let worker_factory = worker_factory.clone();
-                let update_tx = self.update_tx.clone();
+    pub async fn start(&self, workers: Vec<WorkerMap>) -> Result<()> {
+        let mut workers = workers.into_iter();
 
-                let guard = get_shutdown_guard().shutdown_on_drop();
+        let mut push_pool: JoinSet<Result<()>> =
+            crate::tokio::spawn_pool(self.config.push_threads, |_| {
+                let mut thread = PushThread::new(
+                    self.config.clone(),
+                    self.store.clone(),
+                    workers.next().unwrap(),
+                    self.receiver.clone(),
+                );
 
-                let timeout = Duration::from_millis(self.config.push_timeout_ms);
-                let grpc_shared_secret = self.config.grpc_shared_secret.clone();
-
-                async_backtrace::frame!(async move {
-                    metrics::counter!("push.worker.connect.attempt").increment(1);
-
-                    let mut workers: HashMap<String, Box<dyn WorkerClient + Send>> = HashMap::new();
-
-                    for (application, endpoint) in worker_map.clone() {
-                        let worker = match worker_factory(endpoint).await {
-                            Ok(w) => {
-                                metrics::counter!("push.worker.connect", "result" => "ok", "application" => application.clone())
-                                    .increment(1);
-                                w
-                            }
-
-                            Err(e) => {
-                                metrics::counter!("push.worker.connect", "result" => "error", "application" => application.clone())
-                                    .increment(1);
-                                error!(error = ?e, "Failed to connect to worker");
-
-                                return Err(e);
-                            }
-                        };
-
-                        workers.insert(application, worker);
-                    }
-
-                    loop {
-                        tokio::select! {
-                            _ = guard.wait() => {
-                                info!("Push worker received shutdown signal");
-                                break;
-                            }
-
-                            message = receiver.recv_async() => {
-                                let (activation, time) = match message {
-                                    // Received activation from fetch thread
-                                    Ok(a) => a,
-
-                                    // Channel closed
-                                    Err(_) => break,
-                                };
-
-                                metrics::histogram!("push.queue.latency").record(time.elapsed());
-
-                                push_task(store.clone(), update_tx.as_ref(), activation, &mut workers, timeout, grpc_shared_secret.as_slice()).await;
-                            }
-                        }
-                    }
-
-                    // Drain channel before exiting without recording duration metrics since they don't matter at this time
-                    for (activation, _) in receiver.drain() {
-                        push_task(
-                            store.clone(),
-                            update_tx.as_ref(),
-                            activation,
-                            &mut workers,
-                            timeout,
-                            grpc_shared_secret.as_slice(),
-                        )
-                        .await;
-                    }
-
-                    Ok(())
-                })
-            },
-        );
+                async move { thread.start().await }
+            });
 
         while let Some(result) = push_pool.join_next().await {
             match result {
-                Ok(r) => {
-                    // Connection failed
-                    r?
-                }
-
-                // Join failed
+                Ok(r) => r?,
                 Err(e) => return Err(e.into()),
             }
         }
@@ -276,193 +184,6 @@ impl PushPool {
             Err(_elapsed) => {
                 metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
                 Err(PushError::Timeout)
-            }
-        }
-    }
-}
-
-/// Determine which worker should receive an activation, send the activation, and update its status.
-async fn push_task(
-    store: Arc<dyn InflightActivationStore>,
-    update_tx: Option<&mpsc::Sender<String>>,
-    activation: InflightActivation,
-    workers: &mut HashMap<String, Box<dyn WorkerClient + Send>>,
-    timeout: Duration,
-    grpc_shared_secret: &[String],
-) {
-    let id = activation.id.clone();
-
-    let Some(worker) = workers.get_mut(&activation.application) else {
-        metrics::counter!("push.missing_worker_mapping", "application" => activation.application.clone()).increment(1);
-
-        error!(
-            task_id = %id,
-            application = activation.application,
-            "Task application has no worker pool mapping"
-        );
-
-        return;
-    };
-
-    match send_task(
-        worker.as_mut(),
-        activation.clone(),
-        timeout,
-        grpc_shared_secret,
-    )
-    .await
-    {
-        Ok(_) => {
-            metrics::counter!("push.push_task", "result" => "ok").increment(1);
-            debug!(task_id = %id, "Activation sent to worker");
-
-            if activation.processing_attempts < 1 {
-                let latency = max(0, activation.received_latency(Utc::now()));
-
-                metrics::histogram!(
-                    "push.received_to_push.latency",
-                    "namespace" => activation.namespace,
-                    "taskname" => activation.taskname,
-                )
-                .record(latency as f64);
-            } else {
-                debug!(
-                    task_id = %id,
-                    namespace = activation.namespace,
-                    taskname = activation.taskname,
-                    "Activation already processed, skipping \
-                     received → push latency recording"
-                );
-            }
-
-            let start = Instant::now();
-
-            if let Some(tx) = update_tx {
-                let depth = tx.max_capacity() - tx.capacity();
-                metrics::gauge!("push.update_queue.depth").set(depth as f64);
-
-                let result = tx.send(id.clone()).await;
-                metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
-
-                if let Err(e) = result {
-                    metrics::counter!("push.mark_processing", "result" => "error").increment(1);
-
-                    error!(
-                        task_id = %id,
-                        error = ?e,
-                        "Failed to enqueue push update"
-                    );
-                }
-            } else {
-                let result = store.mark_processing(&id).await;
-                metrics::histogram!("push.mark_processing.duration").record(start.elapsed());
-
-                if let Err(e) = result {
-                    metrics::counter!("push.mark_processing", "result" => "error").increment(1);
-
-                    error!(
-                        task_id = %id,
-                        error = ?e,
-                        "Failed to mark activation as processing after push"
-                    );
-                }
-            }
-        }
-
-        // Once processing deadline expires, status will be set back to pending
-        Err(e) => {
-            metrics::counter!("push.push_task", "result" => "error").increment(1);
-
-            error!(
-                task_id = %id,
-                error = ?e,
-                "Failed to send activation to worker"
-            )
-        }
-    };
-}
-
-/// Decode task activation and send it to the worker service for a particular application.
-#[framed]
-async fn send_task(
-    worker: &mut (dyn WorkerClient + Send),
-    activation: InflightActivation,
-    timeout: Duration,
-    grpc_shared_secret: &[String],
-) -> Result<()> {
-    let start = Instant::now();
-    metrics::counter!("push.push_task.attempts").increment(1);
-
-    // Try to decode activation (if it fails, we will see the error where `push_task` is called)
-    let task = match TaskActivation::decode(&activation.activation as &[u8]) {
-        Ok(task) => task,
-        Err(err) => {
-            metrics::histogram!("push.push_task.duration").record(start.elapsed());
-            return Err(err.into());
-        }
-    };
-
-    // The callback URL isn't used by push taskworkers anymore, so we can use an empty string until it's removed from the schema
-    let request = PushTaskRequest {
-        task: Some(task),
-        callback_url: "".into(),
-    };
-
-    let result = match tokio::time::timeout(timeout, worker.send(request, grpc_shared_secret)).await
-    {
-        Ok(r) => r,
-        Err(e) => Err(e.into()),
-    };
-
-    metrics::histogram!("push.push_task.duration").record(start.elapsed());
-    result
-}
-
-pub async fn flush_updates(store: Arc<dyn InflightActivationStore>, buffer: &mut Vec<String>) {
-    if buffer.is_empty() {
-        return;
-    }
-
-    let start = Instant::now();
-    let ids: Vec<_> = std::mem::take(buffer);
-
-    let requested = ids.len() as u64;
-    metrics::histogram!("push.flush_updates.requested").record(requested as f64);
-
-    let result = store.mark_processing_batch(&ids).await;
-    metrics::histogram!("push.mark_processing_batch.duration").record(start.elapsed());
-
-    match result {
-        Ok(affected) => {
-            metrics::histogram!("push.flush_updates.affected").record(affected as f64);
-
-            metrics::counter!("push.flush_updates.updated").increment(affected);
-            metrics::counter!("push.flush_updates", "result" => "ok").increment(1);
-
-            if affected < requested {
-                metrics::counter!("push.flush_updates.partial").increment(1);
-
-                warn!(
-                    requested,
-                    affected, "Updated fewer rows than IDs requested from push pool"
-                );
-            }
-
-            debug!(affected, requested, "Flushed update batch from push pool");
-        }
-
-        Err(e) => {
-            metrics::counter!("push.flush_updates", "result" => "error").increment(1);
-
-            error!(
-                requested,
-                error = ?e,
-                "Failed to flush update batch from push pool"
-            );
-
-            // Push failed updates back into the buffer so they can be retried on next flush
-            for id in ids {
-                buffer.push(id);
             }
         }
     }

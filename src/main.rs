@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -278,7 +279,7 @@ async fn main() -> Result<(), Error> {
                 flusher::run_flusher(
                     rx,
                     flusher_config.push_update_batch_size,
-                    flusher_config.push_update_interval_ms,
+                    flusher_config.push_update_interval_ms as u64,
                     move |buffer| Box::pin(push::flush_updates(flusher_store.clone(), buffer)),
                 )
                 .await
@@ -290,12 +291,41 @@ async fn main() -> Result<(), Error> {
         };
 
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone(), push_update_tx));
+    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
     let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
     // Initialize push threads
     let push_task = if config.delivery_mode.is_push() {
-        Some(tokio::spawn(async move { push_pool.start().await }))
+        let mut workers: Vec<WorkerMap> = vec![];
+
+        // For every push thread, create a map from applications to worker connections
+        for i in config.push_threads {
+            let map = HashMap::new();
+
+            for (application, endpoint) in config.worker_map.clone() {
+                let worker = match Worker::connect(endpoint).await {
+                    Ok(w) => {
+                        metrics::counter!("worker.connect", "result" => "ok", "application" => application.clone()).increment(1);
+                        debug!("Connected to worker!");
+
+                        w
+                    }
+
+                    Err(e) => {
+                        metrics::counter!("worker.connect", "result" => "error", "application" => application.clone()).increment(1);
+                        error!(error = ?e, "Failed to connect to worker");
+
+                        return Err(e);
+                    }
+                };
+
+                map.insert(application, worker);
+            }
+
+            workers.push(map);
+        }
+
+        Some(tokio::spawn(async move { push_pool.start(workers).await }))
     } else {
         None
     };
