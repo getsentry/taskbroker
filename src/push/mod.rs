@@ -41,7 +41,7 @@ pub fn compute_claim_lease_ms(config: &Config) -> u64 {
 /// Thin interface for the push pool. It mostly serves to enable proper unit testing,
 /// but it also decouples fetch logic from push logic even further.
 #[async_trait]
-pub trait Pusher {
+pub trait TaskPusher {
     /// Submit a single task to the push pool.
     async fn push_task(&self, activation: InflightActivation, time: Instant) -> Result<()>;
 }
@@ -120,7 +120,7 @@ impl PushPool {
 }
 
 #[async_trait]
-impl Pusher for PushPool {
+impl TaskPusher for PushPool {
     #[framed]
     async fn push_task(&self, activation: InflightActivation, time: Instant) -> Result<()> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);

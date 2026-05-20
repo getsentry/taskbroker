@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
 use crate::config::Config;
-use crate::push::Pusher;
+use crate::push::TaskPusher;
 use crate::push::updater::test_eager_updater;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;

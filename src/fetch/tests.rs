@@ -207,7 +207,7 @@ impl RecordingPusher {
 }
 
 #[async_trait]
-impl Pusher for RecordingPusher {
+impl TaskPusher for RecordingPusher {
     async fn push_task(&self, activation: InflightActivation, _time: Instant) -> Result<()> {
         self.pushed_ids.lock().await.push(activation.id.clone());
 

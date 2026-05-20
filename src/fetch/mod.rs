@@ -10,7 +10,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::Pusher;
+use crate::push::TaskPusher;
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::BucketRange;
 
@@ -47,23 +47,23 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
 }
 
 /// Wrapper around `config.fetch_threads` asynchronous tasks, each of which fetches batches of pending activations from the store, passes them to the push pool, and repeats.
-pub struct FetchPool<P: Pusher> {
+pub struct FetchPool<T: TaskPusher> {
     /// Inflight activation store.
     store: Arc<dyn InflightActivationStore>,
 
     /// Pool of push threads that push activations to the worker service.
-    pusher: Arc<P>,
+    pusher: Arc<T>,
 
     /// Taskbroker configuration.
     config: Arc<Config>,
 }
 
-impl<P: Pusher + Send + Sync + 'static> FetchPool<P> {
+impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
     /// Initialize a new fetch pool.
     pub fn new(
         store: Arc<dyn InflightActivationStore>,
         config: Arc<Config>,
-        pusher: Arc<P>,
+        pusher: Arc<T>,
     ) -> Self {
         Self {
             store,
