@@ -279,59 +279,60 @@ impl InflightActivationStore for PostgresActivationStore {
     /// Get the size of the database in bytes based on SQLite metadata queries.
     #[framed]
     async fn db_size(&self) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "db_size", || async {
-            let row_result: (i64,) = sqlx::query_as("SELECT pg_database_size($1) as size")
+        let row_result: (i64,) = retry_query(&self.config.retry_config, "db_size", || async {
+            Ok(sqlx::query_as("SELECT pg_database_size($1) as size")
                 .bind(&self.config.pg_database_name)
                 .fetch_one(&self.read_pool)
-                .await?;
-            if row_result.0 < 0 {
-                return Ok(0);
-            }
-            Ok(row_result.0 as u64)
+                .await?)
         })
-        .await
+        .await?;
+        if row_result.0 < 0 {
+            return Ok(0);
+        }
+        Ok(row_result.0 as u64)
     }
 
     /// Get an activation by id. Primarily used for testing
     #[framed]
     async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
-        retry_query(&self.config.retry_config, "get_by_id", || async {
-            let row_result: Option<TableRow> = sqlx::query_as(
-                "
-                SELECT id,
-                    activation,
-                    partition,
-                    kafka_offset AS offset,
-                    added_at,
-                    received_at,
-                    processing_attempts,
-                    expires_at,
-                    delay_until,
-                    processing_deadline_duration,
-                    processing_deadline,
-                    claim_expires_at,
-                    status,
-                    at_most_once,
-                    application,
-                    namespace,
-                    taskname,
-                    on_attempts_exceeded,
-                    bucket
-                FROM inflight_taskactivations
-                WHERE id = $1
-                ",
-            )
-            .bind(id)
-            .fetch_optional(&self.read_pool)
+        let row_result: Option<TableRow> =
+            retry_query(&self.config.retry_config, "get_by_id", || async {
+                Ok(sqlx::query_as(
+                    "
+                    SELECT id,
+                        activation,
+                        partition,
+                        kafka_offset AS offset,
+                        added_at,
+                        received_at,
+                        processing_attempts,
+                        expires_at,
+                        delay_until,
+                        processing_deadline_duration,
+                        processing_deadline,
+                        claim_expires_at,
+                        status,
+                        at_most_once,
+                        application,
+                        namespace,
+                        taskname,
+                        on_attempts_exceeded,
+                        bucket
+                    FROM inflight_taskactivations
+                    WHERE id = $1
+                    ",
+                )
+                .bind(id)
+                .fetch_optional(&self.read_pool)
+                .await?)
+            })
             .await?;
 
-            let Some(row) = row_result else {
-                return Ok(None);
-            };
+        let Some(row) = row_result else {
+            return Ok(None);
+        };
 
-            Ok(Some(row.into()))
-        })
-        .await
+        Ok(Some(row.into()))
     }
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {

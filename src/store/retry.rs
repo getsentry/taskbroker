@@ -28,10 +28,7 @@ impl RetryConfig {
 fn is_retryable_error(err: &Error) -> bool {
     matches!(
         err.downcast_ref::<sqlx::Error>(),
-        Some(sqlx::Error::Io(_))
-            | Some(sqlx::Error::PoolTimedOut)
-            | Some(sqlx::Error::PoolClosed)
-            | Some(sqlx::Error::WorkerCrashed)
+        Some(sqlx::Error::Io(_)) | Some(sqlx::Error::PoolTimedOut)
     )
 }
 
@@ -182,13 +179,15 @@ mod tests {
     fn test_is_retryable_error() {
         // Retryable: transient connection/pool errors
         assert!(is_retryable_error(&Error::from(sqlx::Error::PoolTimedOut)));
-        assert!(is_retryable_error(&Error::from(sqlx::Error::PoolClosed)));
-        assert!(is_retryable_error(&Error::from(sqlx::Error::WorkerCrashed)));
         assert!(is_retryable_error(&Error::from(sqlx::Error::Io(
             std::io::Error::new(std::io::ErrorKind::ConnectionReset, "connection reset")
         ))));
 
-        // Not retryable: logic/schema errors
+        // Not retryable: unrecoverable or logic/schema errors
+        assert!(!is_retryable_error(&Error::from(sqlx::Error::PoolClosed)));
+        assert!(!is_retryable_error(&Error::from(
+            sqlx::Error::WorkerCrashed
+        )));
         assert!(!is_retryable_error(&Error::from(sqlx::Error::RowNotFound)));
         assert!(!is_retryable_error(&Error::from(
             sqlx::Error::ColumnNotFound("id".into())

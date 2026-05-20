@@ -377,57 +377,57 @@ impl InflightActivationStore for SqliteActivationStore {
 
     /// Get the size of the database in bytes based on SQLite metadata queries.
     async fn db_size(&self) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "db_size", || async {
-            let result: u64 = sqlx::query(
+        let row = retry_query(&self.config.retry_config, "db_size", || async {
+            Ok(sqlx::query(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
             )
             .fetch_one(&self.read_pool)
-            .await?
-            .get(0);
-            Ok(result)
+            .await?)
         })
-        .await
+        .await?;
+        Ok(row.get(0))
     }
 
     /// Get an activation by id. Primarily used for testing
     async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
-        retry_query(&self.config.retry_config, "get_by_id", || async {
-            let row_result: Option<TableRow> = sqlx::query_as(
-                "
-                SELECT id,
-                    activation,
-                    partition,
-                    offset,
-                    added_at,
-                    received_at,
-                    processing_attempts,
-                    expires_at,
-                    delay_until,
-                    processing_deadline_duration,
-                    processing_deadline,
-                    claim_expires_at,
-                    status,
-                    at_most_once,
-                    application,
-                    namespace,
-                    taskname,
-                    on_attempts_exceeded,
-                    bucket
-                FROM inflight_taskactivations
-                WHERE id = $1
-                ",
-            )
-            .bind(id)
-            .fetch_optional(&self.read_pool)
+        let row_result: Option<TableRow> =
+            retry_query(&self.config.retry_config, "get_by_id", || async {
+                Ok(sqlx::query_as(
+                    "
+                    SELECT id,
+                        activation,
+                        partition,
+                        offset,
+                        added_at,
+                        received_at,
+                        processing_attempts,
+                        expires_at,
+                        delay_until,
+                        processing_deadline_duration,
+                        processing_deadline,
+                        claim_expires_at,
+                        status,
+                        at_most_once,
+                        application,
+                        namespace,
+                        taskname,
+                        on_attempts_exceeded,
+                        bucket
+                    FROM inflight_taskactivations
+                    WHERE id = $1
+                    ",
+                )
+                .bind(id)
+                .fetch_optional(&self.read_pool)
+                .await?)
+            })
             .await?;
 
-            let Some(row) = row_result else {
-                return Ok(None);
-            };
+        let Some(row) = row_result else {
+            return Ok(None);
+        };
 
-            Ok(Some(row.into()))
-        })
-        .await
+        Ok(Some(row.into()))
     }
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
@@ -692,26 +692,28 @@ impl InflightActivationStore for SqliteActivationStore {
 
     #[instrument(skip_all)]
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
-        retry_query(&self.config.retry_config, "count_by_status", || async {
-            let result = sqlx::query(
+        let result = retry_query(&self.config.retry_config, "count_by_status", || async {
+            Ok(sqlx::query(
                 "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1",
             )
             .bind(status)
             .fetch_one(&self.read_pool)
-            .await?;
-            Ok(result.get::<u64, _>("count") as usize)
+            .await?)
         })
-        .await
+        .await?;
+        Ok(result.get::<u64, _>("count") as usize)
     }
 
     async fn count(&self) -> Result<usize, Error> {
-        retry_query(&self.config.retry_config, "count", || async {
-            let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
-                .fetch_one(&self.read_pool)
-                .await?;
-            Ok(result.get::<u64, _>("count") as usize)
+        let result = retry_query(&self.config.retry_config, "count", || async {
+            Ok(
+                sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
+                    .fetch_one(&self.read_pool)
+                    .await?,
+            )
         })
-        .await
+        .await?;
+        Ok(result.get::<u64, _>("count") as usize)
     }
 
     /// Update the status of a specific activation
@@ -781,7 +783,7 @@ impl InflightActivationStore for SqliteActivationStore {
 
     #[instrument(skip_all)]
     async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        retry_query(
+        let rows: Vec<TableRow> = retry_query(
             &self.config.retry_config,
             "get_retry_activations",
             || async {
@@ -812,13 +814,11 @@ impl InflightActivationStore for SqliteActivationStore {
                 )
                 .bind(InflightActivationStatus::Retry)
                 .fetch_all(&self.read_pool)
-                .await?
-                .into_iter()
-                .map(|row: TableRow| row.into())
-                .collect())
+                .await?)
             },
         )
-        .await
+        .await?;
+        Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
     async fn clear(&self) -> Result<(), Error> {
