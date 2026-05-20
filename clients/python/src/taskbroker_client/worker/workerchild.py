@@ -229,6 +229,12 @@ def child_process(
                 futures_start_time=task.futures_start_time,
             )
 
+        def check_task_future_completion() -> None:
+            if len(pending_task_futures) > 0:
+                for task in pending_task_futures.copy():
+                    if all([f.done() for f in task.pending_futures]):
+                        await_task_futures(task)
+
         while not shutdown_event.is_set() and not local_shutdown.is_set():
             if max_task_count and processed_task_count >= max_task_count:
                 metrics.incr(
@@ -247,6 +253,7 @@ def child_process(
                     "taskworker.worker.child_task_queue_empty",
                     tags={"processing_pool": processing_pool_name},
                 )
+                check_task_future_completion()
                 continue
 
             task_func = _get_known_task(inflight.activation)
@@ -375,11 +382,11 @@ def child_process(
             clear_current_task()
             processed_task_count += 1
 
-            task_produced_futures = set()
+            task_produced_futures = TaskProducer.collect_futures()
             # If the task function itself failed, we don't need to await any
             # producer futures since it'll be retried anyways
-            if next_state == TASK_ACTIVATION_STATUS_COMPLETE:
-                task_produced_futures = TaskProducer.collect_futures()
+            if next_state != TASK_ACTIVATION_STATUS_COMPLETE:
+                task_produced_futures = set()
 
             if len(task_produced_futures) == 0:
                 logging.info("Completing task with no futures")
@@ -398,10 +405,7 @@ def child_process(
                 )
                 pending_task_futures.append(pending_task)
 
-            if len(pending_task_futures) > 0:
-                for task in pending_task_futures.copy():
-                    if all([f.done() for f in task.pending_futures]):
-                        await_task_futures(task)
+            check_task_future_completion()
 
         # Once we get the shutdown signal, drain any pending futures
         for task in pending_task_futures.copy():

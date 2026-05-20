@@ -1345,3 +1345,36 @@ def test_child_process_retries_on_failed_future(
     result = processed.get(timeout=5)
     assert result.task_id == retriable_task.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
+
+
+def test_child_process_clears_pending_futures_when_task_fails(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
+    leftover_future.set_result(_make_broker_value())
+    _pending_futures.add(leftover_future)
+    assert len(_pending_futures) == 1
+
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(FAIL_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    result = processed.get(timeout=5)
+    assert result.task_id == FAIL_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+
+    # The orphaned future is dropped (the activation will be retried at the
+    # broker level if applicable) but the global registry is cleared so it
+    # cannot bleed into the next task this child processes.
+    assert len(_pending_futures) == 0
