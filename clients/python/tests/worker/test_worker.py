@@ -1135,6 +1135,73 @@ def test_child_process_retry_on_deadline_exceeded(mock_capture: mock.Mock) -> No
     assert type(mock_capture.call_args.args[0]) is ProcessingDeadlineExceeded
 
 
+@mock.patch("taskbroker_client.worker.workerchild.logger")
+def test_child_process_general_exception_logs_task_failed(mock_logger: mock.Mock) -> None:
+    """A non-retriable Exception emits taskworker.task.failed with all fields."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    # examples.fail_task has no retry policy → raises ValueError once,
+    # task fails terminally on first attempt.
+    todo.put(FAIL_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    result = processed.get()
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+    assert mock_logger.exception.call_count == 1
+    args, kwargs = mock_logger.exception.call_args
+    assert args[0] == "taskworker.task.failed"
+    extra = kwargs["extra"]
+    assert extra["task_id"] == "333"
+    assert extra["taskname"] == "examples.fail_task"
+    assert extra["namespace"] == "examples"
+    assert extra["processing_pool"] == "test"
+    assert extra["exception_type"] == "ValueError"
+    assert "exception_message" in extra
+
+
+@mock.patch("taskbroker_client.worker.workerchild.logger")
+def test_child_process_silenced_exception_does_not_log_task_failed(
+    mock_logger: mock.Mock,
+) -> None:
+    """When err is in silenced_exceptions, taskworker.task.failed is NOT logged.
+    Preserves the silencing semantics added in #608."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(RETRY_TASK_WITH_SILENCED_UNHANDLED_EXCEPTION)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    result = processed.get()
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+    # Other log calls (e.g., taskworker.task.retry) may have fired, but
+    # taskworker.task.failed must not have.
+    failed_calls = [
+        c
+        for c in mock_logger.exception.call_args_list
+        if c.args and c.args[0] == "taskworker.task.failed"
+    ]
+    assert failed_calls == []
+
+
 # Tests for TaskProducer future tracking, storage, and drain-on-shutdown behavior
 # in child_process. These tests patch TaskProducer.collect_futures so we can inject
 # controllable futures without needing a real Kafka broker.
