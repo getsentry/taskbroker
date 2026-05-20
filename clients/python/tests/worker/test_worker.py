@@ -45,7 +45,7 @@ from taskbroker_client.worker.worker import (
     TaskWorkerProcessingPool,
     WorkerServicer,
 )
-from taskbroker_client.worker.workerchild import ProcessingDeadlineExceeded, child_process
+from taskbroker_client.worker.workerchild import child_process
 
 SIMPLE_TASK = InflightTaskActivation(
     host="localhost:50051",
@@ -664,8 +664,11 @@ def test_child_process_retry_task() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
+@mock.patch("taskbroker_client.worker.workerchild.logger")
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_retry_task_max_attempts(mock_capture: mock.Mock) -> None:
+def test_child_process_retry_task_max_attempts(
+    mock_capture: mock.Mock, mock_logger: mock.Mock
+) -> None:
     # Create an activation that is on its final attempt and
     # will raise an error again.
     activation = InflightTaskActivation(
@@ -708,6 +711,19 @@ def test_child_process_retry_task_max_attempts(mock_capture: mock.Mock) -> None:
     # Error type and chained error should be captured.
     assert isinstance(capture_call[0], NoRetriesRemainingError)
     assert isinstance(capture_call[0].__cause__, RuntimeError)
+
+    # Retry-exhausted emits a structured worker log, but not via
+    # logger.exception; the explicit NoRetriesRemainingError capture above
+    # remains the only Sentry error event from this branch.
+    mock_logger.exception.assert_not_called()
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert args[0] == "taskworker.task.retry_exhausted"
+    extra = kwargs["extra"]
+    assert extra["exception_type"] == "RuntimeError"
+    assert extra["taskname"] == "examples.will_retry"
+    assert extra["retry_attempts"] == 2
+    assert extra["retry_max_attempts"] == 3
 
 
 def test_child_process_failure_task() -> None:
@@ -867,8 +883,8 @@ def test_child_process_pass_headers() -> None:
     redis.delete("task-headers-value", "task-headers-count", "task-headers-custom")
 
 
-@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_terminate_task(mock_capture: mock.Mock) -> None:
+@mock.patch("taskbroker_client.worker.workerchild.logger")
+def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -900,8 +916,16 @@ def test_child_process_terminate_task(mock_capture: mock.Mock) -> None:
     result = processed.get(block=False)
     assert result.task_id == sleepy.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_FAILURE
-    assert mock_capture.call_count == 1
-    assert type(mock_capture.call_args.args[0]) is ProcessingDeadlineExceeded
+    assert mock_logger.exception.call_count == 1
+    args, kwargs = mock_logger.exception.call_args
+    assert args[0] == "taskworker.task.failed"
+    extra = kwargs["extra"]
+    assert extra["exception_type"] == "ProcessingDeadlineExceeded"
+    assert extra["taskname"] == "examples.timed"
+    assert extra["namespace"] == "examples"
+    assert extra["task_id"] == "111"
+    assert extra["processing_pool"] == "test"
+    assert "execution deadline" in extra["exception_message"]
 
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
@@ -1032,8 +1056,8 @@ def test_child_process_context_hooks() -> None:
         app.context_hooks.remove(hook)
 
 
-@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_silenced_timeout(mock_capture: mock.Mock) -> None:
+@mock.patch("taskbroker_client.worker.workerchild.logger")
+def test_child_process_silenced_timeout(mock_logger: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1053,7 +1077,12 @@ def test_child_process_silenced_timeout(mock_capture: mock.Mock) -> None:
     result = processed.get()
     assert result.task_id == RETRY_TASK_WITH_SILENCED_TIMEOUT.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_FAILURE
-    assert mock_capture.call_count == 0
+    failed_calls = [
+        c
+        for c in mock_logger.exception.call_args_list
+        if c.args and c.args[0] == "taskworker.task.failed"
+    ]
+    assert failed_calls == []
 
 
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
@@ -1108,8 +1137,8 @@ def test_child_process_expected_ignored_exception_max_attempts(mock_capture: moc
     assert mock_capture.call_count == 0
 
 
-@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_retry_on_deadline_exceeded(mock_capture: mock.Mock) -> None:
+@mock.patch("taskbroker_client.worker.workerchild.logger")
+def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1131,8 +1160,12 @@ def test_child_process_retry_on_deadline_exceeded(mock_capture: mock.Mock) -> No
     result = processed.get()
     assert result.task_id == RETRY_TASK_ON_DEADLINE_EXCEEDED.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
-    assert mock_capture.call_count == 1
-    assert type(mock_capture.call_args.args[0]) is ProcessingDeadlineExceeded
+    # The timeout was reported (report_timeout_errors=True) even though
+    # the task will retry. taskworker.task.failed fires once per attempt.
+    assert mock_logger.exception.call_count == 1
+    args, kwargs = mock_logger.exception.call_args
+    assert args[0] == "taskworker.task.failed"
+    assert kwargs["extra"]["exception_type"] == "ProcessingDeadlineExceeded"
 
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
