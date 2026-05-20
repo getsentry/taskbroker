@@ -11,7 +11,6 @@ use crate::config::Config;
 use crate::push::thread::PushThread;
 use crate::push::updater::Updater;
 use crate::store::activation::InflightActivation;
-use crate::store::traits::InflightActivationStore;
 use crate::worker::WorkerMap;
 
 pub mod thread;
@@ -57,21 +56,17 @@ pub struct PushPool {
 
     /// Taskbroker configuration.
     config: Arc<Config>,
-
-    /// Activation store, which we need for marking tasks as sent.
-    store: Arc<dyn InflightActivationStore>,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
+    pub fn new(config: Arc<Config>) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
 
         Self {
             sender,
             receiver,
             config,
-            store,
         }
     }
 
@@ -80,19 +75,15 @@ impl PushPool {
     pub async fn start(&self, workers: Vec<WorkerMap>, updater: Arc<dyn Updater>) -> Result<()> {
         let mut workers = workers.into_iter();
 
-        // Group the asynchronous tasks we spawn in this method using a `JoinSet`
-        let mut tasks = JoinSet::new();
-
-        tasks.spawn({
+        // Start the updater
+        let updaterd = tokio::spawn({
             let updater = updater.clone();
             async move { updater.start().await }
         });
 
-        for _ in 0..self.config.push_threads {
-            tasks.spawn({
+        let mut threads: JoinSet<Result<()>> =
+            crate::tokio::spawn_pool(self.config.push_threads, |_| {
                 let mut thread = PushThread {
-                    config: self.config.clone(),
-                    store: self.store.clone(),
                     workers: workers.next().unwrap(),
                     receiver: self.receiver.clone(),
                     updater: updater.clone(),
@@ -100,13 +91,28 @@ impl PushPool {
 
                 async move { thread.start().await }
             });
+
+        while let Some(result) = threads.join_next().await {
+            if let Err(_) = result {
+                todo!()
+            }
+
+            if let Ok(Err(_)) = result {
+                todo!()
+            }
         }
 
-        while let Some(result) = tasks.join_next().await {
-            match result {
-                Ok(r) => r?,
-                Err(e) => return Err(e.into()),
-            }
+        // Now that the push threads have shut down, we can stop the updater
+        updater.stop();
+
+        let result = updaterd.await;
+
+        if let Err(_) = result {
+            todo!()
+        }
+
+        if let Ok(Err(_)) = result {
+            todo!()
         }
 
         Ok(())

@@ -1,89 +1,21 @@
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use hmac::{Hmac, Mac};
-use prost::Message;
-use sentry_protos::taskbroker::v1::TaskActivation;
-use sha2::Sha256;
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
 use crate::config::Config;
+use crate::push::Pusher;
+use crate::push::updater::test_eager_updater;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::FailedTasksForwarder;
-use crate::test_utils::{create_test_store, make_activations};
-use crate::worker::{WorkerClient, WorkerMap};
+use crate::test_utils::make_activations;
+use crate::worker::test_worker_map;
 
 use super::PushPool;
-
-/// Fake worker client that records pushed activation IDs and optionally fails.
-struct MockWorkerClient {
-    /// Pushed activation IDs.
-    pushed: Vec<String>,
-
-    /// Should `push_task` fail?
-    fail: bool,
-}
-
-impl MockWorkerClient {
-    fn new(fail: bool) -> Self {
-        Self {
-            pushed: vec![],
-            fail,
-        }
-    }
-}
-
-#[async_trait]
-impl WorkerClient for MockWorkerClient {
-    async fn push_task(&mut self, activation: InflightActivation) -> Result<()> {
-        TaskActivation::decode(&activation.activation as &[u8]).map_err(|e| anyhow!(e))?;
-        self.pushed.push(activation.id);
-
-        if self.fail {
-            return Err(anyhow!("mock send failure"));
-        }
-
-        Ok(())
-    }
-}
-
-/// Fake worker client that fires a `Notify` when `push_task` is called.
-struct NotifyingWorkerClient {
-    /// Fire off notification when `push_task` is called
-    notify: Arc<Notify>,
-
-    /// Should `push_task` fail?
-    fail: bool,
-}
-
-#[async_trait]
-impl WorkerClient for NotifyingWorkerClient {
-    async fn push_task(&mut self, _activation: InflightActivation) -> Result<()> {
-        self.notify.notify_one();
-
-        if self.fail {
-            return Err(anyhow!("mock send failure"));
-        }
-
-        Ok(())
-    }
-}
-
-/// Create a map of notifying worker clients for tests.
-fn test_worker_map(fail: bool, notify: Arc<Notify>) -> WorkerMap {
-    let mut workers = HashMap::new();
-
-    let client = NotifyingWorkerClient { fail, notify };
-
-    workers.insert("sentry".into(), Box::new(client) as Box<dyn WorkerClient>);
-    workers
-}
 
 /// Minimal fake store that records which activation IDs have been marked as processing.
 #[derive(Clone)]
@@ -100,7 +32,7 @@ impl Default for MockStore {
 }
 
 impl MockStore {
-    fn marked_ids(&self) -> Vec<String> {
+    fn marked(&self) -> Vec<String> {
         self.marked_processing.lock().unwrap().clone()
     }
 }
@@ -245,8 +177,6 @@ impl InflightActivationStore for MockStore {
     }
 }
 
-// --- PushPool tests ---
-
 #[tokio::test]
 async fn push_pool_push_task_enqueues_item() {
     let config = Arc::new(Config {
@@ -254,9 +184,9 @@ async fn push_pool_push_task_enqueues_item() {
         ..Config::default()
     });
 
-    let store = create_test_store("sqlite").await;
-    let pool = PushPool::new(config, store);
     let activation = make_activations(1).remove(0);
+
+    let pool = PushPool::new(config);
 
     let time = Instant::now();
     let result = pool.push_task(activation, time).await;
@@ -270,16 +200,15 @@ async fn push_pool_push_task_backpressures_when_queue_full() {
         ..Config::default()
     });
 
-    let store = create_test_store("sqlite").await;
-    let pool = PushPool::new(config, store);
-
-    let time = Instant::now();
     let first = make_activations(1).remove(0);
     let second = make_activations(1).remove(0);
 
+    let pool = PushPool::new(config);
+
+    let time = Instant::now();
     pool.push_task(first, time)
         .await
-        .expect("first push_task should fill queue");
+        .expect("first task should fill the queue");
 
     let second_push = timeout(Duration::from_millis(50), pool.push_task(second, time)).await;
     assert!(
@@ -297,12 +226,17 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new(config, store.clone()));
+    let pool = Arc::new(PushPool::new(config));
 
     let workers = vec![test_worker_map(false, notify.clone())];
+    let updater = test_eager_updater(store.clone());
+
     let pool_start = pool.clone();
     tokio::spawn(async move {
-        pool_start.start(workers).await.expect("push pool start");
+        pool_start
+            .start(workers, updater)
+            .await
+            .expect("push pool start");
     });
 
     let activation = make_activations(1).remove(0);
@@ -321,7 +255,7 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     assert_eq!(
-        store.marked_ids(),
+        store.marked(),
         vec![id],
         "mark_processing should be called after a successful first-attempt push"
     );
@@ -336,12 +270,17 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new(config, store.clone()));
+    let pool = Arc::new(PushPool::new(config));
 
     let workers = vec![test_worker_map(false, notify.clone())];
+    let updater = test_eager_updater(store.clone());
+
     let pool_start = pool.clone();
     tokio::spawn(async move {
-        pool_start.start(workers).await.expect("push pool start");
+        pool_start
+            .start(workers, updater)
+            .await
+            .expect("push pool start");
     });
 
     let mut activation = make_activations(1).remove(0);
@@ -360,7 +299,7 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     assert_eq!(
-        store.marked_ids(),
+        store.marked(),
         vec![id],
         "mark_processing should be called after a successful retry push"
     );
@@ -375,12 +314,17 @@ async fn push_pool_start_does_not_mark_processing_on_push_failure() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new(config, store.clone()));
+    let pool = Arc::new(PushPool::new(config));
 
     let workers = vec![test_worker_map(true, notify.clone())];
+    let updater = test_eager_updater(store.clone());
+
     let pool_start = pool.clone();
     tokio::spawn(async move {
-        pool_start.start(workers).await.expect("push pool start");
+        pool_start
+            .start(workers, updater)
+            .await
+            .expect("push pool start");
     });
 
     let activation = make_activations(1).remove(0);
@@ -396,7 +340,7 @@ async fn push_pool_start_does_not_mark_processing_on_push_failure() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     assert!(
-        store.marked_ids().is_empty(),
+        store.marked().is_empty(),
         "mark_processing should not be called when push fails"
     );
 }

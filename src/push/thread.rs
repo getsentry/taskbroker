@@ -5,10 +5,8 @@ use anyhow::Result;
 use elegant_departure::get_shutdown_guard;
 use flume::Receiver;
 
-use crate::config::Config;
 use crate::push::updater::Updater;
 use crate::store::activation::InflightActivation;
-use crate::store::traits::InflightActivationStore;
 use crate::worker::WorkerMap;
 
 /// Alias for ergonomics.
@@ -16,12 +14,6 @@ pub type Submission = (InflightActivation, Instant);
 
 /// Abstraction for a single push thread.
 pub struct PushThread {
-    /// The taskbroker configuration.
-    pub(super) config: Arc<Config>,
-
-    /// The activation store.
-    pub(super) store: Arc<dyn InflightActivationStore>,
-
     /// Maps every application to its worker service.
     pub(super) workers: WorkerMap,
 
@@ -51,7 +43,9 @@ impl PushThread {
                     metrics::histogram!("push.queue.latency").record(time.elapsed());
 
                     // Push the task and mark it as processing
-                    self.push_task(activation).await;
+                    if let Err(_) = self.push_task(activation).await {
+                        todo!()
+                    }
                 }
             }
         }
@@ -63,7 +57,9 @@ impl PushThread {
             metrics::histogram!("push.queue.latency").record(time.elapsed());
 
             // Push the task and mark it as processing
-            self.push_task(activation).await;
+            if let Err(_) = self.push_task(activation).await {
+                todo!()
+            }
         }
 
         drop(guard);
@@ -77,11 +73,13 @@ impl PushThread {
         // First, determine the correct worker service
         let Some(worker) = self.workers.get_mut(&activation.application) else {
             // Missing application to worker mapping
-            return Ok(());
+            todo!()
         };
 
         // Then, push the task to that service
-        worker.push_task(activation).await?;
+        if let Err(__) = worker.push_task(activation).await {
+            todo!()
+        }
 
         // Finally, mark the activation as processing
         self.updater.update(id).await

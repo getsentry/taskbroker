@@ -7,12 +7,10 @@ use async_backtrace::framed;
 use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
 use tokio::time::sleep;
-use tonic::async_trait;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::{PushPool, Pusher};
-use crate::store::activation::InflightActivation;
+use crate::push::Pusher;
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::BucketRange;
 

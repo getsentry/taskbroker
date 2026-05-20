@@ -6,7 +6,6 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
-use taskbroker::push::updater::LazyUpdater;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -32,6 +31,7 @@ use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
+use taskbroker::push::updater::{EagerUpdater, LazyUpdater, Updater};
 use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::adapters::postgres::{
     PostgresActivationStore, PostgresActivationStoreConfig,
@@ -39,9 +39,10 @@ use taskbroker::store::adapters::postgres::{
 use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
 use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::upkeep::upkeep;
+use taskbroker::worker::{Worker, WorkerClient, WorkerMap};
 use taskbroker::{Args, get_version};
 use taskbroker::{SERVICE_NAME, flusher};
-use taskbroker::{grpc, logging, push};
+use taskbroker::{grpc, logging};
 
 async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {
@@ -268,31 +269,8 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Push update flush task
-    let (push_update_tx, push_update_task) =
-        if config.batch_push_updates && config.delivery_mode.is_push() {
-            let (tx, rx) = tokio::sync::mpsc::channel(config.push_update_batch_size.max(1));
-
-            let flusher_store = store.clone();
-            let flusher_config = config.clone();
-
-            let handle = tokio::spawn(async move {
-                flusher::run_flusher(
-                    rx,
-                    flusher_config.push_update_batch_size,
-                    flusher_config.push_update_interval_ms as u64,
-                    move |buffer| Box::pin(push::flush_updates(flusher_store.clone(), buffer)),
-                )
-                .await
-            });
-
-            (Some(tx), Some(handle))
-        } else {
-            (None, None)
-        };
-
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
+    let push_pool = Arc::new(PushPool::new(config.clone()));
     let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
 
     // Initialize push threads
@@ -300,22 +278,18 @@ async fn main() -> Result<(), Error> {
         let mut workers: Vec<WorkerMap> = vec![];
 
         // For every push thread, create a map from applications to worker connections
-        for i in config.push_threads {
-            let map = HashMap::new();
+        for _ in 0..config.push_threads {
+            let mut map = HashMap::new();
 
             for (application, endpoint) in config.worker_map.clone() {
-                let worker = match Worker::connect(endpoint).await {
+                let worker = match Worker::connect(config.clone(), endpoint).await {
                     Ok(w) => {
-                        metrics::counter!("worker.connect", "result" => "ok", "application" => application.clone()).increment(1);
                         debug!("Connected to worker!");
-
-                        w
+                        Box::new(w) as Box<dyn WorkerClient>
                     }
 
                     Err(e) => {
-                        metrics::counter!("worker.connect", "result" => "error", "application" => application.clone()).increment(1);
                         error!(error = ?e, "Failed to connect to worker");
-
                         return Err(e);
                     }
                 };
@@ -328,9 +302,11 @@ async fn main() -> Result<(), Error> {
 
         // Create the correct kind of push updater
         let updater = if config.batch_push_updates {
-            Arc::new(LazyUpdater::new(config.clone(), store.clone()))
+            let lazy = LazyUpdater::new(config.clone(), store.clone());
+            Arc::new(lazy) as Arc<dyn Updater>
         } else {
-            Arc::new(EagerUpdater::new(store.clone()))
+            let eager = EagerUpdater::new(store.clone());
+            Arc::new(eager) as Arc<dyn Updater>
         };
 
         Some(tokio::spawn(async move {
@@ -367,10 +343,6 @@ async fn main() -> Result<(), Error> {
 
     if let Some(task) = status_update_task {
         departure = departure.on_completion(log_task_completion("status_update_task", task));
-    }
-
-    if let Some(task) = push_update_task {
-        departure = departure.on_completion(log_task_completion("push_update_task", task));
     }
 
     departure.await;

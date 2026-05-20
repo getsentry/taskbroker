@@ -1,17 +1,21 @@
-use std::{collections::HashMap, time::Duration};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use async_backtrace::framed;
 use hmac::{Hmac, Mac};
 use prost::Message;
-use sentry_protos::taskbroker::v1::{
-    PushTaskRequest, TaskActivation, worker_service_client::WorkerServiceClient,
-};
+use sentry_protos::taskbroker::v1::worker_service_client::WorkerServiceClient;
+use sentry_protos::taskbroker::v1::{PushTaskRequest, TaskActivation};
 use sha2::Sha256;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
 use tonic::{Request, async_trait};
 
+use crate::config::Config;
 use crate::store::activation::InflightActivation;
 
 // Alias for ergonomics.
@@ -20,7 +24,7 @@ pub type WorkerMap = HashMap<String, Box<dyn WorkerClient>>;
 /// gRPC path for `WorkerService::PushTask` that should be kept in sync with `sentry_protos` generated client.
 pub const WORKER_PUSH_TASK_PATH: &str = "/sentry_protos.taskbroker.v1.WorkerService/PushTask";
 
-/// HMAC-SHA256(secret, grpc_path + ":" + message), hex-encoded. Matches Python `RequestSignatureInterceptor` and broker [`crate::grpc::auth_middleware`].
+/// Helper to compute HMAC-SHA256(secret, grpc_path + ":" + message) in hexadecimal. Matches Python `RequestSignatureInterceptor`.
 fn sentry_signature_hex(secret: &str, grpc_path: &str, message: &[u8]) -> String {
     let mut mac =
         Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts keys of any length");
@@ -48,6 +52,21 @@ pub struct Worker {
 
     /// Wait this much time before giving up on a push.
     timeout: Duration,
+}
+
+impl Worker {
+    pub async fn connect(config: Arc<Config>, endpoint: String) -> Result<Self> {
+        let client = WorkerServiceClient::connect(endpoint).await?;
+
+        let secrets = config.grpc_shared_secret.clone();
+        let timeout = Duration::from_millis(config.push_timeout_ms);
+
+        Ok(Self {
+            client,
+            secrets,
+            timeout,
+        })
+    }
 }
 
 #[async_trait]
@@ -85,11 +104,86 @@ impl WorkerClient for Worker {
     }
 }
 
+/// Fake worker client that records pushed activation IDs and optionally fails.
+#[cfg(test)]
+struct MockWorkerClient {
+    /// Pushed activation IDs.
+    pushed: Vec<String>,
+
+    /// Should `push_task` fail?
+    fail: bool,
+}
+
+#[cfg(test)]
+impl MockWorkerClient {
+    fn new(fail: bool) -> Self {
+        Self {
+            pushed: vec![],
+            fail,
+        }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl WorkerClient for MockWorkerClient {
+    async fn push_task(&mut self, activation: InflightActivation) -> Result<()> {
+        TaskActivation::decode(&activation.activation as &[u8]).map_err(|e| anyhow!(e))?;
+        self.pushed.push(activation.id);
+
+        if self.fail {
+            return Err(anyhow!("mock send failure"));
+        }
+
+        Ok(())
+    }
+}
+
+/// Fake worker client that fires a `Notify` when `push_task` is called.
+#[cfg(test)]
+struct NotifyingWorkerClient {
+    /// Fire off notification when `push_task` is called
+    notify: Arc<Notify>,
+
+    /// Should `push_task` fail?
+    fail: bool,
+}
+
+#[cfg(test)]
+#[async_trait]
+impl WorkerClient for NotifyingWorkerClient {
+    async fn push_task(&mut self, _activation: InflightActivation) -> Result<()> {
+        self.notify.notify_one();
+
+        if self.fail {
+            return Err(anyhow!("mock send failure"));
+        }
+
+        Ok(())
+    }
+}
+
+/// Create a map of notifying worker clients for tests.
+#[cfg(test)]
+pub fn test_worker_map(fail: bool, notify: Arc<Notify>) -> WorkerMap {
+    let mut workers = HashMap::new();
+
+    let client = NotifyingWorkerClient { fail, notify };
+
+    workers.insert("sentry".into(), Box::new(client) as Box<dyn WorkerClient>);
+    workers
+}
+
+#[cfg(test)]
 mod tests {
-    use hmac::Hmac;
+    use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
-    use crate::{test_utils::make_activations, worker::WORKER_PUSH_TASK_PATH};
+    use crate::test_utils::make_activations;
+
+    use super::MockWorkerClient;
+    use super::WORKER_PUSH_TASK_PATH;
+    use super::WorkerClient;
 
     #[tokio::test]
     async fn worker_push_task_returns_ok_on_client_success() {
