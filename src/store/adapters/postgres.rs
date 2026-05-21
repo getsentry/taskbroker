@@ -677,18 +677,18 @@ impl InflightActivationStore for PostgresActivationStore {
         // happen after the first retry, since max_attempts comes from the task's
         // retry decorator which stays constant across retries.
         // For raw topics, retry_state starts as None so we create it on first retry.
-        if let Some(max_attempts) = max_attempts {
-            if retry_state.max_attempts != max_attempts {
-                retry_state.max_attempts = max_attempts;
-                needs_update = true;
-            }
+        if let Some(max_attempts) = max_attempts
+            && retry_state.max_attempts != max_attempts
+        {
+            retry_state.max_attempts = max_attempts;
+            needs_update = true;
         }
 
-        if let Some(delay_on_retry) = delay_on_retry {
-            if retry_state.delay_on_retry != Some(delay_on_retry) {
-                retry_state.delay_on_retry = Some(delay_on_retry);
-                needs_update = true;
-            }
+        if let Some(delay_on_retry) = delay_on_retry
+            && retry_state.delay_on_retry != Some(delay_on_retry)
+        {
+            retry_state.delay_on_retry = Some(delay_on_retry);
+            needs_update = true;
         }
 
         if needs_update {
