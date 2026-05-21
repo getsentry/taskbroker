@@ -216,3 +216,176 @@ impl KafkaConfig {
         config.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use figment::Jail;
+
+    use crate::Args;
+    use crate::config::Config;
+
+    #[test]
+    fn test_kafka_consumer_config() {
+        let args = Args { config: None };
+        let config = Config::from_args(&args).unwrap();
+        let consumer_config = config.kafka.kafka_consumer_config();
+
+        assert_eq!(
+            consumer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
+        assert_eq!(consumer_config.get("group.id").unwrap(), "taskworker");
+        assert!(consumer_config.get("session.timeout.ms").is_some());
+    }
+
+    #[test]
+    fn test_kafka_consumer_config_auth() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEFAULT__SECURITY_PROTOCOL",
+                "sasl_plaintext",
+            );
+            jail.set_env("TASKBROKER_KAFKA__DEFAULT__SASL_MECHANISM", "SCRAM-SHA-256");
+            jail.set_env("TASKBROKER_KAFKA__DEFAULT__SASL_USERNAME", "taskbroker");
+            jail.set_env("TASKBROKER_KAFKA__DEFAULT__SASL_PASSWORD", "secret-tech");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let consumer_config = config.kafka.kafka_consumer_config();
+
+            assert_eq!(
+                consumer_config.get("security.protocol").unwrap(),
+                "sasl_plaintext",
+            );
+            assert_eq!(
+                consumer_config.get("sasl.mechanism").unwrap(),
+                "SCRAM-SHA-256"
+            );
+            assert_eq!(consumer_config.get("sasl.username").unwrap(), "taskbroker");
+            assert_eq!(consumer_config.get("sasl.password").unwrap(), "secret-tech");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kafka_consumer_config_ssl() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEFAULT__SSL_CA_LOCATION",
+                "/etc/ssl/ca-certificate.pem",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEFAULT__SSL_CERTIFICATE_LOCATION",
+                "/etc/ssl/taskbroker/public.crt",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEFAULT__SSL_KEY_LOCATION",
+                "/etc/ssl/taskbroker/private.key",
+            );
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let consumer_config = config.kafka.kafka_consumer_config();
+
+            assert_eq!(
+                consumer_config.get("ssl.ca.location").unwrap(),
+                "/etc/ssl/ca-certificate.pem",
+            );
+            assert_eq!(
+                consumer_config.get("ssl.certificate.location").unwrap(),
+                "/etc/ssl/taskbroker/public.crt"
+            );
+            assert_eq!(
+                consumer_config.get("ssl.key.location").unwrap(),
+                "/etc/ssl/taskbroker/private.key"
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kafka_producer_config() {
+        let args = Args { config: None };
+        let config = Config::from_args(&args).unwrap();
+        let producer_config = config.kafka.kafka_producer_config();
+
+        assert_eq!(
+            producer_config.get("bootstrap.servers").unwrap(),
+            "127.0.0.1:9092"
+        );
+        assert!(producer_config.get("group.id").is_none());
+        assert!(producer_config.get("session.timeout.ms").is_none());
+    }
+
+    #[test]
+    fn test_kafka_producer_config_auth() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEADLETTER__SECURITY_PROTOCOL",
+                "sasl_plaintext",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEADLETTER__SASL_MECHANISM",
+                "SCRAM-SHA-256",
+            );
+            jail.set_env("TASKBROKER_KAFKA__DEADLETTER__SASL_USERNAME", "taskbroker");
+            jail.set_env("TASKBROKER_KAFKA__DEADLETTER__SASL_PASSWORD", "secret-tech");
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let producer_config = config.kafka.kafka_producer_config();
+
+            assert_eq!(
+                producer_config.get("security.protocol").unwrap(),
+                "sasl_plaintext"
+            );
+            assert_eq!(
+                producer_config.get("sasl.mechanism").unwrap(),
+                "SCRAM-SHA-256"
+            );
+            assert_eq!(producer_config.get("sasl.username").unwrap(), "taskbroker");
+            assert_eq!(producer_config.get("sasl.password").unwrap(), "secret-tech");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_kafka_producer_config_ssl() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEADLETTER__SSL_CA_LOCATION",
+                "/etc/ssl/ca-certificate.pem",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEADLETTER__SSL_CERTIFICATE_LOCATION",
+                "/etc/ssl/taskbroker/public.crt",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA__DEADLETTER__SSL_KEY_LOCATION",
+                "/etc/ssl/taskbroker/private.key",
+            );
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+            let producer_config = config.kafka.kafka_producer_config();
+
+            assert_eq!(
+                producer_config.get("ssl.ca.location").unwrap(),
+                "/etc/ssl/ca-certificate.pem",
+            );
+            assert_eq!(
+                producer_config.get("ssl.certificate.location").unwrap(),
+                "/etc/ssl/taskbroker/public.crt"
+            );
+            assert_eq!(
+                producer_config.get("ssl.key.location").unwrap(),
+                "/etc/ssl/taskbroker/private.key"
+            );
+
+            Ok(())
+        });
+    }
+}
