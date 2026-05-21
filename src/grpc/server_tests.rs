@@ -86,6 +86,8 @@ async fn test_set_task_status(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -113,6 +115,8 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -266,6 +270,8 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
             namespace: None,
             application: None,
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -306,6 +312,8 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
             application: Some("hammers".into()),
             namespace: None,
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -352,6 +360,8 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
             application: Some("no-matches".into()),
             namespace: None,
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -386,6 +396,8 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
             application: None,
             namespace: Some(namespace),
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -433,6 +445,8 @@ async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) 
                 namespace: None,
                 application: None,
             }),
+            max_attempts: None,
+            delay_on_retry: None,
         }))
         .await
         .unwrap();
@@ -476,6 +490,8 @@ async fn test_set_task_status_update_channel_closed_returns_internal() {
             id: "id_0".to_string(),
             status: 5,
             fetch_next_task: None,
+            max_attempts: None,
+            delay_on_retry: None,
         }))
         .await;
 

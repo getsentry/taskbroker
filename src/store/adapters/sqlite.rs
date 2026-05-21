@@ -7,7 +7,7 @@ use sqlx::sqlite::{
     SqliteAutoVacuum, SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteRow,
     SqliteSynchronous,
 };
-use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite};
+use sqlx::{ConnectOptions, FromRow, Pool, QueryBuilder, Row, Sqlite, Transaction};
 
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
@@ -20,7 +20,8 @@ use libsqlite3_sys::{
     SQLITE_DBSTATUS_LOOKASIDE_USED, SQLITE_DBSTATUS_SCHEMA_USED, SQLITE_DBSTATUS_STMT_USED,
     SQLITE_OK, sqlite3_db_status,
 };
-use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
+use prost::Message;
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
@@ -184,8 +185,20 @@ impl SqliteActivationStore {
     ) -> Result<PoolConnection<Sqlite>, Error> {
         let start = Instant::now();
         let conn = self.write_pool.acquire().await?;
-        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller).record(start.elapsed());
+        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller, "mode" => "conn")
+            .record(start.elapsed());
         Ok(conn)
+    }
+
+    async fn begin_write_tx_metric(
+        &self,
+        caller: &'static str,
+    ) -> Result<Transaction<'_, Sqlite>, Error> {
+        let start = Instant::now();
+        let tx = self.write_pool.begin().await?;
+        metrics::histogram!("sqlite.write.acquire_conn", "fn" => caller, "mode" => "begin")
+            .record(start.elapsed());
+        Ok(tx)
     }
 
     async fn emit_db_status_metrics(&self) {
@@ -683,25 +696,64 @@ impl InflightActivationStore for SqliteActivationStore {
         Ok(result.get::<u64, _>("count") as usize)
     }
 
-    /// Update the status of a specific activation
+    /// Update the status of a specific activation.
+    /// If max_attempts or delay_on_retry is provided (for Retry status), also updates the activation's retry_state.
     #[instrument(skip_all)]
     async fn set_status(
         &self,
         id: &str,
         status: InflightActivationStatus,
+        max_attempts: Option<u32>,
+        delay_on_retry: Option<u64>,
     ) -> Result<Option<InflightActivation>, Error> {
-        let mut conn = self.acquire_write_conn_metric("set_status").await?;
+        let mut tx = self.begin_write_tx_metric("set_status").await?;
+
         let result: Option<TableRow> = sqlx::query_as(
             "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
         )
         .bind(status)
         .bind(id)
-        .fetch_optional(&mut *conn)
+        .fetch_optional(&mut *tx)
         .await?;
 
-        let Some(row) = result else {
+        let Some(mut row) = result else {
             return Ok(None);
         };
+
+        let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+        let mut needs_update = false;
+        let retry_state = activation.retry_state.get_or_insert_default();
+
+        // Only update the blob if max_attempts actually changed. This should rarely
+        // happen after the first retry, since max_attempts comes from the task's
+        // retry decorator which stays constant across retries.
+        // For raw topics, retry_state starts as None so we create it on first retry.
+        if let Some(max_attempts) = max_attempts
+            && retry_state.max_attempts != max_attempts
+        {
+            retry_state.max_attempts = max_attempts;
+            needs_update = true;
+        }
+
+        if let Some(delay_on_retry) = delay_on_retry
+            && retry_state.delay_on_retry != Some(delay_on_retry)
+        {
+            retry_state.delay_on_retry = Some(delay_on_retry);
+            needs_update = true;
+        }
+
+        if needs_update {
+            let updated_activation = activation.encode_to_vec();
+            sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
+                .bind(&updated_activation)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+
+            row.activation = updated_activation;
+        }
+
+        tx.commit().await?;
 
         Ok(Some(row.into()))
     }

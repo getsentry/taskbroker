@@ -261,6 +261,7 @@ def child_process(
             and submitted for retry (if the policy allows).
             """
             RESULT_TIMEOUT_SEC = 1
+            task_func = _get_known_task(task.inflight.activation)
             try:
                 # We don't care about the actual result value,
                 # we just care if result() raises or not
@@ -268,7 +269,6 @@ def child_process(
             # If any pending producer futures failed, retry the task
             except Exception:
                 task.status = TASK_ACTIVATION_STATUS_FAILURE
-                task_func = _get_known_task(task.inflight.activation)
                 if task_func and task_func.retry:
                     retry_state = task.inflight.activation.retry_state
                     if not task_func.retry.max_attempts_reached(retry_state):
@@ -278,6 +278,7 @@ def child_process(
                 inflight=task.inflight,
                 next_state=task.status,
                 execution_start_time=task.execution_start_time,
+                task_func=task_func,
                 futures_start_time=task.futures_start_time,
             )
 
@@ -450,6 +451,7 @@ def child_process(
                     inflight,
                     next_state,
                     execution_start_time,
+                    task_func,
                 )
             else:
                 pending_task = ActivationWithPendingFutures(
@@ -643,6 +645,7 @@ def child_process(
         inflight: InflightTaskActivation,
         next_state: TaskActivationStatus.ValueType,
         execution_start_time: float,
+        task_func: Task[Any, Any] | None,
         futures_start_time: float | None = None,
     ) -> None:
         # Get completion time before pushing to queue, so we can measure queue append time
@@ -653,14 +656,37 @@ def child_process(
                 "processing_pool": processing_pool_name,
             },
         ):
-            processed_tasks.put(
-                ProcessingResult(
-                    task_id=inflight.activation.id,
-                    status=next_state,
-                    host=inflight.host,
-                    receive_timestamp=inflight.receive_timestamp,
+            if task_func and task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY:
+                processed_tasks.put(
+                    ProcessingResult(
+                        task_id=inflight.activation.id,
+                        status=next_state,
+                        host=inflight.host,
+                        receive_timestamp=inflight.receive_timestamp,
+                        # Send max_attempts and delay_on_retry if this is a retry.
+                        # Don't send it on every task as this codepath is relatively
+                        # unoptimized on the broker side.
+                        max_attempts=(
+                            task_func.retry._times + 1
+                            if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
+                            else None
+                        ),
+                        delay_on_retry=(
+                            task_func.retry._delay
+                            if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
+                            else None
+                        ),
+                    )
                 )
-            )
+            else:
+                processed_tasks.put(
+                    ProcessingResult(
+                        task_id=inflight.activation.id,
+                        status=next_state,
+                        host=inflight.host,
+                        receive_timestamp=inflight.receive_timestamp,
+                    )
+                )
         record_task_execution(
             inflight.activation,
             next_state,
