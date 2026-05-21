@@ -20,7 +20,7 @@ use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, FromRow)]
 struct TableRow {
     pub id: String,
     pub activation: Vec<u8>,
@@ -382,9 +382,9 @@ impl InflightActivationStore for PostgresActivationStore {
                 ",
             );
             let query = query_builder
-                .push_values(rows.clone(), |mut b, row: TableRow| {
-                    b.push_bind(row.id);
-                    b.push_bind(row.activation);
+                .push_values(&rows, |mut b, row| {
+                    b.push_bind(&row.id);
+                    b.push_bind(&row.activation);
                     b.push_bind(row.partition);
                     b.push_bind(row.offset);
                     b.push_bind(row.added_at);
@@ -396,7 +396,6 @@ impl InflightActivationStore for PostgresActivationStore {
                     if let Some(deadline) = row.processing_deadline {
                         b.push_bind(deadline);
                     } else {
-                        // Add a literal null
                         b.push("null");
                     }
                     if let Some(exp) = row.claim_expires_at {
@@ -404,11 +403,11 @@ impl InflightActivationStore for PostgresActivationStore {
                     } else {
                         b.push("null");
                     }
-                    b.push_bind(row.status);
+                    b.push_bind(&row.status);
                     b.push_bind(row.at_most_once);
-                    b.push_bind(row.application);
-                    b.push_bind(row.namespace);
-                    b.push_bind(row.taskname);
+                    b.push_bind(&row.application);
+                    b.push_bind(&row.namespace);
+                    b.push_bind(&row.taskname);
                     b.push_bind(row.on_attempts_exceeded as i32);
                     b.push_bind(row.bucket);
                 })
