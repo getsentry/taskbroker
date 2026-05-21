@@ -25,11 +25,10 @@ use tracing::{instrument, warn};
 
 use crate::config::Config;
 use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::InflightActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, FromRow)]
 pub struct TableRow {
     pub id: String,
     pub activation: Vec<u8>,
@@ -144,7 +143,6 @@ pub struct InflightActivationStoreConfig {
     pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
-    pub retry_config: RetryConfig,
 }
 
 impl InflightActivationStoreConfig {
@@ -155,7 +153,6 @@ impl InflightActivationStoreConfig {
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
             claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
-            retry_config: RetryConfig::from_config(config),
         }
     }
 }
@@ -377,51 +374,46 @@ impl InflightActivationStore for SqliteActivationStore {
 
     /// Get the size of the database in bytes based on SQLite metadata queries.
     async fn db_size(&self) -> Result<u64, Error> {
-        let row = retry_query(&self.config.retry_config, "db_size", || async {
-            Ok(sqlx::query(
-                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-            )
-            .fetch_one(&self.read_pool)
-            .await?)
-        })
-        .await?;
-        Ok(row.get(0))
+        let result: u64 = sqlx::query(
+            "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+        )
+        .fetch_one(&self.read_pool)
+        .await?
+        .get(0);
+
+        Ok(result)
     }
 
     /// Get an activation by id. Primarily used for testing
     async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
-        let row_result: Option<TableRow> =
-            retry_query(&self.config.retry_config, "get_by_id", || async {
-                Ok(sqlx::query_as(
-                    "
-                    SELECT id,
-                        activation,
-                        partition,
-                        offset,
-                        added_at,
-                        received_at,
-                        processing_attempts,
-                        expires_at,
-                        delay_until,
-                        processing_deadline_duration,
-                        processing_deadline,
-                        claim_expires_at,
-                        status,
-                        at_most_once,
-                        application,
-                        namespace,
-                        taskname,
-                        on_attempts_exceeded,
-                        bucket
-                    FROM inflight_taskactivations
-                    WHERE id = $1
-                    ",
-                )
-                .bind(id)
-                .fetch_optional(&self.read_pool)
-                .await?)
-            })
-            .await?;
+        let row_result: Option<TableRow> = sqlx::query_as(
+            "
+            SELECT id,
+                activation,
+                partition,
+                offset,
+                added_at,
+                received_at,
+                processing_attempts,
+                expires_at,
+                delay_until,
+                processing_deadline_duration,
+                processing_deadline,
+                claim_expires_at,
+                status,
+                at_most_once,
+                application,
+                namespace,
+                taskname,
+                on_attempts_exceeded,
+                bucket
+            FROM inflight_taskactivations
+            WHERE id = $1
+            ",
+        )
+        .bind(id)
+        .fetch_optional(&self.read_pool)
+        .await?;
 
         let Some(row) = row_result else {
             return Ok(None);
@@ -441,83 +433,78 @@ impl InflightActivationStore for SqliteActivationStore {
             return Ok(0);
         }
 
+        let mut query_builder = QueryBuilder::<Sqlite>::new(
+            "
+            INSERT INTO inflight_taskactivations
+                (
+                    id,
+                    activation,
+                    partition,
+                    offset,
+                    added_at,
+                    received_at,
+                    processing_attempts,
+                    expires_at,
+                    delay_until,
+                    processing_deadline_duration,
+                    processing_deadline,
+                    claim_expires_at,
+                    status,
+                    at_most_once,
+                    application,
+                    namespace,
+                    taskname,
+                    on_attempts_exceeded,
+                    bucket
+                )
+            ",
+        );
         let rows = batch
             .into_iter()
             .map(TableRow::try_from)
             .collect::<Result<Vec<TableRow>, _>>()?;
 
-        let rows_affected = retry_query(&self.config.retry_config, "store", || async {
-            let mut query_builder = QueryBuilder::<Sqlite>::new(
-                "
-                    INSERT INTO inflight_taskactivations
-                        (
-                            id,
-                            activation,
-                            partition,
-                            offset,
-                            added_at,
-                            received_at,
-                            processing_attempts,
-                            expires_at,
-                            delay_until,
-                            processing_deadline_duration,
-                            processing_deadline,
-                            claim_expires_at,
-                            status,
-                            at_most_once,
-                            application,
-                            namespace,
-                            taskname,
-                            on_attempts_exceeded,
-                            bucket
-                        )
-                    ",
-            );
-            let query = query_builder
-                .push_values(rows.clone(), |mut b, row: TableRow| {
-                    b.push_bind(row.id);
-                    b.push_bind(row.activation);
-                    b.push_bind(row.partition);
-                    b.push_bind(row.offset);
-                    b.push_bind(row.added_at.timestamp());
-                    b.push_bind(row.received_at.timestamp());
-                    b.push_bind(row.processing_attempts);
-                    b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
-                    b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
-                    b.push_bind(row.processing_deadline_duration);
+        let query = query_builder
+            .push_values(rows, |mut b, row| {
+                b.push_bind(row.id);
+                b.push_bind(row.activation);
+                b.push_bind(row.partition);
+                b.push_bind(row.offset);
+                b.push_bind(row.added_at.timestamp());
+                b.push_bind(row.received_at.timestamp());
+                b.push_bind(row.processing_attempts);
+                b.push_bind(row.expires_at.map(|t| Some(t.timestamp())));
+                b.push_bind(row.delay_until.map(|t| Some(t.timestamp())));
+                b.push_bind(row.processing_deadline_duration);
 
-                    if let Some(deadline) = row.processing_deadline {
-                        b.push_bind(deadline.timestamp());
-                    } else {
-                        b.push("null");
-                    }
+                if let Some(deadline) = row.processing_deadline {
+                    b.push_bind(deadline.timestamp());
+                } else {
+                    b.push("null");
+                }
 
-                    if let Some(exp) = row.claim_expires_at {
-                        b.push_bind(exp.timestamp());
-                    } else {
-                        b.push("null");
-                    }
+                if let Some(exp) = row.claim_expires_at {
+                    b.push_bind(exp.timestamp());
+                } else {
+                    b.push("null");
+                }
 
-                    b.push_bind(row.status);
-                    b.push_bind(row.at_most_once);
-                    b.push_bind(row.application);
-                    b.push_bind(row.namespace);
-                    b.push_bind(row.taskname);
-                    b.push_bind(row.on_attempts_exceeded as i32);
-                    b.push_bind(row.bucket);
-                })
-                .push(" ON CONFLICT(id) DO NOTHING")
-                .build();
-            let mut conn = self.acquire_write_conn_metric("store").await?;
-            let result = query.execute(&mut *conn).await?;
-            Ok(result.rows_affected())
-        })
-        .await?;
+                b.push_bind(row.status);
+                b.push_bind(row.at_most_once);
+                b.push_bind(row.application);
+                b.push_bind(row.namespace);
+                b.push_bind(row.taskname);
+                b.push_bind(row.on_attempts_exceeded as i32);
+                b.push_bind(row.bucket);
+            })
+            .push(" ON CONFLICT(id) DO NOTHING")
+            .build();
+        let mut conn = self.acquire_write_conn_metric("store").await?;
+        let result = query.execute(&mut *conn).await?;
+        let rows_affected = Ok(result.rows_affected());
 
         // Sync the WAL into the main database so we don't lose data on host failure.
-        // Best-effort — errors are swallowed and only recorded as metrics.
         let checkpoint_timer = Instant::now();
-        let mut conn = self.acquire_write_conn_metric("store_checkpoint").await?;
         let checkpoint_result = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
             .fetch_one(&mut *conn)
             .await;
@@ -535,7 +522,7 @@ impl InflightActivationStore for SqliteActivationStore {
         }
         metrics::histogram!("store.checkpoint.duration").record(checkpoint_timer.elapsed());
 
-        Ok(rows_affected)
+        rows_affected
     }
 
     #[instrument(skip_all)]
@@ -547,97 +534,86 @@ impl InflightActivationStore for SqliteActivationStore {
         bucket: Option<BucketRange>,
         mark_processing: bool,
     ) -> Result<Vec<InflightActivation>, Error> {
-        retry_query(&self.config.retry_config, "claim_activations", || async {
-            let now = Utc::now();
-            let grace_period = self.config.processing_deadline_grace_sec;
+        let now = Utc::now();
+        let grace_period = self.config.processing_deadline_grace_sec;
 
-            let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
 
-            if mark_processing {
-                query_builder.push(format!(
-                    "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
-                ));
+        if mark_processing {
+            query_builder.push(format!(
+                "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
+            ));
 
-                query_builder.push_bind(InflightActivationStatus::Processing);
-            } else {
-                query_builder.push(format!(
-                    "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
-                    self.config.claim_lease_ms as f64 / 1000.0,
-                ));
+            query_builder.push_bind(InflightActivationStatus::Processing);
+        } else {
+            query_builder.push(format!(
+                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
+                self.config.claim_lease_ms as f64 / 1000.0,
+            ));
 
-                query_builder.push_bind(InflightActivationStatus::Claimed);
+            query_builder.push_bind(InflightActivationStatus::Claimed);
+        }
+
+        query_builder.push(" WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
+        query_builder.push_bind(InflightActivationStatus::Pending);
+        query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
+        query_builder.push_bind(now.timestamp());
+        query_builder.push(")");
+
+        if let Some(value) = application {
+            query_builder.push(" AND application =");
+            query_builder.push_bind(value);
+        }
+        if let Some(namespaces) = namespaces
+            && !namespaces.is_empty()
+        {
+            query_builder.push(" AND namespace IN (");
+            let mut separated = query_builder.separated(", ");
+            for namespace in namespaces.iter() {
+                separated.push_bind(namespace);
             }
-
-            query_builder
-                .push(" WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
-            query_builder.push_bind(InflightActivationStatus::Pending);
-            query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
-            query_builder.push_bind(now.timestamp());
             query_builder.push(")");
+        }
+        if let Some((min, max)) = bucket {
+            query_builder.push(" AND bucket >= ");
+            query_builder.push_bind(min);
+            query_builder.push(" AND bucket <= ");
+            query_builder.push_bind(max);
+        }
+        query_builder.push(" ORDER BY added_at");
+        if let Some(limit) = limit {
+            query_builder.push(" LIMIT ");
+            query_builder.push_bind(limit);
+        }
+        query_builder.push(") RETURNING *");
 
-            if let Some(value) = application {
-                query_builder.push(" AND application =");
-                query_builder.push_bind(value);
-            }
-            if let Some(namespaces) = namespaces
-                && !namespaces.is_empty()
-            {
-                query_builder.push(" AND namespace IN (");
-                let mut separated = query_builder.separated(", ");
-                for namespace in namespaces.iter() {
-                    separated.push_bind(namespace);
-                }
-                query_builder.push(")");
-            }
-            if let Some((min, max)) = bucket {
-                query_builder.push(" AND bucket >= ");
-                query_builder.push_bind(min);
-                query_builder.push(" AND bucket <= ");
-                query_builder.push_bind(max);
-            }
-            query_builder.push(" ORDER BY added_at");
-            if let Some(limit) = limit {
-                query_builder.push(" LIMIT ");
-                query_builder.push_bind(limit);
-            }
-            query_builder.push(") RETURNING *");
+        let mut conn = self.acquire_write_conn_metric("claim_activations").await?;
+        let rows: Vec<TableRow> = query_builder
+            .build_query_as::<TableRow>()
+            .fetch_all(&mut *conn)
+            .await?;
 
-            let mut conn = self.acquire_write_conn_metric("claim_activations").await?;
-            let rows: Vec<TableRow> = query_builder
-                .build_query_as::<TableRow>()
-                .fetch_all(&mut *conn)
-                .await?;
-
-            Ok(rows.into_iter().map(|row| row.into()).collect())
-        })
-        .await
+        Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
     #[instrument(skip_all)]
     async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("mark_activation_processing")
+            .await?;
+
         let grace_period = self.config.processing_deadline_grace_sec;
-        let result = retry_query(
-            &self.config.retry_config,
-            "mark_activation_processing",
-            || async {
-                let mut conn = self
-                    .acquire_write_conn_metric("mark_activation_processing")
-                    .await?;
-                let result = sqlx::query(&format!(
-                    "UPDATE inflight_taskactivations SET
-                        status = $1,
-                        processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'),
-                        claim_expires_at = NULL
-                    WHERE id = $2 AND status = $3",
-                ))
-                .bind(InflightActivationStatus::Processing)
-                .bind(id)
-                .bind(InflightActivationStatus::Claimed)
-                .execute(&mut *conn)
-                .await?;
-                Ok(result)
-            },
-        )
+        let result = sqlx::query(&format!(
+            "UPDATE inflight_taskactivations SET
+                status = $1,
+                processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'),
+                claim_expires_at = NULL
+            WHERE id = $2 AND status = $3",
+        ))
+        .bind(InflightActivationStatus::Processing)
+        .bind(id)
+        .bind(InflightActivationStatus::Claimed)
+        .execute(&mut *conn)
         .await?;
 
         if result.rows_affected() == 0 {
@@ -692,27 +668,18 @@ impl InflightActivationStore for SqliteActivationStore {
 
     #[instrument(skip_all)]
     async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
-        let result = retry_query(&self.config.retry_config, "count_by_status", || async {
-            Ok(sqlx::query(
-                "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1",
-            )
-            .bind(status)
-            .fetch_one(&self.read_pool)
-            .await?)
-        })
-        .await?;
+        let result =
+            sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
+                .bind(status)
+                .fetch_one(&self.read_pool)
+                .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
 
     async fn count(&self) -> Result<usize, Error> {
-        let result = retry_query(&self.config.retry_config, "count", || async {
-            Ok(
-                sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
-                    .fetch_one(&self.read_pool)
-                    .await?,
-            )
-        })
-        .await?;
+        let result = sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations")
+            .fetch_one(&self.read_pool)
+            .await?;
         Ok(result.get::<u64, _>("count") as usize)
     }
 
@@ -723,23 +690,20 @@ impl InflightActivationStore for SqliteActivationStore {
         id: &str,
         status: InflightActivationStatus,
     ) -> Result<Option<InflightActivation>, Error> {
-        retry_query(&self.config.retry_config, "set_status", || async {
-            let mut conn = self.acquire_write_conn_metric("set_status").await?;
-            let result: Option<TableRow> = sqlx::query_as(
-                "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
-            )
-            .bind(status)
-            .bind(id)
-            .fetch_optional(&mut *conn)
-            .await?;
+        let mut conn = self.acquire_write_conn_metric("set_status").await?;
+        let result: Option<TableRow> = sqlx::query_as(
+            "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *",
+        )
+        .bind(status)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
 
-            let Some(row) = result else {
-                return Ok(None);
-            };
+        let Some(row) = result else {
+            return Ok(None);
+        };
 
-            Ok(Some(row.into()))
-        })
-        .await
+        Ok(Some(row.into()))
     }
 
     #[instrument(skip_all)]
@@ -748,77 +712,60 @@ impl InflightActivationStore for SqliteActivationStore {
         id: &str,
         deadline: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
-        retry_query(
-            &self.config.retry_config,
-            "set_processing_deadline",
-            || async {
-                let mut conn = self
-                    .acquire_write_conn_metric("set_processing_deadline")
-                    .await?;
-                sqlx::query(
-                    "UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2",
-                )
-                .bind(deadline.unwrap().timestamp())
-                .bind(id)
-                .execute(&mut *conn)
-                .await?;
-                Ok(())
-            },
-        )
-        .await
+        let mut conn = self
+            .acquire_write_conn_metric("set_processing_deadline")
+            .await?;
+        sqlx::query("UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2")
+            .bind(deadline.unwrap().timestamp())
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     #[instrument(skip_all)]
     async fn delete_activation(&self, id: &str) -> Result<(), Error> {
-        retry_query(&self.config.retry_config, "delete_activation", || async {
-            let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
-            sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
-                .bind(id)
-                .execute(&mut *conn)
-                .await?;
-            Ok(())
-        })
-        .await
+        let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
+        sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     #[instrument(skip_all)]
     async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
-        let rows: Vec<TableRow> = retry_query(
-            &self.config.retry_config,
-            "get_retry_activations",
-            || async {
-                Ok(sqlx::query_as(
-                    "
-                    SELECT id,
-                        activation,
-                        partition,
-                        offset,
-                        added_at,
-                        received_at,
-                        processing_attempts,
-                        expires_at,
-                        delay_until,
-                        processing_deadline_duration,
-                        processing_deadline,
-                        claim_expires_at,
-                        status,
-                        at_most_once,
-                        application,
-                        namespace,
-                        taskname,
-                        on_attempts_exceeded,
-                        bucket
-                    FROM inflight_taskactivations
-                    WHERE status = $1
-                    ",
-                )
-                .bind(InflightActivationStatus::Retry)
-                .fetch_all(&self.read_pool)
-                .await?)
-            },
+        Ok(sqlx::query_as(
+            "
+            SELECT id,
+                activation,
+                partition,
+                offset,
+                added_at,
+                received_at,
+                processing_attempts,
+                expires_at,
+                delay_until,
+                processing_deadline_duration,
+                processing_deadline,
+                claim_expires_at,
+                status,
+                at_most_once,
+                application,
+                namespace,
+                taskname,
+                on_attempts_exceeded,
+                bucket
+            FROM inflight_taskactivations
+            WHERE status = $1
+            ",
         )
-        .await?;
-        Ok(rows.into_iter().map(|row| row.into()).collect())
+        .bind(InflightActivationStatus::Retry)
+        .fetch_all(&self.read_pool)
+        .await?
+        .into_iter()
+        .map(|row: TableRow| row.into())
+        .collect())
     }
 
     async fn clear(&self) -> Result<(), Error> {
@@ -832,33 +779,26 @@ impl InflightActivationStore for SqliteActivationStore {
     /// Expired push claims (`Claimed` + past `claim_expires_at`).
     #[instrument(skip_all)]
     async fn handle_claim_expiration(&self) -> Result<u64, Error> {
-        retry_query(
-            &self.config.retry_config,
-            "handle_claim_expiration",
-            || async {
-                let now = Utc::now();
-                let mut conn = self
-                    .acquire_write_conn_metric("handle_claim_expiration")
-                    .await?;
+        let now = Utc::now();
+        let mut conn = self
+            .acquire_write_conn_metric("handle_claim_expiration")
+            .await?;
 
-                let released = sqlx::query(
-                    "UPDATE inflight_taskactivations
-                     SET claim_expires_at = null,
-                         status = $1
-                     WHERE claim_expires_at IS NOT NULL
-                         AND claim_expires_at < $2
-                         AND status = $3",
-                )
-                .bind(InflightActivationStatus::Pending)
-                .bind(now.timestamp())
-                .bind(InflightActivationStatus::Claimed)
-                .execute(&mut *conn)
-                .await?;
-
-                Ok(released.rows_affected())
-            },
+        let released = sqlx::query(
+            "UPDATE inflight_taskactivations
+             SET claim_expires_at = null,
+                 status = $1
+             WHERE claim_expires_at IS NOT NULL
+                 AND claim_expires_at < $2
+                 AND status = $3",
         )
-        .await
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Claimed)
+        .execute(&mut *conn)
+        .await?;
+
+        Ok(released.rows_affected())
     }
 
     /// Update tasks that are in processing and have exceeded their processing deadline
@@ -869,6 +809,8 @@ impl InflightActivationStore for SqliteActivationStore {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
 
+        // Idempotent tasks that fail their processing deadlines go directly to failure
+        // there are no retries, as the worker will reject the task due to idempotency keys.
         let most_once_result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1
@@ -885,6 +827,8 @@ impl InflightActivationStore for SqliteActivationStore {
             processing_deadline_modified_rows = query_res.rows_affected();
         }
 
+        // Update non-idempotent tasks.
+        // Increment processing_attempts by 1 and reset processing_deadline to null.
         let result = sqlx::query(
             "UPDATE inflight_taskactivations
             SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
@@ -910,32 +854,25 @@ impl InflightActivationStore for SqliteActivationStore {
     /// These tasks are set to status=failure and will be handled by handle_failed_tasks accordingly.
     #[instrument(skip_all)]
     async fn handle_processing_attempts(&self) -> Result<u64, Error> {
-        retry_query(
-            &self.config.retry_config,
-            "handle_processing_attempts",
-            || async {
-                let mut conn = self
-                    .acquire_write_conn_metric("handle_processing_attempts")
-                    .await?;
-                let processing_attempts_result = sqlx::query(
-                    "UPDATE inflight_taskactivations
-                    SET status = $1
-                    WHERE processing_attempts >= $2 AND status = $3",
-                )
-                .bind(InflightActivationStatus::Failure)
-                .bind(self.config.max_processing_attempts as i32)
-                .bind(InflightActivationStatus::Pending)
-                .execute(&mut *conn)
-                .await;
-
-                if let Ok(query_res) = processing_attempts_result {
-                    return Ok(query_res.rows_affected());
-                }
-
-                Err(anyhow!("Could not update tasks past processing_deadline"))
-            },
+        let mut conn = self
+            .acquire_write_conn_metric("handle_processing_attempts")
+            .await?;
+        let processing_attempts_result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET status = $1
+            WHERE processing_attempts >= $2 AND status = $3",
         )
-        .await
+        .bind(InflightActivationStatus::Failure)
+        .bind(self.config.max_processing_attempts as i32)
+        .bind(InflightActivationStatus::Pending)
+        .execute(&mut *conn)
+        .await;
+
+        if let Ok(query_res) = processing_attempts_result {
+            return Ok(query_res.rows_affected());
+        }
+
+        Err(anyhow!("Could not update tasks past processing_deadline"))
     }
 
     /// Perform upkeep work for tasks that are past expires_at deadlines
@@ -946,20 +883,17 @@ impl InflightActivationStore for SqliteActivationStore {
     /// The number of impacted records is returned in a Result.
     #[instrument(skip_all)]
     async fn handle_expires_at(&self) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "handle_expires_at", || async {
-            let now = Utc::now();
-            let mut conn = self.acquire_write_conn_metric("handle_expires_at").await?;
-            let query = sqlx::query(
-                "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
-            )
-            .bind(InflightActivationStatus::Pending)
-            .bind(now.timestamp())
-            .execute(&mut *conn)
-            .await?;
+        let now = Utc::now();
+        let mut conn = self.acquire_write_conn_metric("handle_expires_at").await?;
+        let query = sqlx::query(
+            "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .execute(&mut *conn)
+        .await?;
 
-            Ok(query.rows_affected())
-        })
-        .await
+        Ok(query.rows_affected())
     }
 
     /// Perform upkeep work for tasks that are past delay_until deadlines
@@ -970,24 +904,21 @@ impl InflightActivationStore for SqliteActivationStore {
     /// The number of impacted records is returned in a Result.
     #[instrument(skip_all)]
     async fn handle_delay_until(&self) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "handle_delay_until", || async {
-            let now = Utc::now();
-            let mut conn = self.acquire_write_conn_metric("handle_delay_until").await?;
-            let update_result = sqlx::query(
-                r#"UPDATE inflight_taskactivations
-                SET status = $1
-                WHERE delay_until IS NOT NULL AND delay_until < $2 AND status = $3
-                "#,
-            )
-            .bind(InflightActivationStatus::Pending)
-            .bind(now.timestamp())
-            .bind(InflightActivationStatus::Delay)
-            .execute(&mut *conn)
-            .await?;
+        let now = Utc::now();
+        let mut conn = self.acquire_write_conn_metric("handle_delay_until").await?;
+        let update_result = sqlx::query(
+            r#"UPDATE inflight_taskactivations
+            SET status = $1
+            WHERE delay_until IS NOT NULL AND delay_until < $2 AND status = $3
+            "#,
+        )
+        .bind(InflightActivationStatus::Pending)
+        .bind(now.timestamp())
+        .bind(InflightActivationStatus::Delay)
+        .execute(&mut *conn)
+        .await?;
 
-            Ok(update_result.rows_affected())
-        })
-        .await
+        Ok(update_result.rows_affected())
     }
 
     /// Perform upkeep work related to status=failure
@@ -998,69 +929,39 @@ impl InflightActivationStore for SqliteActivationStore {
     /// complete.
     #[instrument(skip_all)]
     async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder, Error> {
-        retry_query(
-            &self.config.retry_config,
-            "handle_failed_tasks",
-            || async {
-                let mut atomic = self.write_pool.begin().await?;
+        let mut atomic = self.write_pool.begin().await?;
 
-                let failed_tasks: Vec<SqliteRow> =
-                    sqlx::query("SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1")
-                        .bind(InflightActivationStatus::Failure)
-                        .fetch_all(&mut *atomic)
-                        .await?
-                        .into_iter()
-                        .collect();
+        let failed_tasks: Vec<SqliteRow> =
+            sqlx::query("SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1")
+                .bind(InflightActivationStatus::Failure)
+                .fetch_all(&mut *atomic)
+                .await?
+                .into_iter()
+                .collect();
 
-                let mut forwarder = FailedTasksForwarder {
-                    to_discard: vec![],
-                    to_deadletter: vec![],
-                };
+        let mut forwarder = FailedTasksForwarder {
+            to_discard: vec![],
+            to_deadletter: vec![],
+        };
 
-                for record in failed_tasks.iter() {
-                    let activation_data: &[u8] = record.get("activation");
-                    let id: String = record.get("id");
-                    let on_attempts_exceeded_val: i32 = record.get("on_attempts_exceeded");
-                    let on_attempts_exceeded: OnAttemptsExceeded =
-                        on_attempts_exceeded_val.try_into().unwrap();
-                    if on_attempts_exceeded == OnAttemptsExceeded::Discard
-                        || on_attempts_exceeded == OnAttemptsExceeded::Unspecified
-                    {
-                        forwarder.to_discard.push((id, activation_data.to_vec()))
-                    } else if on_attempts_exceeded == OnAttemptsExceeded::Deadletter {
-                        forwarder.to_deadletter.push((id, activation_data.to_vec()))
-                    }
-                }
+        for record in failed_tasks.iter() {
+            let activation_data: &[u8] = record.get("activation");
+            let id: String = record.get("id");
+            // We could be deadlettering because of activation.expires
+            // when a task expires we still deadletter if configured.
+            let on_attempts_exceeded_val: i32 = record.get("on_attempts_exceeded");
+            let on_attempts_exceeded: OnAttemptsExceeded =
+                on_attempts_exceeded_val.try_into().unwrap();
+            if on_attempts_exceeded == OnAttemptsExceeded::Discard
+                || on_attempts_exceeded == OnAttemptsExceeded::Unspecified
+            {
+                forwarder.to_discard.push((id, activation_data.to_vec()))
+            } else if on_attempts_exceeded == OnAttemptsExceeded::Deadletter {
+                forwarder.to_deadletter.push((id, activation_data.to_vec()))
+            }
+        }
 
-                if !forwarder.to_discard.is_empty() {
-                    let mut query_builder =
-                        QueryBuilder::new("UPDATE inflight_taskactivations ");
-                    query_builder
-                        .push("SET status = ")
-                        .push_bind(InflightActivationStatus::Complete)
-                        .push(" WHERE id IN (");
-
-                    let mut separated = query_builder.separated(", ");
-                    for (id, _body) in forwarder.to_discard.iter() {
-                        separated.push_bind(id);
-                    }
-                    separated.push_unseparated(")");
-
-                    query_builder.build().execute(&mut *atomic).await?;
-                }
-
-                atomic.commit().await?;
-
-                Ok(forwarder)
-            },
-        )
-        .await
-    }
-
-    /// Mark a collection of tasks as complete by id
-    #[instrument(skip_all)]
-    async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "mark_completed", || async {
+        if !forwarder.to_discard.is_empty() {
             let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
             query_builder
                 .push("SET status = ")
@@ -1068,52 +969,67 @@ impl InflightActivationStore for SqliteActivationStore {
                 .push(" WHERE id IN (");
 
             let mut separated = query_builder.separated(", ");
-            for id in ids.iter() {
+            for (id, _body) in forwarder.to_discard.iter() {
                 separated.push_bind(id);
             }
             separated.push_unseparated(")");
-            let mut conn = self.acquire_write_conn_metric("mark_completed").await?;
-            let result = query_builder.build().execute(&mut *conn).await?;
 
-            Ok(result.rows_affected())
-        })
-        .await
+            query_builder.build().execute(&mut *atomic).await?;
+        }
+
+        atomic.commit().await?;
+
+        Ok(forwarder)
+    }
+
+    /// Mark a collection of tasks as complete by id
+    #[instrument(skip_all)]
+    async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
+        query_builder
+            .push("SET status = ")
+            .push_bind(InflightActivationStatus::Complete)
+            .push(" WHERE id IN (");
+
+        let mut separated = query_builder.separated(", ");
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+        let mut conn = self.acquire_write_conn_metric("mark_completed").await?;
+        let result = query_builder.build().execute(&mut *conn).await?;
+
+        Ok(result.rows_affected())
     }
 
     /// Remove completed tasks.
     /// This method is a garbage collector for the inflight task store.
     #[instrument(skip_all)]
     async fn remove_completed(&self) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "remove_completed", || async {
-            let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
-            let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
-                .bind(InflightActivationStatus::Complete)
-                .execute(&mut *conn)
-                .await?;
+        let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
+        let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
+            .bind(InflightActivationStatus::Complete)
+            .execute(&mut *conn)
+            .await?;
 
-            Ok(query.rows_affected())
-        })
-        .await
+        Ok(query.rows_affected())
     }
 
     /// Remove killswitched tasks.
     #[instrument(skip_all)]
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "remove_killswitched", || async {
-            let mut query_builder =
-                QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE taskname IN (");
-            let mut separated = query_builder.separated(", ");
-            for taskname in killswitched_tasks.iter() {
-                separated.push_bind(taskname);
-            }
-            separated.push_unseparated(")");
-            let mut conn = self
-                .acquire_write_conn_metric("remove_killswitched")
-                .await?;
-            let query = query_builder.build().execute(&mut *conn).await?;
+        let mut query_builder =
+            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE taskname IN (");
+        let mut separated = query_builder.separated(", ");
+        for taskname in killswitched_tasks.iter() {
+            separated.push_bind(taskname);
+        }
+        separated.push_unseparated(")");
+        let mut conn = self
+            .acquire_write_conn_metric("remove_killswitched")
+            .await?;
+        let query = query_builder.build().execute(&mut *conn).await?;
 
-            Ok(query.rows_affected())
-        })
-        .await
+        Ok(query.rows_affected())
     }
 }
