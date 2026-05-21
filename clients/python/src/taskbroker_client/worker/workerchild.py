@@ -378,6 +378,19 @@ def child_process(
                         status=next_state,
                         host=inflight.host,
                         receive_timestamp=inflight.receive_timestamp,
+                        # Send max_attempts and delay_on_retry if this is a retry.
+                        # Don't send it on every task as this codepath is relatively
+                        # unoptimized on the broker side.
+                        max_attempts=(
+                            task_func.retry._times + 1
+                            if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
+                            else None
+                        ),
+                        delay_on_retry=(
+                            task_func.retry._delay
+                            if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
+                            else None
+                        ),
                     )
                 )
 
