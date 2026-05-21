@@ -69,3 +69,4 @@ class ProcessingResult:
     host: str
     receive_timestamp: float
     max_attempts: int | None = None
+    delay_on_retry: int | None = None

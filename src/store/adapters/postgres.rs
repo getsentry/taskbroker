@@ -653,6 +653,7 @@ impl InflightActivationStore for PostgresActivationStore {
         id: &str,
         status: InflightActivationStatus,
         max_attempts: Option<u32>,
+        delay_on_retry: Option<u64>,
     ) -> Result<Option<InflightActivation>, Error> {
         let mut tx = self.begin_write_tx_metric("set_status").await?;
 
@@ -668,31 +669,37 @@ impl InflightActivationStore for PostgresActivationStore {
             return Ok(None);
         };
 
+        let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+        let mut needs_update = false;
+        let retry_state = activation.retry_state.get_or_insert_default();
+
+        // Only update the blob if max_attempts actually changed. This should rarely
+        // happen after the first retry, since max_attempts comes from the task's
+        // retry decorator which stays constant across retries.
+        // For raw topics, retry_state starts as None so we create it on first retry.
         if let Some(max_attempts) = max_attempts {
-            let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
-
-            // Only update the blob if max_attempts actually changed. This should rarely
-            // happen after the first retry, since max_attempts comes from the task's
-            // retry decorator which stays constant across retries.
-            // For raw topics, retry_state starts as None so we create it on first retry.
-            let needs_update = activation
-                .retry_state
-                .as_ref()
-                .is_none_or(|rs| rs.max_attempts != max_attempts);
-
-            if needs_update {
-                let retry_state = activation.retry_state.get_or_insert_default();
+            if retry_state.max_attempts != max_attempts {
                 retry_state.max_attempts = max_attempts;
-
-                let updated_activation = activation.encode_to_vec();
-                sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
-                    .bind(&updated_activation)
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-
-                row.activation = updated_activation;
+                needs_update = true;
             }
+        }
+
+        if let Some(delay_on_retry) = delay_on_retry {
+            if retry_state.delay_on_retry != Some(delay_on_retry) {
+                retry_state.delay_on_retry = Some(delay_on_retry);
+                needs_update = true;
+            }
+        }
+
+        if needs_update {
+            let updated_activation = activation.encode_to_vec();
+            sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
+                .bind(&updated_activation)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+
+            row.activation = updated_activation;
         }
 
         tx.commit().await?;

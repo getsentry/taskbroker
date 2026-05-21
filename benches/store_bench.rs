@@ -125,6 +125,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
                             &format!("id_{task_id}"),
                             InflightActivationStatus::Complete,
                             None,
+                            None,
                         )
                         .await
                         .unwrap();

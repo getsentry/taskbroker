@@ -107,12 +107,14 @@ impl ConsumerService for TaskbrokerServer {
         }
 
         let max_attempts = request.get_ref().max_attempts;
+        let delay_on_retry = request.get_ref().delay_on_retry;
 
         // Use batching channel if available and we don't need to update retry state.
-        // If max_attempts is Some, we can't use batching API to update the activation, and have to
-        // fall back to individual set_status.
+        // If max_attempts or delay_on_retry is Some, we can't use batching API to update the
+        // activation, and have to fall back to individual set_status.
         if let Some(ref tx) = self.update_tx
             && max_attempts.is_none()
+            && delay_on_retry.is_none()
         {
             tx.send((id, status))
                 .await
@@ -122,7 +124,11 @@ impl ConsumerService for TaskbrokerServer {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 
-        match self.store.set_status(&id, status, max_attempts).await {
+        match self
+            .store
+            .set_status(&id, status, max_attempts, delay_on_retry)
+            .await
+        {
             Ok(Some(_)) => metrics::counter!(
                 "grpc_server.set_status",
                 "result" => "ok",
