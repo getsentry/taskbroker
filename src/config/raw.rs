@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Raw mode configuration.
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize)]
 pub struct RawConfig {
     /// The namespace to assign to raw mode activations.
     pub namespace: String,

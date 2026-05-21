@@ -3,10 +3,11 @@ use std::sync::Arc;
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
+use taskbroker::config::store::StoreConfig;
 use tokio::task::JoinSet;
 
 use taskbroker::store::activation::InflightActivationStatus;
-use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::adapters::sqlite::SqliteActivationStore;
 use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::test_utils::{
     generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
@@ -23,20 +24,17 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     } else {
         generate_temp_filename()
     };
-    let store = Arc::new(
-        SqliteActivationStore::new(
-            &url,
-            InflightActivationStoreConfig {
-                max_processing_attempts: 1,
-                vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                claim_lease_ms: 5000,
-                enable_sqlite_status_metrics: false,
-            },
-        )
-        .await
-        .unwrap(),
-    );
+
+    let mut config = StoreConfig::default();
+
+    config.processing_deadline_grace_sec = 3;
+    config.claim_lease_ms = 5000;
+
+    config.sqlite.path = url;
+    config.sqlite.vacuum_page_count = None;
+    config.sqlite.enable_status_metrics = false;
+
+    let store = Arc::new(SqliteActivationStore::new(config).await.unwrap());
 
     let namespace = generate_unique_namespace();
 
@@ -88,20 +86,16 @@ async fn set_status(num_activations: u32, num_workers: u32) {
         generate_temp_filename()
     };
 
-    let store = Arc::new(
-        SqliteActivationStore::new(
-            &url,
-            InflightActivationStoreConfig {
-                max_processing_attempts: 1,
-                vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                claim_lease_ms: 5000,
-                enable_sqlite_status_metrics: false,
-            },
-        )
-        .await
-        .unwrap(),
-    );
+    let mut config = StoreConfig::default();
+
+    config.processing_deadline_grace_sec = 3;
+    config.claim_lease_ms = 5000;
+
+    config.sqlite.path = url;
+    config.sqlite.vacuum_page_count = None;
+    config.sqlite.enable_status_metrics = false;
+
+    let store = Arc::new(SqliteActivationStore::new(config).await.unwrap());
 
     let namespace = generate_unique_namespace();
 

@@ -6,21 +6,19 @@ use std::time::Duration;
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
-use sqlx::postgres::PgSslMode;
 use sqlx::{QueryBuilder, Sqlite};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
-use crate::config::Config;
+use crate::config::store::{SqliteConfig, StoreConfig};
 use crate::store::activation::{InflightActivationBuilder, InflightActivationStatus};
 use crate::store::adapters::sqlite::{SqliteActivationStore, create_sqlite_pool};
 use crate::store::traits::InflightActivationStore;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
-    create_integration_config_with_ssl, create_test_store, generate_temp_filename,
-    generate_unique_namespace, make_activations, make_activations_with_namespace,
-    replace_retry_state,
+    create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
+    make_activations_with_namespace, replace_retry_state,
 };
 
 #[test]
@@ -68,14 +66,6 @@ async fn test_sqlite_create_db() {
     config.store.sqlite.path = generate_temp_filename();
 
     assert!(SqliteActivationStore::new(config.store).await.is_ok())
-}
-
-#[test]
-fn test_connect_opts_preserves_sslmode_query_param() {
-    let config = create_integration_config_with_ssl();
-    let opts = PostgresActivationStoreConfig::from_config(&config).pg_connection;
-    assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
-    assert_eq!(opts.get_host(), "localhost");
 }
 
 #[tokio::test]
@@ -1783,16 +1773,12 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
 
 #[tokio::test]
 async fn test_vacuum_db_incremental() {
-    let config = Config {
-        vacuum_page_count: Some(10),
-        ..Config::default()
-    };
-    let store = SqliteActivationStore::new(
-        &generate_temp_filename(),
-        InflightActivationStoreConfig::from_config(&config),
-    )
-    .await
-    .expect("could not create store");
+    let mut config = create_integration_config();
+    config.store.sqlite.vacuum_page_count = Some(10);
+
+    let store = SqliteActivationStore::new(config.store)
+        .await
+        .expect("could not create store");
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
@@ -1914,19 +1900,21 @@ async fn test_db_status_calls_ok() {
     let db_path = format!("/tmp/taskbroker-dbstatus-{nanos}.sqlite");
     let url = format!("sqlite:{db_path}");
 
-    // Initialize a store to create the database and run migrations
-    SqliteActivationStore::new(
-        &url,
-        InflightActivationStoreConfig {
-            max_processing_attempts: 3,
-            processing_deadline_grace_sec: 0,
-            claim_lease_ms: 5000,
+    let config = StoreConfig {
+        sqlite: SqliteConfig {
+            path: url.clone(),
+            enable_status_metrics: true,
             vacuum_page_count: None,
-            enable_sqlite_status_metrics: false,
         },
-    )
-    .await
-    .expect("store init");
+        processing_deadline_grace_sec: 0,
+        claim_lease_ms: 5000,
+        ..StoreConfig::default()
+    };
+
+    // Initialize a store to create the database and run migrations
+    SqliteActivationStore::new(config)
+        .await
+        .expect("store init");
 
     // Acquire a fresh read connection from a temporary pool, since store.read_pool is private
     let (read_pool, _write_pool) = create_sqlite_pool(&url).await.expect("pool");

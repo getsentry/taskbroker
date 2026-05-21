@@ -9,7 +9,7 @@ pub enum DatabaseAdapter {
 }
 
 /// Configuration options specific to Postgres.
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PostgresConfig {
     /// What host should we use to connect?
     pub host: String,
@@ -53,7 +53,7 @@ impl Default for PostgresConfig {
 }
 
 /// Configuration options specific to SQLite.
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SqliteConfig {
     /// The path to the database.
     pub path: String,
@@ -76,10 +76,10 @@ impl Default for SqliteConfig {
     }
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct StoreConfig {
     /// Which specific database should we use?
-    pub database: DatabaseAdapter,
+    pub adapter: DatabaseAdapter,
 
     /// Configuration options specific to SQLite.
     pub sqlite: SqliteConfig,
@@ -124,7 +124,7 @@ pub struct StoreConfig {
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            database: DatabaseAdapter::Sqlite,
+            adapter: DatabaseAdapter::Sqlite,
             sqlite: SqliteConfig::default(),
             pg: PostgresConfig::default(),
             insert_failure_backoff_ms: 4000,

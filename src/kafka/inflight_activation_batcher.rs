@@ -32,14 +32,14 @@ impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            producer_config: config.kafka_producer_config(),
-            kafka_cluster: config.kafka_cluster.clone(),
-            kafka_topic: config.kafka_topic.clone(),
-            kafka_long_topic: config.kafka_long_topic.clone(),
-            send_timeout_ms: config.kafka_send_timeout_ms,
-            max_batch_time_ms: config.db_insert_batch_max_time_ms,
-            max_batch_len: config.db_insert_batch_max_len,
-            max_batch_size: config.db_insert_batch_max_size,
+            producer_config: config.kafka.kafka_producer_config(),
+            kafka_cluster: config.kafka.default.brokers.clone(),
+            kafka_topic: config.kafka.default.topic.clone(),
+            kafka_long_topic: config.kafka.default.long_topic.clone(),
+            send_timeout_ms: config.kafka.send_timeout_ms,
+            max_batch_time_ms: config.store.insert_batch_interval_ms,
+            max_batch_len: config.store.insert_batch_length,
+            max_batch_size: config.store.insert_batch_size,
         }
     }
 }
@@ -284,11 +284,10 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_close_by_bytes_limit() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config {
-            db_insert_batch_max_size: 1,
-            db_insert_batch_max_len: 2,
-            ..Default::default()
-        });
+
+        let mut config = Config::default();
+        config.store.insert_batch_size = 1;
+        config.store.insert_batch_length = 2;
 
         let mut batcher = InflightActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -312,11 +311,10 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_close_by_rows_limit() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config {
-            db_insert_batch_max_size: 100000,
-            db_insert_batch_max_len: 2,
-            ..Default::default()
-        });
+
+        let mut config = Config::default();
+        config.store.insert_batch_size = 100000;
+        config.store.insert_batch_length = 2;
 
         let mut batcher = InflightActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -367,7 +365,10 @@ demoted_topic: taskworker-demoted"#;
             runtime_config,
         );
 
-        assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
+        assert_eq!(
+            batcher.producer_cluster,
+            config.kafka.default.brokers.clone()
+        );
 
         let inflight_activation_0 = InflightActivationBuilder::new()
             .id("0")

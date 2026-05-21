@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Configuration for a general queue.
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct QueueConfig {
     /// The size of the queue.
     pub size: usize,

@@ -5,6 +5,7 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
+use taskbroker::config::store::DatabaseAdapter;
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -12,7 +13,7 @@ use tonic::transport::Server;
 use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
 
-use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
+use taskbroker::config::{Config, DeliveryMode};
 use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
@@ -32,10 +33,8 @@ use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{
-    PostgresActivationStore, PostgresActivationStoreConfig,
-};
-use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::adapters::postgres::PostgresActivationStore;
+use taskbroker::store::adapters::sqlite::SqliteActivationStore;
 use taskbroker::store::traits::InflightActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
@@ -68,21 +67,22 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
-    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
-        DatabaseAdapter::Sqlite => Arc::new(SqliteActivationStore::new(config.store).await?),
-        DatabaseAdapter::Postgres => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
-                .await?,
-        ),
+    let store: Arc<dyn InflightActivationStore> = match config.store.adapter {
+        DatabaseAdapter::Sqlite => {
+            Arc::new(SqliteActivationStore::new(config.store.clone()).await?)
+        }
+        DatabaseAdapter::Postgres => {
+            Arc::new(PostgresActivationStore::new(config.store.clone()).await?)
+        }
     };
 
     // If this is an environment where the topics might not exist, check and create them.
-    if config.create_missing_topics {
-        let kafka_client_config = config.kafka_consumer_config();
+    if config.kafka.create_missing_topics {
+        let kafka_client_config = config.kafka.kafka_consumer_config();
         create_missing_topics(
             kafka_client_config,
-            &config.kafka_topic,
-            config.default_topic_partitions,
+            &config.kafka.default.topic,
+            config.kafka.default_topic_partitions,
         )
         .await?;
     }
@@ -156,8 +156,8 @@ async fn main() -> Result<(), Error> {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
             start_consumer(
-                &[&consumer_config.kafka_topic],
-                &consumer_config.kafka_consumer_config(),
+                &[&consumer_config.kafka.default.topic],
+                &consumer_config.kafka.kafka_consumer_config(),
                 consumer_store.clone(),
                 processing_strategy!({
                     err:
@@ -186,8 +186,8 @@ async fn main() -> Result<(), Error> {
     });
 
     // Status update flush task
-    let (status_update_tx, status_update_task) = if config.batch_status_updates {
-        let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size.max(1));
+    let (status_update_tx, status_update_task) = if config.fetch.batch_status_updates {
+        let (tx, rx) = tokio::sync::mpsc::channel(config.fetch.status_update_batch_size.max(1));
 
         let flusher_store = store.clone();
         let flusher_config = config.clone();
@@ -195,8 +195,8 @@ async fn main() -> Result<(), Error> {
         let handle = tokio::spawn(async move {
             flusher::run_flusher(
                 rx,
-                flusher_config.status_update_batch_size,
-                flusher_config.status_update_interval_ms,
+                flusher_config.fetch.status_update_batch_size,
+                flusher_config.fetch.status_update_interval_ms,
                 move |buffer| Box::pin(flush_updates(flusher_store.clone(), buffer)),
             )
             .await
@@ -260,14 +260,14 @@ async fn main() -> Result<(), Error> {
     });
 
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.push, store.clone()));
-    let fetch_pool = FetchPool::new(store.clone(), config.fetch, push_pool.clone());
+    let push_pool = Arc::new(PushPool::new(config.push.clone(), store.clone()));
+    let fetch_pool = FetchPool::new(store.clone(), config.fetch.clone(), push_pool.clone());
 
     // Initialize push threads
     let push_task = if config.delivery_mode == DeliveryMode::Push {
-        Some(tokio::spawn(async move {
-            push_pool.start(config.secrets).await
-        }))
+        let secrets = config.secrets.clone();
+
+        Some(tokio::spawn(async move { push_pool.start(secrets).await }))
     } else {
         None
     };

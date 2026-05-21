@@ -4,10 +4,11 @@ use anyhow::Error;
 use rdkafka::message::OwnedMessage;
 
 use crate::config::Config;
+use crate::config::raw::RawConfig;
 use crate::store::activation::InflightActivation;
 
 use super::deserialize_activation::{self, DeserializeActivationConfig};
-use super::deserialize_raw::{self, RawConfig};
+use super::deserialize_raw;
 
 pub struct DeserializeConfig {
     activation_config: DeserializeActivationConfig,
@@ -18,7 +19,7 @@ impl DeserializeConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             activation_config: DeserializeActivationConfig::from_config(config),
-            raw_config: RawConfig::from_config(config),
+            raw_config: config.raw.clone(),
         }
     }
 }

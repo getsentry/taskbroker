@@ -1,14 +1,4 @@
 #![allow(clippy::result_large_err)]
-use std::borrow::Cow;
-use std::collections::BTreeMap;
-
-use figment::providers::{Env, Format, Yaml};
-use figment::{Figment, Metadata, Profile, Provider};
-use rdkafka::ClientConfig;
-use serde::{Deserialize, Serialize};
-
-use crate::Args;
-use crate::logging::LogFormat;
 
 pub mod fetch;
 pub mod kafka;
