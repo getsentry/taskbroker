@@ -127,46 +127,6 @@ pub async fn create_default_postgres_pool(
     Ok(default_pool)
 }
 
-// pub struct PostgresActivationStoreConfig {
-//     pub pg_connection: PgConnectOptions,
-//     pub pg_database_name: String,
-//     pub pg_default_database_name: String,
-//     pub run_migrations: bool,
-//     pub max_processing_attempts: usize,
-//     pub processing_deadline_grace_sec: u64,
-//     /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
-//     pub claim_lease_ms: u64,
-//     pub vacuum_page_count: Option<usize>,
-//     pub enable_sqlite_status_metrics: bool,
-// }
-
-// impl PostgresActivationStoreConfig {
-//     pub fn from_config(config: &Config) -> Self {
-//         let mut conn_opts = PgConnectOptions::new()
-//             .username(&config.pg_username)
-//             .password(&config.pg_password)
-//             .host(&config.pg_host)
-//             .port(config.pg_port);
-//         if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
-//             let url = conn_opts.to_url_lossy();
-//             let new_url =
-//                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
-//             conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
-//         }
-//         Self {
-//             pg_connection: conn_opts,
-//             pg_database_name: config.pg_database_name.clone(),
-//             pg_default_database_name: config.pg_default_database_name.clone(),
-//             run_migrations: config.run_migrations,
-//             max_processing_attempts: config.max_processing_attempts,
-//             vacuum_page_count: config.vacuum_page_count,
-//             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-//             claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
-//             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
-//         }
-//     }
-// }
-
 pub struct PostgresActivationStore {
     conn_opts: PgConnectOptions,
     read_pool: PgPool,
@@ -189,12 +149,14 @@ impl PostgresActivationStore {
 
     #[framed]
     pub async fn new(config: StoreConfig) -> Result<Self, Error> {
+        // Parse list of options in "key:value,key:value" format
         let options: Vec<_> = config
             .pg
             .options
             .split(',')
-            .map(|pair| pair.trim().split_once(':').unwrap())
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.split_once(':').unwrap())
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
             .collect();
 
         let conn_opts = PgConnectOptions::new()
