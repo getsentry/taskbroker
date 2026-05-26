@@ -44,6 +44,13 @@ impl RawConfig {
             application
         );
 
+        if let Some(ref retry_topic) = config.kafka_retry_topic {
+            assert!(
+                retry_topic != &config.kafka_topic,
+                "kafka_retry_topic cannot equal kafka_topic when raw_mode is enabled"
+            );
+        }
+
         Some(Self {
             namespace: config
                 .raw_namespace

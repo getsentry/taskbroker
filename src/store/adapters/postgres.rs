@@ -5,13 +5,14 @@ use std::time::Instant;
 use sqlx::ConnectOptions;
 use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
-use sqlx::{FromRow, Pool, Postgres, QueryBuilder};
+use sqlx::{FromRow, Pool, Postgres, QueryBuilder, Transaction};
 
 use anyhow::{Error, anyhow};
 use async_backtrace::framed;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
+use prost::Message;
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
@@ -186,8 +187,21 @@ impl PostgresActivationStore {
     ) -> Result<PoolConnection<Postgres>, Error> {
         let start = Instant::now();
         let conn = self.write_pool.acquire().await?;
-        metrics::histogram!("postgres.write.acquire_conn", "fn" => caller).record(start.elapsed());
+        metrics::histogram!("postgres.write.acquire_conn", "fn" => caller, "mode" => "conn")
+            .record(start.elapsed());
         Ok(conn)
+    }
+
+    #[framed]
+    async fn begin_write_tx_metric(
+        &self,
+        caller: &'static str,
+    ) -> Result<Transaction<'_, Postgres>, Error> {
+        let start = Instant::now();
+        let tx = self.write_pool.begin().await?;
+        metrics::histogram!("postgres.write.acquire_conn", "fn" => caller, "mode" => "begin")
+            .record(start.elapsed());
+        Ok(tx)
     }
 
     #[framed]
@@ -664,31 +678,95 @@ impl InflightActivationStore for PostgresActivationStore {
         .await
     }
 
-    /// Update the status of a specific activation
+    /// Update the status of a specific activation.
+    /// If max_attempts is provided (for Retry status), also updates the activation's retry_state.
     #[instrument(skip_all)]
     #[framed]
     async fn set_status(
         &self,
         id: &str,
         status: InflightActivationStatus,
+        max_attempts: Option<u32>,
+        delay_on_retry: Option<u64>,
     ) -> Result<Option<InflightActivation>, Error> {
         retry_query(&self.config.retry_config, "set_status", || async {
-            let mut conn = self.acquire_write_conn_metric("set_status").await?;
+            let mut tx = self.begin_write_tx_metric("set_status").await?;
+
             let result: Option<TableRow> = sqlx::query_as(
                 "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *, kafka_offset AS offset",
             )
             .bind(status.to_string())
             .bind(id)
-            .fetch_optional(&mut *conn)
+            .fetch_optional(&mut *tx)
             .await?;
 
-            let Some(row) = result else {
+            let Some(mut row) = result else {
                 return Ok(None);
             };
+
+            let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+            let mut needs_update = false;
+            let task_retry_state = activation.retry_state.get_or_insert_default();
+
+            // Only update the blob if max_attempts actually changed. This should rarely
+            // happen after the first retry, since max_attempts comes from the task's
+            // retry decorator which stays constant across retries.
+            // For raw topics, retry_state starts as None so we create it on first retry.
+            if let Some(max_attempts) = max_attempts
+                && task_retry_state.max_attempts != max_attempts
+            {
+                task_retry_state.max_attempts = max_attempts;
+                needs_update = true;
+            }
+
+            if let Some(delay_on_retry) = delay_on_retry
+                && task_retry_state.delay_on_retry != Some(delay_on_retry)
+            {
+                task_retry_state.delay_on_retry = Some(delay_on_retry);
+                needs_update = true;
+            }
+
+            if needs_update {
+                let updated_activation = activation.encode_to_vec();
+                sqlx::query(
+                    "UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2",
+                )
+                .bind(&updated_activation)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+
+                row.activation = updated_activation;
+            }
+
+            tx.commit().await?;
 
             Ok(Some(row.into()))
         })
         .await
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
+    async fn set_status_batch(
+        &self,
+        ids: &[String],
+        status: InflightActivationStatus,
+    ) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+
+        let result =
+            sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
+                .bind(status.to_string())
+                .bind(ids)
+                .execute(&mut *conn)
+                .await?;
+
+        Ok(result.rows_affected())
     }
 
     #[instrument(skip_all)]

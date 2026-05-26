@@ -118,7 +118,17 @@ impl InflightActivationStore for MockStore {
         &self,
         _id: &str,
         _status: InflightActivationStatus,
+        _max_attempts: Option<u32>,
+        _delay_on_retry: Option<u64>,
     ) -> Result<Option<InflightActivation>, Error> {
+        unimplemented!()
+    }
+
+    async fn set_status_batch(
+        &self,
+        _ids: &[String],
+        _status: InflightActivationStatus,
+    ) -> Result<u64, Error> {
         unimplemented!()
     }
 

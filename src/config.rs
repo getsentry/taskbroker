@@ -129,6 +129,11 @@ pub struct Config {
     /// The location to the DLQ private key file
     pub kafka_deadletter_ssl_key_location: Option<String>,
 
+    /// The topic to publish retry task activations to.
+    /// When set, retries go to this topic instead of kafka_topic.
+    /// Required for raw_mode where the main topic has other consumers.
+    pub kafka_retry_topic: Option<String>,
+
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
 
@@ -306,6 +311,15 @@ pub struct Config {
     /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     pub push_timeout_ms: u64,
 
+    /// Update statuses from the gRPC server in batches?
+    pub batch_status_updates: bool,
+
+    /// The size of a batch of status updates.
+    pub status_update_batch_size: usize,
+
+    /// Maximum milliseconds to wait before flushing a batch of status updates.
+    pub status_update_interval_ms: u64,
+
     /// The hostname used to construct `callback_url` for task push requests.
     pub callback_addr: String,
 
@@ -369,6 +383,7 @@ impl Default for Config {
             kafka_deadletter_ssl_ca_location: None,
             kafka_deadletter_ssl_certificate_location: None,
             kafka_deadletter_ssl_key_location: None,
+            kafka_retry_topic: None,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
@@ -418,6 +433,9 @@ impl Default for Config {
             push_queue_size: 1,
             push_queue_timeout_ms: 5000,
             push_timeout_ms: 30000,
+            batch_status_updates: false,
+            status_update_batch_size: 1,
+            status_update_interval_ms: 100,
             callback_addr: "0.0.0.0".into(),
             callback_port: 50051,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
