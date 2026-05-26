@@ -65,8 +65,14 @@ jobs:
 
       - name: Run pre-commit
         run: |
-          jq '.[]' --raw-output <<< '${{steps.changes.outputs.all_files}}' |
-            xargs pre-commit run --files
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # On main branch, run on all files to catch any formatting drift
+            pre-commit run --all-files
+          else
+            # On PRs, run only on changed files
+            jq '.[]' --raw-output <<< '${{steps.changes.outputs.all_files}}' |
+              xargs pre-commit run --files
+          fi
 
   python-client-lint:
     name: Python Client Lint

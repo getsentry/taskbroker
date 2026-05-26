@@ -172,16 +172,14 @@ def test_upkeep_expiry() -> None:
     dlq_topic_name = "taskworker-dlq"
     curr_time = int(time.time())
 
-    print(
-        f"""
+    print(f"""
 Running test with the following configuration:
         num of messages: {num_messages},
         num of partitions: {num_partitions},
         max pending count: {max_pending_count},
         topic name: {topic_name},
         dlq topic name: {dlq_topic_name}
-    """
-    )
+    """)
 
     create_topic(topic_name, num_partitions)
     create_topic(dlq_topic_name, 1)
