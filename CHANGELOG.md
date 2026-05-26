@@ -87,4 +87,3 @@
 ### Other
 
 - fix(scheduler) Make schedule changes take effect immediately by @markstory in [#590](https://github.com/getsentry/taskbroker/pull/590)
-
