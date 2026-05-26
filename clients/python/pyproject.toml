@@ -64,3 +64,4 @@ target-version = ['py311']
 profile = "black"
 line_length = 100
 lines_between_sections = 1
+src_paths = ["src", "../../integration_tests"]
