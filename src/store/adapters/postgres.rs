@@ -757,16 +757,19 @@ impl InflightActivationStore for PostgresActivationStore {
             return Ok(0);
         }
 
-        let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+        retry_query(&self.config.retry_config, "set_status_batch", || async {
+            let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
 
-        let result =
-            sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
-                .bind(status.to_string())
-                .bind(ids)
-                .execute(&mut *conn)
-                .await?;
+            let result =
+                sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
+                    .bind(status.to_string())
+                    .bind(ids)
+                    .execute(&mut *conn)
+                    .await?;
 
-        Ok(result.rows_affected())
+            Ok(result.rows_affected())
+        })
+        .await
     }
 
     #[instrument(skip_all)]
