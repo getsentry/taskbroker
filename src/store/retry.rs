@@ -68,7 +68,7 @@ where
                 attempt += 1;
             }
             Err(err) => {
-                if attempt > 0 {
+                if attempt > 0 && is_retryable_error(&err) {
                     metrics::counter!("store.retry.exhausted", "method" => label).increment(1);
                 }
                 return Err(err);
@@ -151,6 +151,28 @@ mod tests {
         assert!(result.is_err());
         // Called only once — no retries for non-retryable errors
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_retryable_then_non_retryable_stops_without_exhausting() {
+        let call_count = AtomicU32::new(0);
+        let config = test_config(3);
+
+        let result = retry_query(&config, "test", || async {
+            let count = call_count.fetch_add(1, Ordering::SeqCst);
+            if count == 0 {
+                // First attempt: retryable error — triggers retry
+                Err::<u64, _>(retryable_error())
+            } else {
+                // Second attempt: non-retryable error — should stop immediately
+                Err::<u64, _>(non_retryable_error())
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        // Called exactly twice: first attempt + one retry, then stopped
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
