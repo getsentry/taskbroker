@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
-use crate::store::adapters::sqlite::{ActivationStoreConfig, SqliteActivationStore};
+use crate::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
+use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
 use crate::store::traits::ActivationStore;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
@@ -273,16 +273,16 @@ pub fn create_config() -> Arc<Config> {
 pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
     match adapter {
         "sqlite" => Arc::new(
-            SqliteActivationStore::new(
+            SqliteStore::new(
                 &generate_temp_filename(),
-                ActivationStoreConfig::from_config(&create_integration_config()),
+                SqliteStoreConfig::from_config(&create_integration_config()),
             )
             .await
             .unwrap(),
         ) as Arc<dyn ActivationStore>,
         "postgres" => {
             let store = Arc::new(
-                PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
+                PostgresStore::new(PostgresStoreConfig::from_config(
                     &create_integration_config(),
                 ))
                 .await

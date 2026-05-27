@@ -28,10 +28,8 @@ use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{
-    PostgresActivationStore, PostgresActivationStoreConfig,
-};
-use taskbroker::store::adapters::sqlite::{ActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
+use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
 use taskbroker::store::traits::ActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
@@ -66,16 +64,11 @@ async fn main() -> Result<(), Error> {
 
     let store: Arc<dyn ActivationStore> = match config.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
-            SqliteActivationStore::new(
-                &config.db_path,
-                ActivationStoreConfig::from_config(&config),
-            )
-            .await?,
+            SqliteStore::new(&config.db_path, SqliteStoreConfig::from_config(&config)).await?,
         ),
-        DatabaseAdapter::Postgres => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
-                .await?,
-        ),
+        DatabaseAdapter::Postgres => {
+            Arc::new(PostgresStore::new(PostgresStoreConfig::from_config(&config)).await?)
+        }
     };
 
     // If this is an environment where the topics might not exist, check and create them.

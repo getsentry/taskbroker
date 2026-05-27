@@ -137,7 +137,7 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
     Ok((read_pool, write_pool))
 }
 
-pub struct ActivationStoreConfig {
+pub struct SqliteStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
     /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
@@ -146,7 +146,7 @@ pub struct ActivationStoreConfig {
     pub enable_sqlite_status_metrics: bool,
 }
 
-impl ActivationStoreConfig {
+impl SqliteStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_processing_attempts: config.max_processing_attempts,
@@ -158,14 +158,14 @@ impl ActivationStoreConfig {
     }
 }
 
-pub struct SqliteActivationStore {
+pub struct SqliteStore {
     read_pool: SqlitePool,
     write_pool: SqlitePool,
-    config: ActivationStoreConfig,
+    config: SqliteStoreConfig,
 }
 
-impl SqliteActivationStore {
-    pub async fn new(url: &str, config: ActivationStoreConfig) -> Result<Self, Error> {
+impl SqliteStore {
+    pub async fn new(url: &str, config: SqliteStoreConfig) -> Result<Self, Error> {
         let (read_pool, write_pool) = create_sqlite_pool(url).await?;
 
         sqlx::migrate!("./migrations/sqlite")
@@ -348,7 +348,7 @@ impl SqliteActivationStore {
 }
 
 #[async_trait]
-impl ActivationStore for SqliteActivationStore {
+impl ActivationStore for SqliteStore {
     /// Trigger incremental vacuum to reclaim free pages in the database.
     /// Depending on config data, will either vacuum a set number of
     /// pages or attempt to reclaim all free pages.

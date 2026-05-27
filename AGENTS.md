@@ -36,7 +36,7 @@ If a single external crate needs **more than three** `use` lines, put that crate
 The first block below is **wrong on purpose** (mixed order and no blank lines).
 
 ```rs
-use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
+use crate::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
 use crate::store::traits::ActivationStore;
 use std::sync::Arc;
 use rdkafka::Message;
@@ -60,6 +60,6 @@ use rdkafka::producer::FutureProducer;
 
 use anyhow::{Context, Result};
 
-use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
+use crate::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
 use crate::store::traits::ActivationStore;
 ```

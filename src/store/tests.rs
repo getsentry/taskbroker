@@ -14,10 +14,8 @@ use tokio::task::JoinSet;
 
 use crate::config::Config;
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::PostgresActivationStoreConfig;
-use crate::store::adapters::sqlite::{
-    ActivationStoreConfig, SqliteActivationStore, create_sqlite_pool,
-};
+use crate::store::adapters::postgres::PostgresStoreConfig;
+use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
@@ -68,9 +66,9 @@ fn test_activation_status_from() {
 #[tokio::test]
 async fn test_sqlite_create_db() {
     assert!(
-        SqliteActivationStore::new(
+        SqliteStore::new(
             &generate_temp_filename(),
-            ActivationStoreConfig::from_config(&create_integration_config())
+            SqliteStoreConfig::from_config(&create_integration_config())
         )
         .await
         .is_ok()
@@ -80,7 +78,7 @@ async fn test_sqlite_create_db() {
 #[test]
 fn test_connect_opts_preserves_sslmode_query_param() {
     let config = create_integration_config_with_ssl();
-    let opts = PostgresActivationStoreConfig::from_config(&config).pg_connection;
+    let opts = PostgresStoreConfig::from_config(&config).pg_connection;
     assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
     assert_eq!(opts.get_host(), "localhost");
 }
@@ -1783,9 +1781,9 @@ async fn test_vacuum_db_incremental() {
         vacuum_page_count: Some(10),
         ..Config::default()
     };
-    let store = SqliteActivationStore::new(
+    let store = SqliteStore::new(
         &generate_temp_filename(),
-        ActivationStoreConfig::from_config(&config),
+        SqliteStoreConfig::from_config(&config),
     )
     .await
     .expect("could not create store");
@@ -1911,9 +1909,9 @@ async fn test_db_status_calls_ok() {
     let url = format!("sqlite:{db_path}");
 
     // Initialize a store to create the database and run migrations
-    SqliteActivationStore::new(
+    SqliteStore::new(
         &url,
-        ActivationStoreConfig {
+        SqliteStoreConfig {
             max_processing_attempts: 3,
             processing_deadline_grace_sec: 0,
             claim_lease_ms: 5000,

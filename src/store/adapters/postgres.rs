@@ -129,7 +129,7 @@ pub async fn create_default_postgres_pool(
     Ok(default_pool)
 }
 
-pub struct PostgresActivationStoreConfig {
+pub struct PostgresStoreConfig {
     pub pg_connection: PgConnectOptions,
     pub pg_database_name: String,
     pub pg_default_database_name: String,
@@ -142,7 +142,7 @@ pub struct PostgresActivationStoreConfig {
     pub enable_sqlite_status_metrics: bool,
 }
 
-impl PostgresActivationStoreConfig {
+impl PostgresStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         let mut conn_opts = PgConnectOptions::new()
             .username(&config.pg_username)
@@ -169,14 +169,14 @@ impl PostgresActivationStoreConfig {
     }
 }
 
-pub struct PostgresActivationStore {
+pub struct PostgresStore {
     read_pool: PgPool,
     write_pool: PgPool,
-    config: PostgresActivationStoreConfig,
+    config: PostgresStoreConfig,
     partitions: RwLock<Vec<i32>>,
 }
 
-impl PostgresActivationStore {
+impl PostgresStore {
     #[framed]
     async fn acquire_write_conn_metric(
         &self,
@@ -202,7 +202,7 @@ impl PostgresActivationStore {
     }
 
     #[framed]
-    pub async fn new(config: PostgresActivationStoreConfig) -> Result<Self, Error> {
+    pub async fn new(config: PostgresStoreConfig) -> Result<Self, Error> {
         if config.run_migrations {
             let default_pool = create_default_postgres_pool(
                 &config.pg_connection,
@@ -269,7 +269,7 @@ impl PostgresActivationStore {
 }
 
 #[async_trait]
-impl ActivationStore for PostgresActivationStore {
+impl ActivationStore for PostgresStore {
     /// Trigger incremental vacuum to reclaim free pages in the database.
     /// Depending on config data, will either vacuum a set number of
     /// pages or attempt to reclaim all free pages.
@@ -570,10 +570,6 @@ impl ActivationStore for PostgresActivationStore {
 
         query_builder.push(" ORDER BY received_at ASC LIMIT 1");
 
-        let _ = query_builder
-            .build_query_as::<(DateTime<Utc>, Option<DateTime<Utc>>)>()
-            .fetch_one(&self.read_pool)
-            .await;
         let result = query_builder
             .build_query_as::<(DateTime<Utc>, Option<DateTime<Utc>>)>()
             .fetch_one(&self.read_pool)

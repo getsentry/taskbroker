@@ -6,7 +6,7 @@ use rand::Rng;
 use tokio::task::JoinSet;
 
 use taskbroker::store::activation::ActivationStatus;
-use taskbroker::store::adapters::sqlite::{ActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
 use taskbroker::store::traits::ActivationStore;
 use taskbroker::test_utils::{
     generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
@@ -24,9 +24,9 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
         generate_temp_filename()
     };
     let store = Arc::new(
-        SqliteActivationStore::new(
+        SqliteStore::new(
             &url,
-            ActivationStoreConfig {
+            SqliteStoreConfig {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
@@ -89,9 +89,9 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     };
 
     let store = Arc::new(
-        SqliteActivationStore::new(
+        SqliteStore::new(
             &url,
-            ActivationStoreConfig {
+            SqliteStoreConfig {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
