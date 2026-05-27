@@ -134,6 +134,12 @@ pub struct Config {
     /// Required for raw_mode where the main topic has other consumers.
     pub kafka_retry_topic: Option<String>,
 
+    /// Whether to consume from the retry topic.
+    /// When false (default), this taskbroker only produces to the retry topic
+    /// but does not consume from it, allowing the retry topic to be shared
+    /// across multiple taskbroker instances.
+    pub kafka_consume_retry_topic: bool,
+
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
 
@@ -377,6 +383,7 @@ impl Default for Config {
             kafka_deadletter_ssl_certificate_location: None,
             kafka_deadletter_ssl_key_location: None,
             kafka_retry_topic: None,
+            kafka_consume_retry_topic: false,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
