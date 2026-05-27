@@ -155,7 +155,7 @@ pub struct Config {
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
-    /// The database adapter to use for the inflight activation store.
+    /// The database adapter to use for the activation store.
     pub database_adapter: DatabaseAdapter,
 
     /// Whether to run the migrations on the database.
@@ -163,19 +163,19 @@ pub struct Config {
     /// in production the migrations shouldn't be run by the taskbroker.
     pub run_migrations: bool,
 
-    /// The host of the postgres database to use for the inflight activation store.
+    /// The host of the postgres database to use for the activation store.
     pub pg_host: String,
 
-    /// The port of the postgres database to use for the inflight activation store.
+    /// The port of the postgres database to use for the activation store.
     pub pg_port: u16,
 
-    /// The username of the postgres database to use for the inflight activation store.
+    /// The username of the postgres database to use for the activation store.
     pub pg_username: String,
 
-    /// The password of the postgres database to use for the inflight activation store.
+    /// The password of the postgres database to use for the activation store.
     pub pg_password: String,
 
-    /// The name of the postgres database to use for the inflight activation store.
+    /// The name of the postgres database to use for the activation store.
     pub pg_database_name: String,
 
     /// The default postgres database to use for migrations..
@@ -192,15 +192,15 @@ pub struct Config {
     pub db_write_failure_backoff_ms: u64,
 
     /// The maximum number of tasks that are buffered
-    /// before being written to InflightTaskStore (sqlite).
+    /// before being written to ActivationStore (sqlite).
     pub db_insert_batch_max_len: usize,
 
     /// The maximum number of bytes that are buffered
-    /// before being written to InflightTaskStore (sqlite).
+    /// before being written to ActivationStore (sqlite).
     pub db_insert_batch_max_size: usize,
 
     /// The time in milliseconds to buffer tasks
-    /// before being written to InflightTaskStore (sqlite).
+    /// before being written to ActivationStore (sqlite).
     pub db_insert_batch_max_time_ms: u64,
 
     /// The maximum size of the sqlite database in bytes.
@@ -212,15 +212,15 @@ pub struct Config {
     pub runtime_config_path: Option<String>,
 
     /// The maximum number of pending records that can be
-    /// in the InflightTaskStore (sqlite)
+    /// in the ActivationStore (sqlite)
     pub max_pending_count: usize,
 
     /// The maximum number of delay records that can be
-    /// in the InflightTaskStore (sqlite)
+    /// in the ActivationStore (sqlite)
     pub max_delay_count: usize,
 
     /// The maximum number of processing records that can be
-    /// in the InflightTaskStore (sqlite)
+    /// in the ActivationStore (sqlite)
     pub max_processing_count: usize,
 
     /// The maximum number of times a task can be reset from

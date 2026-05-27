@@ -17,26 +17,20 @@ use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
+use taskbroker::kafka::activation_batcher::{ActivationBatcher, ActivationBatcherConfig};
+use taskbroker::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
 use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
 use taskbroker::kafka::deserialize::{self, DeserializeConfig};
-use taskbroker::kafka::inflight_activation_batcher::{
-    ActivationBatcherConfig, InflightActivationBatcher,
-};
-use taskbroker::kafka::inflight_activation_writer::{
-    ActivationWriterConfig, InflightActivationWriter,
-};
 use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{
-    PostgresActivationStore, PostgresActivationStoreConfig,
-};
-use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
-use taskbroker::store::traits::InflightActivationStore;
+use taskbroker::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
+use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use taskbroker::store::traits::ActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
 use taskbroker::{SERVICE_NAME, flusher};
@@ -68,18 +62,13 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
-    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
+    let store: Arc<dyn ActivationStore> = match config.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
-            SqliteActivationStore::new(
-                &config.db_path,
-                InflightActivationStoreConfig::from_config(&config),
-            )
-            .await?,
+            SqliteStore::new(&config.db_path, SqliteStoreConfig::from_config(&config)).await?,
         ),
-        DatabaseAdapter::Postgres => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
-                .await?,
-        ),
+        DatabaseAdapter::Postgres => {
+            Arc::new(PostgresStore::new(PostgresStoreConfig::from_config(&config)).await?)
+        }
     };
 
     // If this is an environment where the topics might not exist, check and create them.
@@ -196,11 +185,11 @@ async fn main() -> Result<(), Error> {
                         deserialize::new(DeserializeConfig::from_config(&consumer_config)),
 
                     reduce:
-                        InflightActivationBatcher::new(
+                        ActivationBatcher::new(
                             ActivationBatcherConfig::from_config(&consumer_config),
                             runtime_config_manager.clone()
                         ),
-                        InflightActivationWriter::new(
+                        ActivationWriter::new(
                             consumer_store.clone(),
                             ActivationWriterConfig::from_config(&consumer_config)
                         ),
