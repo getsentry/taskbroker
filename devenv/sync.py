@@ -1,7 +1,7 @@
+import shutil
+
 from devenv import constants
 from devenv.lib import brew, config, proc, uv
-
-import shutil
 
 
 def main(context: dict[str, str]) -> int:

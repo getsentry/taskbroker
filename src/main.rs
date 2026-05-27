@@ -17,26 +17,20 @@ use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
+use taskbroker::kafka::activation_batcher::{ActivationBatcher, ActivationBatcherConfig};
+use taskbroker::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
 use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
 use taskbroker::kafka::deserialize::{self, DeserializeConfig};
-use taskbroker::kafka::inflight_activation_batcher::{
-    ActivationBatcherConfig, InflightActivationBatcher,
-};
-use taskbroker::kafka::inflight_activation_writer::{
-    ActivationWriterConfig, InflightActivationWriter,
-};
 use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{
-    PostgresActivationStore, PostgresActivationStoreConfig,
-};
-use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
-use taskbroker::store::traits::InflightActivationStore;
+use taskbroker::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
+use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use taskbroker::store::traits::ActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
 use taskbroker::{SERVICE_NAME, flusher};
@@ -68,18 +62,13 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
-    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
+    let store: Arc<dyn ActivationStore> = match config.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
-            SqliteActivationStore::new(
-                &config.db_path,
-                InflightActivationStoreConfig::from_config(&config),
-            )
-            .await?,
+            SqliteStore::new(&config.db_path, SqliteStoreConfig::from_config(&config)).await?,
         ),
-        DatabaseAdapter::Postgres => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
-                .await?,
-        ),
+        DatabaseAdapter::Postgres => {
+            Arc::new(PostgresStore::new(PostgresStoreConfig::from_config(&config)).await?)
+        }
     };
 
     // If this is an environment where the topics might not exist, check and create them.
@@ -171,7 +160,9 @@ async fn main() -> Result<(), Error> {
 
         // Build list of topics to consume from
         let mut topics_to_consume = vec![consumer_config.kafka_topic.clone()];
-        if let Some(ref retry_topic) = consumer_config.kafka_retry_topic {
+        if consumer_config.kafka_consume_retry_topic
+            && let Some(ref retry_topic) = consumer_config.kafka_retry_topic
+        {
             topics_to_consume.push(retry_topic.clone());
         }
 
@@ -194,11 +185,11 @@ async fn main() -> Result<(), Error> {
                         deserialize::new(DeserializeConfig::from_config(&consumer_config)),
 
                     reduce:
-                        InflightActivationBatcher::new(
+                        ActivationBatcher::new(
                             ActivationBatcherConfig::from_config(&consumer_config),
                             runtime_config_manager.clone()
                         ),
-                        InflightActivationWriter::new(
+                        ActivationWriter::new(
                             consumer_store.clone(),
                             ActivationWriterConfig::from_config(&consumer_config)
                         ),
@@ -231,57 +222,62 @@ async fn main() -> Result<(), Error> {
         (None, None)
     };
 
-    // GRPC server
-    let grpc_server_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
-        let grpc_status_tx = status_update_tx.clone();
+    // GRPC server - only start if port is configured (port 0 disables it)
+    let grpc_server_task = if config.grpc_port > 0 {
+        Some(tokio::spawn({
+            let grpc_store = store.clone();
+            let grpc_config = config.clone();
+            let grpc_status_tx = status_update_tx.clone();
 
-        async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
-                .parse()
-                .expect("Failed to parse address");
+            async move {
+                let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
+                    .parse()
+                    .expect("Failed to parse address");
 
-            let layers = tower::ServiceBuilder::new()
-                .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&grpc_config))
-                .into_inner();
+                let layers = tower::ServiceBuilder::new()
+                    .layer(MetricsLayer::default())
+                    .layer(AuthLayer::new(&grpc_config))
+                    .into_inner();
 
-            let server = Server::builder()
-                .layer(layers)
-                .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store: grpc_store,
-                    config: grpc_config,
-                    update_tx: grpc_status_tx,
-                }))
-                .add_service(health_service.clone())
-                .serve(addr);
+                let server = Server::builder()
+                    .layer(layers)
+                    .add_service(ConsumerServiceServer::new(TaskbrokerServer {
+                        store: grpc_store,
+                        config: grpc_config,
+                        update_tx: grpc_status_tx,
+                    }))
+                    .add_service(health_service.clone())
+                    .serve(addr);
 
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            info!("GRPC server listening on {}", addr);
-            select! {
-                biased;
+                let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+                info!("GRPC server listening on {}", addr);
+                select! {
+                    biased;
 
-                res = server => {
-                    info!("GRPC server task failed, shutting down");
+                    res = server => {
+                        info!("GRPC server task failed, shutting down");
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    match res {
-                        Ok(()) => Ok(()),
-                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        match res {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                        }
+                    }
+                    _ = guard.wait() => {
+                        info!("Cancellation token received, shutting down GRPC server");
+
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        Ok(())
                     }
                 }
-                _ = guard.wait() => {
-                    info!("Cancellation token received, shutting down GRPC server");
-
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok(())
-                }
             }
-        }
-    });
+        }))
+    } else {
+        info!("GRPC server disabled (grpc_port=0)");
+        None
+    };
 
     // Initialize push and fetch pools
     let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
@@ -307,9 +303,12 @@ async fn main() -> Result<(), Error> {
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("consumer", consumer_task))
-        .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task));
+
+    if let Some(task) = grpc_server_task {
+        departure = departure.on_completion(log_task_completion("grpc_server", task));
+    }
 
     if let Some(task) = push_task {
         departure = departure.on_completion(log_task_completion("push_task", task));

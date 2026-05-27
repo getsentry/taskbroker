@@ -6,8 +6,8 @@ use tokio::time::sleep;
 use tracing::{debug, error, instrument};
 
 use crate::config::Config;
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::{Activation, ActivationStatus};
+use crate::store::traits::ActivationStore;
 use crate::store::types::DepthCounts;
 
 use super::consumer::{
@@ -25,7 +25,7 @@ pub struct ActivationWriterConfig {
 }
 
 impl ActivationWriterConfig {
-    /// Convert from application configuration into InflightActivationWriter config.
+    /// Convert from application configuration into ActivationWriter config.
     pub fn from_config(config: &Config) -> Self {
         Self {
             db_max_size: config.db_max_size,
@@ -38,14 +38,14 @@ impl ActivationWriterConfig {
     }
 }
 
-pub struct InflightActivationWriter {
+pub struct ActivationWriter {
     config: ActivationWriterConfig,
-    store: Arc<dyn InflightActivationStore>,
-    batch: Option<Vec<InflightActivation>>,
+    store: Arc<dyn ActivationStore>,
+    batch: Option<Vec<Activation>>,
 }
 
-impl InflightActivationWriter {
-    pub fn new(store: Arc<dyn InflightActivationStore>, config: ActivationWriterConfig) -> Self {
+impl ActivationWriter {
+    pub fn new(store: Arc<dyn ActivationStore>, config: ActivationWriterConfig) -> Self {
         Self {
             config,
             store,
@@ -54,8 +54,8 @@ impl InflightActivationWriter {
     }
 }
 
-impl Reducer for InflightActivationWriter {
-    type Input = Vec<InflightActivation>;
+impl Reducer for ActivationWriter {
+    type Input = Vec<Activation>;
 
     type Output = ();
 
@@ -106,10 +106,10 @@ impl Reducer for InflightActivationWriter {
         // Check if the entire batch is either pending or delay
         let has_delay = batch
             .iter()
-            .any(|activation| activation.status == InflightActivationStatus::Delay);
+            .any(|activation| activation.status == ActivationStatus::Delay);
         let has_pending = batch
             .iter()
-            .any(|activation| activation.status == InflightActivationStatus::Pending);
+            .any(|activation| activation.status == ActivationStatus::Pending);
 
         // Backpressure if any of these conditions are met:
         // 1. The processing limit is exceeded
@@ -202,12 +202,12 @@ mod tests {
     use chrono::DateTime;
     use rstest::rstest;
 
-    use crate::store::activation::{InflightActivationBuilder, InflightActivationStatus};
+    use crate::store::activation::{ActivationBuilder, ActivationStatus};
     use crate::test_utils::{
         TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
     };
 
-    use super::{ActivationWriterConfig, InflightActivationWriter, Reducer};
+    use super::{ActivationWriter, ActivationWriterConfig, Reducer};
 
     #[tokio::test]
     #[rstest]
@@ -223,19 +223,19 @@ mod tests {
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(store, writer_config);
+        let mut writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
@@ -248,7 +248,7 @@ mod tests {
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         let count_delay = writer
             .store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_by_status(ActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_pending + count_delay, 2);
@@ -269,13 +269,13 @@ mod tests {
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(store, writer_config);
+        let mut writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
@@ -304,18 +304,18 @@ mod tests {
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(store, writer_config);
+        let mut writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
-                .status(InflightActivationStatus::Delay)
+                .status(ActivationStatus::Delay)
                 .build(TaskActivationBuilder::new()),
         ];
 
@@ -323,7 +323,7 @@ mod tests {
         writer.flush().await.unwrap();
         let count_delay = writer
             .store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_by_status(ActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 1);
@@ -344,19 +344,19 @@ mod tests {
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(store, writer_config);
+        let mut writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(count_pending, 0);
         let count_delay = writer
             .store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_by_status(ActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
@@ -393,19 +393,19 @@ mod tests {
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(store, writer_config);
+        let mut writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
         let batch = vec![
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("1")
                 .taskname("pending_task")
                 .namespace(&namespace)
@@ -419,7 +419,7 @@ mod tests {
         assert_eq!(count_pending, 2);
         let count_delay = writer
             .store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_by_status(ActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
@@ -444,25 +444,25 @@ mod tests {
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
 
-        let existing_activation = InflightActivationBuilder::new()
+        let existing_activation = ActivationBuilder::new()
             .id("existing")
             .taskname("existing_task")
             .namespace(&namespace)
             .received_at(received_at)
-            .status(InflightActivationStatus::Processing)
+            .status(ActivationStatus::Processing)
             .build(TaskActivationBuilder::new());
 
         store.store(vec![existing_activation]).await.unwrap();
 
-        let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
+        let mut writer = ActivationWriter::new(store.clone(), writer_config);
         let batch = vec![
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("0")
                 .taskname("pending_task")
                 .namespace(&namespace)
                 .received_at(received_at)
                 .build(TaskActivationBuilder::new()),
-            InflightActivationBuilder::new()
+            ActivationBuilder::new()
                 .id("1")
                 .taskname("delay_task")
                 .namespace(&namespace)
@@ -479,13 +479,13 @@ mod tests {
         assert_eq!(count_pending, 0);
         let count_delay = writer
             .store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_by_status(ActivationStatus::Delay)
             .await
             .unwrap();
         assert_eq!(count_delay, 0);
         let count_processing = writer
             .store
-            .count_by_status(InflightActivationStatus::Processing)
+            .count_by_status(ActivationStatus::Processing)
             .await
             .unwrap();
         // Only the existing processing activation should remain, new ones should be blocked
@@ -517,7 +517,7 @@ mod tests {
         // Make more activations that won't be stored.
         let second_round = make_activations(10);
 
-        let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
+        let mut writer = ActivationWriter::new(store.clone(), writer_config);
         writer.reduce(second_round).await.unwrap();
         let flush_result = writer.flush().await.unwrap();
         assert!(flush_result.is_none());
@@ -541,7 +541,7 @@ mod tests {
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = InflightActivationWriter::new(store.clone(), writer_config);
+        let mut writer = ActivationWriter::new(store.clone(), writer_config);
         writer.reduce(vec![]).await.unwrap();
         let flush_result = writer.flush().await.unwrap();
         assert!(flush_result.is_some());

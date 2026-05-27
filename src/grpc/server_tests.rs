@@ -11,7 +11,7 @@ use tonic::{Code, Request};
 
 use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::{StatusUpdate, TaskbrokerServer};
-use crate::store::activation::InflightActivationStatus;
+use crate::store::activation::ActivationStatus;
 use crate::test_utils::{create_config, create_test_store, make_activations};
 
 #[tokio::test]
@@ -160,7 +160,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     assert!(task.id == "id_0");
 
     let row = store.get_by_id("id_0").await.unwrap().expect("claimed row");
-    assert_eq!(row.status, InflightActivationStatus::Processing);
+    assert_eq!(row.status, ActivationStatus::Processing);
 }
 
 #[tokio::test]
@@ -458,12 +458,12 @@ async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) 
 
     let (id, status) = update_rx.recv().await.expect("status update on channel");
     assert_eq!(id, "id_0");
-    assert_eq!(status, InflightActivationStatus::Complete);
+    assert_eq!(status, ActivationStatus::Complete);
 
     let row = store.get_by_id("id_0").await.unwrap().expect("row exists");
     assert_eq!(
         row.status,
-        InflightActivationStatus::Processing,
+        ActivationStatus::Processing,
         "handler does not write status; flush_updates applies channel batches"
     );
 }

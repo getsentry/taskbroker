@@ -11,7 +11,7 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::activation::{Activation, ActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
 
@@ -97,7 +97,7 @@ fn encode_raw_params(raw_bytes: &[u8]) -> Vec<u8> {
 
 /// Create a deserializer closure for raw mode.
 /// Wraps raw Kafka message bytes into a TaskActivation with msgpack-encoded parameters_bytes.
-pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
+pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation, Error> {
     move |msg: Arc<OwnedMessage>| {
         // Whether a message without payload is valid is technically not up to taskbroker, and we
         // can't DLQ messages here. It's easier to convert it to an empty bytestring and let the
@@ -143,10 +143,10 @@ pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightAc
         )
         .record(payload.len() as f64);
 
-        Ok(InflightActivation {
+        Ok(Activation {
             id,
             activation: activation_bytes,
-            status: InflightActivationStatus::Pending,
+            status: ActivationStatus::Pending,
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: now,
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(inflight.taskname, "test-task");
         assert_eq!(inflight.processing_deadline_duration, 60);
         assert_eq!(inflight.offset, 42);
-        assert_eq!(inflight.status, InflightActivationStatus::Pending);
+        assert_eq!(inflight.status, ActivationStatus::Pending);
 
         // Verify the activation can be decoded
         let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
