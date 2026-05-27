@@ -171,7 +171,9 @@ async fn main() -> Result<(), Error> {
 
         // Build list of topics to consume from
         let mut topics_to_consume = vec![consumer_config.kafka_topic.clone()];
-        if let Some(ref retry_topic) = consumer_config.kafka_retry_topic {
+        if consumer_config.kafka_consume_retry_topic
+            && let Some(ref retry_topic) = consumer_config.kafka_retry_topic
+        {
             topics_to_consume.push(retry_topic.clone());
         }
 
