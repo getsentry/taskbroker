@@ -22,8 +22,8 @@ use tonic::transport::Channel;
 use tracing::{debug, error, info};
 
 use crate::config::Config;
-use crate::store::activation::InflightActivation;
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::Activation;
+use crate::store::traits::ActivationStore;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -54,7 +54,7 @@ pub enum PushError {
     Timeout,
 
     /// Channel disconnected (no receivers) or another failure.
-    Channel(SendError<(InflightActivation, Instant)>),
+    Channel(SendError<(Activation, Instant)>),
 }
 
 /// Thin interface for the worker client. It mostly serves to enable proper unit testing, but it also decouples the actual client implementation from our pushing logic.
@@ -95,23 +95,23 @@ impl WorkerClient for WorkerServiceClient<Channel> {
 /// Wrapper around `config.push_threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
 pub struct PushPool {
     /// The sending end of a channel that accepts task activations.
-    sender: Sender<(InflightActivation, Instant)>,
+    sender: Sender<(Activation, Instant)>,
 
     /// The receiving end of a channel that accepts task activations.
-    receiver: Receiver<(InflightActivation, Instant)>,
+    receiver: Receiver<(Activation, Instant)>,
 
     /// Taskbroker configuration.
     config: Arc<Config>,
 
     /// Activation store, which we need for marking tasks as sent.
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn ActivationStore>,
 
     worker_factory: WorkerFactory,
 }
 
 impl PushPool {
     /// Initialize a new push pool.
-    pub fn new(config: Arc<Config>, store: Arc<dyn InflightActivationStore>) -> Self {
+    pub fn new(config: Arc<Config>, store: Arc<dyn ActivationStore>) -> Self {
         let worker_factory: WorkerFactory = Arc::new(|endpoint: String| {
             Box::pin(async move {
                 let client = WorkerServiceClient::connect(endpoint).await?;
@@ -123,7 +123,7 @@ impl PushPool {
 
     fn new_with_factory(
         config: Arc<Config>,
-        store: Arc<dyn InflightActivationStore>,
+        store: Arc<dyn ActivationStore>,
         worker_factory: WorkerFactory,
     ) -> Self {
         let (sender, receiver) = flume::bounded(config.push_queue_size);
@@ -355,11 +355,7 @@ impl PushPool {
 
     /// Send an activation to the internal asynchronous MPMC channel used by all running push threads. Times out after `config.push_queue_timeout_ms` milliseconds.
     #[framed]
-    pub async fn submit(
-        &self,
-        activation: InflightActivation,
-        time: Instant,
-    ) -> Result<(), PushError> {
+    pub async fn submit(&self, activation: Activation, time: Instant) -> Result<(), PushError> {
         let duration = Duration::from_millis(self.config.push_queue_timeout_ms);
         let start = Instant::now();
 
@@ -390,7 +386,7 @@ impl PushPool {
 #[framed]
 async fn push_task(
     worker: &mut (dyn WorkerClient + Send),
-    activation: InflightActivation,
+    activation: Activation,
     callback_url: String,
     timeout: Duration,
     grpc_shared_secret: &[String],

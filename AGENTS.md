@@ -37,7 +37,7 @@ The first block below is **wrong on purpose** (mixed order and no blank lines).
 
 ```rs
 use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::ActivationStore;
 use std::sync::Arc;
 use rdkafka::Message;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
@@ -61,5 +61,5 @@ use rdkafka::producer::FutureProducer;
 use anyhow::{Context, Result};
 
 use crate::store::adapters::postgres::{PostgresActivationStore, PostgresActivationStoreConfig};
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::ActivationStore;
 ```

@@ -5,9 +5,9 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
 use tokio::task::JoinSet;
 
-use taskbroker::store::activation::InflightActivationStatus;
-use taskbroker::store::adapters::sqlite::{InflightActivationStoreConfig, SqliteActivationStore};
-use taskbroker::store::traits::InflightActivationStore;
+use taskbroker::store::activation::ActivationStatus;
+use taskbroker::store::adapters::sqlite::{ActivationStoreConfig, SqliteActivationStore};
+use taskbroker::store::traits::ActivationStore;
 use taskbroker::test_utils::{
     generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
 };
@@ -26,7 +26,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     let store = Arc::new(
         SqliteActivationStore::new(
             &url,
-            InflightActivationStoreConfig {
+            ActivationStoreConfig {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
@@ -91,7 +91,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     let store = Arc::new(
         SqliteActivationStore::new(
             &url,
-            InflightActivationStoreConfig {
+            ActivationStoreConfig {
                 max_processing_attempts: 1,
                 vacuum_page_count: None,
                 processing_deadline_grace_sec: 3,
@@ -123,7 +123,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
                     store
                         .set_status(
                             &format!("id_{task_id}"),
-                            InflightActivationStatus::Complete,
+                            ActivationStatus::Complete,
                             None,
                             None,
                         )
@@ -138,7 +138,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
 
     assert_eq!(
         store
-            .count_by_status(InflightActivationStatus::Complete)
+            .count_by_status(ActivationStatus::Complete)
             .await
             .unwrap(),
         num_activations as usize
@@ -149,7 +149,7 @@ fn store_bench(c: &mut Criterion) {
     let num_activations: u32 = 4_096;
     let num_workers = 64;
 
-    c.benchmark_group("bench_InflightActivationStore")
+    c.benchmark_group("bench_ActivationStore")
         .sample_size(256)
         .throughput(criterion::Throughput::Elements(num_activations.into()))
         .bench_function("get_pending_activation", |b| {
