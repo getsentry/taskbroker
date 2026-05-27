@@ -3,7 +3,7 @@
 */
 
 {
-  group_order: ['s4s2', 'de', 'us', 'control', 'prod-control', 'snty-tools', 'st'],
+  group_order: ['s4s2', 'de', 'us', 'us2', 'control', 'prod-control', 'snty-tools', 'st'],
   // Empty for now — add future test groups here
   test_group_order: [],
   // These groupings consist of user facing deployments
@@ -11,6 +11,7 @@
     s4s2: ['s4s2'],
     de: ['de'],
     us: ['us'],
+    us2: ['us2'],
     control: ['control'],
     'prod-control': ['prod-control'],
     'snty-tools': ['snty-tools'],
