@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,6 +46,7 @@ pub async fn upkeep(
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
+    let mut emitted_partitions: HashSet<i32> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
@@ -55,6 +57,7 @@ pub async fn upkeep(
                     startup_time,
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
+                    &mut emitted_partitions,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
@@ -126,6 +129,7 @@ pub async fn do_upkeep(
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
+    emitted_partitions: &mut HashSet<i32>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -469,8 +473,22 @@ pub async fn do_upkeep(
 
     // State of activations, tagged per partition. Dashboards aggregating
     // without a partition filter still see the global total via tag sum.
+    // Zero out gauges for partitions we emitted last cycle but no longer own.
     if let Some(depths) = depths_per_partition {
-        for (partition, counts) in depths {
+        let current: HashSet<i32> = depths.keys().copied().collect();
+
+        for partition in emitted_partitions.difference(&current) {
+            let partition = partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition).set(0.0);
+        }
+
+        for (partition, counts) in &depths {
             let partition = partition.to_string();
             metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
                 .set(counts.pending as f64);
@@ -481,6 +499,8 @@ pub async fn do_upkeep(
             metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition)
                 .set(counts.delay as f64);
         }
+
+        *emitted_partitions = current;
     }
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
@@ -553,6 +573,7 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
@@ -714,6 +735,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -774,6 +796,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -825,6 +848,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -884,6 +908,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -937,6 +962,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -983,6 +1009,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1045,6 +1072,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1091,6 +1119,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1141,6 +1170,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1223,6 +1253,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1255,6 +1286,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1311,6 +1343,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1372,6 +1405,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1412,6 +1446,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
