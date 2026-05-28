@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -642,6 +643,54 @@ impl ActivationStore for PostgresStore {
             claimed: row.2 as usize,
             processing: row.3 as usize,
         })
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
+    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
+        let mut query_builder = QueryBuilder::new(
+            "SELECT partition,
+                    COUNT(*) FILTER (WHERE status = 'Pending'),
+                    COUNT(*) FILTER (WHERE status = 'Delay'),
+                    COUNT(*) FILTER (WHERE status = 'Claimed'),
+                    COUNT(*) FILTER (WHERE status = 'Processing')
+             FROM inflight_taskactivations",
+        );
+
+        self.add_partition_condition(&mut query_builder, true);
+        query_builder.push(" GROUP BY partition");
+
+        let rows: Vec<(i32, i64, i64, i64, i64)> = query_builder
+            .build_query_as()
+            .fetch_all(&self.read_pool)
+            .await?;
+
+        let mut counts: HashMap<i32, DepthCounts> = rows
+            .into_iter()
+            .map(|(partition, pending, delay, claimed, processing)| {
+                (
+                    partition,
+                    DepthCounts {
+                        pending: pending as usize,
+                        delay: delay as usize,
+                        claimed: claimed as usize,
+                        processing: processing as usize,
+                    },
+                )
+            })
+            .collect();
+
+        let assigned = self.partitions.read().unwrap();
+        for partition in assigned.iter() {
+            counts.entry(*partition).or_insert(DepthCounts {
+                pending: 0,
+                delay: 0,
+                claimed: 0,
+                processing: 0,
+            });
+        }
+
+        Ok(counts)
     }
 
     /// Update the status of a specific activation.

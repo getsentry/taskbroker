@@ -403,17 +403,20 @@ pub async fn do_upkeep(
 
     let now = Utc::now();
     let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
-        store.count_depths(),
+        store.count_depths_per_partition(),
         store.pending_activation_max_lag(&now),
         fs::metadata(config.db_path.clone()),
         fs::metadata(config.db_path.clone() + "-wal")
     );
 
-    if let Ok(depths) = depth_counts {
-        result_context.pending = depths.pending as u32;
-        result_context.delay = depths.delay as u32;
-        result_context.claimed = depths.claimed as u32;
-        result_context.processing = depths.processing as u32;
+    let depths_per_partition = depth_counts.ok();
+    if let Some(ref depths) = depths_per_partition {
+        for counts in depths.values() {
+            result_context.pending += counts.pending as u32;
+            result_context.delay += counts.delay as u32;
+            result_context.claimed += counts.claimed as u32;
+            result_context.processing += counts.processing as u32;
+        }
     }
 
     if !result_context.empty() {
@@ -464,11 +467,21 @@ pub async fn do_upkeep(
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
-    // State of activations
-    metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
-    metrics::gauge!("upkeep.current_claimed_tasks").set(result_context.claimed);
-    metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
-    metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
+    // State of activations, tagged per partition. Dashboards aggregating
+    // without a partition filter still see the global total via tag sum.
+    if let Some(depths) = depths_per_partition {
+        for (partition, counts) in depths {
+            let partition = partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+                .set(counts.pending as f64);
+            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+                .set(counts.claimed as f64);
+            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+                .set(counts.processing as f64);
+            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition)
+                .set(counts.delay as f64);
+        }
+    }
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
     if let Ok(db_file_meta) = db_file_meta {

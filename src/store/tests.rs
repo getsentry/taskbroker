@@ -168,6 +168,74 @@ async fn test_count_depths(#[case] adapter: &str) {
 }
 
 #[tokio::test]
+async fn test_count_depths_per_partition_postgres() {
+    let store = create_test_store("postgres").await;
+
+    // Assign three partitions; partition 2 will have no activations and must
+    // appear in the result with zero counts (zero-fill behavior).
+    store.assign_partitions(vec![0, 1, 2]).unwrap();
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+
+    let make = |id: &str, partition: i32, offset: i64| {
+        ActivationBuilder::new()
+            .id(id.to_string())
+            .taskname("taskname")
+            .namespace(namespace.clone())
+            .partition(partition)
+            .added_at(now)
+            .received_at(now)
+            .offset(offset)
+            .processing_deadline_duration(10)
+            .build(TaskActivationBuilder::new())
+    };
+
+    // Partition 0: 3 pending. Partition 1: 1 pending (later flipped to Delay).
+    let batch = vec![
+        make("p0_0", 0, 0),
+        make("p0_1", 0, 1),
+        make("p0_2", 0, 2),
+        make("p1_0", 1, 3),
+    ];
+    assert!(store.store(batch).await.is_ok());
+
+    store
+        .set_status("p0_0", ActivationStatus::Processing, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("p1_0", ActivationStatus::Delay, None, None)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths_per_partition().await.unwrap();
+
+    let p0 = depths.get(&0).expect("partition 0 missing");
+    assert_eq!(p0.pending, 2, "partition 0 pending");
+    assert_eq!(p0.processing, 1, "partition 0 processing");
+    assert_eq!(p0.delay, 0, "partition 0 delay");
+    assert_eq!(p0.claimed, 0, "partition 0 claimed");
+
+    let p1 = depths.get(&1).expect("partition 1 missing");
+    assert_eq!(p1.pending, 0, "partition 1 pending");
+    assert_eq!(p1.delay, 1, "partition 1 delay");
+    assert_eq!(p1.processing, 0, "partition 1 processing");
+    assert_eq!(p1.claimed, 0, "partition 1 claimed");
+
+    // Zero-fill: partition 2 is assigned but has no rows.
+    let p2 = depths
+        .get(&2)
+        .expect("partition 2 missing (zero-fill failed)");
+    assert_eq!(p2.pending, 0, "partition 2 pending");
+    assert_eq!(p2.delay, 0, "partition 2 delay");
+    assert_eq!(p2.processing, 0, "partition 2 processing");
+    assert_eq!(p2.claimed, 0, "partition 2 claimed");
+
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
