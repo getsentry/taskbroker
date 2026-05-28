@@ -74,14 +74,15 @@ impl Worker {
 impl WorkerClient for Worker {
     #[framed]
     async fn push_task(&mut self, activation: Activation) -> Result<()> {
+        metrics::counter!("worker.push_task.attempts").increment(1);
+
         // Try to decode activation
         let task =
             TaskActivation::decode(&activation.activation as &[u8]).map_err(|e| anyhow!(e))?;
 
-        // The callback URL isn't used by push taskworkers anymore, so we can use an empty string until it's removed from the schema
         let request = PushTaskRequest {
             task: Some(task),
-            callback_url: "".into(),
+            callback_url: "".into(), // Workers don't use this anymore, so use an empty string until field is removed from schema
         };
 
         // Wrap inside a Tonic request
@@ -177,14 +178,12 @@ pub fn test_worker_map(fail: bool, notify: Arc<Notify>) -> WorkerMap {
 
 #[cfg(test)]
 mod tests {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-
     use crate::test_utils::make_activations;
 
     use super::MockWorkerClient;
     use super::WORKER_PUSH_TASK_PATH;
     use super::WorkerClient;
+    use super::sentry_signature_hex;
 
     #[tokio::test]
     async fn worker_push_task_returns_ok_on_client_success() {
@@ -223,12 +222,7 @@ mod tests {
 
     #[test]
     fn worker_sentry_signature_hex_matches_hmac_contract() {
-        let mut mac = Hmac::<Sha256>::new_from_slice(b"super secret")
-            .expect("HMAC accepts keys of any length");
-        mac.update(WORKER_PUSH_TASK_PATH.as_bytes());
-        mac.update(b":");
-        mac.update(b"hello");
-        let digest = hex::encode(mac.finalize().into_bytes());
+        let digest = sentry_signature_hex("super secret", WORKER_PUSH_TASK_PATH, b"hello");
 
         assert_eq!(
             digest,

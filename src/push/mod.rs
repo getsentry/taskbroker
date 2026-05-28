@@ -166,9 +166,13 @@ async fn push_task(
         return;
     };
 
-    match worker.push_task(activation.clone()).await {
+    let start = Instant::now();
+    let result = worker.push_task(activation.clone()).await;
+    metrics::histogram!("worker.push_task.duration").record(start.elapsed());
+
+    match result {
         Ok(_) => {
-            metrics::counter!("push.push_task", "result" => "ok").increment(1);
+            metrics::counter!("worker.push_task", "result" => "ok").increment(1);
             debug!(task_id = %id, "Activation sent to worker");
 
             if activation.processing_attempts < 1 {
@@ -202,7 +206,7 @@ async fn push_task(
 
         // Once claim expires, status will be set back to pending
         Err(e) => {
-            metrics::counter!("push.push_task", "result" => "error").increment(1);
+            metrics::counter!("worker.push_task", "result" => "error").increment(1);
 
             error!(
                 task_id = %id,
