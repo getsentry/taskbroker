@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -5,6 +6,7 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
+use taskbroker::worker::{Worker, WorkerClient, WorkerMap};
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -285,7 +287,32 @@ async fn main() -> Result<(), Error> {
 
     // Initialize push threads
     let push_task = if config.delivery_mode == DeliveryMode::Push {
-        Some(tokio::spawn(async move { push_pool.start().await }))
+        let mut workers: Vec<WorkerMap> = vec![];
+
+        // For every push thread, create a map from applications to worker connections
+        for _ in 0..config.push_threads {
+            let mut map = HashMap::new();
+
+            for (application, endpoint) in config.worker_map.clone() {
+                let worker = match Worker::connect(config.clone(), endpoint).await {
+                    Ok(w) => {
+                        debug!("Connected to worker!");
+                        Box::new(w) as Box<dyn WorkerClient>
+                    }
+
+                    Err(e) => {
+                        error!(error = ?e, "Failed to connect to worker");
+                        return Err(e);
+                    }
+                };
+
+                map.insert(application, worker);
+            }
+
+            workers.push(map);
+        }
+
+        Some(tokio::spawn(async move { push_pool.start(workers).await }))
     } else {
         None
     };
