@@ -326,12 +326,6 @@ pub struct Config {
     /// Maximum milliseconds to wait before flushing a batch of status updates.
     pub status_update_interval_ms: u64,
 
-    /// The hostname used to construct `callback_url` for task push requests.
-    pub callback_addr: String,
-
-    /// The port used to construct `callback_url` for task push requests.
-    pub callback_port: u32,
-
     /// Maps every application to its worker endpoint, both represented as strings.
     pub worker_map: BTreeMap<String, String>,
 
@@ -443,8 +437,6 @@ impl Default for Config {
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
-            callback_addr: "0.0.0.0".into(),
-            callback_port: 50051,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
             raw_mode: false,
             raw_namespace: None,
@@ -935,50 +927,6 @@ mod tests {
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.delivery_mode, DeliveryMode::Push);
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_default_push_callback_fields() {
-        let config = Config::default();
-        assert_eq!(config.callback_addr, "0.0.0.0");
-        assert_eq!(config.callback_port, 50051);
-    }
-
-    #[test]
-    fn test_from_args_push_callback_fields_from_env() {
-        Jail::expect_with(|jail| {
-            jail.set_env("TASKBROKER_CALLBACK_ADDR", "127.0.0.1");
-            jail.set_env("TASKBROKER_CALLBACK_PORT", "51000");
-
-            let args = Args { config: None };
-            let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.callback_addr, "127.0.0.1");
-            assert_eq!(config.callback_port, 51000);
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_from_args_push_callback_fields_from_config_file() {
-        Jail::expect_with(|jail| {
-            jail.create_file(
-                "config.yaml",
-                r#"
-                callback_addr: 10.0.0.1
-                callback_port: 52000
-            "#,
-            )?;
-
-            let args = Args {
-                config: Some("config.yaml".to_owned()),
-            };
-            let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.callback_addr, "10.0.0.1");
-            assert_eq!(config.callback_port, 52000);
 
             Ok(())
         });
