@@ -69,8 +69,6 @@ impl PushPool {
                 let guard = get_shutdown_guard().shutdown_on_drop();
 
                 async_backtrace::frame!(async move {
-                    metrics::counter!("push.worker.connect.attempt").increment(1);
-
                     loop {
                         tokio::select! {
                             _ = guard.wait() => {
