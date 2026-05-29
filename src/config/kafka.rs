@@ -16,6 +16,17 @@ pub struct SharedKafkaConfig {
     /// The Kafka topic to produce demoted "long" namespace tasks to.
     pub long_topic: String,
 
+    /// The topic to publish retry task activations to.
+    /// When set, retries go to this topic instead of `kafka_topic`.
+    /// Required for `raw_mode` where the main topic has other consumers.
+    pub retry_topic: Option<String>,
+
+    /// Whether to consume from the retry topic.
+    /// When false (default), this taskbroker only produces to the retry topic
+    /// but does not consume from it, allowing the retry topic to be shared
+    /// across multiple taskbroker instances.
+    pub consume_retry_topic: bool,
+
     /// The security method used for authentication, like `sasl_plaintext`.
     pub security_protocol: Option<String>,
 
@@ -45,6 +56,8 @@ impl Default for SharedKafkaConfig {
             consumer_group: "taskworker".to_owned(),
             topic: "taskworker".to_owned(),
             long_topic: "taskworker-long".to_owned(),
+            retry_topic: None,
+            consume_retry_topic: false,
             security_protocol: None,
             sasl_mechanism: None,
             sasl_username: None,
@@ -63,6 +76,8 @@ impl SharedKafkaConfig {
             consumer_group: "".to_owned(),
             topic: "taskworker-dlq".to_owned(),
             long_topic: "".to_owned(),
+            retry_topic: None,
+            consume_retry_topic: false,
             security_protocol: None,
             sasl_mechanism: None,
             sasl_username: None,

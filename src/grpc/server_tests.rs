@@ -11,7 +11,7 @@ use tonic::{Code, Request};
 
 use crate::config::{Config, DeliveryMode};
 use crate::grpc::server::{StatusUpdate, TaskbrokerServer};
-use crate::store::activation::InflightActivationStatus;
+use crate::store::activation::ActivationStatus;
 use crate::test_utils::{create_config, create_test_store, make_activations};
 
 #[tokio::test]
@@ -86,6 +86,8 @@ async fn test_set_task_status(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 5, // Complete
         fetch_next_task: None,
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -113,6 +115,8 @@ async fn test_set_task_status_invalid(#[case] adapter: &str) {
         id: "test_task".to_string(),
         status: 1, // Invalid
         fetch_next_task: None,
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -156,7 +160,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     assert!(task.id == "id_0");
 
     let row = store.get_by_id("id_0").await.unwrap().expect("claimed row");
-    assert_eq!(row.status, InflightActivationStatus::Processing);
+    assert_eq!(row.status, ActivationStatus::Processing);
 }
 
 #[tokio::test]
@@ -266,6 +270,8 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
             namespace: None,
             application: None,
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
     let response = service.set_task_status(Request::new(request)).await;
     assert!(response.is_ok());
@@ -306,6 +312,8 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
             application: Some("hammers".into()),
             namespace: None,
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -352,6 +360,8 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
             application: Some("no-matches".into()),
             namespace: None,
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -386,6 +396,8 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
             application: None,
             namespace: Some(namespace),
         }),
+        max_attempts: None,
+        delay_on_retry: None,
     };
 
     let response = service.set_task_status(Request::new(request)).await;
@@ -433,6 +445,8 @@ async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) 
                 namespace: None,
                 application: None,
             }),
+            max_attempts: None,
+            delay_on_retry: None,
         }))
         .await
         .unwrap();
@@ -444,12 +458,12 @@ async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) 
 
     let (id, status) = update_rx.recv().await.expect("status update on channel");
     assert_eq!(id, "id_0");
-    assert_eq!(status, InflightActivationStatus::Complete);
+    assert_eq!(status, ActivationStatus::Complete);
 
     let row = store.get_by_id("id_0").await.unwrap().expect("row exists");
     assert_eq!(
         row.status,
-        InflightActivationStatus::Processing,
+        ActivationStatus::Processing,
         "handler does not write status; flush_updates applies channel batches"
     );
 }
@@ -476,6 +490,8 @@ async fn test_set_task_status_update_channel_closed_returns_internal() {
             id: "id_0".to_string(),
             status: 5,
             fetch_next_task: None,
+            max_attempts: None,
+            delay_on_retry: None,
         }))
         .await;
 

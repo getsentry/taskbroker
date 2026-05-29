@@ -15,11 +15,11 @@ use tonic::{Request, Response, Status};
 use tracing::{debug, error, instrument, warn};
 
 use crate::config::{Config, DeliveryMode};
-use crate::store::activation::InflightActivationStatus;
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::ActivationStatus;
+use crate::store::traits::ActivationStore;
 
 pub struct TaskbrokerServer {
-    pub store: Arc<dyn InflightActivationStore>,
+    pub store: Arc<dyn ActivationStore>,
     pub config: Arc<Config>,
     pub update_tx: Option<Sender<StatusUpdate>>,
 }
@@ -89,12 +89,9 @@ impl ConsumerService for TaskbrokerServer {
         let start_time = Instant::now();
         let id = request.get_ref().id.clone();
 
-        let status: InflightActivationStatus =
-            TaskActivationStatus::try_from(request.get_ref().status)
-                .map_err(|e| {
-                    Status::invalid_argument(format!("Unable to deserialize status: {e:?}"))
-                })?
-                .into();
+        let status: ActivationStatus = TaskActivationStatus::try_from(request.get_ref().status)
+            .map_err(|e| Status::invalid_argument(format!("Unable to deserialize status: {e:?}")))?
+            .into();
 
         if !status.is_conclusion() {
             return Err(Status::invalid_argument(format!(
@@ -102,11 +99,20 @@ impl ConsumerService for TaskbrokerServer {
             )));
         }
 
-        if status == InflightActivationStatus::Failure {
+        if status == ActivationStatus::Failure {
             metrics::counter!("grpc_server.set_status.failure").increment(1);
         }
 
-        if let Some(ref tx) = self.update_tx {
+        let max_attempts = request.get_ref().max_attempts;
+        let delay_on_retry = request.get_ref().delay_on_retry;
+
+        // Use batching channel if available and we don't need to update retry state.
+        // If max_attempts or delay_on_retry is Some, we can't use batching API to update the
+        // activation, and have to fall back to individual set_status.
+        if let Some(ref tx) = self.update_tx
+            && max_attempts.is_none()
+            && delay_on_retry.is_none()
+        {
             tx.send((id, status))
                 .await
                 .map_err(|_| Status::internal("Status update channel closed"))?;
@@ -115,7 +121,11 @@ impl ConsumerService for TaskbrokerServer {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 
-        match self.store.set_status(&id, status).await {
+        match self
+            .store
+            .set_status(&id, status, max_attempts, delay_on_retry)
+            .await
+        {
             Ok(Some(_)) => metrics::counter!(
                 "grpc_server.set_status",
                 "result" => "ok",
@@ -209,17 +219,14 @@ impl ConsumerService for TaskbrokerServer {
     }
 }
 
-pub type StatusUpdate = (String, InflightActivationStatus);
+pub type StatusUpdate = (String, ActivationStatus);
 
-pub async fn flush_updates(
-    store: Arc<dyn InflightActivationStore>,
-    buffer: &mut Vec<StatusUpdate>,
-) {
+pub async fn flush_updates(store: Arc<dyn ActivationStore>, buffer: &mut Vec<StatusUpdate>) {
     if buffer.is_empty() {
         return;
     }
 
-    let mut by_status: HashMap<InflightActivationStatus, Vec<String>> = HashMap::new();
+    let mut by_status: HashMap<ActivationStatus, Vec<String>> = HashMap::new();
 
     for (id, status) in buffer.drain(..) {
         by_status.entry(status).or_default().push(id);

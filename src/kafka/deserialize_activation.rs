@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::fetch::MAX_FETCH_THREADS;
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::activation::{Activation, ActivationStatus};
 
 pub struct DeserializeActivationConfig {
     pub max_delayed_allowed: u64,
@@ -35,7 +35,7 @@ pub fn bucket_from_id(id: &str) -> i16 {
 
 pub fn new(
     config: DeserializeActivationConfig,
-) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
+) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation, Error> {
     move |msg: Arc<OwnedMessage>| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
@@ -75,11 +75,11 @@ pub fn new(
             activation_time + delay
         });
 
-        let status = delay_until.map_or(InflightActivationStatus::Pending, |delay_until| {
+        let status = delay_until.map_or(ActivationStatus::Pending, |delay_until| {
             if Utc::now() > delay_until {
-                InflightActivationStatus::Pending
+                ActivationStatus::Pending
             } else {
-                InflightActivationStatus::Delay
+                ActivationStatus::Delay
             }
         });
 
@@ -92,7 +92,7 @@ pub fn new(
 
         let bucket = bucket_from_id(&activation.id);
 
-        Ok(InflightActivation {
+        Ok(Activation {
             id: activation.id.clone(),
             activation: payload.to_vec(),
             status,
@@ -128,7 +128,7 @@ mod tests {
     use rdkafka::message::OwnedMessage;
     use sentry_protos::taskbroker::v1::TaskActivation;
 
-    use crate::store::activation::InflightActivationStatus;
+    use crate::store::activation::ActivationStatus;
     use crate::test_utils::generate_unique_namespace;
 
     use super::{Config, DeserializeActivationConfig, new};
@@ -271,7 +271,7 @@ mod tests {
             delta.num_seconds() >= 99,
             "Should have ~100 seconds of delay from received_at"
         );
-        assert_eq!(inflight.status, InflightActivationStatus::Pending)
+        assert_eq!(inflight.status, ActivationStatus::Pending)
     }
 
     #[test]
@@ -318,7 +318,7 @@ mod tests {
             delta.num_seconds() >= 99,
             "Should have ~100 seconds of delay from received_at"
         );
-        assert_eq!(inflight.status, InflightActivationStatus::Delay)
+        assert_eq!(inflight.status, ActivationStatus::Delay)
     }
 
     #[test]
@@ -366,6 +366,6 @@ mod tests {
             delta.num_seconds() <= (config.max_delayed_task_allowed_sec as f64 * 1.1) as i64,
             "Should have approxmiately max_delayed_task_allowed_sec of delay from received_at"
         );
-        assert_eq!(inflight.status, InflightActivationStatus::Delay)
+        assert_eq!(inflight.status, ActivationStatus::Delay)
     }
 }

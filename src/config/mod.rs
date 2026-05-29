@@ -273,6 +273,7 @@ mod tests {
                 ssl_ca_location: None,
                 ssl_certificate_location: None,
                 ssl_key_location: None,
+                ..SharedKafkaConfig::default()
             },
             auto_offset_reset: "earliest".to_owned(),
             session_timeout_ms: 9000,

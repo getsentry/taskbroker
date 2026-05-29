@@ -16,12 +16,10 @@ use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskAc
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::store::activation::{
-    InflightActivation, InflightActivationBuilder, InflightActivationStatus,
-};
-use crate::store::adapters::postgres::PostgresActivationStore;
-use crate::store::adapters::sqlite::SqliteActivationStore;
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
+use crate::store::adapters::postgres::PostgresStore;
+use crate::store::adapters::sqlite::SqliteStore;
+use crate::store::traits::ActivationStore;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {
@@ -143,12 +141,12 @@ impl Default for TaskActivationBuilder {
     }
 }
 
-impl InflightActivationBuilder {
+impl ActivationBuilder {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn build(mut self, builder: TaskActivationBuilder) -> InflightActivation {
+    pub fn build(mut self, builder: TaskActivationBuilder) -> Activation {
         // Grab required fields
         let id = self.id.as_ref().expect("field 'id' is required");
 
@@ -197,7 +195,7 @@ impl InflightActivationBuilder {
 
         match self._build() {
             Ok(activation) => activation,
-            Err(e) => panic!("Failed to build InflightActivation - {}", e),
+            Err(e) => panic!("Failed to build Activation - {}", e),
         }
     }
 }
@@ -239,13 +237,13 @@ pub fn generate_unique_namespace() -> String {
 }
 
 /// Create a collection of `count` pending unsaved activations in a particular `namespace`. If you do not want to provide a namespace, use `make_activations`.
-pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<InflightActivation> {
-    let mut records: Vec<InflightActivation> = vec![];
+pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Activation> {
+    let mut records: Vec<Activation> = vec![];
 
     for i in 0..count {
         let now = Utc::now();
 
-        let item = InflightActivationBuilder::new()
+        let item = ActivationBuilder::new()
             .id(format!("id_{i}"))
             .taskname("taskname")
             .namespace(&namespace)
@@ -261,7 +259,7 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
 }
 
 /// Create a collection of `count` pending unsaved activations in a unique namespace. If you want to provide the namespace, use `make_activations_with_namespace`.
-pub fn make_activations(count: u32) -> Vec<InflightActivation> {
+pub fn make_activations(count: u32) -> Vec<Activation> {
     let namespace = generate_unique_namespace();
     make_activations_with_namespace(namespace, count)
 }
@@ -272,22 +270,22 @@ pub fn create_config() -> Arc<Config> {
 }
 
 /// Create an InflightActivationStore instance
-pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore> {
+pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
     let mut config = create_integration_config();
 
     match adapter {
         "sqlite" => {
             config.store.sqlite.path = generate_temp_filename();
-            let store = SqliteActivationStore::new(config.store).await.unwrap();
+            let store = SqliteStore::new(config.store).await.unwrap();
 
-            Arc::new(store) as Arc<dyn InflightActivationStore>
+            Arc::new(store) as Arc<dyn ActivationStore>
         }
 
         "postgres" => {
-            let store = PostgresActivationStore::new(config.store).await.unwrap();
+            let store = PostgresStore::new(config.store).await.unwrap();
             store.assign_partitions(vec![0]).unwrap();
 
-            Arc::new(store) as Arc<dyn InflightActivationStore>
+            Arc::new(store) as Arc<dyn ActivationStore>
         }
 
         _ => panic!("Invalid adapter: {}", adapter),
@@ -417,7 +415,7 @@ pub async fn consume_topic(
     results
 }
 
-pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<RetryState>) {
+pub fn replace_retry_state(inflight: &mut Activation, retry: Option<RetryState>) {
     let mut activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
     activation.retry_state = retry;
     inflight.activation = activation.encode_to_vec();
@@ -429,7 +427,7 @@ pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<Retr
     }
 }
 
-/// Helper struct for asserting counts on the InflightActivationStore.
+/// Helper struct for asserting counts on the ActivationStore.
 #[derive(Default)]
 pub struct StatusCount {
     pub pending: usize,
@@ -441,12 +439,12 @@ pub struct StatusCount {
     pub failure: usize,
 }
 
-/// Assert the state of all counts in the inflight activation store.
-pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivationStore) {
+/// Assert the state of all counts in the activation store.
+pub async fn assert_counts(expected: StatusCount, store: &dyn ActivationStore) {
     assert_eq!(
         expected.pending,
         store
-            .count_by_status(InflightActivationStatus::Pending)
+            .count_by_status(ActivationStatus::Pending)
             .await
             .unwrap(),
         "difference in pending count",
@@ -454,7 +452,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.claimed,
         store
-            .count_by_status(InflightActivationStatus::Claimed)
+            .count_by_status(ActivationStatus::Claimed)
             .await
             .unwrap(),
         "difference in claimed count",
@@ -462,7 +460,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.processing,
         store
-            .count_by_status(InflightActivationStatus::Processing)
+            .count_by_status(ActivationStatus::Processing)
             .await
             .unwrap(),
         "difference in processing count",
@@ -470,7 +468,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.retry,
         store
-            .count_by_status(InflightActivationStatus::Retry)
+            .count_by_status(ActivationStatus::Retry)
             .await
             .unwrap(),
         "difference in retry count",
@@ -478,7 +476,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.delayed,
         store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_by_status(ActivationStatus::Delay)
             .await
             .unwrap(),
         "difference in delay count",
@@ -486,7 +484,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.complete,
         store
-            .count_by_status(InflightActivationStatus::Complete)
+            .count_by_status(ActivationStatus::Complete)
             .await
             .unwrap(),
         "difference in complete count",
@@ -494,7 +492,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.failure,
         store
-            .count_by_status(InflightActivationStatus::Failure)
+            .count_by_status(ActivationStatus::Failure)
             .await
             .unwrap(),
         "difference in failure count",

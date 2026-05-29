@@ -7,8 +7,8 @@ use sentry_protos::taskbroker::v1::PushTaskRequest;
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::{Activation, ActivationStatus};
+use crate::store::traits::ActivationStore;
 use crate::store::types::FailedTasksForwarder;
 use crate::test_utils::{create_test_store, make_activations};
 
@@ -74,8 +74,8 @@ impl MockStore {
 }
 
 #[async_trait]
-impl InflightActivationStore for MockStore {
-    async fn store(&self, _batch: Vec<InflightActivation>) -> anyhow::Result<u64> {
+impl ActivationStore for MockStore {
+    async fn store(&self, _batch: Vec<Activation>) -> anyhow::Result<u64> {
         Ok(0)
     }
     fn assign_partitions(&self, _partitions: Vec<i32>) -> anyhow::Result<()> {
@@ -88,7 +88,7 @@ impl InflightActivationStore for MockStore {
         _limit: Option<i32>,
         _bucket: Option<crate::store::types::BucketRange>,
         _mark_processing: bool,
-    ) -> anyhow::Result<Vec<InflightActivation>> {
+    ) -> anyhow::Result<Vec<Activation>> {
         Ok(vec![])
     }
     async fn mark_activation_processing(&self, id: &str) -> anyhow::Result<()> {
@@ -98,27 +98,29 @@ impl InflightActivationStore for MockStore {
     async fn set_status(
         &self,
         _id: &str,
-        _status: InflightActivationStatus,
-    ) -> anyhow::Result<Option<InflightActivation>> {
+        _status: ActivationStatus,
+        _max_attempts: Option<u32>,
+        _delay_on_retry: Option<u64>,
+    ) -> anyhow::Result<Option<Activation>> {
         Ok(None)
     }
     async fn set_status_batch(
         &self,
         _ids: &[String],
-        _status: InflightActivationStatus,
+        _status: ActivationStatus,
     ) -> anyhow::Result<u64> {
         Ok(0)
     }
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
         0.0
     }
-    async fn count_by_status(&self, _status: InflightActivationStatus) -> anyhow::Result<usize> {
+    async fn count_by_status(&self, _status: ActivationStatus) -> anyhow::Result<usize> {
         Ok(0)
     }
     async fn count(&self) -> anyhow::Result<usize> {
         Ok(0)
     }
-    async fn get_by_id(&self, _id: &str) -> anyhow::Result<Option<InflightActivation>> {
+    async fn get_by_id(&self, _id: &str) -> anyhow::Result<Option<Activation>> {
         Ok(None)
     }
     async fn set_processing_deadline(
@@ -140,7 +142,7 @@ impl InflightActivationStore for MockStore {
     async fn db_size(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-    async fn get_retry_activations(&self) -> anyhow::Result<Vec<InflightActivation>> {
+    async fn get_retry_activations(&self) -> anyhow::Result<Vec<Activation>> {
         Ok(vec![])
     }
     async fn handle_claim_expiration(&self) -> anyhow::Result<u64> {

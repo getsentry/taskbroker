@@ -7,8 +7,8 @@ use tokio::time::{Duration, sleep};
 use tonic::async_trait;
 
 use crate::push::PushError;
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::{Activation, ActivationStatus};
+use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
 use crate::test_utils::make_activations;
 
@@ -17,7 +17,7 @@ use super::*;
 /// Store stub that returns one activation once OR is always empty OR always fails.
 struct MockStore {
     /// A single (optional) pending activation.
-    pending: Mutex<Option<InflightActivation>>,
+    pending: Mutex<Option<Activation>>,
 
     /// Should operations fail?
     fail: bool,
@@ -31,7 +31,7 @@ impl MockStore {
         }
     }
 
-    fn one(activation: InflightActivation) -> Self {
+    fn one(activation: Activation) -> Self {
         Self {
             pending: Mutex::new(Some(activation)),
             fail: false,
@@ -47,7 +47,7 @@ impl MockStore {
 }
 
 #[async_trait]
-impl InflightActivationStore for MockStore {
+impl ActivationStore for MockStore {
     fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<(), Error> {
         Ok(())
     }
@@ -64,11 +64,11 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn get_by_id(&self, _id: &str) -> Result<Option<InflightActivation>, Error> {
+    async fn get_by_id(&self, _id: &str) -> Result<Option<Activation>, Error> {
         unimplemented!()
     }
 
-    async fn store(&self, _batch: Vec<InflightActivation>) -> Result<u64, Error> {
+    async fn store(&self, _batch: Vec<Activation>) -> Result<u64, Error> {
         unimplemented!()
     }
 
@@ -79,7 +79,7 @@ impl InflightActivationStore for MockStore {
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
         mark_processing: bool,
-    ) -> Result<Vec<InflightActivation>, Error> {
+    ) -> Result<Vec<Activation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
         }
@@ -87,9 +87,9 @@ impl InflightActivationStore for MockStore {
         Ok(match self.pending.lock().await.take() {
             Some(mut a) => {
                 a.status = if mark_processing {
-                    InflightActivationStatus::Processing
+                    ActivationStatus::Processing
                 } else {
-                    InflightActivationStatus::Claimed
+                    ActivationStatus::Claimed
                 };
                 vec![a]
             }
@@ -105,7 +105,7 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn count_by_status(&self, _status: InflightActivationStatus) -> Result<usize, Error> {
+    async fn count_by_status(&self, _status: ActivationStatus) -> Result<usize, Error> {
         unimplemented!()
     }
 
@@ -116,15 +116,17 @@ impl InflightActivationStore for MockStore {
     async fn set_status(
         &self,
         _id: &str,
-        _status: InflightActivationStatus,
-    ) -> Result<Option<InflightActivation>, Error> {
+        _status: ActivationStatus,
+        _max_attempts: Option<u32>,
+        _delay_on_retry: Option<u64>,
+    ) -> Result<Option<Activation>, Error> {
         unimplemented!()
     }
 
     async fn set_status_batch(
         &self,
         _ids: &[String],
-        _status: InflightActivationStatus,
+        _status: ActivationStatus,
     ) -> Result<u64, Error> {
         unimplemented!()
     }
@@ -141,7 +143,7 @@ impl InflightActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
+    async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error> {
         unimplemented!()
     }
 
@@ -204,11 +206,7 @@ impl RecordingPusher {
 
 #[async_trait]
 impl TaskPusher for RecordingPusher {
-    async fn submit_task(
-        &self,
-        activation: InflightActivation,
-        _time: Instant,
-    ) -> Result<(), PushError> {
+    async fn submit_task(&self, activation: Activation, _time: Instant) -> Result<(), PushError> {
         self.pushed_ids.lock().await.push(activation.id.clone());
 
         if self.fail {
@@ -230,7 +228,7 @@ fn test_config() -> FetchConfig {
 #[tokio::test]
 async fn fetch_pool_delivers_activation_to_pusher() {
     let activation = make_activations(1).remove(0);
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::one(activation.clone()));
+    let store: Arc<dyn ActivationStore> = Arc::new(MockStore::one(activation.clone()));
     let pusher = Arc::new(RecordingPusher::new(false));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());
@@ -245,7 +243,7 @@ async fn fetch_pool_delivers_activation_to_pusher() {
 #[tokio::test]
 async fn fetch_pool_calls_pusher_once_when_push_errors() {
     let activation = make_activations(1).remove(0);
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::one(activation));
+    let store: Arc<dyn ActivationStore> = Arc::new(MockStore::one(activation));
     let pusher = Arc::new(RecordingPusher::new(true));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());
@@ -259,7 +257,7 @@ async fn fetch_pool_calls_pusher_once_when_push_errors() {
 
 #[tokio::test]
 async fn fetch_pool_skips_pusher_when_store_errors() {
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::error());
+    let store: Arc<dyn ActivationStore> = Arc::new(MockStore::error());
     let pusher = Arc::new(RecordingPusher::new(false));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());
@@ -273,7 +271,7 @@ async fn fetch_pool_skips_pusher_when_store_errors() {
 
 #[tokio::test]
 async fn fetch_pool_skips_pusher_when_no_pending() {
-    let store: Arc<dyn InflightActivationStore> = Arc::new(MockStore::empty());
+    let store: Arc<dyn ActivationStore> = Arc::new(MockStore::empty());
     let pusher = Arc::new(RecordingPusher::new(false));
 
     let pool = FetchPool::new(store, test_config(), pusher.clone());

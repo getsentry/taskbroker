@@ -1,4 +1,10 @@
 # Changelog
+## 0.16.0
+
+### Bug Fixes 🐛
+
+- Update to latest sentry-protos version by @untitaker in [#651](https://github.com/getsentry/taskbroker/pull/651)
+
 ## 0.1.15
 
 ### New Features ✨

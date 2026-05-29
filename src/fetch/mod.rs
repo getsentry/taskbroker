@@ -12,8 +12,8 @@ use tracing::{debug, info, warn};
 
 use crate::config::fetch::FetchConfig;
 use crate::push::{PushError, PushPool};
-use crate::store::activation::InflightActivation;
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::Activation;
+use crate::store::traits::ActivationStore;
 use crate::store::types::BucketRange;
 
 /// This value should be a power of two. If it decreases, some ranges will no longer be queried.
@@ -52,29 +52,21 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
 #[async_trait]
 pub trait TaskPusher {
     /// Submit a single task to the push pool.
-    async fn submit_task(
-        &self,
-        activation: InflightActivation,
-        time: Instant,
-    ) -> Result<(), PushError>;
+    async fn submit_task(&self, activation: Activation, time: Instant) -> Result<(), PushError>;
 }
 
 #[async_trait]
 impl TaskPusher for PushPool {
     #[framed]
-    async fn submit_task(
-        &self,
-        activation: InflightActivation,
-        time: Instant,
-    ) -> Result<(), PushError> {
+    async fn submit_task(&self, activation: Activation, time: Instant) -> Result<(), PushError> {
         self.submit(activation, time).await
     }
 }
 
 /// Wrapper around `config.fetch_threads` asynchronous tasks, each of which fetches batches of pending activations from the store, passes them to the push pool, and repeats.
 pub struct FetchPool<T: TaskPusher> {
-    /// Inflight activation store.
-    store: Arc<dyn InflightActivationStore>,
+    /// Activation store.
+    store: Arc<dyn ActivationStore>,
 
     /// Pool of push threads that push activations to the worker service.
     pusher: Arc<T>,
@@ -85,11 +77,7 @@ pub struct FetchPool<T: TaskPusher> {
 
 impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
     /// Initialize a new fetch pool.
-    pub fn new(
-        store: Arc<dyn InflightActivationStore>,
-        config: FetchConfig,
-        pusher: Arc<T>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn ActivationStore>, config: FetchConfig, pusher: Arc<T>) -> Self {
         Self {
             store,
             config,

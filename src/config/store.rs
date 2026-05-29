@@ -77,6 +77,24 @@ impl Default for SqliteConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct RetryConfig {
+    /// Maximum number of times a query should be retried.
+    pub max_retries: u32,
+
+    /// How many milliseconds should we wait in between retries?
+    pub delay_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 0,
+            delay_ms: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct StoreConfig {
     /// Which specific database should we use?
     pub adapter: DatabaseAdapter,
@@ -86,6 +104,9 @@ pub struct StoreConfig {
 
     /// Configuration options specific to Postgres.
     pub pg: PostgresConfig,
+
+    /// Configuration for query-level retry behavior.
+    pub retry: RetryConfig,
 
     /// The amount of time to wait before retrying failed activation insertions.
     pub insert_failure_backoff_ms: u64,
@@ -134,6 +155,7 @@ impl Default for StoreConfig {
             adapter: DatabaseAdapter::Sqlite,
             sqlite: SqliteConfig::default(),
             pg: PostgresConfig::default(),
+            retry: RetryConfig::default(),
             insert_failure_backoff_ms: 4000,
             insert_batch_length: 256,
             insert_batch_size: 16_000_000,
