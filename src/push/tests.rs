@@ -167,7 +167,7 @@ async fn push_pool_submit_enqueues_item() {
     let activation = make_activations(1).remove(0);
 
     let time = Instant::now();
-    let result = pool.submit(activation, time).await;
+    let result = pool.push_task(activation, time).await;
     assert!(result.is_ok(), "submit should enqueue activation");
 }
 
@@ -185,11 +185,11 @@ async fn push_pool_submit_backpressures_when_queue_full() {
     let first = make_activations(1).remove(0);
     let second = make_activations(1).remove(0);
 
-    pool.submit(first, time)
+    pool.push_task(first, time)
         .await
         .expect("first submit should fill queue");
 
-    let second_submit = timeout(Duration::from_millis(50), pool.submit(second, time)).await;
+    let second_submit = timeout(Duration::from_millis(50), pool.push_task(second, time)).await;
     assert!(
         second_submit.is_err(),
         "second submit should block when queue is full"
@@ -224,7 +224,7 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let id = activation.id.clone();
     let time = Instant::now();
 
-    pool.submit(activation, time)
+    pool.push_task(activation, time)
         .await
         .expect("submit should succeed");
 
@@ -269,7 +269,7 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     let id = activation.id.clone();
     let time = Instant::now();
 
-    pool.submit(activation, time)
+    pool.push_task(activation, time)
         .await
         .expect("submit should succeed");
 
@@ -309,7 +309,7 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     let activation = make_activations(1).remove(0);
     let time = Instant::now();
 
-    pool.submit(activation, time)
+    pool.push_task(activation, time)
         .await
         .expect("submit should succeed");
 

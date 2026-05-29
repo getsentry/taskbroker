@@ -7,12 +7,10 @@ use async_backtrace::framed;
 use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
 use tokio::time::sleep;
-use tonic::async_trait;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::{PushError, PushPool};
-use crate::store::activation::Activation;
+use crate::push::{PushError, TaskPusher};
 use crate::store::traits::ActivationStore;
 use crate::store::types::BucketRange;
 
@@ -46,21 +44,6 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
     let high = ((thread_index + 1) * buckets_per_range - 1) as i16;
 
     (low, high)
-}
-
-/// Thin interface for the push pool. It mostly serves to enable proper unit testing, but it also decouples fetch logic from push logic even further.
-#[async_trait]
-pub trait TaskPusher {
-    /// Submit a single task to the push pool.
-    async fn submit_task(&self, activation: Activation, time: Instant) -> Result<(), PushError>;
-}
-
-#[async_trait]
-impl TaskPusher for PushPool {
-    #[framed]
-    async fn submit_task(&self, activation: Activation, time: Instant) -> Result<(), PushError> {
-        self.submit(activation, time).await
-    }
 }
 
 /// Wrapper around `config.fetch_threads` asynchronous tasks, each of which fetches batches of pending activations from the store, passes them to the push pool, and repeats.
@@ -156,7 +139,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                             debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → claimed latency recording");
                                         }
 
-                                        match pusher.submit_task(activation, start).await {
+                                        match pusher.push_task(activation, start).await {
                                             Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
 
                                             Err(PushError::Timeout) => {

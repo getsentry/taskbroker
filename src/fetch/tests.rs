@@ -207,7 +207,7 @@ impl RecordingPusher {
 
 #[async_trait]
 impl TaskPusher for RecordingPusher {
-    async fn submit_task(&self, activation: Activation, _time: Instant) -> Result<(), PushError> {
+    async fn push_task(&self, activation: Activation, _time: Instant) -> Result<(), PushError> {
         self.pushed_ids.lock().await.push(activation.id.clone());
 
         if self.fail {
