@@ -30,7 +30,7 @@ pub struct PushThread {
 
 impl PushThread {
     pub async fn start(&mut self) -> Result<()> {
-        let guard = get_shutdown_guard();
+        let guard = get_shutdown_guard().shutdown_on_drop();
 
         loop {
             let (activation, time) = match self.receiver.recv_async().await {
