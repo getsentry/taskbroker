@@ -650,7 +650,7 @@ impl ActivationStore for SqliteStore {
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
-        let result = sqlx::query(
+        let result = match sqlx::query(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
             WHERE status = $1
@@ -660,10 +660,17 @@ impl ActivationStore for SqliteStore {
             ",
         )
         .bind(ActivationStatus::Pending)
-        .fetch_one(&self.read_pool)
-        .await;
+        .fetch_optional(&self.read_pool)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                warn!("pending_activation_max_lag query failed: {e}");
+                return 0.0;
+            }
+        };
 
-        if let Ok(row) = result {
+        if let Some(row) = result {
             let received_at: DateTime<Utc> = row.get("received_at");
             let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
             let millis = now.signed_duration_since(received_at).num_milliseconds()
@@ -674,7 +681,7 @@ impl ActivationStore for SqliteStore {
                 });
             millis as f64 / 1000.0
         } else {
-            // If we couldn't find a row, there is no latency.
+            // No pending activations means no latency
             0.0
         }
     }
