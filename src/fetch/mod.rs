@@ -11,7 +11,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::PushError;
+use crate::push::QueueError;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
 use crate::store::types::BucketRange;
@@ -149,7 +149,7 @@ impl FetchPool {
                                         match push_task(activation, start, sender.clone(), config.clone()).await {
                                             Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
 
-                                            Err(PushError::Timeout) => {
+                                            Err(QueueError::Timeout) => {
                                                 metrics::counter!("fetch.submit", "result" => "timeout")
                                                     .increment(1);
 
@@ -163,18 +163,17 @@ impl FetchPool {
                                                 backoff = true;
                                             }
 
-                                            Err(PushError::Channel(e)) => {
-                                                metrics::counter!("fetch.submit", "result" => "channel_error")
+                                            Err(QueueError::Closed) => {
+                                                metrics::counter!("fetch.submit", "result" => "closed")
                                                     .increment(1);
 
                                                 warn!(
                                                     task_id = %id,
-                                                    error = ?e,
-                                                    "Submit to push pool failed due to channel error",
+                                                    "Submit to push pool failed due to closed channel",
                                                 );
 
-                                                // Wait before trying again
-                                                backoff = true;
+                                                // We cannot recover from a closed channel
+                                                return;
                                             }
                                         }
                                     }
@@ -219,7 +218,7 @@ async fn push_task(
     time: Instant,
     sender: Sender<(Activation, Instant)>,
     config: Arc<Config>,
-) -> Result<(), PushError> {
+) -> Result<(), QueueError> {
     metrics::gauge!("push.queue.depth").set(sender.len() as f64);
 
     let duration = Duration::from_millis(config.push_queue_timeout_ms);
@@ -227,10 +226,10 @@ async fn push_task(
 
     match timed!(timeout, "push.queue.wait_duration") {
         // The channel was full so the send timed out
-        Err(_) => Err(PushError::Timeout),
+        Err(_) => Err(QueueError::Timeout),
 
-        // The channel was closed... this should never happen
-        Ok(Err(_)) => unreachable!("Push queue should NEVER be closed here!"),
+        // The channel may close early if the push pool encounters an error
+        Ok(Err(_)) => Err(QueueError::Closed),
 
         // Pushed to channel successfully
         Ok(_) => Ok(()),

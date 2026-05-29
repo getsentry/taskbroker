@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use async_backtrace::framed;
-use flume::{Receiver, SendError};
+use flume::Receiver;
 use tokio::task::JoinSet;
 
 use crate::config::Config;
@@ -17,13 +17,12 @@ mod thread;
 
 /// Error returned when enqueueing an activation for the push workers fails.
 #[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub enum PushError {
+pub enum QueueError {
     /// The bounded queue stayed full until `push_queue_timeout_ms` elapsed.
     Timeout,
 
-    /// Channel disconnected (no receivers) or another failure.
-    Channel(SendError<(Activation, Instant)>),
+    /// Channel closed.
+    Closed,
 }
 
 /// Wrapper around `config.push_threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
