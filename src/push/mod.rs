@@ -60,19 +60,27 @@ impl PushPool {
             async move { thread.start().await }
         });
 
-        while let Some(result) = threads.join_next().await {
-            match result {
-                // Propagate fatal errors
-                Ok(r) => r?,
+        let mut result = Ok(());
 
-                // Join error
-                Err(e) => return Err(e.into()),
+        while let Some(r) = threads.join_next().await {
+            // Propagate fatal errors
+            if let Ok(Err(e)) = r {
+                result = Err(e);
+                break;
+            }
+
+            // Join error
+            if let Err(e) = r {
+                result = Err(e.into());
+                break;
             }
         }
 
-        // Now that the push threads have shut down, we can stop the updater
+        // We must be shutting down, so we should stop the updater daemon
         updater.stop();
-        upd.await?
+        upd.await??;
+
+        result
     }
 }
 
