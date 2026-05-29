@@ -8,13 +8,13 @@ use elegant_departure::get_shutdown_guard;
 use flume::Receiver;
 use tracing::{debug, error};
 
+use crate::push::updater::Updater;
 use crate::store::activation::Activation;
-use crate::store::traits::ActivationStore;
 use crate::timed;
 use crate::worker::WorkerMap;
 
 /// Alias for ergonomics.
-pub type Submission = (Activation, Instant);
+pub type PushItem = (Activation, Instant);
 
 /// Abstraction for a single push thread.
 pub struct PushThread {
@@ -22,10 +22,10 @@ pub struct PushThread {
     pub(super) workers: WorkerMap,
 
     /// Channel containing claimed activations to be pushed.
-    pub(super) receiver: Receiver<Submission>,
+    pub(super) receiver: Receiver<PushItem>,
 
     /// Entity that marks tasks as processing.
-    pub(super) store: Arc<dyn ActivationStore>,
+    pub(super) updater: Arc<dyn Updater>,
 }
 
 impl PushThread {
@@ -105,17 +105,17 @@ impl PushThread {
 
         // Finally, mark the activation as processing
         let result = timed!(
-            self.store.mark_processing(&id),
-            "push.mark_processing.duration"
+            self.updater.update(id.clone()),
+            "push.thread.update.duration"
         );
 
         if let Err(e) = result {
-            metrics::counter!("push.mark_processing", "result" => "error").increment(1);
+            metrics::counter!("push.thread.update", "result" => "error").increment(1);
 
             error!(
                 task_id = %id,
                 error = ?e,
-                "Failed to mark activation as sent after push"
+                "Failed to mark sent activation as processing"
             );
         }
     }

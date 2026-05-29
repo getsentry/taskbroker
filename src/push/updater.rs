@@ -4,9 +4,9 @@ use std::time::Duration;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use elegant_departure::get_shutdown_guard;
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::{Mutex, MutexGuard, Notify, RwLock};
 use tonic::async_trait;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::store::traits::ActivationStore;
@@ -36,7 +36,7 @@ pub struct LazyUpdater {
     store: Arc<dyn ActivationStore>,
 
     /// Last time the buffer was flushed.
-    last_flush: DateTime<Utc>,
+    last_flush: Arc<RwLock<DateTime<Utc>>>,
 
     /// Sent activations that need to be updated.
     buffer: Arc<Mutex<Vec<String>>>,
@@ -48,7 +48,7 @@ pub struct LazyUpdater {
 impl LazyUpdater {
     pub fn new(config: Arc<Config>, store: Arc<dyn ActivationStore>) -> Self {
         let buffer = Arc::new(Mutex::new(vec![]));
-        let last_flush = Utc::now();
+        let last_flush = Arc::new(RwLock::new(Utc::now()));
         let stop = Notify::new();
 
         Self {
@@ -73,6 +73,13 @@ impl LazyUpdater {
                         "Push thread update batch contained {expected} records, but only {actual} were updated"
                     );
                 }
+
+                metrics::histogram!("push.updater.flush.expected").record(expected as f64);
+                metrics::histogram!("push.updater.flush.actual").record(actual as f64);
+
+                // Indicate that this is the last time we performed a periodic flush
+                let mut last_flush = self.last_flush.write().await;
+                *last_flush = Utc::now();
 
                 Ok(())
             }
@@ -109,16 +116,24 @@ impl Updater for LazyUpdater {
 
                     // Make sure we aren't flushing too soon
                     let now = Utc::now().timestamp_millis();
-                    let elapsed = self.last_flush.timestamp_millis()  - now;
+                    let elapsed = now - self.last_flush.read().await.timestamp_millis();
 
                     if elapsed < (self.config.push_update_interval_ms as i64) {
                         // Too soon!
                         continue;
                     }
 
-                    // We can propagate the error upwards here if desired
-                    if let Err(_) = self.flush(&mut buffer).await {
-                        todo!()
+                    match self.flush(&mut buffer).await {
+                        Ok(_) => metrics::counter!("push.updater.flush", "reason" => "tick", "result" => "ok").increment(1),
+
+                        Err(e) => {
+                            metrics::counter!("push.updater.flush", "reason" => "tick", "result" => "error").increment(1);
+
+                            error!(
+                                error = ?e,
+                                "Failed to perform periodic flush of buffered claimed → processing updates"
+                            );
+                        }
                     }
                 }
             }
@@ -134,8 +149,20 @@ impl Updater for LazyUpdater {
 
         if buffer.len() >= self.config.push_update_batch_size {
             // Flush first
-            if let Err(_) = self.flush(&mut buffer).await {
-                todo!()
+            match self.flush(&mut buffer).await {
+                Ok(_) => {
+                    metrics::counter!("push.updater.flush", "reason" => "full", "result" => "ok")
+                        .increment(1)
+                }
+
+                Err(e) => {
+                    metrics::counter!("push.updater.flush", "reason" => "full", "result" => "error").increment(1);
+
+                    error!(
+                        error = ?e,
+                        "Failed to perform inline flush of buffered claimed → processing updates"
+                    );
+                }
             }
         }
 

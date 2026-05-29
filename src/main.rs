@@ -286,7 +286,7 @@ async fn main() -> Result<(), Error> {
     let (sender, receiver) = flume::bounded(config.push_queue_size);
 
     // Initialize push and fetch pools
-    let push_pool = PushPool::new(receiver, config.clone(), store.clone());
+    let push_pool = PushPool::new(receiver, config.clone());
     let fetch_pool = FetchPool::new(sender, store.clone(), config.clone());
 
     // Initialize push threads

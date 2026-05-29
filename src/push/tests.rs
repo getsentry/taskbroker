@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -179,7 +180,7 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     });
     let store = Arc::new(MockStore::default());
     let (sender, receiver) = flume::bounded(config.push_queue_size);
-    let pool = Arc::new(PushPool::new(receiver, config, store.clone()));
+    let pool = Arc::new(PushPool::new(receiver, config));
 
     let workers = vec![test_worker_map(false, notify.clone())];
     let updater = test_eager_updater(store.clone());
@@ -222,7 +223,7 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     });
     let store = Arc::new(MockStore::default());
     let (sender, receiver) = flume::bounded(config.push_queue_size);
-    let pool = Arc::new(PushPool::new(receiver, config, store.clone()));
+    let pool = Arc::new(PushPool::new(receiver, config));
 
     let workers = vec![test_worker_map(false, notify.clone())];
     let updater = test_eager_updater(store.clone());
@@ -262,9 +263,9 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     });
     let store = Arc::new(MockStore::default());
     let (sender, receiver) = flume::bounded(config.push_queue_size);
-    let pool = Arc::new(PushPool::new(receiver, config, store.clone()));
+    let pool = Arc::new(PushPool::new(receiver, config));
 
-    let workers = vec![test_worker_map(false, notify.clone())];
+    let workers = vec![test_worker_map(true, notify.clone())];
     let updater = test_eager_updater(store.clone());
 
     tokio::spawn(async move { pool.start(workers, updater).await });
