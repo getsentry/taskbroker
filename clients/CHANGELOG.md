@@ -1,4 +1,10 @@
 # Changelog
+## 0.17.1
+
+### Bug Fixes 🐛
+
+- (grpc) Increase max message size to 10MB by @untitaker in [#658](https://github.com/getsentry/taskbroker/pull/658)
+
 ## 0.17.0
 
 ### New Features ✨
