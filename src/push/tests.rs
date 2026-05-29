@@ -1,9 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use anyhow::anyhow;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sentry_protos::taskbroker::v1::PushTaskRequest;
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
@@ -12,55 +10,9 @@ use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::FailedTasksForwarder;
 use crate::test_utils::{create_test_store, make_activations};
+use crate::worker::test_worker_map;
 
 use super::*;
-
-/// Fake worker client that records requests and optionally fails.
-struct MockWorkerClient {
-    captured_requests: Vec<PushTaskRequest>,
-    should_fail: bool,
-}
-
-impl MockWorkerClient {
-    fn new(should_fail: bool) -> Self {
-        Self {
-            captured_requests: vec![],
-            should_fail,
-        }
-    }
-}
-
-#[async_trait]
-impl WorkerClient for MockWorkerClient {
-    async fn send(
-        &mut self,
-        request: PushTaskRequest,
-        _grpc_shared_secret: &[String],
-    ) -> Result<()> {
-        self.captured_requests.push(request);
-        if self.should_fail {
-            return Err(anyhow!("mock send failure"));
-        }
-        Ok(())
-    }
-}
-
-/// Fake worker client that fires a Notify when send() is called.
-struct NotifyingWorkerClient {
-    should_fail: bool,
-    notify: Arc<Notify>,
-}
-
-#[async_trait]
-impl WorkerClient for NotifyingWorkerClient {
-    async fn send(&mut self, _request: PushTaskRequest, _: &[String]) -> Result<()> {
-        self.notify.notify_one();
-        if self.should_fail {
-            return Err(anyhow!("mock send failure"));
-        }
-        Ok(())
-    }
-}
 
 /// Minimal fake store that records which activation IDs have been marked as processing.
 #[derive(Default, Clone)]
@@ -181,88 +133,6 @@ impl ActivationStore for MockStore {
     }
 }
 
-/// Factory that fires `notify` when send() is called, then succeeds or fails per `should_fail`.
-fn notifying_factory(should_fail: bool, notify: Arc<Notify>) -> WorkerFactory {
-    Arc::new(move |_: String| {
-        let notify = notify.clone();
-        Box::pin(async move {
-            Ok(Box::new(NotifyingWorkerClient {
-                should_fail,
-                notify,
-            }) as Box<dyn WorkerClient + Send>)
-        })
-    })
-}
-
-/// Factory that always fails to connect (simulates a broken endpoint).
-fn failing_connect_factory() -> WorkerFactory {
-    Arc::new(|_: String| Box::pin(async { Err(anyhow::anyhow!("simulated connect failure")) }))
-}
-
-#[tokio::test]
-async fn push_task_returns_ok_on_client_success() {
-    let activation = make_activations(1).remove(0);
-    let mut worker = MockWorkerClient::new(false);
-    let callback_url = "taskbroker:50051".to_string();
-
-    let result = push_task(
-        &mut worker,
-        activation.clone(),
-        callback_url.clone(),
-        Duration::from_secs(5),
-        &[],
-    )
-    .await;
-    assert!(result.is_ok(), "push_task should succeed");
-    assert_eq!(worker.captured_requests.len(), 1);
-
-    let request = &worker.captured_requests[0];
-    assert_eq!(request.callback_url, callback_url);
-    assert_eq!(
-        request.task.as_ref().map(|task| task.id.as_str()),
-        Some(activation.id.as_str())
-    );
-}
-
-#[tokio::test]
-async fn push_task_returns_err_on_invalid_payload() {
-    let mut activation = make_activations(1).remove(0);
-    activation.activation = vec![1, 2, 3, 4];
-
-    let mut worker = MockWorkerClient::new(false);
-    let result = push_task(
-        &mut worker,
-        activation,
-        "taskbroker:50051".to_string(),
-        Duration::from_secs(5),
-        &[],
-    )
-    .await;
-
-    assert!(result.is_err(), "invalid payload should fail decoding");
-    assert!(
-        worker.captured_requests.is_empty(),
-        "worker should not be called if decode fails"
-    );
-}
-
-#[tokio::test]
-async fn push_task_propagates_client_error() {
-    let activation = make_activations(1).remove(0);
-    let mut worker = MockWorkerClient::new(true);
-
-    let result = push_task(
-        &mut worker,
-        activation,
-        "taskbroker:50051".to_string(),
-        Duration::from_secs(5),
-        &[],
-    )
-    .await;
-    assert!(result.is_err(), "worker send errors should propagate");
-    assert_eq!(worker.captured_requests.len(), 1);
-}
-
 #[tokio::test]
 async fn push_pool_submit_enqueues_item() {
     let config = Arc::new(Config {
@@ -304,34 +174,6 @@ async fn push_pool_submit_backpressures_when_queue_full() {
     );
 }
 
-#[test]
-fn sentry_signature_hex_matches_hmac_contract() {
-    let digest = sentry_signature_hex("super secret", "/test/path", b"hello");
-    assert_eq!(
-        digest,
-        "6408482d9e6d4975ada4c0302fda813c5718e571e6f9a2d6e2803cb48528044e"
-    );
-}
-
-/// When the worker factory fails to connect, start() returns an error immediately.
-#[tokio::test]
-async fn push_pool_start_worker_connect_failure_returns_error() {
-    let config = Arc::new(Config {
-        worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
-    });
-    let store = Arc::new(MockStore::default());
-    let pool = PushPool::new_with_factory(config, store, failing_connect_factory());
-
-    let result = pool.start().await;
-    assert!(
-        result.is_err(),
-        "start() should return Err when the worker factory fails to connect"
-    );
-}
-
 /// After a successful push for a first-attempt activation (processing_attempts == 0),
 /// mark_activation_processing must be called on the store.
 #[tokio::test]
@@ -344,14 +186,15 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new_with_factory(
-        config,
-        store.clone(),
-        notifying_factory(false, notify.clone()),
-    ));
+    let pool = Arc::new(PushPool::new(config, store.clone()));
 
     let pool_start = pool.clone();
-    tokio::spawn(async move { pool_start.start().await });
+    let worker_notify = notify.clone();
+    tokio::spawn(async move {
+        pool_start
+            .start(vec![test_worker_map(false, worker_notify)])
+            .await
+    });
 
     let activation = make_activations(1).remove(0);
     assert_eq!(activation.processing_attempts, 0);
@@ -363,7 +206,7 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
         .await
         .expect("submit should succeed");
 
-    // Wait for the worker to call send(), then give it time to call mark_activation_processing
+    // Wait for the worker to call push_task(), then give it time to call mark_activation_processing.
     timeout(Duration::from_secs(2), notify.notified())
         .await
         .expect("timed out waiting for push to be delivered");
@@ -388,14 +231,15 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new_with_factory(
-        config,
-        store.clone(),
-        notifying_factory(false, notify.clone()),
-    ));
+    let pool = Arc::new(PushPool::new(config, store.clone()));
 
     let pool_start = pool.clone();
-    tokio::spawn(async move { pool_start.start().await });
+    let worker_notify = notify.clone();
+    tokio::spawn(async move {
+        pool_start
+            .start(vec![test_worker_map(false, worker_notify)])
+            .await
+    });
 
     let mut activation = make_activations(1).remove(0);
     activation.processing_attempts = 1;
@@ -430,14 +274,15 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new_with_factory(
-        config,
-        store.clone(),
-        notifying_factory(true, notify.clone()),
-    ));
+    let pool = Arc::new(PushPool::new(config, store.clone()));
 
     let pool_start = pool.clone();
-    tokio::spawn(async move { pool_start.start().await });
+    let worker_notify = notify.clone();
+    tokio::spawn(async move {
+        pool_start
+            .start(vec![test_worker_map(true, worker_notify)])
+            .await
+    });
 
     let activation = make_activations(1).remove(0);
     let time = Instant::now();

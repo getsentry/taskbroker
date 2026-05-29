@@ -14,6 +14,7 @@ pub mod store;
 pub mod test_utils;
 pub mod tokio;
 pub mod upkeep;
+pub mod worker;
 
 /// Name of the grpc service.
 /// Using the service type to get a name wasn't working across modules.
