@@ -31,3 +31,13 @@ pub struct Args {
     #[arg(short, long, help = "The path to a config file")]
     pub config: Option<String>,
 }
+
+#[macro_export]
+macro_rules! timed {
+    ($future:expr, $($histogram_args:tt)+) => {{
+        let start = ::std::time::Instant::now();
+        let result = $future.await;
+        ::metrics::histogram!($($histogram_args)+).record(start.elapsed());
+        result
+    }};
+}

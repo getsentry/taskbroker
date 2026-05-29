@@ -281,9 +281,12 @@ async fn main() -> Result<(), Error> {
         None
     };
 
+    // Initialize push queue
+    let (sender, receiver) = flume::bounded(config.push_queue_size);
+
     // Initialize push and fetch pools
-    let push_pool = Arc::new(PushPool::new(config.clone(), store.clone()));
-    let fetch_pool = FetchPool::new(store.clone(), config.clone(), push_pool.clone());
+    let push_pool = PushPool::new(receiver, config.clone(), store.clone());
+    let fetch_pool = FetchPool::new(sender, store.clone(), config.clone());
 
     // Initialize push threads
     let push_task = if config.delivery_mode == DeliveryMode::Push {

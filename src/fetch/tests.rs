@@ -7,7 +7,6 @@ use tokio::time::{Duration, sleep};
 use tonic::async_trait;
 
 use crate::config::Config;
-use crate::push::PushError;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
@@ -189,35 +188,6 @@ impl ActivationStore for MockStore {
     }
 }
 
-/// Records task IDs passed to `push_task`. If `fail` is true, returns an error.
-struct RecordingPusher {
-    /// What IDs have been pushed?
-    pushed_ids: Mutex<Vec<String>>,
-
-    /// Should pushing fail?
-    fail: bool,
-}
-
-impl RecordingPusher {
-    fn new(fail: bool) -> Self {
-        let pushed_ids = Mutex::new(vec![]);
-        Self { pushed_ids, fail }
-    }
-}
-
-#[async_trait]
-impl TaskPusher for RecordingPusher {
-    async fn submit_task(&self, activation: Activation, _time: Instant) -> Result<(), PushError> {
-        self.pushed_ids.lock().await.push(activation.id.clone());
-
-        if self.fail {
-            return Err(PushError::Timeout);
-        }
-
-        Ok(())
-    }
-}
-
 fn test_config() -> Arc<Config> {
     Arc::new(Config {
         fetch_threads: 1,
@@ -227,59 +197,50 @@ fn test_config() -> Arc<Config> {
 }
 
 #[tokio::test]
-async fn fetch_pool_delivers_activation_to_pusher() {
+async fn fetch_pool_fetch_and_enqueue() {
     let activation = make_activations(1).remove(0);
     let store: Arc<dyn ActivationStore> = Arc::new(MockStore::one(activation.clone()));
-    let pusher = Arc::new(RecordingPusher::new(false));
 
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
+    let config = test_config();
+    let (sender, receiver) = flume::bounded(config.push_queue_size);
+
+    let pool = FetchPool::new(sender, store, config);
     let handle = tokio::spawn(async move { pool.start().await });
 
     sleep(Duration::from_millis(200)).await;
-    assert_eq!(pusher.pushed_ids.lock().await.as_slice(), &[activation.id]);
+    assert_eq!(receiver.recv_async().await.unwrap().0.id, activation.id);
 
     handle.abort();
 }
 
 #[tokio::test]
-async fn fetch_pool_calls_pusher_once_when_push_errors() {
-    let activation = make_activations(1).remove(0);
-    let store: Arc<dyn ActivationStore> = Arc::new(MockStore::one(activation));
-    let pusher = Arc::new(RecordingPusher::new(true));
-
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
-    let handle = tokio::spawn(async move { pool.start().await });
-
-    sleep(Duration::from_millis(100)).await;
-    assert_eq!(pusher.pushed_ids.lock().await.len(), 1);
-
-    handle.abort();
-}
-
-#[tokio::test]
-async fn fetch_pool_skips_pusher_when_store_errors() {
+async fn fetch_pool_store_error() {
     let store: Arc<dyn ActivationStore> = Arc::new(MockStore::error());
-    let pusher = Arc::new(RecordingPusher::new(false));
 
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
+    let config = test_config();
+    let (sender, receiver) = flume::bounded(config.push_queue_size);
+
+    let pool = FetchPool::new(sender.clone(), store, config);
     let handle = tokio::spawn(async move { pool.start().await });
 
     sleep(Duration::from_millis(80)).await;
-    assert!(pusher.pushed_ids.lock().await.is_empty());
+    assert!(receiver.is_empty());
 
     handle.abort();
 }
 
 #[tokio::test]
-async fn fetch_pool_skips_pusher_when_no_pending() {
+async fn fetch_pool_no_pending() {
     let store: Arc<dyn ActivationStore> = Arc::new(MockStore::empty());
-    let pusher = Arc::new(RecordingPusher::new(false));
 
-    let pool = FetchPool::new(store, test_config(), pusher.clone());
+    let config = test_config();
+    let (sender, receiver) = flume::bounded(config.push_queue_size);
+
+    let pool = FetchPool::new(sender, store, config);
     let handle = tokio::spawn(async move { pool.start().await });
 
     sleep(Duration::from_millis(80)).await;
-    assert!(pusher.pushed_ids.lock().await.is_empty());
+    assert!(receiver.is_empty());
 
     handle.abort();
 }
