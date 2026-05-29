@@ -47,16 +47,6 @@ impl PushThread {
             self.push_task(activation).await;
         }
 
-        // Drain channel before exiting
-        let activations: Vec<_> = self.receiver.drain().collect();
-
-        for (activation, time) in activations {
-            metrics::histogram!("push.queue.latency").record(time.elapsed());
-
-            // Push the task and mark it as processing
-            self.push_task(activation).await;
-        }
-
         drop(guard);
         Ok(())
     }
