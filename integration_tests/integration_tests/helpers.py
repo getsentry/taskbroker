@@ -53,16 +53,25 @@ class TaskbrokerConfig:
         self.kafka_auto_offset_reset = kafka_auto_offset_reset
         self.grpc_port = grpc_port
 
-    def to_dict(self) -> dict[str, str | int]:
+    def to_dict(self) -> dict[str, Any]:
         return {
-            "db_name": self.db_name,
-            "db_path": self.db_path,
-            "max_pending_count": self.max_pending_count,
-            "kafka_topic": self.kafka_topic,
-            "kafka_deadletter_topic": self.kafka_deadletter_topic,
-            "kafka_consumer_group": self.kafka_consumer_group,
-            "kafka_auto_offset_reset": self.kafka_auto_offset_reset,
             "grpc_port": self.grpc_port,
+            "kafka": {
+                "default": {
+                    "topic": self.kafka_topic,
+                    "consumer_group": self.kafka_consumer_group,
+                },
+                "deadletter": {
+                    "topic": self.kafka_deadletter_topic,
+                },
+                "auto_offset_reset": self.kafka_auto_offset_reset,
+            },
+            "store": {
+                "sqlite": {
+                    "path": self.db_path,
+                },
+                "max_pending_count": self.max_pending_count,
+            },
         }
 
 
