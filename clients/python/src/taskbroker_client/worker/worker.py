@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, List
 
 import grpc
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from sentry_protos.taskbroker.v1 import taskbroker_pb2_grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     FetchNextTask,
@@ -45,6 +46,8 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
 
 
 class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
@@ -241,6 +244,7 @@ class PushTaskWorker:
         # Running shutdown() within the signal handler can lead to deadlocks
 
         server: grpc.Server | None = None
+        health_servicer: health.HealthServicer | None = None
 
         def signal_handler(*args: Any) -> None:
             if server:
@@ -265,8 +269,15 @@ class PushTaskWorker:
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
                 WorkerServicer(self.worker_pool), server
             )
+            health_servicer = health.HealthServicer()
+            health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+            health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
+            health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
+
             server.add_insecure_port(f"[::]:{self._grpc_port}")
             server.start()
+            health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+            health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
 
             try:
@@ -276,6 +287,10 @@ class PushTaskWorker:
                 pass
 
         finally:
+            if health_servicer is not None:
+                health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
+                health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
+
             if server is not None:
                 server.stop(grace=5)
 
