@@ -80,7 +80,7 @@ impl PushThread {
             error!(
                 task_id = %id,
                 error = ?e,
-                "Failed to send activation to worker"
+                "Failed to send activation to worker: {e}"
             );
 
             return;
