@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::Notify;
@@ -29,14 +28,12 @@ impl MockStore {
 
 #[async_trait]
 impl ActivationStore for MockStore {
-    async fn store(&self, _batch: Vec<Activation>) -> Result<u64> {
+    async fn store(&self, _batch: Vec<Activation>) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<()> {
+    fn assign_partitions(&self, _partitions: Vec<i32>) -> anyhow::Result<()> {
         Ok(())
     }
-
     async fn claim_activations(
         &self,
         _application: Option<&str>,
@@ -44,113 +41,94 @@ impl ActivationStore for MockStore {
         _limit: Option<i32>,
         _bucket: Option<crate::store::types::BucketRange>,
         _mark_processing: bool,
-    ) -> Result<Vec<Activation>> {
+    ) -> anyhow::Result<Vec<Activation>> {
         Ok(vec![])
     }
-
-    async fn mark_activation_processing(&self, id: &str) -> Result<()> {
+    async fn mark_activation_processing(&self, id: &str) -> anyhow::Result<()> {
         self.marked_processing.lock().unwrap().push(id.to_string());
         Ok(())
     }
-
     async fn set_status(
         &self,
         _id: &str,
         _status: ActivationStatus,
         _max_attempts: Option<u32>,
         _delay_on_retry: Option<u64>,
-    ) -> Result<Option<Activation>> {
+    ) -> anyhow::Result<Option<Activation>> {
         Ok(None)
     }
-
-    async fn set_status_batch(&self, _ids: &[String], _status: ActivationStatus) -> Result<u64> {
+    async fn set_status_batch(
+        &self,
+        _ids: &[String],
+        _status: ActivationStatus,
+    ) -> anyhow::Result<u64> {
         Ok(0)
     }
-
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
         0.0
     }
-
-    async fn count_by_status(&self, _status: ActivationStatus) -> Result<usize> {
+    async fn count_by_status(&self, _status: ActivationStatus) -> anyhow::Result<usize> {
         Ok(0)
     }
-
-    async fn count(&self) -> Result<usize> {
+    async fn count(&self) -> anyhow::Result<usize> {
         Ok(0)
     }
-
-    async fn get_by_id(&self, _id: &str) -> Result<Option<Activation>> {
+    async fn get_by_id(&self, _id: &str) -> anyhow::Result<Option<Activation>> {
         Ok(None)
     }
-
     async fn set_processing_deadline(
         &self,
         _id: &str,
         _deadline: Option<DateTime<Utc>>,
-    ) -> Result<()> {
+    ) -> anyhow::Result<()> {
         Ok(())
     }
-
-    async fn delete_activation(&self, _id: &str) -> Result<()> {
+    async fn delete_activation(&self, _id: &str) -> anyhow::Result<()> {
         Ok(())
     }
-
-    async fn vacuum_db(&self) -> Result<()> {
+    async fn vacuum_db(&self) -> anyhow::Result<()> {
         Ok(())
     }
-
-    async fn full_vacuum_db(&self) -> Result<()> {
+    async fn full_vacuum_db(&self) -> anyhow::Result<()> {
         Ok(())
     }
-
-    async fn db_size(&self) -> Result<u64> {
+    async fn db_size(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn get_retry_activations(&self) -> Result<Vec<Activation>> {
+    async fn get_retry_activations(&self) -> anyhow::Result<Vec<Activation>> {
         Ok(vec![])
     }
-
-    async fn handle_claim_expiration(&self) -> Result<u64> {
+    async fn handle_claim_expiration(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn handle_processing_deadline(&self) -> Result<u64> {
+    async fn handle_processing_deadline(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn handle_processing_attempts(&self) -> Result<u64> {
+    async fn handle_processing_attempts(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn handle_expires_at(&self) -> Result<u64> {
+    async fn handle_expires_at(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn handle_delay_until(&self) -> Result<u64> {
+    async fn handle_delay_until(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn handle_failed_tasks(&self) -> Result<FailedTasksForwarder> {
+    async fn handle_failed_tasks(&self) -> anyhow::Result<FailedTasksForwarder> {
         Ok(FailedTasksForwarder {
             to_discard: vec![],
             to_deadletter: vec![],
         })
     }
-
-    async fn mark_completed(&self, _ids: Vec<String>) -> Result<u64> {
+    async fn mark_completed(&self, _ids: Vec<String>) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn remove_completed(&self) -> Result<u64> {
+    async fn remove_completed(&self) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn remove_killswitched(&self, _killswitched_tasks: Vec<String>) -> Result<u64> {
+    async fn remove_killswitched(&self, _killswitched_tasks: Vec<String>) -> anyhow::Result<u64> {
         Ok(0)
     }
-
-    async fn clear(&self) -> Result<()> {
+    async fn clear(&self) -> anyhow::Result<()> {
         Ok(())
     }
 }
