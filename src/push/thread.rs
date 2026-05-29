@@ -33,23 +33,18 @@ impl PushThread {
         let guard = get_shutdown_guard();
 
         loop {
-            // We cannot exit before every fetch thread has exited, so don't exit on `guard.wait()` here
-            tokio::select! {
-                message = self.receiver.recv_async() => {
-                    let (activation, time) = match message {
-                        // Received activation from fetch thread
-                        Ok(a) => a,
+            let (activation, time) = match self.receiver.recv_async().await {
+                // Received activation from fetch thread
+                Ok(a) => a,
 
-                        // We only exit when the push queue is closed, which happens when the fetch pool has shut down
-                        Err(_) => break,
-                    };
+                // We only exit when the push queue is closed, which happens when the fetch pool has shut down
+                Err(_) => break,
+            };
 
-                    metrics::histogram!("push.queue.latency").record(time.elapsed());
+            metrics::histogram!("push.queue.latency").record(time.elapsed());
 
-                    // Push the task and mark it as processing
-                    self.push_task(activation).await;
-                }
-            }
+            // Push the task and mark it as processing
+            self.push_task(activation).await;
         }
 
         // Drain channel before exiting
