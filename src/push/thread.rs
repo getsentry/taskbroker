@@ -105,12 +105,12 @@ impl PushThread {
 
         // Finally, mark the activation as processing
         let result = timed!(
-            self.store.mark_activation_processing(&id),
-            "push.mark_activation_processing.duration"
+            self.store.mark_processing(&id),
+            "push.mark_processing.duration"
         );
 
         if let Err(e) = result {
-            metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+            metrics::counter!("push.mark_processing", "result" => "error").increment(1);
 
             error!(
                 task_id = %id,

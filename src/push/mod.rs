@@ -8,12 +8,14 @@ use tokio::task::JoinSet;
 
 use crate::config::Config;
 use crate::push::thread::PushThread;
+use crate::push::updater::Updater;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
 use crate::tokio::spawn_pool;
 use crate::worker::WorkerMap;
 
 mod thread;
+pub mod updater;
 
 /// Error returned when enqueueing an activation for the push workers fails.
 #[derive(Debug)]
@@ -53,8 +55,14 @@ impl PushPool {
 
     /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     #[framed]
-    pub async fn start(&self, workers: Vec<WorkerMap>) -> Result<()> {
+    pub async fn start(&self, workers: Vec<WorkerMap>, updater: Arc<dyn Updater>) -> Result<()> {
         let mut workers = workers.into_iter();
+
+        // Start the updater
+        let updaterd = tokio::spawn({
+            let updater = updater.clone();
+            async move { updater.start().await }
+        });
 
         let mut threads: JoinSet<Result<()>> = spawn_pool(self.config.push_threads, |_| {
             let mut thread = PushThread {
@@ -76,7 +84,9 @@ impl PushPool {
             }
         }
 
-        Ok(())
+        // Now that the push threads have shut down, we can stop the updater
+        updater.stop();
+        updaterd.await?
     }
 }
 

@@ -326,6 +326,15 @@ pub struct Config {
     /// Maximum milliseconds to wait before flushing a batch of status updates.
     pub status_update_interval_ms: u64,
 
+    /// Update claimed → processing updates in batches? Only applies in PUSH mode.
+    pub batch_push_updates: bool,
+
+    /// The size of a batch of dispatch updates.
+    pub push_update_batch_size: usize,
+
+    /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
+    pub push_update_interval_ms: u32,
+
     /// Maps every application to its worker endpoint, both represented as strings.
     pub worker_map: BTreeMap<String, String>,
 
@@ -437,6 +446,9 @@ impl Default for Config {
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
+            batch_push_updates: false,
+            push_update_batch_size: 1,
+            push_update_interval_ms: 100,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
             raw_mode: false,
             raw_namespace: None,
