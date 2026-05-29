@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import queue
 import signal
 import threading
@@ -23,6 +24,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import (
+    DEFAULT_GRPC_MAX_MESSAGE_SIZE,
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
@@ -261,9 +263,16 @@ class PushTaskWorker:
             if self._grpc_secrets:
                 interceptors = [RequestSignatureServerInterceptor(self._grpc_secrets)]
 
+            max_message_size = int(
+                os.environ.get("TASKBROKER_GRPC_MAX_MESSAGE_SIZE", DEFAULT_GRPC_MAX_MESSAGE_SIZE)
+            )
             server = grpc.server(
                 ThreadPoolExecutor(max_workers=self._concurrency),
                 interceptors=interceptors,
+                options=[
+                    ("grpc.max_receive_message_length", max_message_size),
+                    ("grpc.max_send_message_length", max_message_size),
+                ],
             )
 
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
