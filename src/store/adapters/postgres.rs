@@ -595,11 +595,19 @@ impl ActivationStore for PostgresStore {
 
         query_builder.push(" ORDER BY received_at ASC LIMIT 1");
 
-        let result = query_builder
+        let result = match query_builder
             .build_query_as::<(DateTime<Utc>, Option<DateTime<Utc>>)>()
-            .fetch_one(&self.read_pool)
-            .await;
-        if let Ok(row) = result {
+            .fetch_optional(&self.read_pool)
+            .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                warn!("pending_activation_max_lag query failed: {e}");
+                return 0.0;
+            }
+        };
+
+        if let Some(row) = result {
             let received_at: DateTime<Utc> = row.0;
             let delay_until: Option<DateTime<Utc>> = row.1;
             let millis = now.signed_duration_since(received_at).num_milliseconds()
@@ -610,7 +618,7 @@ impl ActivationStore for PostgresStore {
                 });
             millis as f64 / 1000.0
         } else {
-            // If we couldn't find a row, there is no latency.
+            // No pending activations means no latency
             0.0
         }
     }
