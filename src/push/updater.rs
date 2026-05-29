@@ -131,11 +131,29 @@ impl Updater for LazyUpdater {
 
                             error!(
                                 error = ?e,
-                                "Failed to perform periodic flush of buffered claimed → processing updates"
+                                "Failed to flush claimed → processing updates (tick)"
                             );
                         }
                     }
                 }
+            }
+        }
+
+        // Perform one last flush before exiting
+        let mut buffer = self.buffer.lock().await;
+
+        match self.flush(&mut buffer).await {
+            Ok(_) => metrics::counter!("push.updater.flush", "reason" => "exit", "result" => "ok")
+                .increment(1),
+
+            Err(e) => {
+                metrics::counter!("push.updater.flush", "reason" => "exit", "result" => "error")
+                    .increment(1);
+
+                error!(
+                    error = ?e,
+                    "Failed to flush claimed → processing updates (exit)"
+                );
             }
         }
 
@@ -160,7 +178,7 @@ impl Updater for LazyUpdater {
 
                     error!(
                         error = ?e,
-                        "Failed to perform inline flush of buffered claimed → processing updates"
+                        "Failed to flush claimed → processing updates (full buffer)"
                     );
                 }
             }
