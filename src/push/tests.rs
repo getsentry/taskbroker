@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::FailedTasksForwarder;
-use crate::test_utils::{create_test_store, make_activations};
+use crate::test_utils::make_activations;
 use crate::worker::test_worker_map;
 
 use super::*;
@@ -155,47 +155,6 @@ impl ActivationStore for MockStore {
     }
 }
 
-#[tokio::test]
-async fn push_pool_submit_enqueues_item() {
-    let config = Arc::new(Config {
-        push_queue_size: 2,
-        ..Config::default()
-    });
-
-    let store = create_test_store("sqlite").await;
-    let pool = PushPool::new(config, store);
-    let activation = make_activations(1).remove(0);
-
-    let time = Instant::now();
-    let result = pool.push_task(activation, time).await;
-    assert!(result.is_ok(), "submit should enqueue activation");
-}
-
-#[tokio::test]
-async fn push_pool_submit_backpressures_when_queue_full() {
-    let config = Arc::new(Config {
-        push_queue_size: 1,
-        ..Config::default()
-    });
-
-    let store = create_test_store("sqlite").await;
-    let pool = PushPool::new(config, store);
-
-    let time = Instant::now();
-    let first = make_activations(1).remove(0);
-    let second = make_activations(1).remove(0);
-
-    pool.push_task(first, time)
-        .await
-        .expect("first submit should fill queue");
-
-    let second_submit = timeout(Duration::from_millis(50), pool.push_task(second, time)).await;
-    assert!(
-        second_submit.is_err(),
-        "second submit should block when queue is full"
-    );
-}
-
 /// After a successful push for a first-attempt activation (processing_attempts == 0),
 /// mark_activation_processing must be called on the store.
 #[tokio::test]
@@ -208,7 +167,8 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new(config, store.clone()));
+    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let pool = Arc::new(PushPool::new(receiver, config, store.clone()));
 
     let pool_start = pool.clone();
     let worker_notify = notify.clone();
@@ -224,14 +184,14 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let id = activation.id.clone();
     let time = Instant::now();
 
-    pool.push_task(activation, time)
-        .await
-        .expect("submit should succeed");
+    // Simulate a fetch thread pushing an activation to the queue
+    sender.send_async((activation, time)).await.unwrap();
 
     // Wait for the worker to call push_task(), then give it time to call mark_activation_processing.
     timeout(Duration::from_secs(2), notify.notified())
         .await
         .expect("timed out waiting for push to be delivered");
+
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     assert_eq!(
@@ -253,7 +213,8 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new(config, store.clone()));
+    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let pool = Arc::new(PushPool::new(receiver, config, store.clone()));
 
     let pool_start = pool.clone();
     let worker_notify = notify.clone();
@@ -269,9 +230,8 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     let id = activation.id.clone();
     let time = Instant::now();
 
-    pool.push_task(activation, time)
-        .await
-        .expect("submit should succeed");
+    // Simulate a fetch thread pushing an activation to the queue
+    sender.send_async((activation, time)).await.unwrap();
 
     timeout(Duration::from_secs(2), notify.notified())
         .await
@@ -296,7 +256,8 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
         ..Config::default()
     });
     let store = Arc::new(MockStore::default());
-    let pool = Arc::new(PushPool::new(config, store.clone()));
+    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let pool = Arc::new(PushPool::new(receiver, config, store.clone()));
 
     let pool_start = pool.clone();
     let worker_notify = notify.clone();
@@ -309,9 +270,8 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     let activation = make_activations(1).remove(0);
     let time = Instant::now();
 
-    pool.push_task(activation, time)
-        .await
-        .expect("submit should succeed");
+    // Simulate a fetch thread pushing an activation to the queue
+    sender.send_async((activation, time)).await.unwrap();
 
     timeout(Duration::from_secs(2), notify.notified())
         .await

@@ -6,13 +6,16 @@ use anyhow::Result;
 use async_backtrace::framed;
 use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
+use flume::Sender;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::{PushError, TaskPusher};
+use crate::push::PushError;
+use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
 use crate::store::types::BucketRange;
+use crate::timed;
 
 /// This value should be a power of two. If it decreases, some ranges will no longer be queried.
 /// That means the pending activation query will skip tasks within these ranges.
@@ -47,24 +50,28 @@ pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) 
 }
 
 /// Wrapper around `config.fetch_threads` asynchronous tasks, each of which fetches batches of pending activations from the store, passes them to the push pool, and repeats.
-pub struct FetchPool<T: TaskPusher> {
+pub struct FetchPool {
+    /// The sending end of a channel that accepts task activations.
+    sender: Sender<(Activation, Instant)>,
+
     /// Activation store.
     store: Arc<dyn ActivationStore>,
-
-    /// Pool of push threads that push activations to the worker service.
-    pusher: Arc<T>,
 
     /// Taskbroker configuration.
     config: Arc<Config>,
 }
 
-impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
+impl FetchPool {
     /// Initialize a new fetch pool.
-    pub fn new(store: Arc<dyn ActivationStore>, config: Arc<Config>, pusher: Arc<T>) -> Self {
+    pub fn new(
+        sender: Sender<(Activation, Instant)>,
+        store: Arc<dyn ActivationStore>,
+        config: Arc<Config>,
+    ) -> Self {
         Self {
+            sender,
             store,
             config,
-            pusher,
         }
     }
 
@@ -76,7 +83,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
 
         let mut fetch_pool = crate::tokio::spawn_pool(fetch_threads, |thread_index| {
             let store = self.store.clone();
-            let pusher = self.pusher.clone();
+            let sender = self.sender.clone();
             let config = self.config.clone();
 
             let limit = Some(config.fetch_batch_size.max(1));
@@ -139,7 +146,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                             debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → claimed latency recording");
                                         }
 
-                                        match pusher.push_task(activation, start).await {
+                                        match push_task(activation, start, sender.clone(), config.clone()).await {
                                             Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
 
                                             Err(PushError::Timeout) => {
@@ -204,6 +211,29 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
         }
 
         Ok(())
+    }
+}
+
+async fn push_task(
+    activation: Activation,
+    time: Instant,
+    sender: Sender<(Activation, Instant)>,
+    config: Arc<Config>,
+) -> Result<(), PushError> {
+    metrics::gauge!("push.queue.depth").set(sender.len() as f64);
+
+    let duration = Duration::from_millis(config.push_queue_timeout_ms);
+    let timeout = tokio::time::timeout(duration, sender.send_async((activation, time)));
+
+    match timed!(timeout, "push.queue.wait_duration") {
+        // The channel was full so the send timed out
+        Err(_) => Err(PushError::Timeout),
+
+        // The channel was closed... this should never happen
+        Ok(Err(_)) => unreachable!("Push queue should NEVER be closed here!"),
+
+        // Pushed to channel successfully
+        Ok(_) => Ok(()),
     }
 }
 
