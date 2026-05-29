@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
-use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use crate::store::adapters::postgres::PostgresStore;
+use crate::store::adapters::sqlite::SqliteStore;
 use crate::store::traits::ActivationStore;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
@@ -269,28 +269,25 @@ pub fn create_config() -> Arc<Config> {
     Arc::new(Config::default())
 }
 
-/// Create an ActivationStore instance
+/// Create an InflightActivationStore instance
 pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
+    let mut config = create_integration_config();
+
     match adapter {
-        "sqlite" => Arc::new(
-            SqliteStore::new(
-                &generate_temp_filename(),
-                SqliteStoreConfig::from_config(&create_integration_config()),
-            )
-            .await
-            .unwrap(),
-        ) as Arc<dyn ActivationStore>,
-        "postgres" => {
-            let store = Arc::new(
-                PostgresStore::new(PostgresStoreConfig::from_config(
-                    &create_integration_config(),
-                ))
-                .await
-                .unwrap(),
-            ) as Arc<dyn ActivationStore>;
-            store.assign_partitions(vec![0]).unwrap();
-            store
+        "sqlite" => {
+            config.store.sqlite.path = generate_temp_filename();
+            let store = SqliteStore::new(config.store).await.unwrap();
+
+            Arc::new(store) as Arc<dyn ActivationStore>
         }
+
+        "postgres" => {
+            let store = PostgresStore::new(config.store).await.unwrap();
+            store.assign_partitions(vec![0]).unwrap();
+
+            Arc::new(store) as Arc<dyn ActivationStore>
+        }
+
         _ => panic!("Invalid adapter: {}", adapter),
     }
 }
@@ -298,59 +295,41 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
 /// Create a Config instance that uses a testing topic
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
-pub fn create_integration_config() -> Arc<Config> {
-    let config = Config {
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
-        run_migrations: true,
-        kafka_topic: "taskbroker-test".into(),
-        kafka_auto_offset_reset: "earliest".into(),
-        ..Config::default()
-    };
+pub fn create_integration_config() -> Config {
+    let mut config = Config::default();
 
-    Arc::new(config)
+    config.store.pg.host = get_pg_host();
+    config.store.pg.port = get_pg_port();
+    config.store.pg.username = get_pg_username();
+    config.store.pg.password = get_pg_password();
+    config.store.pg.database_name = get_pg_database_name();
+    config.store.pg.run_migrations = true;
+
+    config.kafka.default.topic = "taskbroker-test".into();
+    config.kafka.auto_offset_reset = "earliest".into();
+
+    config
 }
 
 /// Create a Config instance that uses SSL
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
-pub fn create_integration_config_with_ssl() -> Arc<Config> {
-    let config = Config {
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
-        pg_extra_query_params: Some("sslmode=require".to_string()),
-        run_migrations: true,
-        kafka_topic: "taskbroker-test".into(),
-        kafka_auto_offset_reset: "earliest".into(),
-        ..Config::default()
-    };
-
-    Arc::new(config)
+pub fn create_integration_config_with_ssl() -> Config {
+    let mut config = create_integration_config();
+    config.store.pg.options = "sslmode:require".to_string();
+    config
 }
 
 pub fn create_integration_config_with_topic(topic: String) -> Config {
-    Config {
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
-        run_migrations: true,
-        kafka_topic: topic,
-        kafka_auto_offset_reset: "earliest".into(),
-        ..Config::default()
-    }
+    let mut config = create_integration_config();
+    config.kafka.default.topic = topic;
+    config
 }
 
 /// Create a kafka producer for a given config
 pub fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
     let producer: FutureProducer = config
+        .kafka
         .kafka_producer_config()
         .create()
         .expect("Could not create kafka producer");
@@ -361,6 +340,7 @@ pub fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
 /// Reset a kafka topic by destroying it and recreating it.
 pub async fn reset_topic(config: Arc<Config>) {
     let admin_client: AdminClient<_> = config
+        .kafka
         .kafka_consumer_config()
         .create()
         .expect("Could not create admin client");
@@ -368,14 +348,17 @@ pub async fn reset_topic(config: Arc<Config>) {
     let options = AdminOptions::default();
     admin_client
         .delete_topics(
-            &[config.kafka_topic.as_ref(), &config.kafka_deadletter_topic],
+            &[
+                config.kafka.default.topic.as_ref(),
+                config.kafka.deadletter.topic.as_ref(),
+            ],
             &options,
         )
         .await
         .expect("Could not delete topic");
-    let new_topic = NewTopic::new(&config.kafka_topic, 1, TopicReplication::Fixed(0));
+    let new_topic = NewTopic::new(&config.kafka.default.topic, 1, TopicReplication::Fixed(0));
     let new_dlq_topic = NewTopic::new(
-        &config.kafka_deadletter_topic,
+        &config.kafka.deadletter.topic,
         1,
         TopicReplication::Fixed(0),
     );
@@ -393,6 +376,7 @@ pub async fn consume_topic(
     num_records: usize,
 ) -> Vec<TaskActivation> {
     let consumer: StreamConsumer = config
+        .kafka
         .kafka_consumer_config()
         .create()
         .expect("could not create consumer");

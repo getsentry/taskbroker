@@ -6,7 +6,6 @@ use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 use tonic::async_trait;
 
-use crate::config::Config;
 use crate::push::PushError;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
@@ -160,7 +159,7 @@ impl ActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn handle_processing_attempts(&self) -> Result<u64, Error> {
+    async fn handle_processing_attempts(&self, _max: i32) -> Result<u64, Error> {
         unimplemented!()
     }
 
@@ -218,12 +217,12 @@ impl TaskPusher for RecordingPusher {
     }
 }
 
-fn test_config() -> Arc<Config> {
-    Arc::new(Config {
-        fetch_threads: 1,
-        fetch_wait_ms: 5,
-        ..Config::default()
-    })
+fn test_config() -> FetchConfig {
+    FetchConfig {
+        threads: 1,
+        wait_ms: 5,
+        ..FetchConfig::default()
+    }
 }
 
 #[tokio::test]

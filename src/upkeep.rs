@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::SERVICE_NAME;
 use crate::config::Config;
+use crate::config::upkeep::UpkeepConfig;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::traits::ActivationStore;
 
@@ -32,7 +33,7 @@ pub async fn upkeep(
 ) -> Result<(), anyhow::Error> {
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
-    let kafka_config = config.kafka_producer_config();
+    let kafka_config = config.kafka.kafka_producer_config();
     let producer: Arc<FutureProducer> = Arc::new(
         kafka_config
             .create()
@@ -40,7 +41,7 @@ pub async fn upkeep(
     );
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-    let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
+    let mut timer = time::interval(Duration::from_millis(config.upkeep.interval_ms));
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
@@ -56,7 +57,7 @@ pub async fn upkeep(
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
                 ).await;
-                last_run = check_health(last_run, &config, health_reporter.clone()).await;
+                last_run = check_health(last_run, &config.upkeep, health_reporter.clone()).await;
 
                 if config.log_async_backtrace
                     && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
@@ -153,9 +154,11 @@ pub async fn do_upkeep(
     if let Ok(retries) = store.get_retry_activations().await {
         // Use retry topic if configured, otherwise fall back to main topic
         let retry_target_topic = config
-            .kafka_retry_topic
+            .kafka
+            .default
+            .retry_topic
             .as_ref()
-            .unwrap_or(&config.kafka_topic);
+            .unwrap_or(&config.kafka.default.topic);
 
         // 2. Append retries to kafka
         let deliveries = retries
@@ -171,7 +174,7 @@ pub async fn do_upkeep(
                     let delivery = producer
                         .send(
                             FutureRecord::<(), Vec<u8>>::to(&target_topic).payload(&serialized),
-                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                            Timeout::After(Duration::from_millis(config.kafka.send_timeout_ms)),
                         )
                         .await;
                     match delivery {
@@ -204,7 +207,7 @@ pub async fn do_upkeep(
 
     // 4. Handle processing deadlines and claim expirations
     let seconds_since_startup = (current_time - startup_time).num_seconds() as u64;
-    if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
+    if seconds_since_startup > config.upkeep.deadline_reset_skip_after_startup_sec {
         let handle_processing_deadline_start = Instant::now();
         if let Ok(processing_deadline_reset) = store.handle_processing_deadline().await {
             result_context.processing_deadline_reset = processing_deadline_reset;
@@ -215,7 +218,7 @@ pub async fn do_upkeep(
         metrics::counter!("upkeep.handle_processing_deadline.skipped").increment(1);
     }
 
-    if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
+    if seconds_since_startup > config.upkeep.deadline_reset_skip_after_startup_sec {
         let handle_claim_expiration_start = Instant::now();
 
         if let Ok(claim_expiration_reset) = store.handle_claim_expiration().await {
@@ -230,7 +233,10 @@ pub async fn do_upkeep(
 
     // 5. Handle processing attempts exceeded
     let handle_processing_attempts_exceeded_start = Instant::now();
-    if let Ok(processing_attempts_exceeded) = store.handle_processing_attempts().await {
+    if let Ok(processing_attempts_exceeded) = store
+        .handle_processing_attempts(config.upkeep.max_processing_attempts as i32)
+        .await
+    {
         result_context.processing_attempts_exceeded = processing_attempts_exceeded;
     }
     metrics::histogram!("upkeep.handle_processing_attempts_exceeded")
@@ -268,9 +274,9 @@ pub async fn do_upkeep(
                         .record(activation_data.len() as f64);
                     let delivery = producer
                         .send(
-                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
+                            FutureRecord::<(), Vec<u8>>::to(&config.kafka.deadletter.topic)
                                 .payload(&activation_data),
-                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                            Timeout::After(Duration::from_millis(config.kafka.send_timeout_ms)),
                         )
                         .await;
 
@@ -319,16 +325,16 @@ pub async fn do_upkeep(
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or(config.kafka_cluster.clone());
+        .unwrap_or(config.kafka.default.brokers.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
-        .unwrap_or(config.kafka_long_topic.clone());
-    let same_cluster = forward_cluster == config.kafka_cluster;
-    let same_topic = forward_topic == config.kafka_topic;
+        .unwrap_or(config.kafka.default.long_topic.clone());
+    let same_cluster = forward_cluster == config.kafka.default.brokers;
+    let same_topic = forward_topic == config.kafka.default.topic;
     if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
         let forward_demoted_start = Instant::now();
-        let mut forward_producer_config = config.kafka_producer_config();
+        let mut forward_producer_config = config.kafka.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
         let forward_producer: Arc<FutureProducer> = Arc::new(
             forward_producer_config
@@ -353,7 +359,7 @@ pub async fn do_upkeep(
                             .send(
                                 FutureRecord::<(), Vec<u8>>::to(&topic)
                                     .payload(&inflight.activation),
-                                Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
+                                Timeout::After(Duration::from_millis(config.kafka.send_timeout_ms)),
                             )
                             .await;
                         match delivery {
@@ -384,8 +390,8 @@ pub async fn do_upkeep(
     }
 
     // 13. Vacuum the database
-    if config.full_vacuum_on_upkeep
-        && last_vacuum.elapsed() > Duration::from_millis(config.vacuum_interval_ms)
+    if config.upkeep.full_vacuum_on_upkeep
+        && last_vacuum.elapsed() > Duration::from_millis(config.upkeep.vacuum_interval_ms)
     {
         let vacuum_start = Instant::now();
         match store.full_vacuum_db().await {
@@ -405,8 +411,8 @@ pub async fn do_upkeep(
     let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
         store.count_depths(),
         store.pending_activation_max_lag(&now),
-        fs::metadata(config.db_path.clone()),
-        fs::metadata(config.db_path.clone() + "-wal")
+        fs::metadata(config.store.sqlite.path.clone()),
+        fs::metadata(config.store.sqlite.path.clone() + "-wal")
     );
 
     if let Ok(depths) = depth_counts {
@@ -513,7 +519,7 @@ fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
 /// incrementally.
 pub async fn check_health(
     last_run: Instant,
-    config: &Config,
+    config: &UpkeepConfig,
     health_reporter: HealthReporter,
 ) -> Instant {
     let now = Instant::now();
@@ -649,10 +655,10 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
-            kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+        let mut config = create_integration_config_with_topic(format!("taskbroker-test-{adapter}"));
+        config.kafka.deadletter.topic = format!("taskbroker-test-{adapter}-dlq");
+
+        let config = Arc::new(config);
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
 
         let start_time = Utc::now();
@@ -708,7 +714,7 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert_eq!(result_context.retried, 1);
 
-        let messages = consume_topic(config.clone(), config.kafka_topic.as_ref(), 1).await;
+        let messages = consume_topic(config.clone(), config.kafka.default.topic.as_ref(), 1).await;
         assert_eq!(messages.len(), 1);
         let activation = &messages[0];
 
@@ -803,7 +809,7 @@ mod tests {
         // Simulate upkeep running in the first minute
         let start_time = Utc::now() - Duration::from_secs(50);
         let mut last_vacuum = Instant::now();
-        assert_eq!(60, config.upkeep_deadline_reset_skip_after_startup_sec);
+        assert_eq!(60, config.upkeep.deadline_reset_skip_after_startup_sec);
 
         let result_context = do_upkeep(
             config,
@@ -954,12 +960,12 @@ mod tests {
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].processing_attempts = config.max_processing_attempts as i32;
+        batch[0].processing_attempts = config.upkeep.max_processing_attempts as i32;
 
         batch[1].status = ActivationStatus::Complete;
         batch[1].added_at += Duration::from_secs(1);
 
-        batch[2].processing_attempts = config.max_processing_attempts as i32;
+        batch[2].processing_attempts = config.upkeep.max_processing_attempts as i32;
         batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(batch.clone()).await.is_ok());
@@ -999,10 +1005,10 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
-            kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+        let mut config = create_integration_config_with_topic(format!("taskbroker-test-{adapter}"));
+        config.kafka.deadletter.topic = format!("taskbroker-test-{adapter}-dlq");
+
+        let config = Arc::new(config);
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
@@ -1040,7 +1046,7 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
 
         let messages =
-            consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
+            consume_topic(config.clone(), config.kafka.deadletter.topic.as_ref(), 1).await;
         assert_eq!(messages.len(), 1);
         let activation = &messages[0];
 
@@ -1377,11 +1383,7 @@ demoted_namespaces:
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
-        let raw_config = Config {
-            full_vacuum_on_start: true,
-            ..Default::default()
-        };
-        let config = Arc::new(raw_config);
+        let config = Arc::new(Config::default());
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_test_store(adapter).await;

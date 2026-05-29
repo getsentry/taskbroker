@@ -10,7 +10,7 @@ use tokio::time::sleep;
 use tonic::async_trait;
 use tracing::{debug, info, warn};
 
-use crate::config::Config;
+use crate::config::fetch::FetchConfig;
 use crate::push::{PushError, PushPool};
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
@@ -72,12 +72,12 @@ pub struct FetchPool<T: TaskPusher> {
     pusher: Arc<T>,
 
     /// Taskbroker configuration.
-    config: Arc<Config>,
+    config: FetchConfig,
 }
 
 impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
     /// Initialize a new fetch pool.
-    pub fn new(store: Arc<dyn ActivationStore>, config: Arc<Config>, pusher: Arc<T>) -> Self {
+    pub fn new(store: Arc<dyn ActivationStore>, config: FetchConfig, pusher: Arc<T>) -> Self {
         Self {
             store,
             config,
@@ -88,15 +88,14 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
     /// Spawns one task per effective fetch thread ([`normalize_fetch_threads`]), each claiming pending work only in its bucket subrange.
     #[framed]
     pub async fn start(&self) -> Result<()> {
-        let fetch_wait_ms = self.config.fetch_wait_ms;
-        let fetch_threads = normalize_fetch_threads(self.config.fetch_threads);
+        let fetch_wait_ms = self.config.wait_ms;
+        let fetch_threads = normalize_fetch_threads(self.config.threads);
 
         let mut fetch_pool = crate::tokio::spawn_pool(fetch_threads, |thread_index| {
             let store = self.store.clone();
             let pusher = self.pusher.clone();
-            let config = self.config.clone();
 
-            let limit = Some(config.fetch_batch_size.max(1));
+            let limit = Some(self.config.batch_length.max(1));
             let bucket = Some(bucket_range_for_fetch_thread(thread_index, fetch_threads));
 
             let guard = get_shutdown_guard().shutdown_on_drop();
@@ -163,11 +162,7 @@ impl<T: TaskPusher + Send + Sync + 'static> FetchPool<T> {
                                                 metrics::counter!("fetch.submit", "result" => "timeout")
                                                     .increment(1);
 
-                                                warn!(
-                                                    task_id = %id,
-                                                    "Submit to push pool timed out after {} milliseconds",
-                                                    config.push_queue_timeout_ms
-                                                );
+                                                warn!(task_id = %id, "Submit to push pool timed out");
 
                                                 // Wait for push queue to empty
                                                 backoff = true;

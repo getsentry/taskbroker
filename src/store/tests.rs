@@ -6,22 +6,19 @@ use std::time::Duration;
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
-use sqlx::postgres::PgSslMode;
 use sqlx::{QueryBuilder, Sqlite};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
-use crate::config::Config;
+use crate::config::store::{SqliteConfig, StoreConfig};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::PostgresStoreConfig;
-use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig, create_sqlite_pool};
+use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
-    create_integration_config_with_ssl, create_test_store, generate_temp_filename,
-    generate_unique_namespace, make_activations, make_activations_with_namespace,
-    replace_retry_state,
+    create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
+    make_activations_with_namespace, replace_retry_state,
 };
 
 #[test]
@@ -65,22 +62,10 @@ fn test_activation_status_from() {
 
 #[tokio::test]
 async fn test_sqlite_create_db() {
-    assert!(
-        SqliteStore::new(
-            &generate_temp_filename(),
-            SqliteStoreConfig::from_config(&create_integration_config())
-        )
-        .await
-        .is_ok()
-    )
-}
+    let mut config = create_integration_config();
+    config.store.sqlite.path = generate_temp_filename();
 
-#[test]
-fn test_connect_opts_preserves_sslmode_query_param() {
-    let config = create_integration_config_with_ssl();
-    let opts = PostgresStoreConfig::from_config(&config).pg_connection;
-    assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
-    assert_eq!(opts.get_host(), "localhost");
+    assert!(SqliteStore::new(config.store).await.is_ok())
 }
 
 #[tokio::test]
@@ -1326,14 +1311,14 @@ async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     let mut batch = make_activations(3);
     batch[0].status = ActivationStatus::Pending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[0].processing_attempts = config.max_processing_attempts as i32;
+    batch[0].processing_attempts = config.upkeep.max_processing_attempts as i32;
 
     batch[1].status = ActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
     batch[2].status = ActivationStatus::Pending;
     batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[2].processing_attempts = config.max_processing_attempts as i32;
+    batch[2].processing_attempts = config.upkeep.max_processing_attempts as i32;
 
     assert!(store.store(batch.clone()).await.is_ok());
     assert_counts(
@@ -1346,7 +1331,9 @@ async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     )
     .await;
 
-    let count = store.handle_processing_attempts().await;
+    let count = store
+        .handle_processing_attempts(config.upkeep.max_processing_attempts as i32)
+        .await;
     assert!(count.is_ok());
     assert_eq!(count.unwrap(), 2);
     assert_counts(
@@ -1777,16 +1764,12 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
 
 #[tokio::test]
 async fn test_vacuum_db_incremental() {
-    let config = Config {
-        vacuum_page_count: Some(10),
-        ..Config::default()
-    };
-    let store = SqliteStore::new(
-        &generate_temp_filename(),
-        SqliteStoreConfig::from_config(&config),
-    )
-    .await
-    .expect("could not create store");
+    let mut config = create_integration_config();
+    config.store.sqlite.vacuum_page_count = Some(10);
+
+    let store = SqliteStore::new(config.store)
+        .await
+        .expect("could not create store");
 
     let batch = make_activations(2);
     assert!(store.store(batch).await.is_ok());
@@ -1908,19 +1891,19 @@ async fn test_db_status_calls_ok() {
     let db_path = format!("/tmp/taskbroker-dbstatus-{nanos}.sqlite");
     let url = format!("sqlite:{db_path}");
 
-    // Initialize a store to create the database and run migrations
-    SqliteStore::new(
-        &url,
-        SqliteStoreConfig {
-            max_processing_attempts: 3,
-            processing_deadline_grace_sec: 0,
-            claim_lease_ms: 5000,
+    let config = StoreConfig {
+        sqlite: SqliteConfig {
+            path: url.clone(),
+            enable_status_metrics: true,
             vacuum_page_count: None,
-            enable_sqlite_status_metrics: false,
         },
-    )
-    .await
-    .expect("store init");
+        processing_deadline_grace_sec: 0,
+        claim_lease_ms: 5000,
+        ..StoreConfig::default()
+    };
+
+    // Initialize a store to create the database and run migrations
+    SqliteStore::new(config).await.expect("store init");
 
     // Acquire a fresh read connection from a temporary pool, since store.read_pool is private
     let (read_pool, _write_pool) = create_sqlite_pool(&url).await.expect("pool");

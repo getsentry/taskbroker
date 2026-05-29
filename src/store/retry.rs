@@ -5,22 +5,7 @@ use anyhow::Error;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use crate::config::Config;
-
-/// Configuration for query-level retry behavior.
-pub struct RetryConfig {
-    pub max_retries: u32,
-    pub retry_delay: Duration,
-}
-
-impl RetryConfig {
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            max_retries: config.db_query_max_retries.unwrap_or(0),
-            retry_delay: Duration::from_millis(config.db_query_retry_delay_ms),
-        }
-    }
-}
+use crate::config::store::RetryConfig;
 
 /// Returns true if the error is a transient database/connection error
 /// that is likely to succeed on retry. Downcasts the anyhow::Error to
@@ -47,6 +32,8 @@ where
     Fut: Future<Output = Result<T, Error>>,
 {
     let mut attempt = 0u32;
+    let delay = Duration::from_millis(config.delay_ms);
+
     loop {
         match f().await {
             Ok(val) => {
@@ -64,7 +51,7 @@ where
                     "Retryable database error, retrying"
                 );
                 metrics::counter!("store.retry.attempt", "method" => label).increment(1);
-                sleep(config.retry_delay).await;
+                sleep(delay).await;
                 attempt += 1;
             }
             Err(err) => {
@@ -80,7 +67,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     fn retryable_error() -> Error {
@@ -94,7 +80,7 @@ mod tests {
     fn test_config(max_retries: u32) -> RetryConfig {
         RetryConfig {
             max_retries,
-            retry_delay: Duration::from_millis(0),
+            delay_ms: 0,
         }
     }
 
@@ -217,20 +203,5 @@ mod tests {
         assert!(!is_retryable_error(&Error::from(sqlx::Error::Protocol(
             "unexpected".into()
         ))));
-    }
-
-    #[test]
-    fn test_config_defaults_to_zero_retries() {
-        let config = RetryConfig::from_config(&Arc::new(Config::default()));
-        assert_eq!(config.max_retries, 0);
-    }
-
-    #[test]
-    fn test_config_uses_configured_retries() {
-        let config = RetryConfig::from_config(&Arc::new(Config {
-            db_query_max_retries: Some(5),
-            ..Config::default()
-        }));
-        assert_eq!(config.max_retries, 5);
     }
 }

@@ -28,12 +28,12 @@ impl ActivationWriterConfig {
     /// Convert from application configuration into ActivationWriter config.
     pub fn from_config(config: &Config) -> Self {
         Self {
-            db_max_size: config.db_max_size,
-            max_buf_len: config.db_insert_batch_max_len,
-            max_pending_activations: config.max_pending_count,
-            max_processing_activations: config.max_processing_count,
-            max_delay_activations: config.max_delay_count,
-            write_failure_backoff_ms: config.db_write_failure_backoff_ms,
+            db_max_size: config.store.max_size,
+            max_buf_len: config.store.insert_batch_length,
+            max_pending_activations: config.store.max_pending_count,
+            max_processing_activations: config.store.max_processing_count,
+            max_delay_activations: config.store.max_delay_count,
+            write_failure_backoff_ms: config.store.insert_failure_backoff_ms,
         }
     }
 }

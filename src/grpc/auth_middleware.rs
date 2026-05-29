@@ -30,7 +30,7 @@ pub struct AuthLayer {
 impl AuthLayer {
     pub fn new(config: &Config) -> Self {
         Self {
-            shared_secret: config.grpc_shared_secret.clone(),
+            shared_secret: config.secrets.clone(),
         }
     }
 }
