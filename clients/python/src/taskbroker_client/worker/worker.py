@@ -269,6 +269,8 @@ class PushTaskWorker:
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
                 WorkerServicer(self.worker_pool), server
             )
+
+            # The health service is used by the K8s readiness check
             health_servicer = health.HealthServicer()
             health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
             health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
@@ -276,8 +278,11 @@ class PushTaskWorker:
 
             server.add_insecure_port(f"[::]:{self._grpc_port}")
             server.start()
+
+            # Indicate that the server is ready
             health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
+
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
 
             try:
