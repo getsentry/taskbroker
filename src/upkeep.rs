@@ -1375,11 +1375,7 @@ demoted_namespaces:
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
-        let raw_config = Config {
-            full_vacuum_on_start: true,
-            ..Default::default()
-        };
-        let config = Arc::new(raw_config);
+        let config = Arc::new(Config::default());
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_test_store(adapter).await;

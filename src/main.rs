@@ -87,7 +87,7 @@ async fn main() -> Result<(), Error> {
         .await?;
     }
 
-    if config.full_vacuum_on_start {
+    if config.store.full_vacuum_on_start {
         info!("Running full vacuum on database");
         match store.full_vacuum_db().await {
             Ok(_) => info!("Full vacuum completed."),
@@ -126,7 +126,9 @@ async fn main() -> Result<(), Error> {
     let maintenance_task = tokio::spawn({
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
         let maintenance_store = store.clone();
-        let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
+        let mut timer = time::interval(Duration::from_millis(
+            config.store.maintenance_task_interval_ms,
+        ));
         timer.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
         async move {

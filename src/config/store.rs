@@ -119,6 +119,13 @@ pub struct StoreConfig {
     /// How long a claim is valid for. Note that this option should NOT be set by the user, but
     /// rather calculated using various configuration options. It's only here for ergonomics.
     pub claim_lease_ms: u64,
+
+    /// How often maintenance tasks (reclaiming free pages) are executed.
+    pub maintenance_task_interval_ms: u64,
+
+    /// Enable to have the application perform `VACUUM` on the database
+    /// when it starts up, but before the gRPC server, consumer, and upkeep begin.
+    pub full_vacuum_on_start: bool,
 }
 
 impl Default for StoreConfig {
@@ -137,6 +144,8 @@ impl Default for StoreConfig {
             max_processing_count: 2048,
             processing_deadline_grace_sec: 3,
             claim_lease_ms: 0, // TODO
+            maintenance_task_interval_ms: 6000,
+            full_vacuum_on_start: true,
         }
     }
 }

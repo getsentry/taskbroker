@@ -77,13 +77,6 @@ pub struct Config {
     /// We support a list of secrets to allow for key rotation.
     pub secrets: Vec<String>,
 
-    /// How often maintenance tasks (reclaiming free pages) are executed.
-    pub maintenance_task_interval_ms: u64,
-
-    /// Enable to have the application perform `VACUUM` on the database
-    /// when it starts up, but before the gRPC server, consumer, and upkeep begin.
-    pub full_vacuum_on_start: bool,
-
     /// The maximum number of seconds a task can be delayed.
     /// Tasks delayed greater than this duration are capped.
     pub max_delayed_task_allowed_sec: u64,
@@ -125,8 +118,6 @@ impl Default for Config {
             grpc_addr: "0.0.0.0".to_owned(),
             grpc_port: 50051,
             secrets: vec![],
-            maintenance_task_interval_ms: 6000,
-            full_vacuum_on_start: true,
             max_delayed_task_allowed_sec: 3600,
             delivery_mode: DeliveryMode::Pull,
             kafka: KafkaConfig::default(),
@@ -255,8 +246,6 @@ mod tests {
             grpc_addr: "127.0.0.1".to_owned(),
             grpc_port: 6000,
             secrets: vec!["secret-one".to_owned()],
-            maintenance_task_interval_ms: 3000,
-            full_vacuum_on_start: false,
             max_delayed_task_allowed_sec: 7200,
             delivery_mode: DeliveryMode::Push,
             ..Config::default()
@@ -298,6 +287,8 @@ mod tests {
             max_pending_count: 512,
             max_processing_count: 256,
             insert_batch_length: 128,
+            maintenance_task_interval_ms: 6001,
+            full_vacuum_on_start: false,
             ..StoreConfig::default()
         }
     }
@@ -405,8 +396,6 @@ mod tests {
             grpc_port: 6000
             secrets:
                 - secret-one
-            maintenance_task_interval_ms: 3000
-            full_vacuum_on_start: false
             max_delayed_task_allowed_sec: 7200
             delivery_mode: push
         "#,
@@ -427,11 +416,6 @@ mod tests {
         assert_eq!(config.grpc_addr, expected.grpc_addr);
         assert_eq!(config.grpc_port, expected.grpc_port);
         assert_eq!(config.secrets, expected.secrets);
-        assert_eq!(
-            config.maintenance_task_interval_ms,
-            expected.maintenance_task_interval_ms
-        );
-        assert_eq!(config.full_vacuum_on_start, expected.full_vacuum_on_start);
         assert_eq!(
             config.max_delayed_task_allowed_sec,
             expected.max_delayed_task_allowed_sec
@@ -463,7 +447,6 @@ mod tests {
             ("TASKBROKER_GRPC_PORT", "6000"),
             ("TASKBROKER_SECRETS", r#"["secret-one"]"#),
             ("TASKBROKER_MAINTENANCE_TASK_INTERVAL_MS", "3000"),
-            ("TASKBROKER_FULL_VACUUM_ON_START", "false"),
             ("TASKBROKER_MAX_DELAYED_TASK_ALLOWED_SEC", "7200"),
             ("TASKBROKER_DELIVERY_MODE", "push"),
         ]);
@@ -480,11 +463,6 @@ mod tests {
         assert_eq!(config.grpc_addr, expected.grpc_addr);
         assert_eq!(config.grpc_port, expected.grpc_port);
         assert_eq!(config.secrets, expected.secrets);
-        assert_eq!(
-            config.maintenance_task_interval_ms,
-            expected.maintenance_task_interval_ms
-        );
-        assert_eq!(config.full_vacuum_on_start, expected.full_vacuum_on_start);
         assert_eq!(
             config.max_delayed_task_allowed_sec,
             expected.max_delayed_task_allowed_sec
@@ -553,6 +531,8 @@ mod tests {
                 max_pending_count: 512
                 max_processing_count: 256
                 insert_batch_length: 128
+                maintenance_task_interval_ms: 6001
+                full_vacuum_on_start: false
         "#,
         );
         assert_eq!(config.store, expected_store_config());
@@ -568,6 +548,9 @@ mod tests {
             ("TASKBROKER_STORE__MAX_PENDING_COUNT", "512"),
             ("TASKBROKER_STORE__MAX_PROCESSING_COUNT", "256"),
             ("TASKBROKER_STORE__INSERT_BATCH_LENGTH", "128"),
+            ("TASKBROKER_STORE__INSERT_BATCH_LENGTH", "128"),
+            ("TASKBROKER_STORE__MAINTENANCE_TASK_INTERVAL_MS", "6001"),
+            ("TASKBROKER_STORE__FULL_VACUUM_ON_START", "false"),
         ]);
         assert_eq!(config.store, expected_store_config());
         let mut default = Config::default();
