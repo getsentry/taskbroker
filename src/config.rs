@@ -268,6 +268,10 @@ pub struct Config {
     /// If a message is bigger than this then the produce will fail.
     pub max_message_size: u64,
 
+    /// The maximum size in bytes for gRPC messages sent to workers.
+    /// Should be at least as large as max_message_size.
+    pub grpc_max_message_size: usize,
+
     /// The number of pages to vacuum from sqlite when vacuum is run.
     /// If None, all pages will be vacuumed.
     pub vacuum_page_count: Option<usize>,
@@ -420,6 +424,7 @@ impl Default for Config {
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
+            grpc_max_message_size: 10 * 1024 * 1024, // 10MB
             vacuum_page_count: None,
             full_vacuum_on_start: true,
             full_vacuum_on_upkeep: true,

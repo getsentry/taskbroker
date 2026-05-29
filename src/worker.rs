@@ -57,7 +57,12 @@ pub struct Worker {
 
 impl Worker {
     pub async fn connect(config: Arc<Config>, endpoint: String) -> Result<Self> {
-        let client = WorkerServiceClient::connect(endpoint).await?;
+        let channel = tonic::transport::Channel::from_shared(endpoint)?
+            .connect()
+            .await?;
+        let client = WorkerServiceClient::new(channel)
+            .max_encoding_message_size(config.grpc_max_message_size)
+            .max_decoding_message_size(config.grpc_max_message_size);
 
         let secrets = config.grpc_shared_secret.clone();
         let timeout = Duration::from_millis(config.push_timeout_ms);
