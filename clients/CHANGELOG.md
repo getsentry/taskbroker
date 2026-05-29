@@ -1,4 +1,10 @@
 # Changelog
+## 0.17.0
+
+### New Features ✨
+
+- (taskworker) Add Health Check Service by @george-sentry in [#656](https://github.com/getsentry/taskbroker/pull/656)
+
 ## 0.16.0
 
 ### Bug Fixes 🐛
