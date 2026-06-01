@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,13 +20,13 @@ use uuid::Uuid;
 use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::ActivationStore;
 
 /// The upkeep task that periodically performs upkeep
-/// on the inflight store
+/// on the activation store
 pub async fn upkeep(
     config: Arc<Config>,
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn ActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     health_reporter: HealthReporter,
@@ -45,6 +46,7 @@ pub async fn upkeep(
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
+    let mut emitted_partitions: HashSet<i32> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
@@ -55,6 +57,7 @@ pub async fn upkeep(
                     startup_time,
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
+                    &mut emitted_partitions,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
@@ -121,11 +124,12 @@ impl UpkeepResults {
 )]
 pub async fn do_upkeep(
     config: Arc<Config>,
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn ActivationStore>,
     producer: Arc<FutureProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
+    emitted_partitions: &mut HashSet<i32>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -403,17 +407,19 @@ pub async fn do_upkeep(
 
     let now = Utc::now();
     let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
-        store.count_depths(),
+        store.count_depths_per_partition(),
         store.pending_activation_max_lag(&now),
         fs::metadata(config.db_path.clone()),
         fs::metadata(config.db_path.clone() + "-wal")
     );
 
-    if let Ok(depths) = depth_counts {
-        result_context.pending = depths.pending as u32;
-        result_context.delay = depths.delay as u32;
-        result_context.claimed = depths.claimed as u32;
-        result_context.processing = depths.processing as u32;
+    if let Ok(ref depths) = depth_counts {
+        for counts in depths.values() {
+            result_context.pending += counts.pending as u32;
+            result_context.delay += counts.delay as u32;
+            result_context.claimed += counts.claimed as u32;
+            result_context.processing += counts.processing as u32;
+        }
     }
 
     if !result_context.empty() {
@@ -464,11 +470,37 @@ pub async fn do_upkeep(
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
-    // State of inflight tasks
-    metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
-    metrics::gauge!("upkeep.current_claimed_tasks").set(result_context.claimed);
-    metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
-    metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
+    // State of activations, tagged per partition. Dashboards aggregating
+    // without a partition filter still see the global total via tag sum.
+    // Zero out gauges for partitions we emitted last cycle but no longer own.
+    if let Ok(depths) = depth_counts {
+        let current: HashSet<i32> = depths.keys().copied().collect();
+
+        for partition in emitted_partitions.difference(&current) {
+            let partition = partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition).set(0.0);
+        }
+
+        for (partition, counts) in &depths {
+            let partition = partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+                .set(counts.pending as f64);
+            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+                .set(counts.claimed as f64);
+            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+                .set(counts.processing as f64);
+            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition)
+                .set(counts.delay as f64);
+        }
+
+        *emitted_partitions = current;
+    }
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
     if let Ok(db_file_meta) = db_file_meta {
@@ -481,7 +513,7 @@ pub async fn do_upkeep(
     result_context
 }
 
-/// Create a new activation that is a 'retry' of the passed inflight_activation
+/// Create a new activation that is a 'retry' of the passed activation
 /// The retry_state.attempts is advanced as part of the retry state machine.
 #[instrument(skip_all)]
 fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
@@ -540,6 +572,7 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
@@ -555,7 +588,7 @@ mod tests {
 
     use crate::config::Config;
     use crate::runtime_config::RuntimeConfigManager;
-    use crate::store::activation::InflightActivationStatus;
+    use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
         create_integration_config_with_topic, create_producer, create_test_store, make_activations,
@@ -687,7 +720,7 @@ mod tests {
             activation.parameters = r#"{"a":"b"}"#.into();
         }
         activation.delay = Some(30);
-        records[0].status = InflightActivationStatus::Retry;
+        records[0].status = ActivationStatus::Retry;
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
         records[0].activation = activation.encode_to_vec();
 
@@ -701,6 +734,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -750,7 +784,7 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task with a future processing deadline
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline = Some(Utc::now() + TimeDelta::minutes(5));
         assert!(store.store(batch.clone()).await.is_ok());
 
@@ -761,13 +795,14 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
         // Should retain the processing record
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Processing)
+                .count_by_status(ActivationStatus::Processing)
                 .await
                 .unwrap(),
             1
@@ -786,7 +821,7 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         assert!(store.store(batch.clone()).await.is_ok());
@@ -794,7 +829,7 @@ mod tests {
         // Should start off with one in processing
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Processing)
+                .count_by_status(ActivationStatus::Processing)
                 .await
                 .unwrap(),
             1
@@ -812,6 +847,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -842,7 +878,7 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].processing_attempts = 0;
@@ -851,14 +887,14 @@ mod tests {
         // Should start off with one in processing
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Processing)
+                .count_by_status(ActivationStatus::Processing)
                 .await
                 .unwrap(),
             1
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
@@ -871,6 +907,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -911,7 +948,7 @@ mod tests {
                 delay_on_retry: None,
             }),
         );
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].at_most_once = true;
@@ -924,6 +961,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -956,7 +994,7 @@ mod tests {
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
         batch[0].processing_attempts = config.max_processing_attempts as i32;
 
-        batch[1].status = InflightActivationStatus::Complete;
+        batch[1].status = ActivationStatus::Complete;
         batch[1].added_at += Duration::from_secs(1);
 
         batch[2].processing_attempts = config.max_processing_attempts as i32;
@@ -970,6 +1008,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -978,7 +1017,7 @@ mod tests {
         assert_eq!(result_context.completed, 3); // all three are removed as completed
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             0,
@@ -986,7 +1025,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Complete)
+                .count_by_status(ActivationStatus::Complete)
                 .await
                 .unwrap(),
             0,
@@ -1021,7 +1060,7 @@ mod tests {
                 delay_on_retry: None,
             }),
         );
-        records[0].status = InflightActivationStatus::Failure;
+        records[0].status = ActivationStatus::Failure;
         records[1].added_at += Duration::from_secs(1);
         assert!(store.store(records.clone()).await.is_ok());
 
@@ -1032,6 +1071,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1067,7 +1107,7 @@ mod tests {
         let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(2);
-        batch[0].status = InflightActivationStatus::Failure;
+        batch[0].status = ActivationStatus::Failure;
         batch[1].added_at += Duration::from_secs(1);
         assert!(store.store(batch).await.is_ok());
 
@@ -1078,6 +1118,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1090,7 +1131,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1,
@@ -1113,7 +1154,7 @@ mod tests {
         let mut batch = make_activations(4);
 
         batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
-        batch[1].status = InflightActivationStatus::Complete;
+        batch[1].status = ActivationStatus::Complete;
         batch[2].expires_at = Some(Utc::now() - Duration::from_secs(100));
 
         // Ensure the fourth task is in the future
@@ -1128,6 +1169,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1135,7 +1177,7 @@ mod tests {
         assert_eq!(result_context.completed, 1); // 1 complete
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1,
@@ -1143,7 +1185,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Complete)
+                .count_by_status(ActivationStatus::Complete)
                 .await
                 .unwrap(),
             0,
@@ -1182,23 +1224,23 @@ mod tests {
 
         let mut batch = make_activations(2);
 
-        batch[0].status = InflightActivationStatus::Delay;
+        batch[0].status = ActivationStatus::Delay;
         batch[0].delay_until = Some(Utc::now() - Duration::from_secs(1));
 
-        batch[1].status = InflightActivationStatus::Delay;
+        batch[1].status = ActivationStatus::Delay;
         batch[1].delay_until = Some(Utc::now() + Duration::from_secs(1));
 
         assert!(store.store(batch.clone()).await.is_ok());
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Delay)
+                .count_by_status(ActivationStatus::Delay)
                 .await
                 .unwrap(),
             2
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             0
@@ -1210,12 +1252,13 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
@@ -1242,12 +1285,13 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
@@ -1298,13 +1342,14 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
         assert_eq!(result_context.forwarded, 2);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             4,
@@ -1312,7 +1357,7 @@ demoted_namespaces:
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Complete)
+                .count_by_status(ActivationStatus::Complete)
                 .await
                 .unwrap(),
             2,
@@ -1359,13 +1404,14 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
         assert_eq!(result_context.killswitched, 3);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             3
@@ -1399,6 +1445,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 

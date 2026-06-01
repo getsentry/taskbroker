@@ -1,4 +1,26 @@
 # Changelog
+## 26.5.1
+
+### New Features ✨
+
+#### Taskbroker
+
+- Add kafka_consume_retry_topic config flag by @untitaker in [#646](https://github.com/getsentry/taskbroker/pull/646)
+- Implement retry support for raw topics by @untitaker in [#630](https://github.com/getsentry/taskbroker/pull/630)
+
+#### Other
+
+- (worker) Add taskworker.task.failed log for failed tasks by @s-starostin in [#635](https://github.com/getsentry/taskbroker/pull/635)
+
+### Bug Fixes 🐛
+
+- Fix pre-commit CI failures by @untitaker in [#644](https://github.com/getsentry/taskbroker/pull/644)
+- Fix taskbroker CI issues by @untitaker in [#640](https://github.com/getsentry/taskbroker/pull/640)
+
+### Other
+
+- release: 26.5.0 by @markstory in [d054115d](https://github.com/getsentry/taskbroker/commit/d054115df0a6a61c7cb1b45160a9f5d74cecb095)
+
 ## 26.5.0
 
 ### New Features ✨
@@ -87,4 +109,3 @@
 ### Other
 
 - fix(scheduler) Make schedule changes take effect immediately by @markstory in [#590](https://github.com/getsentry/taskbroker/pull/590)
-

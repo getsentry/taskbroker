@@ -25,8 +25,8 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
-use crate::store::traits::InflightActivationStore;
+use crate::store::activation::{Activation, ActivationStatus};
+use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
 
 #[derive(Debug, FromRow)]
@@ -53,10 +53,10 @@ pub struct TableRow {
     pub bucket: i16,
 }
 
-impl TryFrom<InflightActivation> for TableRow {
+impl TryFrom<Activation> for TableRow {
     type Error = anyhow::Error;
 
-    fn try_from(value: InflightActivation) -> Result<Self, Self::Error> {
+    fn try_from(value: Activation) -> Result<Self, Self::Error> {
         Ok(Self {
             id: value.id,
             activation: value.activation,
@@ -81,12 +81,12 @@ impl TryFrom<InflightActivation> for TableRow {
     }
 }
 
-impl From<TableRow> for InflightActivation {
+impl From<TableRow> for Activation {
     fn from(value: TableRow) -> Self {
         Self {
             id: value.id,
             activation: value.activation,
-            status: InflightActivationStatus::from_str(&value.status).unwrap(),
+            status: ActivationStatus::from_str(&value.status).unwrap(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -137,7 +137,7 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
     Ok((read_pool, write_pool))
 }
 
-pub struct InflightActivationStoreConfig {
+pub struct SqliteStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
     /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
@@ -146,7 +146,7 @@ pub struct InflightActivationStoreConfig {
     pub enable_sqlite_status_metrics: bool,
 }
 
-impl InflightActivationStoreConfig {
+impl SqliteStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_processing_attempts: config.max_processing_attempts,
@@ -158,14 +158,14 @@ impl InflightActivationStoreConfig {
     }
 }
 
-pub struct SqliteActivationStore {
+pub struct SqliteStore {
     read_pool: SqlitePool,
     write_pool: SqlitePool,
-    config: InflightActivationStoreConfig,
+    config: SqliteStoreConfig,
 }
 
-impl SqliteActivationStore {
-    pub async fn new(url: &str, config: InflightActivationStoreConfig) -> Result<Self, Error> {
+impl SqliteStore {
+    pub async fn new(url: &str, config: SqliteStoreConfig) -> Result<Self, Error> {
         let (read_pool, write_pool) = create_sqlite_pool(url).await?;
 
         sqlx::migrate!("./migrations/sqlite")
@@ -348,7 +348,7 @@ impl SqliteActivationStore {
 }
 
 #[async_trait]
-impl InflightActivationStore for SqliteActivationStore {
+impl ActivationStore for SqliteStore {
     /// Trigger incremental vacuum to reclaim free pages in the database.
     /// Depending on config data, will either vacuum a set number of
     /// pages or attempt to reclaim all free pages.
@@ -398,7 +398,7 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     /// Get an activation by id. Primarily used for testing
-    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error> {
+    async fn get_by_id(&self, id: &str) -> Result<Option<Activation>, Error> {
         let row_result: Option<TableRow> = sqlx::query_as(
             "
             SELECT id,
@@ -441,7 +441,7 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error> {
+    async fn store(&self, batch: Vec<Activation>) -> Result<u64, Error> {
         if batch.is_empty() {
             return Ok(0);
         }
@@ -546,7 +546,7 @@ impl InflightActivationStore for SqliteActivationStore {
         limit: Option<i32>,
         bucket: Option<BucketRange>,
         mark_processing: bool,
-    ) -> Result<Vec<InflightActivation>, Error> {
+    ) -> Result<Vec<Activation>, Error> {
         let now = Utc::now();
         let grace_period = self.config.processing_deadline_grace_sec;
 
@@ -557,18 +557,18 @@ impl InflightActivationStore for SqliteActivationStore {
                 "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
             ));
 
-            query_builder.push_bind(InflightActivationStatus::Processing);
+            query_builder.push_bind(ActivationStatus::Processing);
         } else {
             query_builder.push(format!(
                 "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
                 self.config.claim_lease_ms as f64 / 1000.0,
             ));
 
-            query_builder.push_bind(InflightActivationStatus::Claimed);
+            query_builder.push_bind(ActivationStatus::Claimed);
         }
 
         query_builder.push(" WHERE id IN (SELECT id FROM inflight_taskactivations WHERE status = ");
-        query_builder.push_bind(InflightActivationStatus::Pending);
+        query_builder.push_bind(ActivationStatus::Pending);
         query_builder.push(" AND (expires_at IS NULL OR expires_at > ");
         query_builder.push_bind(now.timestamp());
         query_builder.push(")");
@@ -623,9 +623,9 @@ impl InflightActivationStore for SqliteActivationStore {
                 claim_expires_at = NULL
             WHERE id = $2 AND status = $3",
         ))
-        .bind(InflightActivationStatus::Processing)
+        .bind(ActivationStatus::Processing)
         .bind(id)
-        .bind(InflightActivationStatus::Claimed)
+        .bind(ActivationStatus::Claimed)
         .execute(&mut *conn)
         .await?;
 
@@ -650,7 +650,7 @@ impl InflightActivationStore for SqliteActivationStore {
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
-        let result = sqlx::query(
+        let result = match sqlx::query(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
             WHERE status = $1
@@ -659,11 +659,18 @@ impl InflightActivationStore for SqliteActivationStore {
             LIMIT 1
             ",
         )
-        .bind(InflightActivationStatus::Pending)
-        .fetch_one(&self.read_pool)
-        .await;
+        .bind(ActivationStatus::Pending)
+        .fetch_optional(&self.read_pool)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                warn!("pending_activation_max_lag query failed: {e}");
+                return 0.0;
+            }
+        };
 
-        if let Ok(row) = result {
+        if let Some(row) = result {
             let received_at: DateTime<Utc> = row.get("received_at");
             let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
             let millis = now.signed_duration_since(received_at).num_milliseconds()
@@ -674,13 +681,13 @@ impl InflightActivationStore for SqliteActivationStore {
                 });
             millis as f64 / 1000.0
         } else {
-            // If we couldn't find a row, there is no latency.
+            // No pending activations means no latency
             0.0
         }
     }
 
     #[instrument(skip_all)]
-    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error> {
+    async fn count_by_status(&self, status: ActivationStatus) -> Result<usize, Error> {
         let result =
             sqlx::query("SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = $1")
                 .bind(status)
@@ -702,10 +709,10 @@ impl InflightActivationStore for SqliteActivationStore {
     async fn set_status(
         &self,
         id: &str,
-        status: InflightActivationStatus,
+        status: ActivationStatus,
         max_attempts: Option<u32>,
         delay_on_retry: Option<u64>,
-    ) -> Result<Option<InflightActivation>, Error> {
+    ) -> Result<Option<Activation>, Error> {
         let mut tx = self.begin_write_tx_metric("set_status").await?;
 
         let result: Option<TableRow> = sqlx::query_as(
@@ -762,7 +769,7 @@ impl InflightActivationStore for SqliteActivationStore {
     async fn set_status_batch(
         &self,
         ids: &[String],
-        status: InflightActivationStatus,
+        status: ActivationStatus,
     ) -> Result<u64, Error> {
         if ids.is_empty() {
             return Ok(0);
@@ -817,7 +824,7 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     #[instrument(skip_all)]
-    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error> {
+    async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error> {
         Ok(sqlx::query_as(
             "
             SELECT id,
@@ -843,7 +850,7 @@ impl InflightActivationStore for SqliteActivationStore {
             WHERE status = $1
             ",
         )
-        .bind(InflightActivationStatus::Retry)
+        .bind(ActivationStatus::Retry)
         .fetch_all(&self.read_pool)
         .await?
         .into_iter()
@@ -875,9 +882,9 @@ impl InflightActivationStore for SqliteActivationStore {
                  AND claim_expires_at < $2
                  AND status = $3",
         )
-        .bind(InflightActivationStatus::Pending)
+        .bind(ActivationStatus::Pending)
         .bind(now.timestamp())
-        .bind(InflightActivationStatus::Claimed)
+        .bind(ActivationStatus::Claimed)
         .execute(&mut *conn)
         .await?;
 
@@ -899,9 +906,9 @@ impl InflightActivationStore for SqliteActivationStore {
             SET processing_deadline = null, status = $1
             WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
         )
-        .bind(InflightActivationStatus::Failure)
+        .bind(ActivationStatus::Failure)
         .bind(now.timestamp())
-        .bind(InflightActivationStatus::Processing)
+        .bind(ActivationStatus::Processing)
         .execute(&mut *atomic)
         .await;
 
@@ -917,9 +924,9 @@ impl InflightActivationStore for SqliteActivationStore {
             SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
             WHERE processing_deadline < $2 AND status = $3",
         )
-        .bind(InflightActivationStatus::Pending)
+        .bind(ActivationStatus::Pending)
         .bind(now.timestamp())
-        .bind(InflightActivationStatus::Processing)
+        .bind(ActivationStatus::Processing)
         .execute(&mut *atomic)
         .await;
 
@@ -945,9 +952,9 @@ impl InflightActivationStore for SqliteActivationStore {
             SET status = $1
             WHERE processing_attempts >= $2 AND status = $3",
         )
-        .bind(InflightActivationStatus::Failure)
+        .bind(ActivationStatus::Failure)
         .bind(self.config.max_processing_attempts as i32)
-        .bind(InflightActivationStatus::Pending)
+        .bind(ActivationStatus::Pending)
         .execute(&mut *conn)
         .await;
 
@@ -971,7 +978,7 @@ impl InflightActivationStore for SqliteActivationStore {
         let query = sqlx::query(
             "DELETE FROM inflight_taskactivations WHERE status = $1 AND expires_at IS NOT NULL AND expires_at < $2",
         )
-        .bind(InflightActivationStatus::Pending)
+        .bind(ActivationStatus::Pending)
         .bind(now.timestamp())
         .execute(&mut *conn)
         .await?;
@@ -995,9 +1002,9 @@ impl InflightActivationStore for SqliteActivationStore {
             WHERE delay_until IS NOT NULL AND delay_until < $2 AND status = $3
             "#,
         )
-        .bind(InflightActivationStatus::Pending)
+        .bind(ActivationStatus::Pending)
         .bind(now.timestamp())
-        .bind(InflightActivationStatus::Delay)
+        .bind(ActivationStatus::Delay)
         .execute(&mut *conn)
         .await?;
 
@@ -1016,7 +1023,7 @@ impl InflightActivationStore for SqliteActivationStore {
 
         let failed_tasks: Vec<SqliteRow> =
             sqlx::query("SELECT id, activation, on_attempts_exceeded FROM inflight_taskactivations WHERE status = $1")
-                .bind(InflightActivationStatus::Failure)
+                .bind(ActivationStatus::Failure)
                 .fetch_all(&mut *atomic)
                 .await?
                 .into_iter()
@@ -1048,7 +1055,7 @@ impl InflightActivationStore for SqliteActivationStore {
             let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
             query_builder
                 .push("SET status = ")
-                .push_bind(InflightActivationStatus::Complete)
+                .push_bind(ActivationStatus::Complete)
                 .push(" WHERE id IN (");
 
             let mut separated = query_builder.separated(", ");
@@ -1071,7 +1078,7 @@ impl InflightActivationStore for SqliteActivationStore {
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
         query_builder
             .push("SET status = ")
-            .push_bind(InflightActivationStatus::Complete)
+            .push_bind(ActivationStatus::Complete)
             .push(" WHERE id IN (");
 
         let mut separated = query_builder.separated(", ");
@@ -1086,12 +1093,12 @@ impl InflightActivationStore for SqliteActivationStore {
     }
 
     /// Remove completed tasks.
-    /// This method is a garbage collector for the inflight task store.
+    /// This method is a garbage collector for the activation store.
     #[instrument(skip_all)]
     async fn remove_completed(&self) -> Result<u64, Error> {
         let mut conn = self.acquire_write_conn_metric("remove_completed").await?;
         let query = sqlx::query("DELETE FROM inflight_taskactivations WHERE status = $1")
-            .bind(InflightActivationStatus::Complete)
+            .bind(ActivationStatus::Complete)
             .execute(&mut *conn)
             .await?;
 

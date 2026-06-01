@@ -1,17 +1,19 @@
+use std::collections::HashMap;
+
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::join;
 use tracing::warn;
 
-use crate::store::activation::{InflightActivation, InflightActivationStatus};
+use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
 #[async_trait]
-pub trait InflightActivationStore: Send + Sync {
+pub trait ActivationStore: Send + Sync {
     /// CONSUMER OPERATIONS
     /// Store a batch of activations
-    async fn store(&self, batch: Vec<InflightActivation>) -> Result<u64, Error>;
+    async fn store(&self, batch: Vec<Activation>) -> Result<u64, Error>;
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
 
@@ -25,14 +27,14 @@ pub trait InflightActivationStore: Send + Sync {
         limit: Option<i32>,
         bucket: Option<BucketRange>,
         mark_processing: bool,
-    ) -> Result<Vec<InflightActivation>, Error>;
+    ) -> Result<Vec<Activation>, Error>;
 
     /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
     async fn claim_activations_for_push(
         &self,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-    ) -> Result<Vec<InflightActivation>, Error> {
+    ) -> Result<Vec<Activation>, Error> {
         self.claim_activations(None, None, limit, bucket, false)
             .await
     }
@@ -42,7 +44,7 @@ pub trait InflightActivationStore: Send + Sync {
         &self,
         application: Option<&str>,
         namespace: Option<&str>,
-    ) -> Result<Option<InflightActivation>, Error> {
+    ) -> Result<Option<Activation>, Error> {
         // Convert single namespace to vector for internal use
         let namespaces = namespace.map(|ns| vec![ns.to_string()]);
 
@@ -76,16 +78,16 @@ pub trait InflightActivationStore: Send + Sync {
     async fn set_status(
         &self,
         id: &str,
-        status: InflightActivationStatus,
+        status: ActivationStatus,
         max_attempts: Option<u32>,
         delay_on_retry: Option<u64>,
-    ) -> Result<Option<InflightActivation>, Error>;
+    ) -> Result<Option<Activation>, Error>;
 
     /// Update the status of multiple activations in one batch.
     async fn set_status_batch(
         &self,
         ids: &[String],
-        status: InflightActivationStatus,
+        status: ActivationStatus,
     ) -> Result<u64, Error>;
 
     /// COUNT OPERATIONS
@@ -94,28 +96,27 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// Count activations with Pending status
     async fn count_pending_activations(&self) -> Result<usize, Error> {
-        self.count_by_status(InflightActivationStatus::Pending)
-            .await
+        self.count_by_status(ActivationStatus::Pending).await
     }
 
     /// Count activations by status
-    async fn count_by_status(&self, status: InflightActivationStatus) -> Result<usize, Error>;
+    async fn count_by_status(&self, status: ActivationStatus) -> Result<usize, Error>;
 
     /// Count all activations
     async fn count(&self) -> Result<usize, Error>;
 
     /// ACTIVATION OPERATIONS
     /// Get an activation by id
-    async fn get_by_id(&self, id: &str) -> Result<Option<InflightActivation>, Error>;
+    async fn get_by_id(&self, id: &str) -> Result<Option<Activation>, Error>;
 
     /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
     /// Default implementation uses separate calls, but stores may override with a single query.
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
         let (pending, delay, claimed, processing) = join!(
-            self.count_by_status(InflightActivationStatus::Pending),
-            self.count_by_status(InflightActivationStatus::Delay),
-            self.count_by_status(InflightActivationStatus::Claimed),
-            self.count_by_status(InflightActivationStatus::Processing),
+            self.count_by_status(ActivationStatus::Pending),
+            self.count_by_status(ActivationStatus::Delay),
+            self.count_by_status(ActivationStatus::Claimed),
+            self.count_by_status(ActivationStatus::Processing),
         );
 
         Ok(DepthCounts {
@@ -124,6 +125,14 @@ pub trait InflightActivationStore: Send + Sync {
             claimed: claimed?,
             processing: processing?,
         })
+    }
+
+    /// Queue depths grouped by partition for upkeep gauges. The default
+    /// implementation returns the flat total under sentinel partition -1 for
+    /// stores that aren't partition-aware.
+    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
+        let total = self.count_depths().await?;
+        Ok(HashMap::from([(-1, total)]))
     }
 
     /// Set the processing deadline for a specific activation
@@ -148,7 +157,7 @@ pub trait InflightActivationStore: Send + Sync {
 
     /// UPKEEP OPERATIONS
     /// Get all activations with status Retry
-    async fn get_retry_activations(&self) -> Result<Vec<InflightActivation>, Error>;
+    async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error>;
 
     /// Revert expired push claims back to pending status.
     async fn handle_claim_expiration(&self) -> Result<u64, Error>;

@@ -14,6 +14,7 @@ pub mod store;
 pub mod test_utils;
 pub mod tokio;
 pub mod upkeep;
+pub mod worker;
 
 /// Name of the grpc service.
 /// Using the service type to get a name wasn't working across modules.
@@ -29,4 +30,14 @@ pub struct Args {
     /// Path to the configuration file
     #[arg(short, long, help = "The path to a config file")]
     pub config: Option<String>,
+}
+
+#[macro_export]
+macro_rules! timed {
+    ($future:expr, $($histogram_args:tt)+) => {{
+        let start = ::std::time::Instant::now();
+        let result = $future.await;
+        ::metrics::histogram!($($histogram_args)+).record(start.elapsed());
+        result
+    }};
 }

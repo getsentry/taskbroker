@@ -248,8 +248,7 @@ def test_upkeep_retry() -> None:
     kafka_deadletter_topic = "taskworker-dlq"
     curr_time = int(time.time())
 
-    print(
-        f"""
+    print(f"""
 Running test with the following configuration:
         num of messages: {num_messages},
         attempts per task: {retries_per_task},
@@ -257,8 +256,7 @@ Running test with the following configuration:
         num of workers: {num_workers},
         max pending count: {max_pending_count},
         topic name: {topic_name}
-    """
-    )
+    """)
 
     create_topic(topic_name, num_partitions)
 

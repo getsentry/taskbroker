@@ -199,8 +199,7 @@ def test_upkeep_delay() -> None:
     min_delay = 20
     max_delay = 40
 
-    print(
-        f"""
+    print(f"""
 Running test with the following configuration:
         num of messages: {num_messages},
         num of partitions: {num_partitions},
@@ -208,8 +207,7 @@ Running test with the following configuration:
         topic name: {topic_name},
         dlq topic name: {dlq_topic_name},
         delay range: {min_delay} - {max_delay}
-    """
-    )
+    """)
 
     create_topic(topic_name, num_partitions)
 

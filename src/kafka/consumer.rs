@@ -28,12 +28,12 @@ use anyhow::{Error, anyhow};
 use futures::{Stream, StreamExt, future, pin_mut};
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::store::traits::InflightActivationStore;
+use crate::store::traits::ActivationStore;
 
 pub async fn start_consumer(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
-    activation_store: Arc<dyn InflightActivationStore>,
+    activation_store: Arc<dyn ActivationStore>,
     spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,
         &BTreeSet<(String, i32)>,
@@ -331,7 +331,7 @@ enum ConsumerState {
 pub async fn handle_events(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     events: UnboundedReceiver<(Event, SyncSender<()>)>,
-    activation_store: Arc<dyn InflightActivationStore>,
+    activation_store: Arc<dyn ActivationStore>,
     shutdown_client: oneshot::Sender<()>,
     mut spawn_actors: impl FnMut(
         Arc<StreamConsumer<KafkaContext>>,

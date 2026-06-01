@@ -41,6 +41,8 @@ _RPC_SIGNATURE_AUTH_TLS = threading.local()
 MAX_ACTIVATION_SIZE = 1024 * 1024 * 10
 """Max payload size we will process."""
 
+GRPC_HEALTH_CHECK_METHOD = "/grpc.health.v1.Health/Check"
+
 
 def make_broker_hosts(
     host_prefix: str,
@@ -197,6 +199,9 @@ class RequestSignatureServerInterceptor(ServerInterceptor):
     ) -> Any:
         handler = continuation(handler_call_details)
         if handler is None or not self._secrets:
+            return handler
+
+        if handler_call_details.method == GRPC_HEALTH_CHECK_METHOD:
             return handler
 
         if handler.request_streaming or handler.response_streaming or handler.unary_unary is None:

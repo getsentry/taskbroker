@@ -10,7 +10,7 @@ use rdkafka::util::Timeout;
 
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
-use crate::store::activation::InflightActivation;
+use crate::store::activation::Activation;
 
 use super::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
@@ -44,8 +44,8 @@ impl ActivationBatcherConfig {
     }
 }
 
-pub struct InflightActivationBatcher {
-    batch: Vec<InflightActivation>,
+pub struct ActivationBatcher {
+    batch: Vec<Activation>,
     batch_size: usize,
     forward_batch: Vec<Vec<u8>>, // payload
     config: ActivationBatcherConfig,
@@ -54,7 +54,7 @@ pub struct InflightActivationBatcher {
     producer_cluster: String,
 }
 
-impl InflightActivationBatcher {
+impl ActivationBatcher {
     pub fn new(
         config: ActivationBatcherConfig,
         runtime_config_manager: Arc<RuntimeConfigManager>,
@@ -63,7 +63,7 @@ impl InflightActivationBatcher {
             config
                 .producer_config
                 .create()
-                .expect("Could not create kafka producer in inflight activation batcher"),
+                .expect("Could not create kafka producer in activation batcher"),
         );
         let producer_cluster = config
             .producer_config
@@ -82,10 +82,10 @@ impl InflightActivationBatcher {
     }
 }
 
-impl Reducer for InflightActivationBatcher {
-    type Input = InflightActivation;
+impl Reducer for ActivationBatcher {
+    type Input = Activation;
 
-    type Output = Vec<InflightActivation>;
+    type Output = Vec<Activation>;
 
     async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
         let runtime_config = self.runtime_config_manager.read().await;
@@ -156,7 +156,7 @@ impl Reducer for InflightActivationBatcher {
                 self.producer = Arc::new(
                     new_config
                         .create()
-                        .expect("Could not create kafka producer in inflight activation batcher"),
+                        .expect("Could not create kafka producer in activation batcher"),
                 );
                 self.producer_cluster = forward_cluster;
             }
@@ -219,11 +219,11 @@ mod tests {
     use chrono::Utc;
     use tempfile::NamedTempFile;
 
-    use crate::store::activation::InflightActivationBuilder;
+    use crate::store::activation::ActivationBuilder;
     use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
 
     use super::{
-        ActivationBatcherConfig, Config, InflightActivationBatcher, Reducer, RuntimeConfigManager,
+        ActivationBatcher, ActivationBatcherConfig, Config, Reducer, RuntimeConfigManager,
     };
 
     #[tokio::test]
@@ -242,20 +242,20 @@ demoted_namespaces:
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
         let config = Arc::new(Config::default());
-        let mut batcher = InflightActivationBatcher::new(
+        let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace(&namespace)
             .build(TaskActivationBuilder::new());
 
-        batcher.reduce(inflight_activation_0).await.unwrap();
+        batcher.reduce(activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
     }
 
@@ -263,21 +263,21 @@ demoted_namespaces:
     async fn test_drop_task_due_to_expiry() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let config = Arc::new(Config::default());
-        let mut batcher = InflightActivationBatcher::new(
+        let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace(&namespace)
             .expires_at(Utc::now())
             .build(TaskActivationBuilder::new());
 
-        batcher.reduce(inflight_activation_0).await.unwrap();
+        batcher.reduce(activation_0).await.unwrap();
         assert_eq!(batcher.batch.len(), 0);
     }
 
@@ -290,20 +290,20 @@ demoted_namespaces:
             ..Default::default()
         });
 
-        let mut batcher = InflightActivationBatcher::new(
+        let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("taskname")
             .namespace(&namespace)
             .build(TaskActivationBuilder::new());
 
-        batcher.reduce(inflight_activation_0).await.unwrap();
+        batcher.reduce(activation_0).await.unwrap();
         assert!(batcher.is_full().await);
         batcher.flush().await.unwrap();
         assert!(!batcher.is_full().await)
@@ -318,27 +318,27 @@ demoted_namespaces:
             ..Default::default()
         });
 
-        let mut batcher = InflightActivationBatcher::new(
+        let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
 
         let namespace = generate_unique_namespace();
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("taskname")
             .namespace(&namespace)
             .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivationBuilder::new()
+        let activation_1 = ActivationBuilder::new()
             .id("1")
             .taskname("taskname")
             .namespace(&namespace)
             .build(TaskActivationBuilder::new());
 
-        batcher.reduce(inflight_activation_0).await.unwrap();
-        batcher.reduce(inflight_activation_1).await.unwrap();
+        batcher.reduce(activation_0).await.unwrap();
+        batcher.reduce(activation_1).await.unwrap();
         assert!(batcher.is_full().await);
         batcher.flush().await.unwrap();
         assert!(!batcher.is_full().await)
@@ -362,27 +362,27 @@ demoted_topic: taskworker-demoted"#;
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
         let config = Arc::new(Config::default());
-        let mut batcher = InflightActivationBatcher::new(
+        let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
 
         assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
 
-        let inflight_activation_0 = InflightActivationBuilder::new()
+        let activation_0 = ActivationBuilder::new()
             .id("0")
             .taskname("task_to_be_filtered")
             .namespace("bad_namespace")
             .build(TaskActivationBuilder::new());
 
-        let inflight_activation_1 = InflightActivationBuilder::new()
+        let activation_1 = ActivationBuilder::new()
             .id("1")
             .taskname("good_task")
             .namespace("good_namespace")
             .build(TaskActivationBuilder::new());
 
-        batcher.reduce(inflight_activation_0).await.unwrap();
-        batcher.reduce(inflight_activation_1).await.unwrap();
+        batcher.reduce(activation_0).await.unwrap();
+        batcher.reduce(activation_1).await.unwrap();
 
         assert_eq!(batcher.batch.len(), 1);
         assert_eq!(batcher.forward_batch.len(), 1);

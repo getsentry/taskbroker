@@ -134,6 +134,12 @@ pub struct Config {
     /// Required for raw_mode where the main topic has other consumers.
     pub kafka_retry_topic: Option<String>,
 
+    /// Whether to consume from the retry topic.
+    /// When false (default), this taskbroker only produces to the retry topic
+    /// but does not consume from it, allowing the retry topic to be shared
+    /// across multiple taskbroker instances.
+    pub kafka_consume_retry_topic: bool,
+
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
 
@@ -149,7 +155,7 @@ pub struct Config {
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
-    /// The database adapter to use for the inflight activation store.
+    /// The database adapter to use for the activation store.
     pub database_adapter: DatabaseAdapter,
 
     /// Whether to run the migrations on the database.
@@ -157,19 +163,19 @@ pub struct Config {
     /// in production the migrations shouldn't be run by the taskbroker.
     pub run_migrations: bool,
 
-    /// The host of the postgres database to use for the inflight activation store.
+    /// The host of the postgres database to use for the activation store.
     pub pg_host: String,
 
-    /// The port of the postgres database to use for the inflight activation store.
+    /// The port of the postgres database to use for the activation store.
     pub pg_port: u16,
 
-    /// The username of the postgres database to use for the inflight activation store.
+    /// The username of the postgres database to use for the activation store.
     pub pg_username: String,
 
-    /// The password of the postgres database to use for the inflight activation store.
+    /// The password of the postgres database to use for the activation store.
     pub pg_password: String,
 
-    /// The name of the postgres database to use for the inflight activation store.
+    /// The name of the postgres database to use for the activation store.
     pub pg_database_name: String,
 
     /// The default postgres database to use for migrations..
@@ -185,16 +191,23 @@ pub struct Config {
     /// The amount of time to wait before retrying writes to db when write fails.
     pub db_write_failure_backoff_ms: u64,
 
+    /// The maximum number of times to retry a transient database query error
+    /// before surfacing the error. When None, queries are not retried.
+    pub db_query_max_retries: Option<u32>,
+
+    /// The delay in milliseconds between query retry attempts.
+    pub db_query_retry_delay_ms: u64,
+
     /// The maximum number of tasks that are buffered
-    /// before being written to InflightTaskStore (sqlite).
+    /// before being written to ActivationStore (sqlite).
     pub db_insert_batch_max_len: usize,
 
     /// The maximum number of bytes that are buffered
-    /// before being written to InflightTaskStore (sqlite).
+    /// before being written to ActivationStore (sqlite).
     pub db_insert_batch_max_size: usize,
 
     /// The time in milliseconds to buffer tasks
-    /// before being written to InflightTaskStore (sqlite).
+    /// before being written to ActivationStore (sqlite).
     pub db_insert_batch_max_time_ms: u64,
 
     /// The maximum size of the sqlite database in bytes.
@@ -206,15 +219,15 @@ pub struct Config {
     pub runtime_config_path: Option<String>,
 
     /// The maximum number of pending records that can be
-    /// in the InflightTaskStore (sqlite)
+    /// in the ActivationStore (sqlite)
     pub max_pending_count: usize,
 
     /// The maximum number of delay records that can be
-    /// in the InflightTaskStore (sqlite)
+    /// in the ActivationStore (sqlite)
     pub max_delay_count: usize,
 
     /// The maximum number of processing records that can be
-    /// in the InflightTaskStore (sqlite)
+    /// in the ActivationStore (sqlite)
     pub max_processing_count: usize,
 
     /// The maximum number of times a task can be reset from
@@ -254,6 +267,10 @@ pub struct Config {
     /// The maximum number of bytes allowed for a message on the Kafka producer.
     /// If a message is bigger than this then the produce will fail.
     pub max_message_size: u64,
+
+    /// The maximum size in bytes for gRPC messages sent to workers.
+    /// Should be at least as large as max_message_size.
+    pub grpc_max_message_size: usize,
 
     /// The number of pages to vacuum from sqlite when vacuum is run.
     /// If None, all pages will be vacuumed.
@@ -313,12 +330,6 @@ pub struct Config {
     /// Maximum milliseconds to wait before flushing a batch of status updates.
     pub status_update_interval_ms: u64,
 
-    /// The hostname used to construct `callback_url` for task push requests.
-    pub callback_addr: String,
-
-    /// The port used to construct `callback_url` for task push requests.
-    pub callback_port: u32,
-
     /// Maps every application to its worker endpoint, both represented as strings.
     pub worker_map: BTreeMap<String, String>,
 
@@ -377,6 +388,7 @@ impl Default for Config {
             kafka_deadletter_ssl_certificate_location: None,
             kafka_deadletter_ssl_key_location: None,
             kafka_retry_topic: None,
+            kafka_consume_retry_topic: false,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
@@ -393,6 +405,8 @@ impl Default for Config {
             pg_default_database_name: "postgres".to_owned(),
             pg_extra_query_params: None,
             db_write_failure_backoff_ms: 4000,
+            db_query_max_retries: None,
+            db_query_retry_delay_ms: 100,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
             db_insert_batch_max_time_ms: 1000,
@@ -410,6 +424,7 @@ impl Default for Config {
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
+            grpc_max_message_size: 10 * 1024 * 1024, // 10MB
             vacuum_page_count: None,
             full_vacuum_on_start: true,
             full_vacuum_on_upkeep: true,
@@ -427,8 +442,6 @@ impl Default for Config {
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
-            callback_addr: "0.0.0.0".into(),
-            callback_port: 50051,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
             raw_mode: false,
             raw_namespace: None,
@@ -919,50 +932,6 @@ mod tests {
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.delivery_mode, DeliveryMode::Push);
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_default_push_callback_fields() {
-        let config = Config::default();
-        assert_eq!(config.callback_addr, "0.0.0.0");
-        assert_eq!(config.callback_port, 50051);
-    }
-
-    #[test]
-    fn test_from_args_push_callback_fields_from_env() {
-        Jail::expect_with(|jail| {
-            jail.set_env("TASKBROKER_CALLBACK_ADDR", "127.0.0.1");
-            jail.set_env("TASKBROKER_CALLBACK_PORT", "51000");
-
-            let args = Args { config: None };
-            let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.callback_addr, "127.0.0.1");
-            assert_eq!(config.callback_port, 51000);
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_from_args_push_callback_fields_from_config_file() {
-        Jail::expect_with(|jail| {
-            jail.create_file(
-                "config.yaml",
-                r#"
-                callback_addr: 10.0.0.1
-                callback_port: 52000
-            "#,
-            )?;
-
-            let args = Args {
-                config: Some("config.yaml".to_owned()),
-            };
-            let config = Config::from_args(&args).unwrap();
-            assert_eq!(config.callback_addr, "10.0.0.1");
-            assert_eq!(config.callback_port, 52000);
 
             Ok(())
         });

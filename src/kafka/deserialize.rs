@@ -5,7 +5,7 @@ use rdkafka::Message;
 use rdkafka::message::OwnedMessage;
 
 use crate::config::Config;
-use crate::store::activation::InflightActivation;
+use crate::store::activation::Activation;
 
 use super::deserialize_activation::{self, DeserializeActivationConfig};
 use super::deserialize_raw::{self, RawConfig};
@@ -31,9 +31,7 @@ impl DeserializeConfig {
 /// In raw mode, raw Kafka bytes are wrapped into a TaskActivation.
 /// In normal mode, Kafka messages are expected to contain encoded TaskActivation protos.
 /// Messages from the retry topic are always deserialized as activations.
-pub fn new(
-    config: DeserializeConfig,
-) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
+pub fn new(config: DeserializeConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation, Error> {
     let raw_deserializer = config.raw_config.map(deserialize_raw::new);
     let activation_deserializer = deserialize_activation::new(config.activation_config);
     let retry_topic = config.retry_topic;

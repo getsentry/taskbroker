@@ -1,4 +1,22 @@
 # Changelog
+## 0.17.1
+
+### Bug Fixes 🐛
+
+- (grpc) Increase max message size to 10MB by @untitaker in [#658](https://github.com/getsentry/taskbroker/pull/658)
+
+## 0.17.0
+
+### New Features ✨
+
+- (taskworker) Add Health Check Service by @george-sentry in [#656](https://github.com/getsentry/taskbroker/pull/656)
+
+## 0.16.0
+
+### Bug Fixes 🐛
+
+- Update to latest sentry-protos version by @untitaker in [#651](https://github.com/getsentry/taskbroker/pull/651)
+
 ## 0.1.15
 
 ### New Features ✨

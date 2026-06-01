@@ -29,8 +29,10 @@ from taskbroker_client.constants import DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUC
 from taskbroker_client.metrics import NoOpMetricsBackend
 from taskbroker_client.types import ProcessingResult
 from taskbroker_client.worker.client import (
+    GRPC_HEALTH_CHECK_METHOD,
     HealthCheckSettings,
     HostTemporarilyUnavailable,
+    RequestSignatureServerInterceptor,
     TaskbrokerClient,
     grpc_metadata_get,
     make_broker_hosts,
@@ -378,6 +380,18 @@ def test_parse_rpc_secret_list() -> None:
 
     # Correctly parse a valid list of strings
     assert parse_rpc_secret_list('["a","b"]') == ["a", "b"]
+
+
+def test_request_signature_server_interceptor_skips_grpc_health_check() -> None:
+    handler = grpc.unary_unary_rpc_method_handler(
+        lambda request, context: None,
+        request_deserializer=lambda body: body,
+        response_serializer=lambda response: b"",
+    )
+    handler_call_details = Mock(method=GRPC_HEALTH_CHECK_METHOD, invocation_metadata=())
+    interceptor = RequestSignatureServerInterceptor(["secret"])
+
+    assert interceptor.intercept_service(lambda _: handler, handler_call_details) is handler
 
 
 def test_get_task_with_namespace() -> None:
