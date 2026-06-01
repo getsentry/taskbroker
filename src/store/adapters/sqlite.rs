@@ -545,14 +545,14 @@ impl ActivationStore for SqliteStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_activation_processing: bool,
+        mark_processing: bool,
     ) -> Result<Vec<Activation>, Error> {
         let now = Utc::now();
         let grace_period = self.config.processing_deadline_grace_sec;
 
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
 
-        if mark_activation_processing {
+        if mark_processing {
             query_builder.push(format!(
                 "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
             ));

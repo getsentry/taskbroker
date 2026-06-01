@@ -444,7 +444,7 @@ impl ActivationStore for PostgresStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_activation_processing: bool,
+        mark_processing: bool,
     ) -> Result<Vec<Activation>, Error> {
         let grace_period = self.config.processing_deadline_grace_sec;
         let claim_lease_ms = self.config.claim_lease_ms as i64;
@@ -496,7 +496,7 @@ impl ActivationStore for PostgresStore {
             }
             query_builder.push(" FOR UPDATE SKIP LOCKED)");
 
-            if mark_activation_processing {
+            if mark_processing {
                 query_builder.push(format!(
                     "UPDATE inflight_taskactivations
                      SET processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),

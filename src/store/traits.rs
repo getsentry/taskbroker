@@ -24,7 +24,7 @@ pub trait ActivationStore: Send + Sync {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_activation_processing: bool,
+        mark_processing: bool,
     ) -> Result<Vec<Activation>, Error>;
 
     /// Claims `limit` activations within the `bucket` range. Push mode uses status `Claimed` until `mark_activation_processing` moves to `Processing`.
