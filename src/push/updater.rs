@@ -180,6 +180,8 @@ impl Updater for LazyUpdater {
                         error = ?e,
                         "Failed to flush claimed → processing updates (full buffer)"
                     );
+
+                    return Err(e);
                 }
             }
         }
