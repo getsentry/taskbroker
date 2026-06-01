@@ -78,7 +78,7 @@ impl ActivationStore for MockStore {
         _namespaces: Option<&[String]>,
         _limit: Option<i32>,
         _bucket: Option<BucketRange>,
-        mark_processing: bool,
+        mark_activation_processing: bool,
     ) -> Result<Vec<Activation>, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
@@ -86,7 +86,7 @@ impl ActivationStore for MockStore {
 
         Ok(match self.pending.lock().await.take() {
             Some(mut a) => {
-                a.status = if mark_processing {
+                a.status = if mark_activation_processing {
                     ActivationStatus::Processing
                 } else {
                     ActivationStatus::Claimed
@@ -97,7 +97,7 @@ impl ActivationStore for MockStore {
         })
     }
 
-    async fn mark_processing(&self, _id: &str) -> Result<(), Error> {
+    async fn mark_activation_processing(&self, _id: &str) -> Result<(), Error> {
         Ok(())
     }
 

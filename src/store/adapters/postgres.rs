@@ -444,7 +444,7 @@ impl ActivationStore for PostgresStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_processing: bool,
+        mark_activation_processing: bool,
     ) -> Result<Vec<Activation>, Error> {
         let grace_period = self.config.processing_deadline_grace_sec;
         let claim_lease_ms = self.config.claim_lease_ms as i64;
@@ -496,7 +496,7 @@ impl ActivationStore for PostgresStore {
             }
             query_builder.push(" FOR UPDATE SKIP LOCKED)");
 
-            if mark_processing {
+            if mark_activation_processing {
                 query_builder.push(format!(
                     "UPDATE inflight_taskactivations
                      SET processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
@@ -533,15 +533,15 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn mark_processing(&self, id: &str) -> Result<(), Error> {
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
         let grace_period = self.config.processing_deadline_grace_sec;
 
         retry_query(
             &self.config.retry_config,
-            "mark_processing",
+            "mark_activation_processing",
             || async {
                 let mut conn = self
-                    .acquire_write_conn_metric("mark_processing")
+                    .acquire_write_conn_metric("mark_activation_processing")
                     .await?;
 
                 let result = sqlx::query(&format!(
@@ -558,7 +558,7 @@ impl ActivationStore for PostgresStore {
                 .await?;
 
                 if result.rows_affected() == 0 {
-                    metrics::counter!("push.mark_processing", "result" => "not_found")
+                    metrics::counter!("push.mark_activation_processing", "result" => "not_found")
                         .increment(1);
 
                     warn!(
@@ -566,7 +566,7 @@ impl ActivationStore for PostgresStore {
                         "Activation could not be marked as processing, it may be missing or its status may have already changed"
                     );
                 } else {
-                    metrics::counter!("push.mark_processing", "result" => "ok")
+                    metrics::counter!("push.mark_activation_processing", "result" => "ok")
                         .increment(1);
                 }
 

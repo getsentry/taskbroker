@@ -50,7 +50,7 @@ impl ActivationStore for MockStore {
         Ok(vec![])
     }
 
-    async fn mark_processing(&self, id: &str) -> Result<()> {
+    async fn mark_activation_processing(&self, id: &str) -> Result<()> {
         self.marked_processing.lock().unwrap().push(id.to_string());
         Ok(())
     }
@@ -168,7 +168,7 @@ impl ActivationStore for MockStore {
 }
 
 /// After a successful push for a first-attempt activation (processing_attempts == 0),
-/// mark_processing must be called on the store.
+/// mark_activation_processing must be called on the store.
 #[tokio::test]
 async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let notify = Arc::new(Notify::new());
@@ -196,7 +196,7 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     // Simulate a fetch thread pushing an activation to the queue
     sender.send_async((activation, time)).await.unwrap();
 
-    // Wait for the worker to call push_task(), then give it time to call mark_processing.
+    // Wait for the worker to call push_task(), then give it time to call mark_activation_processing.
     timeout(Duration::from_secs(2), notify.notified())
         .await
         .expect("timed out waiting for push to be delivered");
@@ -206,12 +206,12 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     assert_eq!(
         store.marked_ids(),
         vec![id],
-        "mark_processing should be called after a successful first-attempt push"
+        "mark_activation_processing should be called after a successful first-attempt push"
     );
 }
 
 /// After a successful push for a retried activation (processing_attempts > 0),
-/// mark_processing must be called and latency recording is skipped.
+/// mark_activation_processing must be called and latency recording is skipped.
 #[tokio::test]
 async fn push_pool_start_marks_activation_processing_on_retry() {
     let notify = Arc::new(Notify::new());
@@ -247,11 +247,11 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     assert_eq!(
         store.marked_ids(),
         vec![id],
-        "mark_processing should be called after a successful retry push"
+        "mark_activation_processing should be called after a successful retry push"
     );
 }
 
-/// When the worker fails to deliver an activation, mark_processing must NOT be called.
+/// When the worker fails to deliver an activation, mark_activation_processing must NOT be called.
 #[tokio::test]
 async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     let notify = Arc::new(Notify::new());
@@ -283,6 +283,6 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
 
     assert!(
         store.marked_ids().is_empty(),
-        "mark_processing should not be called when push fails"
+        "mark_activation_processing should not be called when push fails"
     );
 }

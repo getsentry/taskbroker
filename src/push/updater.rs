@@ -208,7 +208,7 @@ impl EagerUpdater {
 #[async_trait]
 impl Updater for EagerUpdater {
     async fn update(&self, id: String) -> Result<()> {
-        self.store.mark_processing(&id).await
+        self.store.mark_activation_processing(&id).await
     }
 }
 

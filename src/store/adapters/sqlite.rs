@@ -545,14 +545,14 @@ impl ActivationStore for SqliteStore {
         namespaces: Option<&[String]>,
         limit: Option<i32>,
         bucket: Option<BucketRange>,
-        mark_processing: bool,
+        mark_activation_processing: bool,
     ) -> Result<Vec<Activation>, Error> {
         let now = Utc::now();
         let grace_period = self.config.processing_deadline_grace_sec;
 
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET ");
 
-        if mark_processing {
+        if mark_activation_processing {
             query_builder.push(format!(
                 "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
             ));
@@ -610,8 +610,10 @@ impl ActivationStore for SqliteStore {
     }
 
     #[instrument(skip_all)]
-    async fn mark_processing(&self, id: &str) -> Result<(), Error> {
-        let mut conn = self.acquire_write_conn_metric("mark_processing").await?;
+    async fn mark_activation_processing(&self, id: &str) -> Result<(), Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("mark_activation_processing")
+            .await?;
 
         let grace_period = self.config.processing_deadline_grace_sec;
         let result = sqlx::query(&format!(
@@ -628,14 +630,15 @@ impl ActivationStore for SqliteStore {
         .await?;
 
         if result.rows_affected() == 0 {
-            metrics::counter!("push.mark_processing", "result" => "not_found").increment(1);
+            metrics::counter!("push.mark_activation_processing", "result" => "not_found")
+                .increment(1);
 
             warn!(
                 task_id = %id,
                 "Activation could not be marked as sent, it may be missing or its status may have already changed"
             );
         } else {
-            metrics::counter!("push.mark_processing", "result" => "ok").increment(1);
+            metrics::counter!("push.mark_activation_processing", "result" => "ok").increment(1);
         }
 
         Ok(())
