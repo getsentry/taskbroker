@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -123,6 +125,14 @@ pub trait ActivationStore: Send + Sync {
             claimed: claimed?,
             processing: processing?,
         })
+    }
+
+    /// Queue depths grouped by partition for upkeep gauges. The default
+    /// implementation returns the flat total under sentinel partition -1 for
+    /// stores that aren't partition-aware.
+    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
+        let total = self.count_depths().await?;
+        Ok(HashMap::from([(-1, total)]))
     }
 
     /// Set the processing deadline for a specific activation
