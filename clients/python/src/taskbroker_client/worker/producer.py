@@ -21,8 +21,6 @@ class TaskProducer:
     producer futures tracked by TaskProducer, and will only register the activation as
     a success if all producer futures from that task were successful.
     Otherwise, the activation will be retried.
-
-    TODO: actually have the TaskWorker child check TaskProducer futures.
     """
 
     def __init__(self, producer: ProducerProtocol) -> None:

@@ -29,6 +29,7 @@ from taskbroker_client.constants import (
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
     MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE,
+    WORKER_CHILD_JOIN_TIMEOUT_SEC,
 )
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.client import (
@@ -735,7 +736,10 @@ class TaskWorkerProcessingPool:
         for child in self._children:
             child.terminate()
         for child in self._children:
-            child.join()
+            child.join(WORKER_CHILD_JOIN_TIMEOUT_SEC)
+            if child.is_alive():
+                child.kill()
+                child.join()
 
         logger.info("taskworker.worker.shutdown.result")
         if self._result_thread:

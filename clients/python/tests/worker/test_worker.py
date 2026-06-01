@@ -1,8 +1,13 @@
 import base64
 import contextlib
+import os
 import queue
+import signal
+import threading
 import time
-from collections.abc import MutableMapping
+from collections.abc import Iterator, MutableMapping
+from concurrent.futures import Future
+from datetime import datetime
 from multiprocessing import Event, get_context
 from typing import Any
 from unittest import TestCase, mock
@@ -10,7 +15,10 @@ from unittest import TestCase, mock
 import grpc
 import msgpack
 import orjson
+import pytest
 import zstandard as zstd
+from arroyo.backends.kafka import KafkaPayload
+from arroyo.types import BrokerValue, Partition, Topic
 from redis import StrictRedis
 
 # from sentry.utils.redis import redis_clusters
@@ -30,6 +38,7 @@ from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.producer import TaskProducer, _pending_futures
 from taskbroker_client.worker.worker import (
     PushTaskWorker,
     TaskWorker,
@@ -1224,3 +1233,248 @@ def test_child_process_silenced_exception_does_not_log_task_failed(
         if c.args and c.args[0] == "taskworker.task.failed"
     ]
     assert failed_calls == []
+
+
+# Tests for TaskProducer future tracking, storage, and drain-on-shutdown behavior
+# in child_process. These tests patch TaskProducer.collect_futures so we can inject
+# controllable futures without needing a real Kafka broker.
+
+
+@pytest.fixture
+def clear_pending_futures() -> Iterator[None]:
+    _pending_futures.clear()
+    yield
+    _pending_futures.clear()
+
+
+@pytest.fixture
+def restore_signal_handlers() -> Iterator[None]:
+    """`child_process` installs SIGTERM/SIGINT handlers in the current process."""
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+
+
+def _make_broker_value() -> BrokerValue[KafkaPayload]:
+    return BrokerValue(
+        KafkaPayload(None, b"", []),
+        Partition(Topic("test"), 0),
+        0,
+        datetime(2024, 1, 1),
+    )
+
+
+def _producing_task(task_id: str = "task-with-futures") -> InflightTaskActivation:
+    return InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id=task_id,
+            taskname="examples.simple_task",
+            namespace="examples",
+            parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+            processing_deadline_duration=2,
+        ),
+    )
+
+
+def test_child_process_tracks_producer_futures(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    done_future: Future[BrokerValue[KafkaPayload]] = Future()
+    done_future.set_result(_make_broker_value())
+
+    todo.put(task)
+    with mock.patch.object(
+        TaskProducer, "collect_futures", return_value={done_future}
+    ) as collect_mock:
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+        )
+
+    # collect_futures is called once per executed task
+    assert collect_mock.call_count == 1
+
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+def test_child_process_holds_result_until_futures_done(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    pending_future: Future[BrokerValue[KafkaPayload]] = Future()
+    todo.put(task)
+
+    # `child_process` calls `signal.signal`, which must run on the main thread.
+    # Use a helper thread to observe the queue while the future is still
+    # pending, then resolve the future so the drain can complete.
+    observed_empty_while_pending = threading.Event()
+
+    def observe_and_resolve() -> None:
+        # Wait for child_process to process the task and enter the drain loop.
+        time.sleep(0.5)
+        if processed.qsize() == 0:
+            observed_empty_while_pending.set()
+        pending_future.set_result(_make_broker_value())
+
+    observer = threading.Thread(target=observe_and_resolve, name="future-observer")
+    observer.start()
+    try:
+        with mock.patch.object(TaskProducer, "collect_futures", return_value={pending_future}):
+            child_process(
+                "examples.app:app",
+                todo,
+                processed,
+                shutdown,
+                max_task_count=1,
+                processing_pool_name="test",
+                process_type="fork",
+            )
+    finally:
+        observer.join(timeout=5)
+        shutdown.set()
+
+    assert (
+        observed_empty_while_pending.is_set()
+    ), "result was pushed before the producer future was resolved"
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+def test_child_process_drains_pending_futures_on_sigterm(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    pending_future: Future[BrokerValue[KafkaPayload]] = Future()
+    todo.put(task)
+
+    def deliver_sigterm() -> None:
+        # Wait for child_process to install its SIGTERM handler and start the
+        # worker loop, otherwise the default handler would terminate the test
+        # process.
+        time.sleep(0.5)
+        pending_future.set_result(_make_broker_value())
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    sigterm_thread = threading.Thread(target=deliver_sigterm, name="sigterm-sender")
+    sigterm_thread.start()
+    try:
+        with mock.patch.object(TaskProducer, "collect_futures", return_value={pending_future}):
+            child_process(
+                "examples.app:app",
+                todo,
+                processed,
+                shutdown,
+                max_task_count=None,
+                processing_pool_name="test",
+                process_type="fork",
+            )
+    finally:
+        sigterm_thread.join(timeout=5)
+        shutdown.set()
+
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+def test_child_process_retries_on_failed_future(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    retriable_task = InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id="failed-future-retry",
+            taskname="examples.will_retry",
+            namespace="examples",
+            parameters=orjson.dumps({"args": ["noop"], "kwargs": {}}).decode("utf8"),
+            processing_deadline_duration=2,
+            retry_state=RetryState(
+                attempts=0,
+                max_attempts=3,
+                on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+            ),
+        ),
+    )
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    failed_future: Future[BrokerValue[KafkaPayload]] = Future()
+    failed_future.set_exception(RuntimeError("kafka produce failed"))
+
+    todo.put(retriable_task)
+    with mock.patch.object(TaskProducer, "collect_futures", return_value={failed_future}):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+        )
+
+    result = processed.get(timeout=5)
+    assert result.task_id == retriable_task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_RETRY
+
+
+def test_child_process_clears_pending_futures_when_task_fails(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
+    leftover_future.set_result(_make_broker_value())
+    _pending_futures.add(leftover_future)
+    assert len(_pending_futures) == 1
+
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(FAIL_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+    result = processed.get(timeout=5)
+    assert result.task_id == FAIL_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+
+    # The orphaned future is dropped (the activation will be retried at the
+    # broker level if applicable) but the global registry is cleared so it
+    # cannot bleed into the next task this child processes.
+    assert len(_pending_futures) == 0
