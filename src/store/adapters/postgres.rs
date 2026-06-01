@@ -17,6 +17,7 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
+use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::ActivationStore;
@@ -138,7 +139,6 @@ pub struct PostgresStoreConfig {
     pub run_migrations: bool,
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
-    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
     pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
@@ -166,7 +166,7 @@ impl PostgresStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
+            claim_lease_ms: compute_claim_lease_ms(config),
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
             retry_config: RetryConfig::from_config(config),
         }
@@ -509,7 +509,7 @@ impl ActivationStore for PostgresStore {
             } else {
                 query_builder.push(format!(
                     "UPDATE inflight_taskactivations
-                     SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond') + (interval '{grace_period} seconds'),
+                     SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond'),
                          processing_deadline = NULL,
                          status = "
                 ));
