@@ -94,8 +94,10 @@ impl PushThread {
                 error!(
                     task_id = %id,
                     error = ?e,
-                    "Failed to undo claim on failed send"
+                    "Failed to undo claim on send failure"
                 );
+
+                return;
             }
 
             metrics::counter!("push.undo_claim", "result" => "ok").increment(1);
