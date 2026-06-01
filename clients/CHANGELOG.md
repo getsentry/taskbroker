@@ -1,4 +1,10 @@
 # Changelog
+## 0.18.0
+
+### New Features ✨
+
+- (client) Workerchild awaits TaskProducer futures by @bmckerry in [#642](https://github.com/getsentry/taskbroker/pull/642)
+
 ## 0.17.1
 
 ### Bug Fixes 🐛
