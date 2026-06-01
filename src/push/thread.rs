@@ -8,7 +8,7 @@ use elegant_departure::get_shutdown_guard;
 use flume::Receiver;
 use tracing::{debug, error};
 
-use crate::store::activation::Activation;
+use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::timed;
 use crate::worker::WorkerMap;
@@ -82,6 +82,25 @@ impl PushThread {
                 error = ?e,
                 "Failed to send activation to worker: {e}"
             );
+
+            // Revert claimed task back to pending
+            if let Err(e) = self
+                .store
+                .set_status(&id, ActivationStatus::Pending, None, None)
+                .await
+            {
+                metrics::counter!("push.undo_claim", "result" => "error").increment(1);
+
+                error!(
+                    task_id = %id,
+                    error = ?e,
+                    "Failed to undo claim on send failure"
+                );
+
+                return;
+            }
+
+            metrics::counter!("push.undo_claim", "result" => "ok").increment(1);
 
             return;
         }
