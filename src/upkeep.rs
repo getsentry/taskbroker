@@ -413,8 +413,7 @@ pub async fn do_upkeep(
         fs::metadata(config.db_path.clone() + "-wal")
     );
 
-    let depths_per_partition = depth_counts.ok();
-    if let Some(ref depths) = depths_per_partition {
+    if let Ok(ref depths) = depth_counts {
         for counts in depths.values() {
             result_context.pending += counts.pending as u32;
             result_context.delay += counts.delay as u32;
@@ -474,7 +473,7 @@ pub async fn do_upkeep(
     // State of activations, tagged per partition. Dashboards aggregating
     // without a partition filter still see the global total via tag sum.
     // Zero out gauges for partitions we emitted last cycle but no longer own.
-    if let Some(depths) = depths_per_partition {
+    if let Ok(depths) = depth_counts {
         let current: HashSet<i32> = depths.keys().copied().collect();
 
         for partition in emitted_partitions.difference(&current) {
