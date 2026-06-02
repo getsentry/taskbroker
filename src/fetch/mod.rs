@@ -19,28 +19,12 @@ use crate::timed;
 
 /// This value should be a power of two. If it decreases, some ranges will no longer be queried.
 /// That means the pending activation query will skip tasks within these ranges.
-pub const MAX_FETCH_THREADS: i16 = 256;
-
-/// Returns the largest positive divisor of [`MAX_FETCH_THREADS`] that is also a power of two.
-pub fn normalize_fetch_threads(n: usize) -> usize {
-    let n = n.max(1);
-    let mut v = MAX_FETCH_THREADS;
-
-    while v > 1 {
-        if (v as usize) <= n {
-            return v as usize;
-        }
-
-        v /= 2;
-    }
-
-    1
-}
+pub const MAX_FETCH_THREADS: usize = 256;
 
 /// Inclusive bucket range for fetch thread `thread_index` when using `fetch_threads` concurrent fetch loops.
 /// Requires `fetch_threads` to divide [`MAX_FETCH_THREADS`] (enforced via [`normalize_fetch_threads`]).
 pub fn bucket_range_for_fetch_thread(thread_index: usize, fetch_threads: usize) -> BucketRange {
-    let maximum = MAX_FETCH_THREADS as usize;
+    let maximum = MAX_FETCH_THREADS;
     let buckets_per_range = maximum / fetch_threads;
 
     let low = (thread_index * buckets_per_range) as i16;
@@ -79,14 +63,14 @@ impl FetchPool {
     #[framed]
     pub async fn start(&self) -> Result<()> {
         let fetch_wait_ms = self.config.fetch_wait_ms;
-        let fetch_threads = normalize_fetch_threads(self.config.fetch_threads);
+        let fetch_threads = self.config.fetch_threads;
 
         let mut fetch_pool = crate::tokio::spawn_pool(fetch_threads, |thread_index| {
             let store = self.store.clone();
             let sender = self.sender.clone();
             let config = self.config.clone();
 
-            let limit = Some(config.fetch_batch_size.max(1));
+            let limit = Some(config.fetch_batch_size);
             let bucket = Some(bucket_range_for_fetch_thread(thread_index, fetch_threads));
 
             let guard = get_shutdown_guard().shutdown_on_drop();
