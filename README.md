@@ -66,10 +66,50 @@ cargo run -- -c ./config/config-sentry-dev.yaml
 ## Configuration
 
 Taskbroker uses YAML files for configuration, and all of the available
-configuration options can be found in [Config](https://github.com/getsentry/taskbroker/blob/main/src/config.rs#L15)
+configuration options can be found in [Config](https://github.com/getsentry/taskbroker/blob/main/src/config.rs).
 
 All configuration options can also be defined as environment variables using
-the `TASKBROKER_` prefix.
+the `TASKBROKER_` prefix. Nested values use a `__` separator, e.g.
+`TASKBROKER_KAFKA_CLUSTERS__DEFAULT__ADDRESS=127.0.0.1:9092`.
+
+### Kafka topics and clusters
+
+Kafka is configured with two maps: `kafka_clusters` defines the brokers (and
+optional auth) for each cluster, and `kafka_topics` declares each topic and
+which cluster it lives on. Exactly one topic must be consumable; the rest
+(retry, dead-letter) are `produce_only`. The dead-letter and retry topics must
+share a cluster with the upkeep producer.
+
+```yaml
+kafka_deadletter_topic: taskworker-dlq
+
+kafka_clusters:
+  default:
+    address: 127.0.0.1:9092
+    # optional auth, applied to every topic on this cluster:
+    # security_protocol: sasl_ssl
+    # sasl_mechanism: scram-sha-256
+    # sasl_username: ...
+    # sasl_password: ...
+
+kafka_topics:
+  taskworker:
+    cluster: default
+    consumer_group: taskworker
+  taskworker-retry:
+    cluster: default
+    consumer_group: taskworker
+    produce_only: true
+  taskworker-dlq:
+    cluster: default
+    consumer_group: taskworker
+    produce_only: true
+```
+
+The older flat `kafka_cluster` / `kafka_topic` / `kafka_consumer_group` fields
+(and the `kafka_deadletter_*` auth fields) are deprecated but still supported.
+See [docs/kafka-config-migration.md](docs/kafka-config-migration.md) for how to
+move from the legacy fields to the new format.
 
 ## Tests
 
