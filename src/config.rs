@@ -592,26 +592,6 @@ impl Config {
                 )));
             }
         } else {
-            // Legacy / zero-config path. Legacy topic and cluster must be set
-            // together (or neither, in which case the historical defaults apply).
-            match (&self.kafka_cluster, &self.kafka_topic) {
-                (Some(_), None) => {
-                    return Err(Box::new(figment::Error::from(
-                        "kafka_cluster is set but kafka_topic is not; \
-                         either set both or use kafka_clusters/kafka_topics instead"
-                            .to_owned(),
-                    )));
-                }
-                (None, Some(_)) => {
-                    return Err(Box::new(figment::Error::from(
-                        "kafka_topic is set but kafka_cluster is not; \
-                         either set both or use kafka_clusters/kafka_topics instead"
-                            .to_owned(),
-                    )));
-                }
-                _ => {}
-            }
-
             if self.kafka_cluster.is_some() {
                 warn!("kafka_cluster is deprecated, use kafka_clusters instead");
             }
