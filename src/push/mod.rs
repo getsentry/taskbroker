@@ -36,8 +36,8 @@ const QUERY_MS: u64 = 1000;
 pub fn compute_claim_lease_ms(config: &Config) -> u64 {
     // Imagine we are computing the lease for some task in a batch of N tasks
     let fetch_batch_size = config.fetch_batch_size.max(1) as u64;
-    let push_threads = config.push_threads as u64;
-    let push_queue_size = config.push_queue_size as u64;
+    let push_threads = config.push_threads.max(1) as u64;
+    let push_queue_size = config.push_queue_size.max(1) as u64;
 
     // In the worst case, this task is the last in a batch where every queue push times out
     let queue_ms = fetch_batch_size * config.push_queue_timeout_ms;
