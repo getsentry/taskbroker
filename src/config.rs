@@ -166,32 +166,42 @@ pub struct Config {
     /// Whether to create missing topics if they don't exist.
     pub create_missing_topics: bool,
 
-    /// Comma separated list of kafka brokers to
-    /// publish dead letter messages on
+    /// Comma separated list of kafka brokers to publish dead letter messages on.
+    /// Deprecated: declare the deadletter topic in kafka_topics (produce_only)
+    /// with a cluster reference instead.
     pub kafka_deadletter_cluster: Option<String>,
 
-    /// The kafka topic to publish dead letter messages on
+    /// The kafka topic to publish dead letter messages on.
+    /// Still valid in the new format: it names the produce-only topic in
+    /// kafka_topics whose cluster the deadletter producer connects to.
     pub kafka_deadletter_topic: String,
 
-    /// The security method used for authentication to the DLQ eg. sasl_plaintext
+    /// The security method used for authentication to the DLQ eg. sasl_plaintext.
+    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
     pub kafka_deadletter_security_protocol: Option<String>,
 
-    /// The hashing algorithm used for authentication to the DLQ eg. scram-sha-256
+    /// The hashing algorithm used for authentication to the DLQ eg. scram-sha-256.
+    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
     pub kafka_deadletter_sasl_mechanism: Option<String>,
 
-    /// The sasl username for DLQ publishing
+    /// The sasl username for DLQ publishing.
+    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
     pub kafka_deadletter_sasl_username: Option<String>,
 
-    /// The sasl password for DLQ publishing
+    /// The sasl password for DLQ publishing.
+    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
     pub kafka_deadletter_sasl_password: Option<String>,
 
-    /// The location to the DLQ CA certificate file
+    /// The location to the DLQ CA certificate file.
+    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
     pub kafka_deadletter_ssl_ca_location: Option<String>,
 
-    /// The location to the DLQ certificate file
+    /// The location to the DLQ certificate file.
+    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
     pub kafka_deadletter_ssl_certificate_location: Option<String>,
 
-    /// The location to the DLQ private key file
+    /// The location to the DLQ private key file.
+    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
     pub kafka_deadletter_ssl_key_location: Option<String>,
 
     /// The topic to publish retry task activations to.
@@ -551,13 +561,15 @@ impl Config {
     /// `kafka_topics` and `kafka_clusters` are always populated.
     pub(crate) fn normalize_and_validate(&mut self) -> Result<(), Box<figment::Error>> {
         const DEFAULT_CLUSTER: &str = "default";
+        const DEADLETTER_CLUSTER: &str = "deadletter";
         const DEFAULT_TOPIC: &str = "taskworker";
         const DEFAULT_CLUSTER_ADDRESS: &str = "127.0.0.1:9092";
         const DEFAULT_CONSUMER_GROUP: &str = "taskworker";
 
         let uses_new_format = !self.kafka_topics.is_empty() || !self.kafka_clusters.is_empty();
-        // Any explicitly-set legacy field tied to the main consumed cluster.
-        // (Deadletter fields are not legacy duals and are intentionally excluded.)
+        // Any explicitly-set deprecated field describing a cluster (the main
+        // consumed cluster or the deadletter cluster). kafka_deadletter_topic is
+        // NOT deprecated and is intentionally excluded.
         let uses_legacy = self.kafka_topic.is_some()
             || self.kafka_cluster.is_some()
             || self.kafka_consumer_group.is_some()
@@ -567,13 +579,21 @@ impl Config {
             || self.kafka_sasl_password.is_some()
             || self.kafka_ssl_ca_location.is_some()
             || self.kafka_ssl_certificate_location.is_some()
-            || self.kafka_ssl_key_location.is_some();
+            || self.kafka_ssl_key_location.is_some()
+            || self.kafka_deadletter_cluster.is_some()
+            || self.kafka_deadletter_security_protocol.is_some()
+            || self.kafka_deadletter_sasl_mechanism.is_some()
+            || self.kafka_deadletter_sasl_username.is_some()
+            || self.kafka_deadletter_sasl_password.is_some()
+            || self.kafka_deadletter_ssl_ca_location.is_some()
+            || self.kafka_deadletter_ssl_certificate_location.is_some()
+            || self.kafka_deadletter_ssl_key_location.is_some();
 
         if uses_new_format && uses_legacy {
             return Err(Box::new(figment::Error::from(
-                "cannot mix the deprecated kafka_topic/kafka_cluster/kafka_consumer_group \
-                 (and related kafka_sasl_*/kafka_ssl_* fields) with kafka_topics/kafka_clusters; \
-                 use one config format or the other"
+                "cannot mix the deprecated kafka_cluster/kafka_topic/kafka_consumer_group/\
+                 kafka_deadletter_cluster (and related kafka_sasl_*/kafka_ssl_*/kafka_deadletter_* \
+                 auth fields) with kafka_topics/kafka_clusters; use one config format or the other"
                     .to_owned(),
             )));
         }
@@ -598,6 +618,12 @@ impl Config {
             if self.kafka_topic.is_some() {
                 warn!("kafka_topic is deprecated, use kafka_topics instead");
             }
+            if self.kafka_deadletter_cluster.is_some() {
+                warn!(
+                    "kafka_deadletter_cluster is deprecated, declare the deadletter topic in \
+                     kafka_topics with a cluster reference instead"
+                );
+            }
 
             let topic_name = self
                 .kafka_topic
@@ -615,7 +641,7 @@ impl Config {
             self.kafka_clusters.insert(
                 DEFAULT_CLUSTER.to_owned(),
                 ClusterConfig {
-                    address,
+                    address: address.clone(),
                     security_protocol: self.kafka_security_protocol.clone(),
                     sasl_mechanism: self.kafka_sasl_mechanism.clone(),
                     sasl_username: self.kafka_sasl_username.clone(),
@@ -623,6 +649,29 @@ impl Config {
                     ssl_ca_location: self.kafka_ssl_ca_location.clone(),
                     ssl_certificate_location: self.kafka_ssl_certificate_location.clone(),
                     ssl_key_location: self.kafka_ssl_key_location.clone(),
+                },
+            );
+
+            // Migrate the deprecated deadletter cluster/auth fields into a
+            // dedicated cluster. The deadletter producer historically falls back
+            // to the main cluster's address when kafka_deadletter_cluster is
+            // unset, while using its own (possibly empty) auth.
+            self.kafka_clusters.insert(
+                DEADLETTER_CLUSTER.to_owned(),
+                ClusterConfig {
+                    address: self
+                        .kafka_deadletter_cluster
+                        .clone()
+                        .unwrap_or_else(|| address.clone()),
+                    security_protocol: self.kafka_deadletter_security_protocol.clone(),
+                    sasl_mechanism: self.kafka_deadletter_sasl_mechanism.clone(),
+                    sasl_username: self.kafka_deadletter_sasl_username.clone(),
+                    sasl_password: self.kafka_deadletter_sasl_password.clone(),
+                    ssl_ca_location: self.kafka_deadletter_ssl_ca_location.clone(),
+                    ssl_certificate_location: self
+                        .kafka_deadletter_ssl_certificate_location
+                        .clone(),
+                    ssl_key_location: self.kafka_deadletter_ssl_key_location.clone(),
                 },
             );
 
@@ -646,6 +695,18 @@ impl Config {
                     raw: raw_config,
                 },
             );
+
+            // Register the deadletter topic as a produce-only topic, just like
+            // the retry topic below. Its name stays configured via the (still
+            // valid) kafka_deadletter_topic field.
+            self.kafka_topics
+                .entry(self.kafka_deadletter_topic.clone())
+                .or_insert_with(|| TopicConfig {
+                    cluster: DEADLETTER_CLUSTER.to_owned(),
+                    consumer_group: consumer_group.clone(),
+                    produce_only: true,
+                    raw: None,
+                });
 
             // Add the retry topic if configured (unless it collides with the
             // main topic). Retry topics are produce-only; this taskbroker writes
@@ -674,6 +735,16 @@ impl Config {
 
         // Validate exactly one consumable topic
         self.consumable_topic()?;
+
+        // The deadletter topic must be a declared topic so the producer can
+        // resolve its cluster. In legacy mode it was added above; in the new
+        // format the user must declare it (produce-only) in kafka_topics.
+        if !self.kafka_topics.contains_key(&self.kafka_deadletter_topic) {
+            return Err(Box::new(figment::Error::from(format!(
+                "kafka_deadletter_topic '{}' is not defined in kafka_topics",
+                self.kafka_deadletter_topic
+            ))));
+        }
 
         Ok(())
     }
@@ -771,46 +842,43 @@ impl Config {
         config.clone()
     }
 
-    /// Convert the application Config into rdkafka::ClientConfig
-    /// Convert the application Config into rdkafka::ClientConfig for producer (DLQ).
-    /// Falls back to consumable topic's cluster if kafka_deadletter_cluster is not set.
+    /// Convert the application Config into rdkafka::ClientConfig for the
+    /// deadletter / forwarding producer. The producer connects to the cluster
+    /// of the `kafka_deadletter_topic` entry in `kafka_topics` (in legacy mode
+    /// this is the migrated "deadletter" cluster).
     /// Panics if config wasn't validated.
     pub fn kafka_producer_config(&self) -> ClientConfig {
-        let (_, topic_config) = self
-            .consumable_topic()
-            .expect("consumable_topic failed - was config validated?");
-        let default_cluster = self
-            .cluster(&topic_config.cluster)
+        let dlq_topic = self
+            .kafka_topics
+            .get(&self.kafka_deadletter_topic)
+            .expect("deadletter topic not in kafka_topics - was config validated?");
+        let cluster = self
+            .cluster(&dlq_topic.cluster)
             .expect("cluster lookup failed - was config validated?");
 
         let mut new_config = ClientConfig::new();
         let config = new_config
-            .set(
-                "bootstrap.servers",
-                self.kafka_deadletter_cluster
-                    .as_ref()
-                    .unwrap_or(&default_cluster.address),
-            )
+            .set("bootstrap.servers", cluster.address.clone())
             .set("message.max.bytes", format!("{}", self.max_message_size));
-        if let Some(sasl_mechanism) = &self.kafka_deadletter_sasl_mechanism {
+        if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
             config.set("sasl.mechanism", sasl_mechanism);
         }
-        if let Some(sasl_username) = &self.kafka_deadletter_sasl_username {
+        if let Some(ref sasl_username) = cluster.sasl_username {
             config.set("sasl.username", sasl_username);
         }
-        if let Some(sasl_password) = &self.kafka_deadletter_sasl_password {
+        if let Some(ref sasl_password) = cluster.sasl_password {
             config.set("sasl.password", sasl_password);
         }
-        if let Some(security_protocol) = &self.kafka_deadletter_security_protocol {
+        if let Some(ref security_protocol) = cluster.security_protocol {
             config.set("security.protocol", security_protocol);
         }
-        if let Some(ssl_ca_location) = &self.kafka_deadletter_ssl_ca_location {
+        if let Some(ref ssl_ca_location) = cluster.ssl_ca_location {
             config.set("ssl.ca.location", ssl_ca_location);
         }
-        if let Some(ssl_certificate_location) = &self.kafka_deadletter_ssl_certificate_location {
+        if let Some(ref ssl_certificate_location) = cluster.ssl_certificate_location {
             config.set("ssl.certificate.location", ssl_certificate_location);
         }
-        if let Some(ssl_private_key_location) = &self.kafka_deadletter_ssl_key_location {
+        if let Some(ref ssl_private_key_location) = cluster.ssl_key_location {
             config.set("ssl.key.location", ssl_private_key_location);
         }
 
@@ -1233,6 +1301,8 @@ mod tests {
             jail.create_file(
                 "config.yaml",
                 r#"
+kafka_deadletter_topic: profiles-dlq
+
 kafka_topics:
   profiles:
     cluster: profiles-cluster
@@ -1242,6 +1312,10 @@ kafka_topics:
   profiles-retry:
     cluster: profiles-cluster
     consumer_group: taskbroker-profiles-retry
+    produce_only: true
+  profiles-dlq:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles-dlq
     produce_only: true
 
 kafka_clusters:
@@ -1256,7 +1330,7 @@ kafka_clusters:
             let config = Config::from_args(&args).unwrap();
 
             let topics = &config.kafka_topics;
-            assert_eq!(topics.len(), 2);
+            assert_eq!(topics.len(), 3);
 
             let profiles = topics.get("profiles").unwrap();
             assert_eq!(profiles.cluster, "profiles-cluster");
@@ -1317,6 +1391,21 @@ kafka_clusters:
                 "TASKBROKER_KAFKA_TOPICS__PROFILES__CONSUMER_GROUP",
                 "taskbroker-profiles",
             );
+            // The deadletter topic must be a declared topic. The key segment is
+            // lowercased to "profiles_dlq", so kafka_deadletter_topic must match.
+            jail.set_env("TASKBROKER_KAFKA_DEADLETTER_TOPIC", "profiles_dlq");
+            jail.set_env(
+                "TASKBROKER_KAFKA_TOPICS__PROFILES_DLQ__CLUSTER",
+                "my_cluster",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_TOPICS__PROFILES_DLQ__CONSUMER_GROUP",
+                "taskbroker-profiles-dlq",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_TOPICS__PROFILES_DLQ__PRODUCE_ONLY",
+                "true",
+            );
             jail.set_env(
                 "TASKBROKER_KAFKA_CLUSTERS__MY_CLUSTER__ADDRESS",
                 "10.0.0.2:9092",
@@ -1326,11 +1415,12 @@ kafka_clusters:
             let config = Config::from_args(&args).unwrap();
 
             let topics = &config.kafka_topics;
-            assert_eq!(topics.len(), 1);
+            assert_eq!(topics.len(), 2);
 
             let profiles = topics.get("profiles").unwrap();
             assert_eq!(profiles.cluster, "my_cluster");
             assert_eq!(profiles.consumer_group, "taskbroker-profiles");
+            assert!(topics.get("profiles_dlq").unwrap().produce_only);
 
             let clusters = &config.kafka_clusters;
             assert_eq!(clusters.len(), 1);
@@ -1477,10 +1567,12 @@ kafka_clusters:
     #[test]
     fn test_multi_topic_allows_one_consumable_with_produce_only() {
         Jail::expect_with(|jail| {
-            // One consumable topic (profiles), one produce-only (profiles-retry).
+            // One consumable topic (profiles), two produce-only (retry + dlq).
             jail.create_file(
                 "config.yaml",
                 r#"
+kafka_deadletter_topic: profiles-dlq
+
 kafka_topics:
   profiles:
     cluster: my-cluster
@@ -1488,6 +1580,10 @@ kafka_topics:
   profiles-retry:
     cluster: my-cluster
     consumer_group: taskbroker-profiles-retry
+    produce_only: true
+  profiles-dlq:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles-dlq
     produce_only: true
 
 kafka_clusters:
@@ -1502,11 +1598,12 @@ kafka_clusters:
             let config = Config::from_args(&args).unwrap();
 
             let topics = &config.kafka_topics;
-            assert_eq!(topics.len(), 2);
+            assert_eq!(topics.len(), 3);
 
-            // One consumable, one produce-only
+            // One consumable, two produce-only
             assert!(!topics.get("profiles").unwrap().produce_only);
             assert!(topics.get("profiles-retry").unwrap().produce_only);
+            assert!(topics.get("profiles-dlq").unwrap().produce_only);
 
             // consumable_topic() returns the one consumable topic
             let (topic_name, _) = config.consumable_topic().unwrap();
@@ -1543,6 +1640,87 @@ kafka_clusters:
                 err.to_string().contains("no consumable topic"),
                 "unexpected error: {}",
                 err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_requires_deadletter_topic() {
+        // In the new format the deadletter topic must be declared in kafka_topics.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topics:
+  profiles:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("kafka_deadletter_topic 'taskworker-dlq' is not defined"),
+                "unexpected error: {}",
+                err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_deadletter_producer_uses_its_topic_cluster() {
+        // The deadletter producer connects to the cluster of the deadletter
+        // topic, which can differ from the consumable topic's cluster.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_deadletter_topic: profiles-dlq
+
+kafka_topics:
+  profiles:
+    cluster: main-cluster
+    consumer_group: taskbroker-profiles
+  profiles-dlq:
+    cluster: dlq-cluster
+    consumer_group: taskbroker-profiles-dlq
+    produce_only: true
+
+kafka_clusters:
+  main-cluster:
+    address: 10.0.0.1:9092
+  dlq-cluster:
+    address: 10.9.9.9:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            let consumer_config = config.kafka_consumer_config();
+            assert_eq!(
+                consumer_config.get("bootstrap.servers").unwrap(),
+                "10.0.0.1:9092"
+            );
+
+            let producer_config = config.kafka_producer_config();
+            assert_eq!(
+                producer_config.get("bootstrap.servers").unwrap(),
+                "10.9.9.9:9092"
             );
 
             Ok(())
