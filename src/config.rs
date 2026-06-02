@@ -748,10 +748,19 @@ impl Config {
                 ))));
             }
 
-            // Add the retry topic if configured (unless it collides with the
-            // main topic). Retry topics are produce-only; this taskbroker writes
-            // retries to them but does not consume from them.
+            // Add the retry topic if configured. Retry topics are produce-only;
+            // this taskbroker writes retries to them but does not consume from
+            // them. Aliasing the main topic is allowed (retries are re-enqueued
+            // there), but aliasing the deadletter topic is not: the names would
+            // collide and the retry would silently inherit the deadletter
+            // cluster/role.
             if let Some(ref retry_topic) = self.kafka_retry_topic {
+                if retry_topic == &self.kafka_deadletter_topic {
+                    return Err(Box::new(figment::Error::from(format!(
+                        "kafka_retry_topic '{}' must differ from kafka_deadletter_topic",
+                        retry_topic
+                    ))));
+                }
                 self.kafka_topics
                     .entry(retry_topic.clone())
                     .or_insert_with(|| TopicConfig {
@@ -1744,6 +1753,29 @@ kafka_clusters:
                 err.to_string().contains(
                     "kafka_deadletter_topic 'taskworker' must differ from the consumed topic \
                      'taskworker'"
+                ),
+                "unexpected error: {}",
+                err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_legacy_rejects_retry_topic_equal_to_deadletter_topic() {
+        // The retry topic may alias the main topic, but not the deadletter
+        // topic: that collision would silently give the retry topic the
+        // deadletter cluster/role.
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_KAFKA_RETRY_TOPIC", "taskworker-dlq");
+            jail.set_env("TASKBROKER_KAFKA_DEADLETTER_TOPIC", "taskworker-dlq");
+
+            let args = Args { config: None };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains(
+                    "kafka_retry_topic 'taskworker-dlq' must differ from kafka_deadletter_topic"
                 ),
                 "unexpected error: {}",
                 err
