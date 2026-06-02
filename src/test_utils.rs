@@ -264,9 +264,12 @@ pub fn make_activations(count: u32) -> Vec<Activation> {
     make_activations_with_namespace(namespace, count)
 }
 
-/// Create a basic default [`Config`]
+/// Create a basic default [`Config`], normalized so the kafka helpers
+/// (`consumable_topic`, `cluster`, ...) are usable.
 pub fn create_config() -> Arc<Config> {
-    Arc::new(Config::default())
+    let mut config = Config::default();
+    config.normalize_and_validate().unwrap();
+    Arc::new(config)
 }
 
 /// Create an ActivationStore instance
@@ -295,57 +298,48 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
     }
 }
 
-/// Create a Config instance that uses a testing topic
-/// and earliest auto_offset_reset. This is intended to be combined
-/// with [`reset_topic`]
-pub fn create_integration_config() -> Arc<Config> {
-    let config = Config {
+/// Create a normalized integration [`Config`] from a caller-supplied `base`.
+/// The standard integration defaults (pg connection, local kafka cluster,
+/// consumer group, earliest offset reset) are applied first, then `base`
+/// overrides them, and finally the config is normalized — so any field the
+/// caller sets (e.g. `kafka_deadletter_topic`) is in place before the kafka
+/// topic maps are built.
+pub fn create_integration_config_from_base(base: Config) -> Config {
+    let mut config = Config {
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
         pg_username: get_pg_username(),
         pg_password: get_pg_password(),
         pg_database_name: get_pg_database_name(),
         run_migrations: true,
-        kafka_topic: "taskbroker-test".into(),
+        kafka_cluster: Some("127.0.0.1:9092".into()),
+        kafka_consumer_group: Some("taskworker".into()),
         kafka_auto_offset_reset: "earliest".into(),
-        ..Config::default()
+        ..base
     };
+    config.normalize_and_validate().unwrap();
+    config
+}
 
-    Arc::new(config)
+/// Create a Config instance that uses a testing topic
+/// and earliest auto_offset_reset. This is intended to be combined
+/// with [`reset_topic`]
+pub fn create_integration_config() -> Arc<Config> {
+    Arc::new(create_integration_config_from_base(Config {
+        kafka_topic: Some("taskbroker-test".into()),
+        ..Config::default()
+    }))
 }
 
 /// Create a Config instance that uses SSL
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
 pub fn create_integration_config_with_ssl() -> Arc<Config> {
-    let config = Config {
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
+    Arc::new(create_integration_config_from_base(Config {
         pg_extra_query_params: Some("sslmode=require".to_string()),
-        run_migrations: true,
-        kafka_topic: "taskbroker-test".into(),
-        kafka_auto_offset_reset: "earliest".into(),
+        kafka_topic: Some("taskbroker-test".into()),
         ..Config::default()
-    };
-
-    Arc::new(config)
-}
-
-pub fn create_integration_config_with_topic(topic: String) -> Config {
-    Config {
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
-        run_migrations: true,
-        kafka_topic: topic,
-        kafka_auto_offset_reset: "earliest".into(),
-        ..Config::default()
-    }
+    }))
 }
 
 /// Create a kafka producer for a given config
@@ -365,15 +359,13 @@ pub async fn reset_topic(config: Arc<Config>) {
         .create()
         .expect("Could not create admin client");
 
+    let (main_topic, _) = config.consumable_topic().expect("no consumable topic");
     let options = AdminOptions::default();
     admin_client
-        .delete_topics(
-            &[config.kafka_topic.as_ref(), &config.kafka_deadletter_topic],
-            &options,
-        )
+        .delete_topics(&[main_topic, &config.kafka_deadletter_topic], &options)
         .await
         .expect("Could not delete topic");
-    let new_topic = NewTopic::new(&config.kafka_topic, 1, TopicReplication::Fixed(0));
+    let new_topic = NewTopic::new(main_topic, 1, TopicReplication::Fixed(0));
     let new_dlq_topic = NewTopic::new(
         &config.kafka_deadletter_topic,
         1,

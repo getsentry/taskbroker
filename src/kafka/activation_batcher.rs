@@ -31,10 +31,17 @@ pub struct ActivationBatcherConfig {
 impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
+        let (topic_name, topic_config) = config
+            .consumable_topic()
+            .expect("no consumable topic configured");
+        let cluster = config
+            .cluster(&topic_config.cluster)
+            .expect("cluster not found");
+
         Self {
             producer_config: config.kafka_producer_config(),
-            kafka_cluster: config.kafka_cluster.clone(),
-            kafka_topic: config.kafka_topic.clone(),
+            kafka_cluster: cluster.address.clone(),
+            kafka_topic: topic_name.to_owned(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
             max_batch_time_ms: config.db_insert_batch_max_time_ms,
@@ -241,7 +248,9 @@ demoted_namespaces:
         let runtime_config = Arc::new(
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
@@ -262,7 +271,9 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_drop_task_due_to_expiry() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
@@ -284,11 +295,13 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_close_by_bytes_limit() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config {
+        let mut config = Config {
             db_insert_batch_max_size: 1,
             db_insert_batch_max_len: 2,
             ..Default::default()
-        });
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -312,11 +325,13 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_close_by_rows_limit() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config {
+        let mut config = Config {
             db_insert_batch_max_size: 100000,
             db_insert_batch_max_len: 2,
             ..Default::default()
-        });
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -361,13 +376,21 @@ demoted_topic: taskworker-demoted"#;
         let runtime_config = Arc::new(
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
 
-        assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
+        let (_, topic_config) = config.consumable_topic().unwrap();
+        let cluster_address = config
+            .cluster(&topic_config.cluster)
+            .unwrap()
+            .address
+            .clone();
+        assert_eq!(batcher.producer_cluster, cluster_address);
 
         let activation_0 = ActivationBuilder::new()
             .id("0")

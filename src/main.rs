@@ -76,9 +76,12 @@ async fn main() -> Result<(), Error> {
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
         let kafka_client_config = config.kafka_consumer_config();
+        let (main_topic, _) = config
+            .consumable_topic()
+            .map_err(|e| anyhow!("invalid config: {}", e))?;
         create_missing_topics(
             kafka_client_config.clone(),
-            &config.kafka_topic,
+            main_topic,
             config.default_topic_partitions,
         )
         .await?;
@@ -161,12 +164,10 @@ async fn main() -> Result<(), Error> {
         let runtime_config_manager = runtime_config_manager.clone();
 
         // Build list of topics to consume from
-        let mut topics_to_consume = vec![consumer_config.kafka_topic.clone()];
-        if consumer_config.kafka_consume_retry_topic
-            && let Some(ref retry_topic) = consumer_config.kafka_retry_topic
-        {
-            topics_to_consume.push(retry_topic.clone());
-        }
+        let (main_topic, _) = consumer_config
+            .consumable_topic()
+            .expect("invalid config: no consumable topic");
+        let topics_to_consume = [main_topic.to_owned()];
 
         async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
