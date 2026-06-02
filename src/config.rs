@@ -656,7 +656,7 @@ impl Config {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_CONSUMER_GROUP.to_owned());
 
-            self.kafka_clusters.insert(
+            let prev = self.kafka_clusters.insert(
                 DEFAULT_CLUSTER.to_owned(),
                 ClusterConfig {
                     address: address.clone(),
@@ -669,12 +669,16 @@ impl Config {
                     ssl_key_location: self.kafka_ssl_key_location.clone(),
                 },
             );
+            assert!(
+                prev.is_none(),
+                "internal: duplicate '{DEFAULT_CLUSTER}' cluster"
+            );
 
             // Migrate the deprecated deadletter cluster/auth fields into a
             // dedicated cluster. The deadletter producer historically falls back
             // to the main cluster's address when kafka_deadletter_cluster is
             // unset, while using its own (possibly empty) auth.
-            self.kafka_clusters.insert(
+            let prev = self.kafka_clusters.insert(
                 DEADLETTER_CLUSTER.to_owned(),
                 ClusterConfig {
                     address: self
@@ -692,6 +696,10 @@ impl Config {
                     ssl_key_location: self.kafka_deadletter_ssl_key_location.clone(),
                 },
             );
+            assert!(
+                prev.is_none(),
+                "internal: duplicate '{DEADLETTER_CLUSTER}' cluster"
+            );
 
             let raw_config = if self.raw_mode {
                 Some(RawModeConfig {
@@ -704,8 +712,8 @@ impl Config {
                 None
             };
 
-            self.kafka_topics.insert(
-                topic_name,
+            let prev = self.kafka_topics.insert(
+                topic_name.clone(),
                 TopicConfig {
                     cluster: DEFAULT_CLUSTER.to_owned(),
                     consumer_group: consumer_group.clone(),
@@ -716,13 +724,21 @@ impl Config {
                     auto_offset_reset: None,
                 },
             );
+            assert!(prev.is_none(), "internal: duplicate topic '{topic_name}'");
 
-            // Register the deadletter topic as a produce-only topic, just like
-            // the retry topic below. Its name stays configured via the (still
-            // valid) kafka_deadletter_topic field.
-            self.kafka_topics
-                .entry(self.kafka_deadletter_topic.clone())
-                .or_insert_with(|| TopicConfig {
+            // Register the deadletter topic as a produce-only topic on its own
+            // cluster, just like the retry topic below. Its name stays
+            // configured via the (still valid) kafka_deadletter_topic field.
+            //
+            // Topics are keyed by name, so a deadletter topic sharing the main
+            // topic's name cannot also carry the deadletter cluster: this insert
+            // would silently collapse the two into the consumed topic's cluster.
+            // A non-empty return value means such a collision happened (the main
+            // topic is the only prior entry), so reject it rather than misroute
+            // deadletter messages.
+            let prev = self.kafka_topics.insert(
+                self.kafka_deadletter_topic.clone(),
+                TopicConfig {
                     cluster: DEADLETTER_CLUSTER.to_owned(),
                     consumer_group: consumer_group.clone(),
                     produce_only: true,
@@ -730,7 +746,14 @@ impl Config {
                     session_timeout_ms: None,
                     auto_commit_interval_ms: None,
                     auto_offset_reset: None,
-                });
+                },
+            );
+            if prev.is_some() {
+                return Err(Box::new(figment::Error::from(format!(
+                    "kafka_deadletter_topic '{}' must differ from the consumed topic '{}'",
+                    self.kafka_deadletter_topic, topic_name
+                ))));
+            }
 
             // Add the retry topic if configured (unless it collides with the
             // main topic). Retry topics are produce-only; this taskbroker writes
@@ -1704,6 +1727,31 @@ kafka_clusters:
             assert!(
                 err.to_string()
                     .contains("kafka_deadletter_topic 'taskworker-dlq' is not defined"),
+                "unexpected error: {}",
+                err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_legacy_rejects_deadletter_topic_equal_to_main_topic() {
+        // Topics are keyed by name, so a deadletter topic that shares the main
+        // topic's name cannot carry its own (deadletter) cluster. Rather than
+        // silently route deadletter messages to the consumed topic's cluster,
+        // normalization must reject the collision.
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_KAFKA_TOPIC", "taskworker");
+            jail.set_env("TASKBROKER_KAFKA_DEADLETTER_TOPIC", "taskworker");
+
+            let args = Args { config: None };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains(
+                    "kafka_deadletter_topic 'taskworker' must differ from the consumed topic \
+                     'taskworker'"
+                ),
                 "unexpected error: {}",
                 err
             );
