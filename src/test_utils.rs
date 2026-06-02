@@ -264,9 +264,12 @@ pub fn make_activations(count: u32) -> Vec<Activation> {
     make_activations_with_namespace(namespace, count)
 }
 
-/// Create a basic default [`Config`]
+/// Create a basic default [`Config`], normalized so the kafka helpers
+/// (`consumable_topic`, `cluster`, ...) are usable.
 pub fn create_config() -> Arc<Config> {
-    Arc::new(Config::default())
+    let mut config = Config::default();
+    config.normalize_and_validate().unwrap();
+    Arc::new(config)
 }
 
 /// Create an ActivationStore instance
@@ -299,7 +302,7 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
 pub fn create_integration_config() -> Arc<Config> {
-    let config = Config {
+    let mut config = Config {
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
         pg_username: get_pg_username(),
@@ -312,6 +315,7 @@ pub fn create_integration_config() -> Arc<Config> {
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
     };
+    config.normalize_and_validate().unwrap();
 
     Arc::new(config)
 }
@@ -320,7 +324,7 @@ pub fn create_integration_config() -> Arc<Config> {
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
 pub fn create_integration_config_with_ssl() -> Arc<Config> {
-    let config = Config {
+    let mut config = Config {
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
         pg_username: get_pg_username(),
@@ -334,12 +338,13 @@ pub fn create_integration_config_with_ssl() -> Arc<Config> {
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
     };
+    config.normalize_and_validate().unwrap();
 
     Arc::new(config)
 }
 
 pub fn create_integration_config_with_topic(topic: String) -> Config {
-    Config {
+    let mut config = Config {
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
         pg_username: get_pg_username(),
@@ -351,7 +356,9 @@ pub fn create_integration_config_with_topic(topic: String) -> Config {
         kafka_consumer_group: Some("taskworker".into()),
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
-    }
+    };
+    config.normalize_and_validate().unwrap();
+    config
 }
 
 /// Create a kafka producer for a given config

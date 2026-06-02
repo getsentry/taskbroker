@@ -248,7 +248,9 @@ demoted_namespaces:
         let runtime_config = Arc::new(
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
@@ -269,7 +271,9 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_drop_task_due_to_expiry() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
@@ -291,11 +295,13 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_close_by_bytes_limit() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config {
+        let mut config = Config {
             db_insert_batch_max_size: 1,
             db_insert_batch_max_len: 2,
             ..Default::default()
-        });
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -319,11 +325,13 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_close_by_rows_limit() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        let config = Arc::new(Config {
+        let mut config = Config {
             db_insert_batch_max_size: 100000,
             db_insert_batch_max_len: 2,
             ..Default::default()
-        });
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
@@ -368,16 +376,21 @@ demoted_topic: taskworker-demoted"#;
         let runtime_config = Arc::new(
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
-        let config = Arc::new(Config::default());
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_config(&config),
             runtime_config,
         );
 
-        assert_eq!(
-            batcher.producer_cluster,
-            config.kafka_cluster.clone().unwrap()
-        );
+        let (_, topic_config) = config.consumable_topic().unwrap();
+        let cluster_address = config
+            .cluster(&topic_config.cluster)
+            .unwrap()
+            .address
+            .clone();
+        assert_eq!(batcher.producer_cluster, cluster_address);
 
         let activation_0 = ActivationBuilder::new()
             .id("0")

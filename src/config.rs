@@ -117,15 +117,19 @@ pub struct Config {
     pub grpc_shared_secret: Vec<String>,
 
     /// Comma separated list of kafka brokers to connect to.
-    /// Deprecated: use kafka_clusters instead.
+    /// Deprecated: use kafka_clusters instead. Mutually exclusive with the new
+    /// format; defaults to None (the historical "127.0.0.1:9092" default is
+    /// applied during normalization when no kafka config is provided at all).
     pub kafka_cluster: Option<String>,
 
     /// The kafka consumer group name.
-    /// Deprecated: use kafka_topics instead.
+    /// Deprecated: use kafka_topics instead. Mutually exclusive with the new
+    /// format; defaults to None (the historical "taskworker" default applies).
     pub kafka_consumer_group: Option<String>,
 
     /// The topic to fetch task messages from.
-    /// Deprecated: use kafka_topics instead.
+    /// Deprecated: use kafka_topics instead. Mutually exclusive with the new
+    /// format; defaults to None (the historical "taskworker" default applies).
     pub kafka_topic: Option<String>,
 
     /// The topic to produce demoted "long" namespace tasks to.
@@ -194,12 +198,6 @@ pub struct Config {
     /// When set, retries go to this topic instead of kafka_topic.
     /// Required for raw_mode where the main topic has other consumers.
     pub kafka_retry_topic: Option<String>,
-
-    /// Whether to consume from the retry topic.
-    /// When false (default), this taskbroker only produces to the retry topic
-    /// but does not consume from it, allowing the retry topic to be shared
-    /// across multiple taskbroker instances.
-    pub kafka_consume_retry_topic: bool,
 
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
@@ -425,6 +423,9 @@ pub struct Config {
 }
 
 impl Default for Config {
+    /// Field defaults. `kafka_topics`/`kafka_clusters` are left empty; call
+    /// [`Config::normalize_and_validate`] (as `from_args` does) to populate
+    /// them from the legacy fields before using the kafka helpers.
     fn default() -> Self {
         Self {
             sentry_dsn: None,
@@ -437,8 +438,8 @@ impl Default for Config {
             grpc_shared_secret: vec![],
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             default_metrics_tags: Default::default(),
-            kafka_cluster: Some("127.0.0.1:9092".to_owned()),
-            kafka_consumer_group: Some("taskworker".to_owned()),
+            kafka_cluster: None,
+            kafka_consumer_group: None,
             kafka_sasl_mechanism: None,
             kafka_sasl_username: None,
             kafka_sasl_password: None,
@@ -446,7 +447,7 @@ impl Default for Config {
             kafka_ssl_certificate_location: None,
             kafka_ssl_key_location: None,
             kafka_security_protocol: None,
-            kafka_topic: Some("taskworker".to_owned()),
+            kafka_topic: None,
             kafka_long_topic: "taskworker-long".to_owned(),
             create_missing_topics: false,
             kafka_deadletter_cluster: None,
@@ -459,7 +460,6 @@ impl Default for Config {
             kafka_deadletter_ssl_certificate_location: None,
             kafka_deadletter_ssl_key_location: None,
             kafka_retry_topic: None,
-            kafka_consume_retry_topic: false,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
@@ -540,61 +540,111 @@ impl Config {
         Ok(config)
     }
 
-    /// Normalize legacy single-topic config into the new multi-topic format,
-    /// then validate the result.
+    /// Normalize the legacy single-topic config into the new multi-topic
+    /// format, then validate the result.
     ///
-    /// Legacy fields (`kafka_topic`, `kafka_cluster`, etc.) are merged into
-    /// `kafka_topics`/`kafka_clusters`. New-style config takes precedence.
-    /// After this, `kafka_topics` and `kafka_clusters` are always populated.
-    fn normalize_and_validate(&mut self) -> Result<(), Box<figment::Error>> {
+    /// The legacy fields (`kafka_topic`, `kafka_cluster`, etc.) and the new
+    /// fields (`kafka_topics`, `kafka_clusters`) are mutually exclusive: mixing
+    /// them is a hard error. When only legacy fields are used (including the
+    /// zero-config case, where the historical `taskworker` defaults apply), they
+    /// are normalized into `kafka_topics`/`kafka_clusters`. After this,
+    /// `kafka_topics` and `kafka_clusters` are always populated.
+    pub(crate) fn normalize_and_validate(&mut self) -> Result<(), Box<figment::Error>> {
         const DEFAULT_CLUSTER: &str = "default";
+        const DEFAULT_TOPIC: &str = "taskworker";
+        const DEFAULT_CLUSTER_ADDRESS: &str = "127.0.0.1:9092";
+        const DEFAULT_CONSUMER_GROUP: &str = "taskworker";
 
-        // Validate that legacy fields are used together
-        match (&self.kafka_cluster, &self.kafka_topic) {
-            (Some(_), None) => {
-                return Err(Box::new(figment::Error::from(
-                    "kafka_cluster is set but kafka_topic is not; \
-                     either set both or use kafka_clusters/kafka_topics instead"
-                        .to_owned(),
-                )));
-            }
-            (None, Some(_)) => {
-                return Err(Box::new(figment::Error::from(
-                    "kafka_topic is set but kafka_cluster is not; \
-                     either set both or use kafka_clusters/kafka_topics instead"
-                        .to_owned(),
-                )));
-            }
-            _ => {}
+        let uses_new_format = !self.kafka_topics.is_empty() || !self.kafka_clusters.is_empty();
+        // Any explicitly-set legacy field tied to the main consumed cluster.
+        // (Deadletter fields are not legacy duals and are intentionally excluded.)
+        let uses_legacy = self.kafka_topic.is_some()
+            || self.kafka_cluster.is_some()
+            || self.kafka_consumer_group.is_some()
+            || self.kafka_security_protocol.is_some()
+            || self.kafka_sasl_mechanism.is_some()
+            || self.kafka_sasl_username.is_some()
+            || self.kafka_sasl_password.is_some()
+            || self.kafka_ssl_ca_location.is_some()
+            || self.kafka_ssl_certificate_location.is_some()
+            || self.kafka_ssl_key_location.is_some();
+
+        if uses_new_format && uses_legacy {
+            return Err(Box::new(figment::Error::from(
+                "cannot mix the deprecated kafka_topic/kafka_cluster/kafka_consumer_group \
+                 (and related kafka_sasl_*/kafka_ssl_* fields) with kafka_topics/kafka_clusters; \
+                 use one config format or the other"
+                    .to_owned(),
+            )));
         }
 
-        // Build cluster config from legacy fields (if present)
-        if let Some(ref address) = self.kafka_cluster {
-            warn!("kafka_cluster is deprecated, use kafka_clusters instead");
-            let legacy_cluster = ClusterConfig {
-                address: address.clone(),
-                security_protocol: self.kafka_security_protocol.clone(),
-                sasl_mechanism: self.kafka_sasl_mechanism.clone(),
-                sasl_username: self.kafka_sasl_username.clone(),
-                sasl_password: self.kafka_sasl_password.clone(),
-                ssl_ca_location: self.kafka_ssl_ca_location.clone(),
-                ssl_certificate_location: self.kafka_ssl_certificate_location.clone(),
-                ssl_key_location: self.kafka_ssl_key_location.clone(),
-            };
+        if uses_new_format {
+            // New format: the maps are the source of truth. Require both halves
+            // so a topic always has a cluster to resolve against.
+            if self.kafka_topics.is_empty() {
+                return Err(Box::new(figment::Error::from(
+                    "kafka_clusters is set but kafka_topics is empty".to_owned(),
+                )));
+            }
+            if self.kafka_clusters.is_empty() {
+                return Err(Box::new(figment::Error::from(
+                    "kafka_topics is set but kafka_clusters is empty".to_owned(),
+                )));
+            }
+        } else {
+            // Legacy / zero-config path. Legacy topic and cluster must be set
+            // together (or neither, in which case the historical defaults apply).
+            match (&self.kafka_cluster, &self.kafka_topic) {
+                (Some(_), None) => {
+                    return Err(Box::new(figment::Error::from(
+                        "kafka_cluster is set but kafka_topic is not; \
+                         either set both or use kafka_clusters/kafka_topics instead"
+                            .to_owned(),
+                    )));
+                }
+                (None, Some(_)) => {
+                    return Err(Box::new(figment::Error::from(
+                        "kafka_topic is set but kafka_cluster is not; \
+                         either set both or use kafka_clusters/kafka_topics instead"
+                            .to_owned(),
+                    )));
+                }
+                _ => {}
+            }
 
-            // Add the legacy cluster (won't overwrite if "default" already exists)
-            self.kafka_clusters
-                .entry(DEFAULT_CLUSTER.to_owned())
-                .or_insert(legacy_cluster);
-        }
+            if self.kafka_cluster.is_some() {
+                warn!("kafka_cluster is deprecated, use kafka_clusters instead");
+            }
+            if self.kafka_topic.is_some() {
+                warn!("kafka_topic is deprecated, use kafka_topics instead");
+            }
 
-        // Build topic config from legacy fields (if present)
-        if let Some(ref topic_name) = self.kafka_topic {
-            warn!("kafka_topic is deprecated, use kafka_topics instead");
+            let topic_name = self
+                .kafka_topic
+                .clone()
+                .unwrap_or_else(|| DEFAULT_TOPIC.to_owned());
+            let address = self
+                .kafka_cluster
+                .clone()
+                .unwrap_or_else(|| DEFAULT_CLUSTER_ADDRESS.to_owned());
             let consumer_group = self
                 .kafka_consumer_group
                 .clone()
-                .unwrap_or_else(|| "taskworker".to_owned());
+                .unwrap_or_else(|| DEFAULT_CONSUMER_GROUP.to_owned());
+
+            self.kafka_clusters.insert(
+                DEFAULT_CLUSTER.to_owned(),
+                ClusterConfig {
+                    address,
+                    security_protocol: self.kafka_security_protocol.clone(),
+                    sasl_mechanism: self.kafka_sasl_mechanism.clone(),
+                    sasl_username: self.kafka_sasl_username.clone(),
+                    sasl_password: self.kafka_sasl_password.clone(),
+                    ssl_ca_location: self.kafka_ssl_ca_location.clone(),
+                    ssl_certificate_location: self.kafka_ssl_certificate_location.clone(),
+                    ssl_key_location: self.kafka_ssl_key_location.clone(),
+                },
+            );
 
             let raw_config = if self.raw_mode {
                 Some(RawModeConfig {
@@ -607,26 +657,26 @@ impl Config {
                 None
             };
 
-            let legacy_topic = TopicConfig {
-                cluster: DEFAULT_CLUSTER.to_owned(),
-                consumer_group: consumer_group.clone(),
-                produce_only: false,
-                raw: raw_config,
-            };
+            self.kafka_topics.insert(
+                topic_name,
+                TopicConfig {
+                    cluster: DEFAULT_CLUSTER.to_owned(),
+                    consumer_group: consumer_group.clone(),
+                    produce_only: false,
+                    raw: raw_config,
+                },
+            );
 
-            // Add legacy topic (new-style config takes precedence)
-            self.kafka_topics
-                .entry(topic_name.clone())
-                .or_insert(legacy_topic);
-
-            // Add retry topic if configured (only if not already present)
+            // Add the retry topic if configured (unless it collides with the
+            // main topic). Retry topics are produce-only; this taskbroker writes
+            // retries to them but does not consume from them.
             if let Some(ref retry_topic) = self.kafka_retry_topic {
                 self.kafka_topics
                     .entry(retry_topic.clone())
                     .or_insert_with(|| TopicConfig {
                         cluster: DEFAULT_CLUSTER.to_owned(),
                         consumer_group,
-                        produce_only: !self.kafka_consume_retry_topic,
+                        produce_only: true,
                         raw: None,
                     });
             }
@@ -820,7 +870,12 @@ mod tests {
         assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
-        assert_eq!(config.kafka_topic, Some("taskworker".to_owned()));
+        // The legacy kafka fields default to None now; the historical
+        // "taskworker" default is applied during normalization (see
+        // test_from_args_env_test).
+        assert_eq!(config.kafka_topic, None);
+        assert_eq!(config.kafka_cluster, None);
+        assert_eq!(config.kafka_consumer_group, None);
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 2048);
         assert_eq!(config.max_processing_count, 2048);
@@ -880,7 +935,12 @@ mod tests {
                 config.default_metrics_tags,
                 BTreeMap::from([("key_1".to_owned(), "value_1".to_owned())])
             );
-            assert_eq!(config.kafka_consumer_group, Some("taskworker".to_owned()));
+            // kafka_consumer_group is unset in the yaml, so the legacy field
+            // stays None and normalization applies the "taskworker" default.
+            assert_eq!(config.kafka_consumer_group, None);
+            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            assert_eq!(topic_name, "error-tasks");
+            assert_eq!(topic_config.consumer_group, "taskworker");
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_topic, Some("error-tasks".to_owned()));
@@ -937,7 +997,15 @@ mod tests {
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
             assert_eq!(config.log_filter, "error");
-            assert_eq!(config.kafka_topic, Some("taskworker".to_owned()));
+            // Zero-config: legacy fields stay None, but normalization applies
+            // the historical "taskworker" default as the consumable topic.
+            assert_eq!(config.kafka_topic, None);
+            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            assert_eq!(topic_name, "taskworker");
+            assert_eq!(
+                config.cluster(&topic_config.cluster).unwrap().address,
+                "127.0.0.1:9092"
+            );
             assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 2048);
@@ -1182,12 +1250,9 @@ mod tests {
         use super::{ClusterConfig, RawModeConfig};
 
         Jail::expect_with(|jail| {
-            // Set kafka_topic to match the consumable topic so they merge
             jail.create_file(
                 "config.yaml",
                 r#"
-kafka_topic: profiles
-
 kafka_topics:
   profiles:
     cluster: profiles-cluster
@@ -1211,7 +1276,6 @@ kafka_clusters:
             let config = Config::from_args(&args).unwrap();
 
             let topics = &config.kafka_topics;
-            // 2 topics from yaml, legacy kafka_topic merges with "profiles"
             assert_eq!(topics.len(), 2);
 
             let profiles = topics.get("profiles").unwrap();
@@ -1232,8 +1296,9 @@ kafka_clusters:
             assert!(retry.produce_only);
 
             let clusters = &config.kafka_clusters;
-            // 2 clusters: profiles-cluster from yaml + default from legacy kafka_cluster
-            assert_eq!(clusters.len(), 2);
+            // Only the explicitly-declared cluster exists; no legacy "default"
+            // cluster is injected when the new format is used.
+            assert_eq!(clusters.len(), 1);
             assert_eq!(
                 clusters.get("profiles-cluster"),
                 Some(&ClusterConfig {
@@ -1247,8 +1312,7 @@ kafka_clusters:
                     ssl_key_location: None,
                 })
             );
-            // Legacy "default" cluster also exists
-            assert!(clusters.contains_key("default"));
+            assert!(!clusters.contains_key("default"));
 
             // Test consumable_topic() and cluster() helpers
             let (topic_name, topic_config) = config.consumable_topic().unwrap();
@@ -1265,8 +1329,6 @@ kafka_clusters:
     #[test]
     fn test_multi_topic_config_from_env() {
         Jail::expect_with(|jail| {
-            // Set kafka_topic to match the new topic so they merge
-            jail.set_env("TASKBROKER_KAFKA_TOPIC", "profiles");
             // Note: figment lowercases env var keys after splitting on "__",
             // so MY_CLUSTER becomes my_cluster (with underscore, not hyphen).
             // The cluster reference value is preserved as-is.
@@ -1284,7 +1346,6 @@ kafka_clusters:
             let config = Config::from_args(&args).unwrap();
 
             let topics = &config.kafka_topics;
-            // "profiles" from env + legacy kafka_topic merges with it
             assert_eq!(topics.len(), 1);
 
             let profiles = topics.get("profiles").unwrap();
@@ -1292,9 +1353,9 @@ kafka_clusters:
             assert_eq!(profiles.consumer_group, "taskbroker-profiles");
 
             let clusters = &config.kafka_clusters;
+            assert_eq!(clusters.len(), 1);
             assert_eq!(clusters.get("my_cluster").unwrap().address, "10.0.0.2:9092");
-            // Legacy "default" cluster also exists
-            assert!(clusters.contains_key("default"));
+            assert!(!clusters.contains_key("default"));
 
             // Test consumable_topic() helper
             let (topic_name, _) = config.consumable_topic().unwrap();
@@ -1305,18 +1366,49 @@ kafka_clusters:
     }
 
     #[test]
-    fn test_multi_topic_unknown_cluster_reference() {
-        // When kafka_topics references a cluster that doesn't exist in kafka_clusters,
-        // validation should fail. The "default" cluster is always added from legacy config,
-        // but custom cluster references must exist.
+    fn test_rejects_mixing_legacy_and_new_format() {
         Jail::expect_with(|jail| {
             jail.create_file(
                 "config.yaml",
                 r#"
-kafka_topic: profiles
+kafka_topic: legacy-topic
+kafka_cluster: 127.0.0.1:9092
+
 kafka_topics:
   profiles:
-    cluster: nonexistent-cluster
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains("cannot mix"),
+                "unexpected error: {}",
+                err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_requires_clusters() {
+        // kafka_topics without any kafka_clusters is a misconfiguration.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topics:
+  profiles:
+    cluster: my-cluster
     consumer_group: taskbroker-profiles
 "#,
             )?;
@@ -1326,7 +1418,7 @@ kafka_topics:
             };
             let err = Config::from_args(&args).unwrap_err();
             assert!(
-                err.to_string().contains("unknown cluster"),
+                err.to_string().contains("kafka_clusters is empty"),
                 "unexpected error: {}",
                 err
             );
@@ -1338,11 +1430,9 @@ kafka_topics:
     #[test]
     fn test_multi_topic_validates_cluster_references() {
         Jail::expect_with(|jail| {
-            // Set kafka_topic to match the profile so legacy topic merges
             jail.create_file(
                 "config.yaml",
                 r#"
-kafka_topic: profiles
 kafka_topics:
   profiles:
     cluster: nonexistent-cluster
@@ -1371,12 +1461,10 @@ kafka_clusters:
     #[test]
     fn test_multi_topic_rejects_multiple_consumable_topics() {
         Jail::expect_with(|jail| {
-            // Two consumable topics in kafka_topics - should fail even with legacy merging
-            // because both profiles and subscriptions are consumable
+            // Two consumable topics - the guard for this PR rejects this.
             jail.create_file(
                 "config.yaml",
                 r#"
-kafka_topic: profiles
 kafka_topics:
   profiles:
     cluster: my-cluster
@@ -1409,12 +1497,10 @@ kafka_clusters:
     #[test]
     fn test_multi_topic_allows_one_consumable_with_produce_only() {
         Jail::expect_with(|jail| {
-            // One consumable topic (profiles), one produce-only (profiles-retry)
-            // Legacy kafka_topic merges with profiles
+            // One consumable topic (profiles), one produce-only (profiles-retry).
             jail.create_file(
                 "config.yaml",
                 r#"
-kafka_topic: profiles
 kafka_topics:
   profiles:
     cluster: my-cluster
@@ -1457,7 +1543,6 @@ kafka_clusters:
             jail.create_file(
                 "config.yaml",
                 r#"
-kafka_topic: profiles
 kafka_topics:
   profiles:
     cluster: my-cluster

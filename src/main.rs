@@ -167,12 +167,7 @@ async fn main() -> Result<(), Error> {
         let (main_topic, _) = consumer_config
             .consumable_topic()
             .expect("invalid config: no consumable topic");
-        let mut topics_to_consume = vec![main_topic.to_owned()];
-        if consumer_config.kafka_consume_retry_topic
-            && let Some(ref retry_topic) = consumer_config.kafka_retry_topic
-        {
-            topics_to_consume.push(retry_topic.clone());
-        }
+        let topics_to_consume = vec![main_topic.to_owned()];
 
         async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
