@@ -45,8 +45,11 @@ impl RawConfig {
         );
 
         if let Some(ref retry_topic) = config.kafka_retry_topic {
+            let (main_topic, _) = config
+                .consumable_topic()
+                .expect("no consumable topic configured");
             assert!(
-                retry_topic != &config.kafka_topic,
+                retry_topic != main_topic,
                 "kafka_retry_topic cannot equal kafka_topic when raw_mode is enabled"
             );
         }

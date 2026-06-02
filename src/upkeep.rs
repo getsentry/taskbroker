@@ -14,7 +14,7 @@ use sentry_protos::taskbroker::v1::TaskActivation;
 use tokio::{fs, join, select, time};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::SERVICE_NAME;
@@ -156,10 +156,12 @@ pub async fn do_upkeep(
     let handle_retries_start = Instant::now();
     if let Ok(retries) = store.get_retry_activations().await {
         // Use retry topic if configured, otherwise fall back to main topic
+        let (main_topic, _) = config.consumable_topic().expect("no consumable topic");
+        let main_topic_owned = main_topic.to_owned();
         let retry_target_topic = config
             .kafka_retry_topic
             .as_ref()
-            .unwrap_or(&config.kafka_topic);
+            .unwrap_or(&main_topic_owned);
 
         // 2. Append retries to kafka
         let deliveries = retries
@@ -320,18 +322,38 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
+    let (main_topic, main_topic_config) = config.consumable_topic().expect("no consumable topic");
+    let main_cluster = config
+        .cluster(&main_topic_config.cluster)
+        .expect("cluster not found")
+        .address
+        .clone();
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or(config.kafka_cluster.clone());
+        .unwrap_or(main_cluster.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
         .unwrap_or(config.kafka_long_topic.clone());
-    let same_cluster = forward_cluster == config.kafka_cluster;
-    let same_topic = forward_topic == config.kafka_topic;
+    let same_cluster = forward_cluster == main_cluster;
+    let same_topic = forward_topic == main_topic;
     if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
         let forward_demoted_start = Instant::now();
+        // The forwarding producer reuses the deadletter cluster's credentials
+        // (see Config::kafka_producer_config) and only overrides
+        // bootstrap.servers. If we're forwarding to a different cluster that has
+        // its own auth, those credentials won't apply there and publishing will
+        // fail. We keep the legacy behavior (reuse + override) for compatibility
+        // but warn so the misconfiguration is visible.
+        let dlq_cluster = config.kafka_producer_cluster();
+        if forward_cluster != dlq_cluster.address && dlq_cluster.has_auth() {
+            warn!(
+                "forwarding demoted-namespace tasks to cluster '{}', but the producer reuses the \
+                 deadletter cluster '{}' credentials; publishing may fail if their auth differs",
+                forward_cluster, dlq_cluster.address
+            );
+        }
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
         let forward_producer: Arc<FutureProducer> = Arc::new(
@@ -591,7 +613,7 @@ mod tests {
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
-        create_integration_config_with_topic, create_producer, create_test_store, make_activations,
+        create_integration_config_from_base, create_producer, create_test_store, make_activations,
         replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
@@ -682,10 +704,11 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
 
         let start_time = Utc::now();
@@ -742,7 +765,8 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert_eq!(result_context.retried, 1);
 
-        let messages = consume_topic(config.clone(), config.kafka_topic.as_ref(), 1).await;
+        let (main_topic, _) = config.consumable_topic().unwrap();
+        let messages = consume_topic(config.clone(), main_topic, 1).await;
         assert_eq!(messages.len(), 1);
         let activation = &messages[0];
 
@@ -1038,10 +1062,11 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
@@ -1423,11 +1448,11 @@ demoted_namespaces:
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
-        let raw_config = Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-full-vacuum-{adapter}")),
             full_vacuum_on_start: true,
             ..Default::default()
-        };
-        let config = Arc::new(raw_config);
+        }));
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_test_store(adapter).await;

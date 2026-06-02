@@ -220,8 +220,11 @@ mod tests {
     }
 
     #[test]
-    fn test_config_defaults_to_zero_retries() {
-        let config = RetryConfig::from_config(&Arc::new(Config::default()));
+    fn test_config_none_means_zero_retries() {
+        let config = RetryConfig::from_config(&Arc::new(Config {
+            db_query_max_retries: None,
+            ..Config::default()
+        }));
         assert_eq!(config.max_retries, 0);
     }
 
