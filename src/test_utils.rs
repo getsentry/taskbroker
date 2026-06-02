@@ -298,10 +298,13 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
     }
 }
 
-/// Create a Config instance that uses a testing topic
-/// and earliest auto_offset_reset. This is intended to be combined
-/// with [`reset_topic`]
-pub fn create_integration_config() -> Arc<Config> {
+/// Create a normalized integration [`Config`] from a caller-supplied `base`.
+/// The standard integration defaults (pg connection, local kafka cluster,
+/// consumer group, earliest offset reset) are applied first, then `base`
+/// overrides them, and finally the config is normalized — so any field the
+/// caller sets (e.g. `kafka_deadletter_topic`) is in place before the kafka
+/// topic maps are built.
+pub fn create_integration_config_from_base(base: Config) -> Config {
     let mut config = Config {
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
@@ -309,56 +312,42 @@ pub fn create_integration_config() -> Arc<Config> {
         pg_password: get_pg_password(),
         pg_database_name: get_pg_database_name(),
         run_migrations: true,
-        kafka_topic: Some("taskbroker-test".into()),
         kafka_cluster: Some("127.0.0.1:9092".into()),
         kafka_consumer_group: Some("taskworker".into()),
         kafka_auto_offset_reset: "earliest".into(),
-        ..Config::default()
+        ..base
     };
     config.normalize_and_validate().unwrap();
+    config
+}
 
-    Arc::new(config)
+/// Create a Config instance that uses a testing topic
+/// and earliest auto_offset_reset. This is intended to be combined
+/// with [`reset_topic`]
+pub fn create_integration_config() -> Arc<Config> {
+    Arc::new(create_integration_config_from_base(Config {
+        kafka_topic: Some("taskbroker-test".into()),
+        ..Config::default()
+    }))
 }
 
 /// Create a Config instance that uses SSL
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
 pub fn create_integration_config_with_ssl() -> Arc<Config> {
-    let mut config = Config {
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
+    Arc::new(create_integration_config_from_base(Config {
         pg_extra_query_params: Some("sslmode=require".to_string()),
-        run_migrations: true,
         kafka_topic: Some("taskbroker-test".into()),
-        kafka_cluster: Some("127.0.0.1:9092".into()),
-        kafka_consumer_group: Some("taskworker".into()),
-        kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
-    };
-    config.normalize_and_validate().unwrap();
-
-    Arc::new(config)
+    }))
 }
 
+/// Create a normalized integration [`Config`] using the given main topic.
 pub fn create_integration_config_with_topic(topic: String) -> Config {
-    let mut config = Config {
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
-        run_migrations: true,
+    create_integration_config_from_base(Config {
         kafka_topic: Some(topic),
-        kafka_cluster: Some("127.0.0.1:9092".into()),
-        kafka_consumer_group: Some("taskworker".into()),
-        kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
-    };
-    config.normalize_and_validate().unwrap();
-    config
+    })
 }
 
 /// Create a kafka producer for a given config

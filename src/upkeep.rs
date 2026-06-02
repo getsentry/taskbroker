@@ -599,7 +599,7 @@ mod tests {
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
-        create_integration_config_with_topic, create_producer, create_test_store, make_activations,
+        create_integration_config_from_base, create_producer, create_test_store, make_activations,
         replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
@@ -690,10 +690,11 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
 
         let start_time = Utc::now();
@@ -1047,10 +1048,11 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
@@ -1432,11 +1434,11 @@ demoted_namespaces:
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
-        let raw_config = Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-full-vacuum-{adapter}")),
             full_vacuum_on_start: true,
             ..Default::default()
-        };
-        let config = Arc::new(raw_config);
+        }));
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_test_store(adapter).await;
