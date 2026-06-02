@@ -816,23 +816,28 @@ impl Config {
         // The upkeep producer connects to the deadletter topic's cluster but is
         // also reused to publish retries to the retry topic (or the consumed
         // topic when no retry topic is configured). A single producer can only
-        // reach one cluster, so the retry target must resolve to the same
-        // cluster address as the deadletter topic; otherwise retries would be
-        // published to the wrong brokers.
+        // reach one cluster, so the retry target must be a declared topic on
+        // the same cluster address as the deadletter topic; otherwise retries
+        // would be published to the wrong brokers. In the legacy format the
+        // retry topic is registered above; in the new format the user must
+        // declare it in kafka_topics.
         let (consumed_topic, _) = self.consumable_topic()?;
         let retry_target = self.kafka_retry_topic.as_deref().unwrap_or(consumed_topic);
+        let retry_topic_config = self.kafka_topics.get(retry_target).ok_or_else(|| {
+            Box::new(figment::Error::from(format!(
+                "kafka_retry_topic '{retry_target}' is not defined in kafka_topics"
+            )))
+        })?;
+        let retry_address = &self.cluster(&retry_topic_config.cluster)?.address;
         let deadletter_address = &self
             .cluster(&self.kafka_topics[&self.kafka_deadletter_topic].cluster)?
             .address;
-        if let Some(retry_topic_config) = self.kafka_topics.get(retry_target) {
-            let retry_address = &self.cluster(&retry_topic_config.cluster)?.address;
-            if retry_address != deadletter_address {
-                return Err(Box::new(figment::Error::from(format!(
-                    "retry target topic '{}' is on cluster '{}', but deadletter topic '{}' is on \
-                     '{}'; they share a single producer and must be on the same cluster",
-                    retry_target, retry_address, self.kafka_deadletter_topic, deadletter_address
-                ))));
-            }
+        if retry_address != deadletter_address {
+            return Err(Box::new(figment::Error::from(format!(
+                "retry target topic '{}' is on cluster '{}', but deadletter topic '{}' is on \
+                 '{}'; they share a single producer and must be on the same cluster",
+                retry_target, retry_address, self.kafka_deadletter_topic, deadletter_address
+            ))));
         }
 
         Ok(())
@@ -1920,6 +1925,48 @@ kafka_clusters:
             assert_eq!(
                 consumer_config.get("auto.offset.reset").unwrap(),
                 "earliest"
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_new_format_requires_retry_topic_to_be_declared() {
+        // In the new format kafka_retry_topic must be declared in kafka_topics
+        // so its cluster is known; otherwise retries would silently use the
+        // deadletter producer's cluster.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_deadletter_topic: profiles-dlq
+kafka_retry_topic: profiles-retry
+
+kafka_topics:
+  profiles:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+  profiles-dlq:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles-dlq
+    produce_only: true
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("kafka_retry_topic 'profiles-retry' is not defined in kafka_topics"),
+                "unexpected error: {}",
+                err
             );
 
             Ok(())
