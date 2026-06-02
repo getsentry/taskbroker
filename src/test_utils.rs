@@ -342,14 +342,6 @@ pub fn create_integration_config_with_ssl() -> Arc<Config> {
     }))
 }
 
-/// Create a normalized integration [`Config`] using the given main topic.
-pub fn create_integration_config_with_topic(topic: String) -> Config {
-    create_integration_config_from_base(Config {
-        kafka_topic: Some(topic),
-        ..Config::default()
-    })
-}
-
 /// Create a kafka producer for a given config
 pub fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
     let producer: FutureProducer = config
