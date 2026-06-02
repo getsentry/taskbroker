@@ -727,15 +727,8 @@ impl Config {
             assert!(prev.is_none(), "internal: duplicate topic '{topic_name}'");
 
             // Register the deadletter topic as a produce-only topic on its own
-            // cluster, just like the retry topic below. Its name stays
-            // configured via the (still valid) kafka_deadletter_topic field.
-            //
-            // Topics are keyed by name, so a deadletter topic sharing the main
-            // topic's name cannot also carry the deadletter cluster: this insert
-            // would silently collapse the two into the consumed topic's cluster.
-            // A non-empty return value means such a collision happened (the main
-            // topic is the only prior entry), so reject it rather than misroute
-            // deadletter messages.
+            // cluster. A non-empty return value means it collided with the main
+            // topic, which would route deadletter messages to the wrong cluster.
             let prev = self.kafka_topics.insert(
                 self.kafka_deadletter_topic.clone(),
                 TopicConfig {
