@@ -813,6 +813,28 @@ impl Config {
             ))));
         }
 
+        // The upkeep producer connects to the deadletter topic's cluster but is
+        // also reused to publish retries to the retry topic (or the consumed
+        // topic when no retry topic is configured). A single producer can only
+        // reach one cluster, so the retry target must resolve to the same
+        // cluster address as the deadletter topic; otherwise retries would be
+        // published to the wrong brokers.
+        let (consumed_topic, _) = self.consumable_topic()?;
+        let retry_target = self.kafka_retry_topic.as_deref().unwrap_or(consumed_topic);
+        let deadletter_address = &self
+            .cluster(&self.kafka_topics[&self.kafka_deadletter_topic].cluster)?
+            .address;
+        if let Some(retry_topic_config) = self.kafka_topics.get(retry_target) {
+            let retry_address = &self.cluster(&retry_topic_config.cluster)?.address;
+            if retry_address != deadletter_address {
+                return Err(Box::new(figment::Error::from(format!(
+                    "retry target topic '{}' is on cluster '{}', but deadletter topic '{}' is on \
+                     '{}'; they share a single producer and must be on the same cluster",
+                    retry_target, retry_address, self.kafka_deadletter_topic, deadletter_address
+                ))));
+            }
+        }
+
         Ok(())
     }
 
@@ -1905,9 +1927,11 @@ kafka_clusters:
     }
 
     #[test]
-    fn test_deadletter_producer_uses_its_topic_cluster() {
-        // The deadletter producer connects to the cluster of the deadletter
-        // topic, which can differ from the consumable topic's cluster.
+    fn test_rejects_deadletter_topic_on_different_cluster() {
+        // The upkeep producer is shared between deadletter publishing and retry
+        // publishing (to the consumed topic), and a single producer can only
+        // reach one cluster. Putting the deadletter topic on a different cluster
+        // than the consumed topic would misroute retries, so it's rejected.
         Jail::expect_with(|jail| {
             jail.create_file(
                 "config.yaml",
@@ -1934,18 +1958,12 @@ kafka_clusters:
             let args = Args {
                 config: Some("config.yaml".to_owned()),
             };
-            let config = Config::from_args(&args).unwrap();
-
-            let consumer_config = config.kafka_consumer_config();
-            assert_eq!(
-                consumer_config.get("bootstrap.servers").unwrap(),
-                "10.0.0.1:9092"
-            );
-
-            let producer_config = config.kafka_producer_config();
-            assert_eq!(
-                producer_config.get("bootstrap.servers").unwrap(),
-                "10.9.9.9:9092"
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("they share a single producer and must be on the same cluster"),
+                "unexpected error: {}",
+                err
             );
 
             Ok(())
