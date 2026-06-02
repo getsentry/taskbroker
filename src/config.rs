@@ -10,6 +10,56 @@ use serde::{Deserialize, Serialize};
 use crate::Args;
 use crate::logging::LogFormat;
 
+/// Configuration for a single Kafka topic in multi-topic mode.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct TopicConfig {
+    /// Which cluster this topic is on (key into kafka_clusters)
+    pub cluster: String,
+    /// Consumer group for this topic
+    pub consumer_group: String,
+    /// If true, this topic is produce-only (e.g. retry topics).
+    /// Defaults to false, meaning the topic is consumed.
+    #[serde(default)]
+    pub produce_only: bool,
+    /// Raw mode settings. If set, this topic uses raw mode.
+    #[serde(default)]
+    pub raw: Option<RawModeConfig>,
+}
+
+/// Raw mode settings for a topic.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct RawModeConfig {
+    /// The namespace to assign to raw mode activations.
+    pub namespace: Option<String>,
+    /// The application to assign to raw mode activations.
+    pub application: Option<String>,
+    /// The taskname to assign to raw mode activations.
+    pub taskname: Option<String>,
+    /// Processing deadline duration in seconds for raw mode activations.
+    pub processing_deadline_duration: Option<u16>,
+}
+
+/// Configuration for a Kafka cluster.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct ClusterConfig {
+    /// Comma-separated list of broker addresses
+    pub address: String,
+    /// The security method used for authentication eg. sasl_plaintext
+    pub security_protocol: Option<String>,
+    /// The hashing algorithm used for authentication eg. scram-sha-256
+    pub sasl_mechanism: Option<String>,
+    /// The sasl username for authentication
+    pub sasl_username: Option<String>,
+    /// The sasl password for authentication
+    pub sasl_password: Option<String>,
+    /// The location to the CA certificate file
+    pub ssl_ca_location: Option<String>,
+    /// The location to the certificate file
+    pub ssl_certificate_location: Option<String>,
+    /// The location to the private key file
+    pub ssl_key_location: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseAdapter {
@@ -351,6 +401,16 @@ pub struct Config {
     /// This is an u16 because 1) we don't want to allow signed numbers 2) it can be cast into i32
     /// (which we use elsewhere) without error conditions. It doesn't actually have to be that small.
     pub raw_processing_deadline_duration: u16,
+
+    /// Topic configurations. After normalization, this always contains
+    /// at least one entry (from legacy config or explicit kafka_topics).
+    #[serde(default)]
+    pub kafka_topics: BTreeMap<String, TopicConfig>,
+
+    /// Kafka cluster configurations.
+    /// After normalization, this always contains at least the "default" cluster.
+    #[serde(default)]
+    pub kafka_clusters: BTreeMap<String, ClusterConfig>,
 }
 
 impl Default for Config {
@@ -448,6 +508,8 @@ impl Default for Config {
             raw_application: None,
             raw_taskname: None,
             raw_processing_deadline_duration: 30,
+            kafka_topics: BTreeMap::new(),
+            kafka_clusters: BTreeMap::new(),
         }
     }
 }
@@ -459,17 +521,144 @@ impl Config {
         if let Some(path) = &args.config {
             builder = builder.merge(Yaml::file(path));
         }
-        builder = builder.merge(Env::prefixed("TASKBROKER_"));
-        let config = builder.extract()?;
+        // Use split("__") to support nested config via envvars like:
+        // TASKBROKER_KAFKA_TOPICS__PROFILES__CLUSTER=my-cluster
+        builder = builder.merge(Env::prefixed("TASKBROKER_").split("__"));
+        let mut config: Config = builder.extract()?;
+        config.normalize_and_validate()?;
         Ok(config)
     }
 
-    /// Convert the application Config into rdkafka::ClientConfig
+    /// Normalize legacy single-topic config into the new multi-topic format,
+    /// then validate the result.
+    ///
+    /// Legacy fields (`kafka_topic`, `kafka_cluster`, etc.) are merged into
+    /// `kafka_topics`/`kafka_clusters`. New-style config takes precedence.
+    /// After this, `kafka_topics` and `kafka_clusters` are always populated.
+    fn normalize_and_validate(&mut self) -> Result<(), Box<figment::Error>> {
+        const DEFAULT_CLUSTER: &str = "default";
+
+        // Build cluster config from legacy fields
+        let legacy_cluster = ClusterConfig {
+            address: self.kafka_cluster.clone(),
+            security_protocol: self.kafka_security_protocol.clone(),
+            sasl_mechanism: self.kafka_sasl_mechanism.clone(),
+            sasl_username: self.kafka_sasl_username.clone(),
+            sasl_password: self.kafka_sasl_password.clone(),
+            ssl_ca_location: self.kafka_ssl_ca_location.clone(),
+            ssl_certificate_location: self.kafka_ssl_certificate_location.clone(),
+            ssl_key_location: self.kafka_ssl_key_location.clone(),
+        };
+
+        // Add the legacy cluster (won't overwrite if "default" already exists)
+        self.kafka_clusters
+            .entry(DEFAULT_CLUSTER.to_owned())
+            .or_insert(legacy_cluster);
+
+        // Build topic config from legacy fields
+        let raw_config = if self.raw_mode {
+            Some(RawModeConfig {
+                namespace: self.raw_namespace.clone(),
+                application: self.raw_application.clone(),
+                taskname: self.raw_taskname.clone(),
+                processing_deadline_duration: Some(self.raw_processing_deadline_duration),
+            })
+        } else {
+            None
+        };
+
+        let legacy_topic = TopicConfig {
+            cluster: DEFAULT_CLUSTER.to_owned(),
+            consumer_group: self.kafka_consumer_group.clone(),
+            produce_only: false,
+            raw: raw_config,
+        };
+
+        // Add legacy topic (new-style config takes precedence)
+        self.kafka_topics
+            .entry(self.kafka_topic.clone())
+            .or_insert(legacy_topic);
+
+        // Add retry topic if configured (only if not already present)
+        if let Some(ref retry_topic) = self.kafka_retry_topic {
+            self.kafka_topics
+                .entry(retry_topic.clone())
+                .or_insert_with(|| TopicConfig {
+                    cluster: DEFAULT_CLUSTER.to_owned(),
+                    consumer_group: self.kafka_consumer_group.clone(),
+                    produce_only: !self.kafka_consume_retry_topic,
+                    raw: None,
+                });
+        }
+
+        // Validate cluster references
+        for (topic_name, topic_config) in &self.kafka_topics {
+            self.cluster(&topic_config.cluster).map_err(|_| {
+                Box::new(figment::Error::from(format!(
+                    "topic '{}' references unknown cluster '{}'",
+                    topic_name, topic_config.cluster
+                )))
+            })?;
+        }
+
+        // Validate exactly one consumable topic
+        self.consumable_topic()?;
+
+        Ok(())
+    }
+
+    /// Get the single consumable topic and its config.
+    /// Returns an error if there are zero or multiple consumable topics.
+    pub fn consumable_topic(&self) -> Result<(&str, &TopicConfig), Box<figment::Error>> {
+        let mut consumable = self
+            .kafka_topics
+            .iter()
+            .filter(|(_, cfg)| !cfg.produce_only);
+
+        let first = consumable.next().ok_or_else(|| {
+            Box::new(figment::Error::from(
+                "no consumable topic configured (all topics have produce_only: true)".to_owned(),
+            ))
+        })?;
+
+        if consumable.next().is_some() {
+            let count = self
+                .kafka_topics
+                .values()
+                .filter(|t| !t.produce_only)
+                .count();
+            return Err(Box::new(figment::Error::from(format!(
+                "multi-topic consumption is not yet supported: {} consumable topics configured, maximum is 1",
+                count
+            ))));
+        }
+
+        Ok((first.0.as_str(), first.1))
+    }
+
+    /// Get cluster config by name.
+    /// Returns an error if the cluster doesn't exist.
+    pub fn cluster(&self, name: &str) -> Result<&ClusterConfig, Box<figment::Error>> {
+        self.kafka_clusters
+            .get(name)
+            .ok_or_else(|| Box::new(figment::Error::from(format!("unknown cluster: {}", name))))
+    }
+
+    /// Convert the application Config into rdkafka::ClientConfig for consumer.
+    /// Uses the single consumable topic's cluster.
+    /// Panics if config wasn't validated (call from_args, not extract directly).
     pub fn kafka_consumer_config(&self) -> ClientConfig {
+        let (_, topic_config) = self
+            .consumable_topic()
+            .expect("consumable_topic failed - was config validated?");
+        let cluster = self
+            .cluster(&topic_config.cluster)
+            .expect("cluster lookup failed - was config validated?");
+
         let mut new_config = ClientConfig::new();
         let config = new_config
-            .set("bootstrap.servers", self.kafka_cluster.clone())
-            .set("group.id", self.kafka_consumer_group.clone())
+            .set("bootstrap.servers", cluster.address.clone())
+            .set("group.id", topic_config.consumer_group.clone())
             .set(
                 "session.timeout.ms",
                 self.kafka_session_timeout_ms.to_string(),
@@ -486,25 +675,25 @@ impl Config {
             )
             .set("enable.auto.offset.store", "false");
 
-        if let Some(sasl_mechanism) = &self.kafka_sasl_mechanism {
+        if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
             config.set("sasl.mechanism", sasl_mechanism);
         }
-        if let Some(sasl_username) = &self.kafka_sasl_username {
+        if let Some(ref sasl_username) = cluster.sasl_username {
             config.set("sasl.username", sasl_username);
         }
-        if let Some(sasl_password) = &self.kafka_sasl_password {
+        if let Some(ref sasl_password) = cluster.sasl_password {
             config.set("sasl.password", sasl_password);
         }
-        if let Some(security_protocol) = &self.kafka_security_protocol {
+        if let Some(ref security_protocol) = cluster.security_protocol {
             config.set("security.protocol", security_protocol);
         }
-        if let Some(ssl_ca_location) = &self.kafka_ssl_ca_location {
+        if let Some(ref ssl_ca_location) = cluster.ssl_ca_location {
             config.set("ssl.ca.location", ssl_ca_location);
         }
-        if let Some(ssl_certificate_location) = &self.kafka_ssl_certificate_location {
+        if let Some(ref ssl_certificate_location) = cluster.ssl_certificate_location {
             config.set("ssl.certificate.location", ssl_certificate_location);
         }
-        if let Some(ssl_private_key_location) = &self.kafka_ssl_key_location {
+        if let Some(ref ssl_private_key_location) = cluster.ssl_key_location {
             config.set("ssl.key.location", ssl_private_key_location);
         }
 
@@ -932,6 +1121,313 @@ mod tests {
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.delivery_mode, DeliveryMode::Push);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_config_from_yaml() {
+        use super::{ClusterConfig, RawModeConfig};
+
+        Jail::expect_with(|jail| {
+            // Set kafka_topic to match the consumable topic so they merge
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topic: profiles
+
+kafka_topics:
+  profiles:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles
+    raw:
+      application: profiles
+  profiles-retry:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles-retry
+    produce_only: true
+
+kafka_clusters:
+  profiles-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            let topics = &config.kafka_topics;
+            // 2 topics from yaml, legacy kafka_topic merges with "profiles"
+            assert_eq!(topics.len(), 2);
+
+            let profiles = topics.get("profiles").unwrap();
+            assert_eq!(profiles.cluster, "profiles-cluster");
+            assert_eq!(profiles.consumer_group, "taskbroker-profiles");
+            assert!(!profiles.produce_only);
+            assert_eq!(
+                profiles.raw,
+                Some(RawModeConfig {
+                    namespace: None,
+                    application: Some("profiles".to_owned()),
+                    taskname: None,
+                    processing_deadline_duration: None,
+                })
+            );
+
+            let retry = topics.get("profiles-retry").unwrap();
+            assert!(retry.produce_only);
+
+            let clusters = &config.kafka_clusters;
+            // 2 clusters: profiles-cluster from yaml + default from legacy kafka_cluster
+            assert_eq!(clusters.len(), 2);
+            assert_eq!(
+                clusters.get("profiles-cluster"),
+                Some(&ClusterConfig {
+                    address: "10.0.0.1:9092".to_owned(),
+                    security_protocol: None,
+                    sasl_mechanism: None,
+                    sasl_username: None,
+                    sasl_password: None,
+                    ssl_ca_location: None,
+                    ssl_certificate_location: None,
+                    ssl_key_location: None,
+                })
+            );
+            // Legacy "default" cluster also exists
+            assert!(clusters.contains_key("default"));
+
+            // Test consumable_topic() and cluster() helpers
+            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            assert_eq!(topic_name, "profiles");
+            assert_eq!(topic_config.cluster, "profiles-cluster");
+
+            let cluster = config.cluster("profiles-cluster").unwrap();
+            assert_eq!(cluster.address, "10.0.0.1:9092");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_config_from_env() {
+        Jail::expect_with(|jail| {
+            // Set kafka_topic to match the new topic so they merge
+            jail.set_env("TASKBROKER_KAFKA_TOPIC", "profiles");
+            // Note: figment lowercases env var keys after splitting on "__",
+            // so MY_CLUSTER becomes my_cluster (with underscore, not hyphen).
+            // The cluster reference value is preserved as-is.
+            jail.set_env("TASKBROKER_KAFKA_TOPICS__PROFILES__CLUSTER", "my_cluster");
+            jail.set_env(
+                "TASKBROKER_KAFKA_TOPICS__PROFILES__CONSUMER_GROUP",
+                "taskbroker-profiles",
+            );
+            jail.set_env(
+                "TASKBROKER_KAFKA_CLUSTERS__MY_CLUSTER__ADDRESS",
+                "10.0.0.2:9092",
+            );
+
+            let args = Args { config: None };
+            let config = Config::from_args(&args).unwrap();
+
+            let topics = &config.kafka_topics;
+            // "profiles" from env + legacy kafka_topic merges with it
+            assert_eq!(topics.len(), 1);
+
+            let profiles = topics.get("profiles").unwrap();
+            assert_eq!(profiles.cluster, "my_cluster");
+            assert_eq!(profiles.consumer_group, "taskbroker-profiles");
+
+            let clusters = &config.kafka_clusters;
+            assert_eq!(clusters.get("my_cluster").unwrap().address, "10.0.0.2:9092");
+            // Legacy "default" cluster also exists
+            assert!(clusters.contains_key("default"));
+
+            // Test consumable_topic() helper
+            let (topic_name, _) = config.consumable_topic().unwrap();
+            assert_eq!(topic_name, "profiles");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_unknown_cluster_reference() {
+        // When kafka_topics references a cluster that doesn't exist in kafka_clusters,
+        // validation should fail. The "default" cluster is always added from legacy config,
+        // but custom cluster references must exist.
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topic: profiles
+kafka_topics:
+  profiles:
+    cluster: nonexistent-cluster
+    consumer_group: taskbroker-profiles
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown cluster"),
+                "unexpected error: {}",
+                err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_validates_cluster_references() {
+        Jail::expect_with(|jail| {
+            // Set kafka_topic to match the profile so legacy topic merges
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topic: profiles
+kafka_topics:
+  profiles:
+    cluster: nonexistent-cluster
+    consumer_group: taskbroker-profiles
+
+kafka_clusters:
+  other-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains("unknown cluster"),
+                "unexpected error: {}",
+                err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_rejects_multiple_consumable_topics() {
+        Jail::expect_with(|jail| {
+            // Two consumable topics in kafka_topics - should fail even with legacy merging
+            // because both profiles and subscriptions are consumable
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topic: profiles
+kafka_topics:
+  profiles:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+  subscriptions:
+    cluster: my-cluster
+    consumer_group: taskbroker-subscriptions
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("multi-topic consumption is not yet supported"),
+                "unexpected error: {}",
+                err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_allows_one_consumable_with_produce_only() {
+        Jail::expect_with(|jail| {
+            // One consumable topic (profiles), one produce-only (profiles-retry)
+            // Legacy kafka_topic merges with profiles
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topic: profiles
+kafka_topics:
+  profiles:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+  profiles-retry:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles-retry
+    produce_only: true
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            let topics = &config.kafka_topics;
+            assert_eq!(topics.len(), 2);
+
+            // One consumable, one produce-only
+            assert!(!topics.get("profiles").unwrap().produce_only);
+            assert!(topics.get("profiles-retry").unwrap().produce_only);
+
+            // consumable_topic() returns the one consumable topic
+            let (topic_name, _) = config.consumable_topic().unwrap();
+            assert_eq!(topic_name, "profiles");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_multi_topic_rejects_zero_consumable_topics() {
+        Jail::expect_with(|jail| {
+            // All topics are produce-only - should fail
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_topic: profiles
+kafka_topics:
+  profiles:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+    produce_only: true
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains("no consumable topic"),
+                "unexpected error: {}",
+                err
+            );
 
             Ok(())
         });
