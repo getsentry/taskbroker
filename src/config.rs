@@ -766,20 +766,10 @@ impl Config {
                 ))));
             }
 
-            // Add the retry topic if configured. Retry topics are produce-only;
-            // this taskbroker writes retries to them but does not consume from
-            // them. Retries are published by the upkeep producer, which is the
-            // same producer used for the deadletter topic and therefore connects
-            // to the deadletter cluster (see kafka_producer_cluster). A distinct
-            // legacy retry topic must therefore be registered on the deadletter
-            // cluster, not the main consumer cluster -- otherwise the
-            // same-cluster validation below compares the retry topic against the
-            // wrong cluster and rejects configs where the main consumer cluster
-            // differs from the deadletter cluster. Aliasing the main topic is
-            // allowed (retries are re-enqueued there, which requires the main and
-            // deadletter clusters to coincide), but aliasing the deadletter topic
-            // is not: the names would collide and the retry would silently
-            // inherit the deadletter role.
+            // Register the retry topic on the deadletter cluster: retries are
+            // published by the upkeep producer, which is the same producer used
+            // for the deadletter topic (see kafka_producer_cluster). Aliasing
+            // the deadletter topic is rejected to avoid a name collision.
             if let Some(ref retry_topic) = self.kafka_retry_topic {
                 if retry_topic == &self.kafka_deadletter_topic {
                     return Err(Box::new(figment::Error::from(format!(
