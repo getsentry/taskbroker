@@ -306,7 +306,9 @@ pub fn create_integration_config() -> Arc<Config> {
         pg_password: get_pg_password(),
         pg_database_name: get_pg_database_name(),
         run_migrations: true,
-        kafka_topic: "taskbroker-test".into(),
+        kafka_topic: Some("taskbroker-test".into()),
+        kafka_cluster: Some("127.0.0.1:9092".into()),
+        kafka_consumer_group: Some("taskworker".into()),
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
     };
@@ -326,7 +328,9 @@ pub fn create_integration_config_with_ssl() -> Arc<Config> {
         pg_database_name: get_pg_database_name(),
         pg_extra_query_params: Some("sslmode=require".to_string()),
         run_migrations: true,
-        kafka_topic: "taskbroker-test".into(),
+        kafka_topic: Some("taskbroker-test".into()),
+        kafka_cluster: Some("127.0.0.1:9092".into()),
+        kafka_consumer_group: Some("taskworker".into()),
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
     };
@@ -342,7 +346,9 @@ pub fn create_integration_config_with_topic(topic: String) -> Config {
         pg_password: get_pg_password(),
         pg_database_name: get_pg_database_name(),
         run_migrations: true,
-        kafka_topic: topic,
+        kafka_topic: Some(topic),
+        kafka_cluster: Some("127.0.0.1:9092".into()),
+        kafka_consumer_group: Some("taskworker".into()),
         kafka_auto_offset_reset: "earliest".into(),
         ..Config::default()
     }
@@ -365,15 +371,13 @@ pub async fn reset_topic(config: Arc<Config>) {
         .create()
         .expect("Could not create admin client");
 
+    let (main_topic, _) = config.consumable_topic().expect("no consumable topic");
     let options = AdminOptions::default();
     admin_client
-        .delete_topics(
-            &[config.kafka_topic.as_ref(), &config.kafka_deadletter_topic],
-            &options,
-        )
+        .delete_topics(&[main_topic, &config.kafka_deadletter_topic], &options)
         .await
         .expect("Could not delete topic");
-    let new_topic = NewTopic::new(&config.kafka_topic, 1, TopicReplication::Fixed(0));
+    let new_topic = NewTopic::new(main_topic, 1, TopicReplication::Fixed(0));
     let new_dlq_topic = NewTopic::new(
         &config.kafka_deadletter_topic,
         1,

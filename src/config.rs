@@ -6,6 +6,7 @@ use figment::providers::{Env, Format, Yaml};
 use figment::{Figment, Metadata, Profile, Provider};
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use crate::Args;
 use crate::logging::LogFormat;
@@ -115,37 +116,47 @@ pub struct Config {
     /// We support a list of secrets to allow for key rotation.
     pub grpc_shared_secret: Vec<String>,
 
-    /// Comma separated list of kafka brokers to connect to
-    pub kafka_cluster: String,
+    /// Comma separated list of kafka brokers to connect to.
+    /// Deprecated: use kafka_clusters instead.
+    pub kafka_cluster: Option<String>,
 
-    /// The kafka consumer group name
-    pub kafka_consumer_group: String,
+    /// The kafka consumer group name.
+    /// Deprecated: use kafka_topics instead.
+    pub kafka_consumer_group: Option<String>,
 
     /// The topic to fetch task messages from.
-    pub kafka_topic: String,
+    /// Deprecated: use kafka_topics instead.
+    pub kafka_topic: Option<String>,
 
     /// The topic to produce demoted "long" namespace tasks to.
     pub kafka_long_topic: String,
 
-    /// The security method used for authentication eg. sasl_plaintext
+    /// The security method used for authentication eg. sasl_plaintext.
+    /// Deprecated: use kafka_clusters instead.
     pub kafka_security_protocol: Option<String>,
 
-    /// The hashing algorithm used for authentication eg. scram-sha-256
+    /// The hashing algorithm used for authentication eg. scram-sha-256.
+    /// Deprecated: use kafka_clusters instead.
     pub kafka_sasl_mechanism: Option<String>,
 
-    /// The sasl username for ingesting messages
+    /// The sasl username for ingesting messages.
+    /// Deprecated: use kafka_clusters instead.
     pub kafka_sasl_username: Option<String>,
 
-    /// The sasl password for ingesting messages
+    /// The sasl password for ingesting messages.
+    /// Deprecated: use kafka_clusters instead.
     pub kafka_sasl_password: Option<String>,
 
-    /// The location to the CA certificate file
+    /// The location to the CA certificate file.
+    /// Deprecated: use kafka_clusters instead.
     pub kafka_ssl_ca_location: Option<String>,
 
-    /// The location to the certificate file
+    /// The location to the certificate file.
+    /// Deprecated: use kafka_clusters instead.
     pub kafka_ssl_certificate_location: Option<String>,
 
-    /// The location to the private key file
+    /// The location to the private key file.
+    /// Deprecated: use kafka_clusters instead.
     pub kafka_ssl_key_location: Option<String>,
 
     /// Whether to create missing topics if they don't exist.
@@ -426,8 +437,8 @@ impl Default for Config {
             grpc_shared_secret: vec![],
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             default_metrics_tags: Default::default(),
-            kafka_cluster: "127.0.0.1:9092".to_owned(),
-            kafka_consumer_group: "taskworker".to_owned(),
+            kafka_cluster: Some("127.0.0.1:9092".to_owned()),
+            kafka_consumer_group: Some("taskworker".to_owned()),
             kafka_sasl_mechanism: None,
             kafka_sasl_username: None,
             kafka_sasl_password: None,
@@ -435,7 +446,7 @@ impl Default for Config {
             kafka_ssl_certificate_location: None,
             kafka_ssl_key_location: None,
             kafka_security_protocol: None,
-            kafka_topic: "taskworker".to_owned(),
+            kafka_topic: Some("taskworker".to_owned()),
             kafka_long_topic: "taskworker-long".to_owned(),
             create_missing_topics: false,
             kafka_deadletter_cluster: None,
@@ -538,57 +549,87 @@ impl Config {
     fn normalize_and_validate(&mut self) -> Result<(), Box<figment::Error>> {
         const DEFAULT_CLUSTER: &str = "default";
 
-        // Build cluster config from legacy fields
-        let legacy_cluster = ClusterConfig {
-            address: self.kafka_cluster.clone(),
-            security_protocol: self.kafka_security_protocol.clone(),
-            sasl_mechanism: self.kafka_sasl_mechanism.clone(),
-            sasl_username: self.kafka_sasl_username.clone(),
-            sasl_password: self.kafka_sasl_password.clone(),
-            ssl_ca_location: self.kafka_ssl_ca_location.clone(),
-            ssl_certificate_location: self.kafka_ssl_certificate_location.clone(),
-            ssl_key_location: self.kafka_ssl_key_location.clone(),
-        };
+        // Validate that legacy fields are used together
+        match (&self.kafka_cluster, &self.kafka_topic) {
+            (Some(_), None) => {
+                return Err(Box::new(figment::Error::from(
+                    "kafka_cluster is set but kafka_topic is not; \
+                     either set both or use kafka_clusters/kafka_topics instead"
+                        .to_owned(),
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(Box::new(figment::Error::from(
+                    "kafka_topic is set but kafka_cluster is not; \
+                     either set both or use kafka_clusters/kafka_topics instead"
+                        .to_owned(),
+                )));
+            }
+            _ => {}
+        }
 
-        // Add the legacy cluster (won't overwrite if "default" already exists)
-        self.kafka_clusters
-            .entry(DEFAULT_CLUSTER.to_owned())
-            .or_insert(legacy_cluster);
+        // Build cluster config from legacy fields (if present)
+        if let Some(ref address) = self.kafka_cluster {
+            warn!("kafka_cluster is deprecated, use kafka_clusters instead");
+            let legacy_cluster = ClusterConfig {
+                address: address.clone(),
+                security_protocol: self.kafka_security_protocol.clone(),
+                sasl_mechanism: self.kafka_sasl_mechanism.clone(),
+                sasl_username: self.kafka_sasl_username.clone(),
+                sasl_password: self.kafka_sasl_password.clone(),
+                ssl_ca_location: self.kafka_ssl_ca_location.clone(),
+                ssl_certificate_location: self.kafka_ssl_certificate_location.clone(),
+                ssl_key_location: self.kafka_ssl_key_location.clone(),
+            };
 
-        // Build topic config from legacy fields
-        let raw_config = if self.raw_mode {
-            Some(RawModeConfig {
-                namespace: self.raw_namespace.clone(),
-                application: self.raw_application.clone(),
-                taskname: self.raw_taskname.clone(),
-                processing_deadline_duration: Some(self.raw_processing_deadline_duration),
-            })
-        } else {
-            None
-        };
+            // Add the legacy cluster (won't overwrite if "default" already exists)
+            self.kafka_clusters
+                .entry(DEFAULT_CLUSTER.to_owned())
+                .or_insert(legacy_cluster);
+        }
 
-        let legacy_topic = TopicConfig {
-            cluster: DEFAULT_CLUSTER.to_owned(),
-            consumer_group: self.kafka_consumer_group.clone(),
-            produce_only: false,
-            raw: raw_config,
-        };
+        // Build topic config from legacy fields (if present)
+        if let Some(ref topic_name) = self.kafka_topic {
+            warn!("kafka_topic is deprecated, use kafka_topics instead");
+            let consumer_group = self
+                .kafka_consumer_group
+                .clone()
+                .unwrap_or_else(|| "taskworker".to_owned());
 
-        // Add legacy topic (new-style config takes precedence)
-        self.kafka_topics
-            .entry(self.kafka_topic.clone())
-            .or_insert(legacy_topic);
+            let raw_config = if self.raw_mode {
+                Some(RawModeConfig {
+                    namespace: self.raw_namespace.clone(),
+                    application: self.raw_application.clone(),
+                    taskname: self.raw_taskname.clone(),
+                    processing_deadline_duration: Some(self.raw_processing_deadline_duration),
+                })
+            } else {
+                None
+            };
 
-        // Add retry topic if configured (only if not already present)
-        if let Some(ref retry_topic) = self.kafka_retry_topic {
+            let legacy_topic = TopicConfig {
+                cluster: DEFAULT_CLUSTER.to_owned(),
+                consumer_group: consumer_group.clone(),
+                produce_only: false,
+                raw: raw_config,
+            };
+
+            // Add legacy topic (new-style config takes precedence)
             self.kafka_topics
-                .entry(retry_topic.clone())
-                .or_insert_with(|| TopicConfig {
-                    cluster: DEFAULT_CLUSTER.to_owned(),
-                    consumer_group: self.kafka_consumer_group.clone(),
-                    produce_only: !self.kafka_consume_retry_topic,
-                    raw: None,
-                });
+                .entry(topic_name.clone())
+                .or_insert(legacy_topic);
+
+            // Add retry topic if configured (only if not already present)
+            if let Some(ref retry_topic) = self.kafka_retry_topic {
+                self.kafka_topics
+                    .entry(retry_topic.clone())
+                    .or_insert_with(|| TopicConfig {
+                        cluster: DEFAULT_CLUSTER.to_owned(),
+                        consumer_group,
+                        produce_only: !self.kafka_consume_retry_topic,
+                        raw: None,
+                    });
+            }
         }
 
         // Validate cluster references
@@ -701,14 +742,24 @@ impl Config {
     }
 
     /// Convert the application Config into rdkafka::ClientConfig
+    /// Convert the application Config into rdkafka::ClientConfig for producer (DLQ).
+    /// Falls back to consumable topic's cluster if kafka_deadletter_cluster is not set.
+    /// Panics if config wasn't validated.
     pub fn kafka_producer_config(&self) -> ClientConfig {
+        let (_, topic_config) = self
+            .consumable_topic()
+            .expect("consumable_topic failed - was config validated?");
+        let default_cluster = self
+            .cluster(&topic_config.cluster)
+            .expect("cluster lookup failed - was config validated?");
+
         let mut new_config = ClientConfig::new();
         let config = new_config
             .set(
                 "bootstrap.servers",
                 self.kafka_deadletter_cluster
                     .as_ref()
-                    .unwrap_or(&self.kafka_cluster),
+                    .unwrap_or(&default_cluster.address),
             )
             .set("message.max.bytes", format!("{}", self.max_message_size));
         if let Some(sasl_mechanism) = &self.kafka_deadletter_sasl_mechanism {
@@ -769,7 +820,7 @@ mod tests {
         assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
-        assert_eq!(config.kafka_topic, "taskworker");
+        assert_eq!(config.kafka_topic, Some("taskworker".to_owned()));
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 2048);
         assert_eq!(config.max_processing_count, 2048);
@@ -823,16 +874,16 @@ mod tests {
             assert_eq!(config.log_format, LogFormat::Json);
             assert_eq!(
                 config.kafka_cluster,
-                "10.0.0.1:9092,10.0.0.2:9092".to_owned()
+                Some("10.0.0.1:9092,10.0.0.2:9092".to_owned())
             );
             assert_eq!(
                 config.default_metrics_tags,
                 BTreeMap::from([("key_1".to_owned(), "value_1".to_owned())])
             );
-            assert_eq!(config.kafka_consumer_group, "taskworker".to_owned());
+            assert_eq!(config.kafka_consumer_group, Some("taskworker".to_owned()));
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
-            assert_eq!(config.kafka_topic, "error-tasks".to_owned());
+            assert_eq!(config.kafka_topic, Some("error-tasks".to_owned()));
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.database_adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
@@ -886,7 +937,7 @@ mod tests {
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
             assert_eq!(config.log_filter, "error");
-            assert_eq!(config.kafka_topic, "taskworker".to_owned());
+            assert_eq!(config.kafka_topic, Some("taskworker".to_owned()));
             assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
             assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
             assert_eq!(config.max_pending_count, 2048);

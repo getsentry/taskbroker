@@ -31,10 +31,17 @@ pub struct ActivationBatcherConfig {
 impl ActivationBatcherConfig {
     /// Convert from application configuration into ActivationBatcher config.
     pub fn from_config(config: &Config) -> Self {
+        let (topic_name, topic_config) = config
+            .consumable_topic()
+            .expect("no consumable topic configured");
+        let cluster = config
+            .cluster(&topic_config.cluster)
+            .expect("cluster not found");
+
         Self {
             producer_config: config.kafka_producer_config(),
-            kafka_cluster: config.kafka_cluster.clone(),
-            kafka_topic: config.kafka_topic.clone(),
+            kafka_cluster: cluster.address.clone(),
+            kafka_topic: topic_name.to_owned(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
             max_batch_time_ms: config.db_insert_batch_max_time_ms,
@@ -367,7 +374,10 @@ demoted_topic: taskworker-demoted"#;
             runtime_config,
         );
 
-        assert_eq!(batcher.producer_cluster, config.kafka_cluster.clone());
+        assert_eq!(
+            batcher.producer_cluster,
+            config.kafka_cluster.clone().unwrap()
+        );
 
         let activation_0 = ActivationBuilder::new()
             .id("0")

@@ -156,10 +156,12 @@ pub async fn do_upkeep(
     let handle_retries_start = Instant::now();
     if let Ok(retries) = store.get_retry_activations().await {
         // Use retry topic if configured, otherwise fall back to main topic
+        let (main_topic, _) = config.consumable_topic().expect("no consumable topic");
+        let main_topic_owned = main_topic.to_owned();
         let retry_target_topic = config
             .kafka_retry_topic
             .as_ref()
-            .unwrap_or(&config.kafka_topic);
+            .unwrap_or(&main_topic_owned);
 
         // 2. Append retries to kafka
         let deliveries = retries
@@ -320,16 +322,22 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
+    let (main_topic, main_topic_config) = config.consumable_topic().expect("no consumable topic");
+    let main_cluster = config
+        .cluster(&main_topic_config.cluster)
+        .expect("cluster not found")
+        .address
+        .clone();
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or(config.kafka_cluster.clone());
+        .unwrap_or(main_cluster.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
         .unwrap_or(config.kafka_long_topic.clone());
-    let same_cluster = forward_cluster == config.kafka_cluster;
-    let same_topic = forward_topic == config.kafka_topic;
+    let same_cluster = forward_cluster == main_cluster;
+    let same_topic = forward_topic == main_topic;
     if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
         let forward_demoted_start = Instant::now();
         let mut forward_producer_config = config.kafka_producer_config();
@@ -742,7 +750,8 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert_eq!(result_context.retried, 1);
 
-        let messages = consume_topic(config.clone(), config.kafka_topic.as_ref(), 1).await;
+        let (main_topic, _) = config.consumable_topic().unwrap();
+        let messages = consume_topic(config.clone(), main_topic, 1).await;
         assert_eq!(messages.len(), 1);
         let activation = &messages[0];
 
