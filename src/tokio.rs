@@ -1,5 +1,20 @@
 use std::future::Future;
-use tokio::task::JoinSet;
+
+use sentry::{Hub, SentryFutureExt};
+use tokio::task::{JoinHandle, JoinSet};
+
+/// Spawns a task with the main Sentry hub propagated.
+///
+/// This ensures that global Sentry tags configured via `configure_scope` on
+/// the main thread are available in spawned tasks. Without this, tokio worker
+/// threads would have their own hub without those tags.
+pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(future.bind_hub(Hub::new_from_top(Hub::main())))
+}
 
 /// Spawns `max(n, 1)` tasks, each running the future produced by `f` with the task's index.
 /// Returns a [`JoinSet`] containing all spawned tasks.
@@ -13,7 +28,7 @@ where
 
     let count = n.max(1);
     for i in 0..count {
-        join_set.spawn(f(i));
+        join_set.spawn(f(i).bind_hub(Hub::new_from_top(Hub::main())));
     }
 
     join_set

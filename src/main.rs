@@ -115,7 +115,7 @@ async fn main() -> Result<(), Error> {
         .await;
 
     // Upkeep loop
-    let upkeep_task = tokio::spawn({
+    let upkeep_task = taskbroker::tokio::spawn({
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
@@ -133,7 +133,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Maintenance task loop
-    let maintenance_task = tokio::spawn({
+    let maintenance_task = taskbroker::tokio::spawn({
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
         let maintenance_store = store.clone();
         let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
@@ -158,7 +158,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Consumer from kafka
-    let consumer_task = tokio::spawn({
+    let consumer_task = taskbroker::tokio::spawn({
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
@@ -210,7 +210,7 @@ async fn main() -> Result<(), Error> {
         let flusher_store = store.clone();
         let flusher_config = config.clone();
 
-        let handle = tokio::spawn(async move {
+        let handle = taskbroker::tokio::spawn(async move {
             flusher::run_flusher(
                 rx,
                 flusher_config.status_update_batch_size,
@@ -227,7 +227,7 @@ async fn main() -> Result<(), Error> {
 
     // GRPC server - only start if port is configured (port 0 disables it)
     let grpc_server_task = if config.grpc_port > 0 {
-        Some(tokio::spawn({
+        Some(taskbroker::tokio::spawn({
             let grpc_store = store.clone();
             let grpc_config = config.clone();
             let grpc_status_tx = status_update_tx.clone();
@@ -316,14 +316,18 @@ async fn main() -> Result<(), Error> {
             workers.push(map);
         }
 
-        Some(tokio::spawn(async move { push_pool.start(workers).await }))
+        Some(taskbroker::tokio::spawn(async move {
+            push_pool.start(workers).await
+        }))
     } else {
         None
     };
 
     // Initialize fetch threads
     let fetch_task = if config.delivery_mode == DeliveryMode::Push {
-        Some(tokio::spawn(async move { fetch_pool.start().await }))
+        Some(taskbroker::tokio::spawn(
+            async move { fetch_pool.start().await },
+        ))
     } else {
         None
     };
