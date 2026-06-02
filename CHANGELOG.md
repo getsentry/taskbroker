@@ -1,4 +1,21 @@
 # Changelog
+## 26.5.2
+
+### New Features ✨
+
+- (config) Add Validation to Several Config Fields by @george-sentry in [#664](https://github.com/getsentry/taskbroker/pull/664)
+- (query retries) Enable query retry with default of 3 retries by @victoria-yining-huang in [#665](https://github.com/getsentry/taskbroker/pull/665)
+- (taskbroker) Undo Claim on Send Failure by @george-sentry in [#661](https://github.com/getsentry/taskbroker/pull/661)
+- Add default metrics tags to Sentry errors by @untitaker in [#659](https://github.com/getsentry/taskbroker/pull/659)
+
+### Bug Fixes 🐛
+
+- (config) Legacy retry topic uses deadletter cluster by @untitaker in [#666](https://github.com/getsentry/taskbroker/pull/666)
+
+### Internal Changes 🔧
+
+- (config) Introduce multi-topic config, deprecate old fields by @untitaker in [#663](https://github.com/getsentry/taskbroker/pull/663)
+
 ## 26.5.1
 
 ### New Features ✨
