@@ -519,7 +519,7 @@ impl Default for Config {
             pg_default_database_name: "postgres".to_owned(),
             pg_extra_query_params: None,
             db_write_failure_backoff_ms: 4000,
-            db_query_max_retries: None,
+            db_query_max_retries: Some(3),
             db_query_retry_delay_ms: 100,
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
