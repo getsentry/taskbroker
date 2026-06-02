@@ -728,7 +728,7 @@ impl Config {
 
             // Register the deadletter topic as a produce-only topic on its own
             // cluster. A non-empty return value means it collided with the main
-            // topic, which would route deadletter messages to the wrong cluster.
+            // topic, which would route deadletter messages to the wrong topic.
             let prev = self.kafka_topics.insert(
                 self.kafka_deadletter_topic.clone(),
                 TopicConfig {
