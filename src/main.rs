@@ -167,7 +167,7 @@ async fn main() -> Result<(), Error> {
         let (main_topic, _) = consumer_config
             .consumable_topic()
             .expect("invalid config: no consumable topic");
-        let topics_to_consume = vec![main_topic.to_owned()];
+        let topics_to_consume = [main_topic.to_owned()];
 
         async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
