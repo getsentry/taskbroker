@@ -1027,18 +1027,11 @@ impl Provider for Config {
 
 /// Ensures that `n` is a power of two, used to validate `fetch_threads`.
 fn validate_power_of_two(n: usize) -> Result<(), ValidationError> {
-    let mut m = n;
-
-    while m > 1 {
-        if m % 2 == 1 {
-            // Not divisible by two
-            return Err(ValidationError::new("not_power_of_two"));
-        }
-
-        m /= 2;
+    if n.is_power_of_two() {
+        Ok(())
+    } else {
+        Err(ValidationError::new("not_power_of_two"))
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1082,10 +1075,12 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_invalid_fields() {
-        let mut config = Config::default();
+        let mut config = Config {
+            fetch_threads: 0,
+            ..Config::default()
+        };
 
         // Fetch threads cannot be zero
-        config.fetch_threads = 0;
         assert!(config.validate().is_err());
 
         config.fetch_threads = 1;
