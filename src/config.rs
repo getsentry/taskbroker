@@ -589,9 +589,13 @@ impl Config {
 
         // Use "__" for nested configurations via environment variables, like `TASKBROKER_KAFKA_TOPICS__PROFILES__CLUSTER`
         builder = builder.merge(Env::prefixed("TASKBROKER_").split("__"));
-
         let mut config: Config = builder.extract()?;
+
+        // Normalize and validate Kafka values
         config.normalize_and_validate()?;
+
+        // Validate all other values
+        config.validate()?;
 
         Ok(config)
     }
@@ -857,9 +861,6 @@ impl Config {
                 deadletter_address
             ));
         }
-
-        // Validate all other values
-        self.validate()?;
 
         Ok(())
     }
