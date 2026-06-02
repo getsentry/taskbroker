@@ -25,6 +25,18 @@ pub struct TopicConfig {
     /// Raw mode settings. If set, this topic uses raw mode.
     #[serde(default)]
     pub raw: Option<RawModeConfig>,
+    /// The kafka session timeout in ms for this topic's consumer.
+    /// Falls back to the global `kafka_session_timeout_ms` when unset.
+    #[serde(default)]
+    pub session_timeout_ms: Option<usize>,
+    /// The interval in ms at which this topic's consumer auto-commits.
+    /// Falls back to the global `kafka_auto_commit_interval_ms` when unset.
+    #[serde(default)]
+    pub auto_commit_interval_ms: Option<usize>,
+    /// The auto offset reset policy for this topic's consumer.
+    /// Falls back to the global `kafka_auto_offset_reset` when unset.
+    #[serde(default)]
+    pub auto_offset_reset: Option<String>,
 }
 
 /// Raw mode settings for a topic.
@@ -212,13 +224,19 @@ pub struct Config {
     /// The default number of partitions for a topic
     pub default_topic_partitions: i32,
 
-    /// The kafka session timeout in ms
+    /// The kafka session timeout in ms.
+    /// Used as the default for topics that don't set their own
+    /// `session_timeout_ms`.
     pub kafka_session_timeout_ms: usize,
 
     /// The amount of ms that the consumer will commit at.
+    /// Used as the default for topics that don't set their own
+    /// `auto_commit_interval_ms`.
     pub kafka_auto_commit_interval_ms: usize,
 
-    /// The amount of ms that the consumer will commit at.
+    /// The auto offset reset policy for the consumer.
+    /// Used as the default for topics that don't set their own
+    /// `auto_offset_reset`.
     pub kafka_auto_offset_reset: String,
 
     /// The number of ms for timeouts when publishing messages to kafka.
@@ -693,6 +711,9 @@ impl Config {
                     consumer_group: consumer_group.clone(),
                     produce_only: false,
                     raw: raw_config,
+                    session_timeout_ms: None,
+                    auto_commit_interval_ms: None,
+                    auto_offset_reset: None,
                 },
             );
 
@@ -706,6 +727,9 @@ impl Config {
                     consumer_group: consumer_group.clone(),
                     produce_only: true,
                     raw: None,
+                    session_timeout_ms: None,
+                    auto_commit_interval_ms: None,
+                    auto_offset_reset: None,
                 });
 
             // Add the retry topic if configured (unless it collides with the
@@ -719,6 +743,9 @@ impl Config {
                         consumer_group,
                         produce_only: true,
                         raw: None,
+                        session_timeout_ms: None,
+                        auto_commit_interval_ms: None,
+                        auto_offset_reset: None,
                     });
             }
         }
@@ -797,24 +824,30 @@ impl Config {
             .cluster(&topic_config.cluster)
             .expect("cluster lookup failed - was config validated?");
 
+        // Per-topic consumer settings, falling back to the global defaults.
+        let session_timeout_ms = topic_config
+            .session_timeout_ms
+            .unwrap_or(self.kafka_session_timeout_ms);
+        let auto_commit_interval_ms = topic_config
+            .auto_commit_interval_ms
+            .unwrap_or(self.kafka_auto_commit_interval_ms);
+        let auto_offset_reset = topic_config
+            .auto_offset_reset
+            .clone()
+            .unwrap_or_else(|| self.kafka_auto_offset_reset.clone());
+
         let mut new_config = ClientConfig::new();
         let config = new_config
             .set("bootstrap.servers", cluster.address.clone())
             .set("group.id", topic_config.consumer_group.clone())
-            .set(
-                "session.timeout.ms",
-                self.kafka_session_timeout_ms.to_string(),
-            )
+            .set("session.timeout.ms", session_timeout_ms.to_string())
             .set("enable.partition.eof", "false")
             .set("enable.auto.commit", "true")
             .set(
                 "auto.commit.interval.ms",
-                self.kafka_auto_commit_interval_ms.to_string(),
+                auto_commit_interval_ms.to_string(),
             )
-            .set(
-                "auto.offset.reset",
-                self.kafka_auto_offset_reset.to_string(),
-            )
+            .set("auto.offset.reset", auto_offset_reset)
             .set("enable.auto.offset.store", "false");
 
         if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
@@ -1673,6 +1706,103 @@ kafka_clusters:
                     .contains("kafka_deadletter_topic 'taskworker-dlq' is not defined"),
                 "unexpected error: {}",
                 err
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_per_topic_consumer_settings_override_globals() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_deadletter_topic: profiles-dlq
+kafka_session_timeout_ms: 6000
+kafka_auto_commit_interval_ms: 5000
+kafka_auto_offset_reset: latest
+
+kafka_topics:
+  profiles:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+    session_timeout_ms: 12000
+    auto_commit_interval_ms: 1000
+    auto_offset_reset: earliest
+  profiles-dlq:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles-dlq
+    produce_only: true
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            let consumer_config = config.kafka_consumer_config();
+
+            // Per-topic values win over the globals.
+            assert_eq!(consumer_config.get("session.timeout.ms").unwrap(), "12000");
+            assert_eq!(
+                consumer_config.get("auto.commit.interval.ms").unwrap(),
+                "1000"
+            );
+            assert_eq!(
+                consumer_config.get("auto.offset.reset").unwrap(),
+                "earliest"
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_topic_consumer_settings_fall_back_to_globals() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_deadletter_topic: profiles-dlq
+kafka_session_timeout_ms: 7000
+kafka_auto_commit_interval_ms: 2000
+kafka_auto_offset_reset: earliest
+
+kafka_topics:
+  profiles:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles
+  profiles-dlq:
+    cluster: my-cluster
+    consumer_group: taskbroker-profiles-dlq
+    produce_only: true
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+            let consumer_config = config.kafka_consumer_config();
+
+            // No per-topic overrides, so the globals are used.
+            assert_eq!(consumer_config.get("session.timeout.ms").unwrap(), "7000");
+            assert_eq!(
+                consumer_config.get("auto.commit.interval.ms").unwrap(),
+                "2000"
+            );
+            assert_eq!(
+                consumer_config.get("auto.offset.reset").unwrap(),
+                "earliest"
             );
 
             Ok(())
