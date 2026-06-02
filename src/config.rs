@@ -651,6 +651,9 @@ impl Config {
             if self.kafka_topic.is_some() {
                 warn!("kafka_topic is deprecated, use kafka_topics instead");
             }
+            if self.kafka_consumer_group.is_some() {
+                warn!("kafka_consumer_group is deprecated, use kafka_topics instead");
+            }
             if self.kafka_deadletter_cluster.is_some() {
                 warn!(
                     "kafka_deadletter_cluster is deprecated, declare the deadletter topic in \
