@@ -73,6 +73,21 @@ pub struct ClusterConfig {
     pub ssl_key_location: Option<String>,
 }
 
+impl ClusterConfig {
+    /// Whether any authentication / TLS settings are configured for this
+    /// cluster. Used to detect when a producer would carry credentials that
+    /// only apply to this specific cluster.
+    pub fn has_auth(&self) -> bool {
+        self.security_protocol.is_some()
+            || self.sasl_mechanism.is_some()
+            || self.sasl_username.is_some()
+            || self.sasl_password.is_some()
+            || self.ssl_ca_location.is_some()
+            || self.ssl_certificate_location.is_some()
+            || self.ssl_key_location.is_some()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DatabaseAdapter {
@@ -900,19 +915,26 @@ impl Config {
         config.clone()
     }
 
+    /// The cluster the deadletter / forwarding producer connects to: the
+    /// cluster of the `kafka_deadletter_topic` entry in `kafka_topics` (in
+    /// legacy mode this is the migrated "deadletter" cluster).
+    /// Panics if config wasn't validated.
+    pub fn kafka_producer_cluster(&self) -> &ClusterConfig {
+        let dlq_topic = self
+            .kafka_topics
+            .get(&self.kafka_deadletter_topic)
+            .expect("deadletter topic not in kafka_topics - was config validated?");
+        self.cluster(&dlq_topic.cluster)
+            .expect("cluster lookup failed - was config validated?")
+    }
+
     /// Convert the application Config into rdkafka::ClientConfig for the
     /// deadletter / forwarding producer. The producer connects to the cluster
     /// of the `kafka_deadletter_topic` entry in `kafka_topics` (in legacy mode
     /// this is the migrated "deadletter" cluster).
     /// Panics if config wasn't validated.
     pub fn kafka_producer_config(&self) -> ClientConfig {
-        let dlq_topic = self
-            .kafka_topics
-            .get(&self.kafka_deadletter_topic)
-            .expect("deadletter topic not in kafka_topics - was config validated?");
-        let cluster = self
-            .cluster(&dlq_topic.cluster)
-            .expect("cluster lookup failed - was config validated?");
+        let cluster = self.kafka_producer_cluster();
 
         let mut new_config = ClientConfig::new();
         let config = new_config

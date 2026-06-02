@@ -14,7 +14,7 @@ use sentry_protos::taskbroker::v1::TaskActivation;
 use tokio::{fs, join, select, time};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::SERVICE_NAME;
@@ -340,6 +340,20 @@ pub async fn do_upkeep(
     let same_topic = forward_topic == main_topic;
     if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
         let forward_demoted_start = Instant::now();
+        // The forwarding producer reuses the deadletter cluster's credentials
+        // (see Config::kafka_producer_config) and only overrides
+        // bootstrap.servers. If we're forwarding to a different cluster that has
+        // its own auth, those credentials won't apply there and publishing will
+        // fail. We keep the legacy behavior (reuse + override) for compatibility
+        // but warn so the misconfiguration is visible.
+        let dlq_cluster = config.kafka_producer_cluster();
+        if forward_cluster != dlq_cluster.address && dlq_cluster.has_auth() {
+            warn!(
+                "forwarding demoted-namespace tasks to cluster '{}', but the producer reuses the \
+                 deadletter cluster '{}' credentials; publishing may fail if their auth differs",
+                forward_cluster, dlq_cluster.address
+            );
+        }
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
         let forward_producer: Arc<FutureProducer> = Arc::new(
