@@ -29,6 +29,7 @@ libsqlite3-sys = "0.30.1"
 metrics = "0.24.0"
 metrics-exporter-statsd = "0.9.0"
 prost = "0.14"
+validator = { version = "0.20.0", features = ["derive"] }
 prost-types = "0.14"
 rand = "0.8.5"
 rdkafka = { version = "0.37.0", features = ["cmake-build", "ssl"] }

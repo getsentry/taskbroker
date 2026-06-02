@@ -2,12 +2,15 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use anyhow::Result;
 use figment::providers::{Env, Format, Yaml};
 use figment::{Figment, Metadata, Profile, Provider};
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
+use validator::{Validate, ValidationError};
 
 use crate::Args;
+use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
@@ -31,7 +34,7 @@ pub enum DeliveryMode {
     Push,
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct Config {
     /// The sentry DSN to use for error reporting.
     pub sentry_dsn: Option<String>,
@@ -300,34 +303,41 @@ pub struct Config {
     pub delivery_mode: DeliveryMode,
 
     /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
-    /// If it's not a power of two or it's too large, it will be rounded to a valid nearby value.
+    #[validate(range(min = 1, max = MAX_FETCH_THREADS), custom(function = "validate_power_of_two"))]
     pub fetch_threads: usize,
 
     /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
     pub fetch_wait_ms: u64,
 
     /// The number of activations to claim with a single fetch query.
+    #[validate(range(min = 1))]
     pub fetch_batch_size: i32,
 
-    /// The number of concurrent pushers each dispatcher should run.
+    /// The number of concurrent push threads to run.
+    #[validate(range(min = 1))]
     pub push_threads: usize,
 
     /// The size of the push queue.
+    #[validate(range(min = 1))]
     pub push_queue_size: usize,
 
     /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
+    #[validate(range(min = 1))]
     pub push_queue_timeout_ms: u64,
 
     /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
+    #[validate(range(min = 1))]
     pub push_timeout_ms: u64,
 
     /// Update statuses from the gRPC server in batches?
     pub batch_status_updates: bool,
 
     /// The size of a batch of status updates.
+    #[validate(range(min = 1))]
     pub status_update_batch_size: usize,
 
     /// Maximum milliseconds to wait before flushing a batch of status updates.
+    #[validate(range(min = 1))]
     pub status_update_interval_ms: u64,
 
     /// Maps every application to its worker endpoint, both represented as strings.
@@ -454,13 +464,18 @@ impl Default for Config {
 
 impl Config {
     /// Build a config instance from defaults, env vars, file + CLI options
-    pub fn from_args(args: &Args) -> Result<Self, Box<figment::Error>> {
+    pub fn from_args(args: &Args) -> Result<Self> {
         let mut builder = Figment::from(Config::default());
+
         if let Some(path) = &args.config {
             builder = builder.merge(Yaml::file(path));
         }
+
         builder = builder.merge(Env::prefixed("TASKBROKER_"));
-        let config = builder.extract()?;
+
+        let config: Config = builder.extract()?;
+        config.validate()?;
+
         Ok(config)
     }
 
@@ -558,12 +573,29 @@ impl Provider for Config {
     }
 }
 
+/// Ensures that `n` is a power of two, used to validate `fetch_threads`.
+fn validate_power_of_two(n: usize) -> Result<(), ValidationError> {
+    let mut m = n;
+
+    while m > 1 {
+        if m % 2 == 1 {
+            // Not divisible by two
+            return Err(ValidationError::new("not_power_of_two"));
+        }
+
+        m /= 2;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeMap;
 
     use figment::Jail;
+    use validator::Validate;
 
     use crate::Args;
     use crate::logging::LogFormat;
@@ -589,6 +621,81 @@ mod tests {
             config.worker_map.get("sentry").map(String::as_str),
             Some("http://127.0.0.1:50052")
         );
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_fields() {
+        let mut config = Config::default();
+
+        // Fetch threads cannot be zero
+        config.fetch_threads = 0;
+        assert!(config.validate().is_err());
+
+        config.fetch_threads = 1;
+        assert!(config.validate().is_ok());
+
+        // Fetch threads must be a power of two
+        config.fetch_threads = 3;
+        assert!(config.validate().is_err());
+
+        config.fetch_threads = 4;
+        assert!(config.validate().is_ok());
+
+        // Fetch threads must be ≤ 256
+        config.fetch_threads = 512;
+        assert!(config.validate().is_err());
+
+        config.fetch_threads = 1;
+        assert!(config.validate().is_ok());
+
+        // Fetch batch size cannot be zero
+        config.fetch_batch_size = 0;
+        assert!(config.validate().is_err());
+
+        config.fetch_batch_size = 1;
+        assert!(config.validate().is_ok());
+
+        // Push threads cannot be zero
+        config.push_threads = 0;
+        assert!(config.validate().is_err());
+
+        config.push_threads = 1;
+        assert!(config.validate().is_ok());
+
+        // Push queue size cannot be zero
+        config.push_queue_size = 0;
+        assert!(config.validate().is_err());
+
+        config.push_queue_size = 1;
+        assert!(config.validate().is_ok());
+
+        // Push queue timeout cannot be zero
+        config.push_queue_timeout_ms = 0;
+        assert!(config.validate().is_err());
+
+        config.push_queue_timeout_ms = 1;
+        assert!(config.validate().is_ok());
+
+        // Push timeout cannot be zero
+        config.push_timeout_ms = 0;
+        assert!(config.validate().is_err());
+
+        config.push_timeout_ms = 1;
+        assert!(config.validate().is_ok());
+
+        // Status update batch size cannot be zero
+        config.status_update_batch_size = 0;
+        assert!(config.validate().is_err());
+
+        config.status_update_batch_size = 1;
+        assert!(config.validate().is_ok());
+
+        // Status update interval cannot be zero
+        config.status_update_interval_ms = 0;
+        assert!(config.validate().is_err());
+
+        config.status_update_interval_ms = 1;
+        assert!(config.validate().is_ok());
     }
 
     #[test]
