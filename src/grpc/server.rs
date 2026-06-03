@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,21 +6,21 @@ use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
-    TaskActivation, TaskActivationStatus,
+    FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusBatchRequest,
+    SetTaskStatusBatchResponse, SetTaskStatusRequest, SetTaskStatusResponse, TaskActivation,
+    TaskActivationStatus,
 };
-use tokio::sync::mpsc::Sender;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, instrument, warn};
+use tracing::{error, instrument, warn};
 
 use crate::config::{Config, DeliveryMode};
 use crate::store::activation::ActivationStatus;
 use crate::store::traits::ActivationStore;
+use crate::timed;
 
 pub struct TaskbrokerServer {
     pub store: Arc<dyn ActivationStore>,
     pub config: Arc<Config>,
-    pub update_tx: Option<Sender<StatusUpdate>>,
 }
 
 #[tonic::async_trait]
@@ -82,6 +81,52 @@ impl ConsumerService for TaskbrokerServer {
     }
 
     #[instrument(skip_all)]
+    async fn set_task_status_batch(
+        &self,
+        request: Request<SetTaskStatusBatchRequest>,
+    ) -> Result<Response<SetTaskStatusBatchResponse>, Status> {
+        let batches = request.into_inner().batches;
+        let mut updated = vec![];
+
+        for batch in batches {
+            let status: ActivationStatus = TaskActivationStatus::try_from(batch.status)
+                .map_err(|e| {
+                    Status::invalid_argument(format!("Unable to deserialize status... {e:?}"))
+                })?
+                .into();
+
+            let ids: Vec<String> = batch.tasks.iter().map(|t| t.id.clone()).collect();
+
+            if !status.is_conclusion() {
+                let message = format!(
+                    "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got {status:?}"
+                );
+                return Err(Status::invalid_argument(message));
+            }
+
+            let result = timed!(
+                self.store.set_status_batch(status, batch.tasks),
+                "store.set_status_batch"
+            );
+
+            if let Err(e) = result {
+                metrics::counter!(
+                    "store.set_status_batch",
+                    "result" => "error",
+                    "status" => status.to_string()
+                )
+                .increment(1);
+
+                error!(?e, ?status, "Failed to set status for batch of tasks");
+            }
+
+            updated.extend(ids);
+        }
+
+        Ok(Response::new(SetTaskStatusBatchResponse { updated }))
+    }
+
+    #[instrument(skip_all)]
     async fn set_task_status(
         &self,
         request: Request<SetTaskStatusRequest>,
@@ -105,21 +150,6 @@ impl ConsumerService for TaskbrokerServer {
 
         let max_attempts = request.get_ref().max_attempts;
         let delay_on_retry = request.get_ref().delay_on_retry;
-
-        // Use batching channel if available and we don't need to update retry state.
-        // If max_attempts or delay_on_retry is Some, we can't use batching API to update the
-        // activation, and have to fall back to individual set_status.
-        if let Some(ref tx) = self.update_tx
-            && max_attempts.is_none()
-            && delay_on_retry.is_none()
-        {
-            tx.send((id, status))
-                .await
-                .map_err(|_| Status::internal("Status update channel closed"))?;
-
-            metrics::histogram!("grpc_server.set_status.duration").record(start_time.elapsed());
-            return Ok(Response::new(SetTaskStatusResponse { task: None }));
-        }
 
         match self
             .store
@@ -216,79 +246,5 @@ impl ConsumerService for TaskbrokerServer {
         };
         metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
         res
-    }
-}
-
-pub type StatusUpdate = (String, ActivationStatus);
-
-pub async fn flush_updates(store: Arc<dyn ActivationStore>, buffer: &mut Vec<StatusUpdate>) {
-    if buffer.is_empty() {
-        return;
-    }
-
-    let mut by_status: HashMap<ActivationStatus, Vec<String>> = HashMap::new();
-
-    for (id, status) in buffer.drain(..) {
-        by_status.entry(status).or_default().push(id);
-    }
-
-    for (status, ids) in by_status {
-        let requested = ids.len() as u64;
-        let st = status.to_string();
-
-        metrics::histogram!("grpc_server.flush_updates.requested", "status" => st.clone())
-            .record(requested as f64);
-
-        match store.set_status_batch(&ids, status).await {
-            Ok(affected) => {
-                metrics::histogram!(
-                    "grpc_server.flush_updates.affected",
-                    "status" => st.clone()
-                )
-                .record(affected as f64);
-
-                metrics::counter!(
-                    "grpc_server.flush_updates.updated",
-                    "status" => st.clone()
-                )
-                .increment(affected);
-
-                metrics::counter!("grpc_server.flush_updates", "result" => "ok").increment(1);
-
-                if affected < requested {
-                    metrics::counter!(
-                        "grpc_server.flush_updates.partial",
-                        "status" => st.clone()
-                    )
-                    .increment(1);
-
-                    warn!(
-                        ?status,
-                        requested, affected, "Updated fewer rows than IDs requested from server"
-                    );
-                }
-
-                debug!(
-                    ?status,
-                    affected, requested, "Flushed status batch from server"
-                );
-            }
-
-            Err(e) => {
-                metrics::counter!("grpc_server.flush_updates", "result" => "error").increment(1);
-
-                error!(
-                    ?status,
-                    requested,
-                    error = ?e,
-                    "Failed to flush status batch from server"
-                );
-
-                // Push failed updates back into the buffer so they can be retried on next flush
-                for id in ids {
-                    buffer.push((id, status));
-                }
-            }
-        }
     }
 }

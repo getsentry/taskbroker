@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sentry_protos::taskbroker::v1::TaskActivationStatusData;
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
@@ -63,7 +64,11 @@ impl ActivationStore for MockStore {
         Ok(None)
     }
 
-    async fn set_status_batch(&self, _ids: &[String], _status: ActivationStatus) -> Result<u64> {
+    async fn set_status_batch(
+        &self,
+        _status: ActivationStatus,
+        _tasks: Vec<TaskActivationStatusData>,
+    ) -> Result<u64> {
         Ok(0)
     }
 

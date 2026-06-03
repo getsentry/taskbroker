@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
+use sentry_protos::taskbroker::v1::TaskActivationStatusData;
 use tokio::sync::Mutex;
 use tokio::time::{Duration, sleep};
 use tonic::async_trait;
@@ -125,8 +126,8 @@ impl ActivationStore for MockStore {
 
     async fn set_status_batch(
         &self,
-        _ids: &[String],
         _status: ActivationStatus,
+        _tasks: Vec<TaskActivationStatusData>,
     ) -> Result<u64, Error> {
         unimplemented!()
     }

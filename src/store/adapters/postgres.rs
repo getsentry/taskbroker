@@ -13,7 +13,7 @@ use async_backtrace::framed;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use prost::Message;
-use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
+use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation, TaskActivationStatusData};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
@@ -813,24 +813,87 @@ impl ActivationStore for PostgresStore {
     #[framed]
     async fn set_status_batch(
         &self,
-        ids: &[String],
         status: ActivationStatus,
+        tasks: Vec<TaskActivationStatusData>,
     ) -> Result<u64, Error> {
-        if ids.is_empty() {
+        if tasks.is_empty() {
             return Ok(0);
         }
 
         retry_query(&self.config.retry_config, "set_status_batch", || async {
-            let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+            let mut tx = self.begin_write_tx_metric("set_status_batch").await?;
+            let ids: Vec<String> = tasks.iter().map(|task| task.id.clone()).collect();
+            let has_retry_updates = tasks
+                .iter()
+                .any(|task| task.max_attempts.is_some() || task.delay_on_retry.is_some());
 
-            let result =
-                sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
-                    .bind(status.to_string())
-                    .bind(ids)
-                    .execute(&mut *conn)
+            if !has_retry_updates {
+                let result = sqlx::query(
+                    "UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)",
+                )
+                .bind(status.to_string())
+                .bind(&ids)
+                .execute(&mut *tx)
+                .await?;
+
+                tx.commit().await?;
+                return Ok(result.rows_affected());
+            }
+
+            let retry_updates: HashMap<&str, &TaskActivationStatusData> = tasks
+                .iter()
+                .filter(|task| task.max_attempts.is_some() || task.delay_on_retry.is_some())
+                .map(|task| (task.id.as_str(), task))
+                .collect();
+
+            let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
+                "UPDATE inflight_taskactivations
+                 SET status = $1
+                 WHERE id = ANY($2)
+                 RETURNING id, activation",
+            )
+            .bind(status.to_string())
+            .bind(&ids)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            for (id, activation_data) in &rows {
+                let Some(task) = retry_updates.get(id.as_str()) else {
+                    continue;
+                };
+
+                let mut activation = TaskActivation::decode(activation_data.as_slice())?;
+                let retry_state = activation.retry_state.get_or_insert_default();
+                let mut needs_update = false;
+
+                if let Some(max_attempts) = task.max_attempts
+                    && retry_state.max_attempts != max_attempts
+                {
+                    retry_state.max_attempts = max_attempts;
+                    needs_update = true;
+                }
+
+                if let Some(delay_on_retry) = task.delay_on_retry
+                    && retry_state.delay_on_retry != Some(delay_on_retry)
+                {
+                    retry_state.delay_on_retry = Some(delay_on_retry);
+                    needs_update = true;
+                }
+
+                if needs_update {
+                    sqlx::query(
+                        "UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2",
+                    )
+                    .bind(activation.encode_to_vec())
+                    .bind(id)
+                    .execute(&mut *tx)
                     .await?;
+                }
+            }
 
-            Ok(result.rows_affected())
+            tx.commit().await?;
+
+            Ok(rows.len() as u64)
         })
         .await
     }

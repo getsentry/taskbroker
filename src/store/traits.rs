@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sentry_protos::taskbroker::v1::TaskActivationStatusData;
 use tokio::join;
 use tracing::warn;
 
@@ -86,8 +87,8 @@ pub trait ActivationStore: Send + Sync {
     /// Update the status of multiple activations in one batch.
     async fn set_status_batch(
         &self,
-        ids: &[String],
         status: ActivationStatus,
+        tasks: Vec<TaskActivationStatusData>,
     ) -> Result<u64, Error>;
 
     /// COUNT OPERATIONS
