@@ -98,6 +98,32 @@ async fn test_store(#[case] adapter: &str) {
     store.remove_db().await.unwrap();
 }
 
+/// Drain mode (`drain: true`) runs with no consumers, so partitions are never
+/// assigned and the assigned set stays empty. An empty assignment must mean "no
+/// partition filter" so the broker can still flush everything already in its
+/// store -- NOT "filter to nothing". This is what makes draining work, and it
+/// matters most on postgres, the adapter that actually filters by partition.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_claim_drains_without_partition_assignment(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    store.assign_partitions(vec![]).unwrap();
+
+    assert!(store.store(make_activations(3)).await.is_ok());
+
+    for _ in 0..3 {
+        let claimed = store.claim_activation_for_pull(None, None).await.unwrap();
+        assert!(
+            claimed.is_some(),
+            "claim returned None with no partition assignment; a drain broker could \
+             never flush its store"
+        );
+    }
+    store.remove_db().await.unwrap();
+}
+
 #[tokio::test]
 #[rstest]
 #[case::sqlite("sqlite")]
