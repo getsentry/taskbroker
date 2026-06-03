@@ -31,23 +31,36 @@ same config.
 | `kafka_deadletter_topic` | **not deprecated** — still a top-level field; must name a `produce_only` topic declared in `kafka_topics` |
 | `kafka_retry_topic` | **not deprecated** — still a top-level field; must name a `produce_only` topic declared in `kafka_topics` |
 
-Raw-mode fields (`raw_mode`, `raw_namespace`, `raw_application`, `raw_taskname`,
-`raw_processing_deadline_duration`) move under a per-topic `raw:` block.
+Raw-mode fields move under the consumed topic's `raw:` block:
+
+| Legacy field | New location |
+| --- | --- |
+| `raw_mode` | presence of a `raw:` block on the topic |
+| `raw_namespace` | `kafka_topics.<topic>.raw.namespace` |
+| `raw_application` | `kafka_topics.<topic>.raw.application` |
+| `raw_taskname` | `kafka_topics.<topic>.raw.taskname` |
+| `raw_processing_deadline_duration` | `kafka_topics.<topic>.raw.processing_deadline_duration` |
+
+The top-level `raw_*` fields are deprecated; the legacy global `raw_mode` is
+migrated onto the consumed topic's `raw` block during normalization.
 
 ### Removed
 
-- `kafka_consume_retry_topic` was removed. Retry topics are now always
-  `produce_only`. Consuming a separate retry topic on the same taskbroker is no
-  longer supported — only one topic may be consumed (multi-topic consumption is
-  not yet implemented).
+- `kafka_consume_retry_topic` was removed. Retry topics are declared like any
+  other topic in `kafka_topics`; to consume one, declare it as a normal
+  (non-`produce_only`) consumed topic rather than toggling a flag.
 
 ## Rules enforced at startup
 
-- Exactly one topic must be consumable (i.e. not `produce_only`).
+- At least one topic must be consumable (i.e. not `produce_only`).
 - `kafka_deadletter_topic` must be declared in `kafka_topics`.
-- The retry target (the `kafka_retry_topic` if set, otherwise the consumed
-  topic) and the dead-letter topic must resolve to the **same cluster address** —
-  they share a single upkeep producer.
+- `kafka_retry_topic` is **mandatory when a consumed topic uses raw mode**: raw
+  messages aren't activations, so retries (which are activation-encoded) cannot
+  loop back into the raw topic and must go to a separate activation-encoded
+  topic. For a single non-raw consumed topic, retries fall back to that topic
+  when `kafka_retry_topic` is unset.
+- The retry target and the dead-letter topic must resolve to the **same cluster
+  address** — they share a single upkeep producer.
 - Every topic's `cluster` must reference a cluster defined in `kafka_clusters`.
 
 ## Examples
@@ -132,6 +145,52 @@ kafka_topics:
   profiles-dlq:
     cluster: deadletter
     consumer_group: taskbroker-profiles
+    produce_only: true
+```
+
+### Raw mode (per-topic)
+
+Before — raw mode configured via the global `raw_*` fields:
+
+```yaml
+kafka_cluster: 127.0.0.1:9092
+kafka_topic: profiles
+kafka_consumer_group: ingest-profiles
+raw_mode: true
+raw_namespace: ingest.profiling.passthrough
+raw_application: sentry
+raw_taskname: sentry.profiles.task.process_profile_from_kafka
+```
+
+After — raw mode moves onto the consumed topic's `raw` block, and a retry topic
+becomes mandatory (raw messages aren't activations, so retries can't loop back
+into the raw topic). Here retries go to the `taskworker` topic, which another
+taskbroker consumes:
+
+```yaml
+kafka_deadletter_topic: taskworker-dlq
+kafka_retry_topic: taskworker
+
+kafka_clusters:
+  default:
+    address: 127.0.0.1:9092
+
+kafka_topics:
+  profiles:
+    cluster: default
+    consumer_group: ingest-profiles
+    raw:
+      namespace: ingest.profiling.passthrough
+      application: sentry
+      taskname: sentry.profiles.task.process_profile_from_kafka
+      processing_deadline_duration: 30
+  taskworker:
+    cluster: default
+    consumer_group: ingest-profiles
+    produce_only: true
+  taskworker-dlq:
+    cluster: default
+    consumer_group: ingest-profiles
     produce_only: true
 ```
 
