@@ -274,11 +274,17 @@ pub struct Config {
     /// The port of the postgres database to use for the activation store.
     pub pg_port: u16,
 
+    // User permitted to run DDL operations.
+    pub pg_ddl_username: String,
+
     /// The username of the postgres database to use for the activation store.
     pub pg_username: String,
 
     /// The password of the postgres database to use for the activation store.
     pub pg_password: String,
+
+    /// Password for the user permitted to run DDL operations.
+    pub pg_ddl_password: String,
 
     /// The name of the postgres database to use for the activation store.
     pub pg_database_name: String,
@@ -523,6 +529,8 @@ impl Default for Config {
             run_migrations: false,
             pg_host: "sentry-postgres-1".to_owned(),
             pg_port: 5432,
+            pg_ddl_username: "postgres".to_owned(),
+            pg_ddl_password: "password".to_owned(),
             pg_username: "postgres".to_owned(),
             pg_password: "password".to_owned(),
             pg_database_name: "default".to_owned(),
@@ -1042,8 +1050,8 @@ mod tests {
     use figment::Jail;
     use validator::Validate;
 
-    use crate::Args;
     use crate::logging::LogFormat;
+    use crate::{Args, Run};
 
     use super::{Config, DatabaseAdapter, DeliveryMode};
 
@@ -1184,6 +1192,7 @@ mod tests {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
@@ -1239,7 +1248,10 @@ mod tests {
             jail.set_env("TASKBROKER_DATABASE_ADAPTER", "postgres");
             jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.log_filter, "error");
             assert_eq!(config.database_adapter, DatabaseAdapter::Postgres);
@@ -1256,7 +1268,10 @@ mod tests {
             jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
             jail.set_env("TASKBROKER_DEFAULT_METRICS_TAGS", "{key=value}");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
@@ -1299,7 +1314,10 @@ mod tests {
                 "{sentry=http://127.0.0.1:60052,launchpad=http://127.0.0.1:60053}",
             );
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(
                 config.worker_map,
@@ -1315,7 +1333,10 @@ mod tests {
 
     #[test]
     fn test_kafka_consumer_config() {
-        let args = Args { config: None };
+        let args = Args {
+            run: Run::Broker,
+            config: None,
+        };
         let config = Config::from_args(&args).unwrap();
         let consumer_config = config.kafka_consumer_config();
 
@@ -1335,7 +1356,10 @@ mod tests {
             jail.set_env("TASKBROKER_KAFKA_SASL_USERNAME", "taskbroker");
             jail.set_env("TASKBROKER_KAFKA_SASL_PASSWORD", "secret-tech");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             let consumer_config = config.kafka_consumer_config();
 
@@ -1370,7 +1394,10 @@ mod tests {
                 "/etc/ssl/taskbroker/private.key",
             );
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             let consumer_config = config.kafka_consumer_config();
 
@@ -1393,7 +1420,10 @@ mod tests {
 
     #[test]
     fn test_kafka_producer_config() {
-        let args = Args { config: None };
+        let args = Args {
+            run: Run::Broker,
+            config: None,
+        };
         let config = Config::from_args(&args).unwrap();
         let producer_config = config.kafka_producer_config();
 
@@ -1419,7 +1449,10 @@ mod tests {
             jail.set_env("TASKBROKER_KAFKA_DEADLETTER_SASL_USERNAME", "taskbroker");
             jail.set_env("TASKBROKER_KAFKA_DEADLETTER_SASL_PASSWORD", "secret-tech");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             let producer_config = config.kafka_producer_config();
 
@@ -1454,7 +1487,10 @@ mod tests {
                 "/etc/ssl/taskbroker/private.key",
             );
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             let producer_config = config.kafka_producer_config();
 
@@ -1486,7 +1522,10 @@ mod tests {
         Jail::expect_with(|jail| {
             jail.set_env("TASKBROKER_DELIVERY_MODE", "push");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.delivery_mode, DeliveryMode::Push);
 
@@ -1500,6 +1539,7 @@ mod tests {
             jail.create_file("config.yaml", "delivery_mode: push")?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
@@ -1541,6 +1581,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
@@ -1627,7 +1668,10 @@ kafka_clusters:
                 "10.0.0.2:9092",
             );
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).unwrap();
 
             let topics = &config.kafka_topics;
@@ -1672,6 +1716,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -1700,6 +1745,7 @@ kafka_topics:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -1731,6 +1777,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -1766,6 +1813,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -1809,6 +1857,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
@@ -1849,6 +1898,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -1881,6 +1931,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -1905,7 +1956,10 @@ kafka_clusters:
             jail.set_env("TASKBROKER_KAFKA_TOPIC", "taskworker");
             jail.set_env("TASKBROKER_KAFKA_DEADLETTER_TOPIC", "taskworker");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let err = Config::from_args(&args).unwrap_err();
             assert!(
                 err.to_string().contains(
@@ -1929,7 +1983,10 @@ kafka_clusters:
             jail.set_env("TASKBROKER_KAFKA_RETRY_TOPIC", "taskworker-dlq");
             jail.set_env("TASKBROKER_KAFKA_DEADLETTER_TOPIC", "taskworker-dlq");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let err = Config::from_args(&args).unwrap_err();
             assert!(
                 err.to_string().contains(
@@ -1973,6 +2030,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
@@ -2020,6 +2078,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
@@ -2068,6 +2127,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -2112,6 +2172,7 @@ kafka_clusters:
             )?;
 
             let args = Args {
+                run: Run::Broker,
                 config: Some("config.yaml".to_owned()),
             };
             let err = Config::from_args(&args).unwrap_err();
@@ -2141,7 +2202,10 @@ kafka_clusters:
             jail.set_env("TASKBROKER_KAFKA_DEADLETTER_TOPIC", "taskworker-ingest-dlq");
             jail.set_env("TASKBROKER_KAFKA_DEADLETTER_CLUSTER", "kafka-small:9092");
 
-            let args = Args { config: None };
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
             let config = Config::from_args(&args).expect("legacy retry config should validate");
 
             // The retry topic resolves to the deadletter cluster (where the

@@ -207,41 +207,8 @@ impl PostgresStore {
 
     #[framed]
     pub async fn new(config: PostgresStoreConfig) -> Result<Self, Error> {
-        if config.run_migrations {
-            let default_pool = create_default_postgres_pool(
-                &config.pg_connection,
-                &config.pg_default_database_name,
-            )
-            .await?;
-
-            // Create the database if it doesn't exist
-            let row: (bool,) = sqlx::query_as(
-                "SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )",
-            )
-            .bind(&config.pg_database_name)
-            .fetch_one(&default_pool)
-            .await?;
-
-            if !row.0 {
-                println!("Creating database {}", &config.pg_database_name);
-                sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
-                    .bind(&config.pg_database_name)
-                    .execute(&default_pool)
-                    .await?;
-            }
-            // Close the default pool
-            default_pool.close().await;
-        }
-
         let (read_pool, write_pool) =
             create_postgres_pool(&config.pg_connection, &config.pg_database_name).await?;
-
-        if config.run_migrations {
-            println!("Running migrations on database");
-            sqlx::migrate!("./migrations/postgres")
-                .run(&write_pool)
-                .await?;
-        }
 
         Ok(Self {
             read_pool,
