@@ -8,7 +8,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use sqlx::{FromRow, Pool, Postgres, QueryBuilder, Transaction};
 
-use anyhow::{Error, anyhow};
+use anyhow::{Error, Result, anyhow};
 use async_backtrace::framed;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -22,6 +22,55 @@ use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+
+/// Run migrations.
+pub async fn migrate(config: &Config) -> Result<()> {
+    let mut conn_opts = PgConnectOptions::new()
+        .username(&config.pg_ddl_username)
+        .password(&config.pg_ddl_password)
+        .host(&config.pg_host)
+        .port(config.pg_port);
+
+    if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
+        let url = conn_opts.to_url_lossy();
+        let new_url =
+            url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
+        conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
+    }
+
+    let default_pool =
+        create_default_postgres_pool(&conn_opts, &config.pg_default_database_name).await?;
+
+    // Create the database if it doesn't exist
+    let row: (bool,) =
+        sqlx::query_as("SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )")
+            .bind(&config.pg_database_name)
+            .fetch_one(&default_pool)
+            .await?;
+
+    if !row.0 {
+        println!("Creating database {}", &config.pg_database_name);
+        sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
+            .execute(&default_pool)
+            .await?;
+    }
+
+    default_pool.close().await;
+
+    let migration_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(conn_opts.database(&config.pg_database_name))
+        .await?;
+
+    println!("Running migrations on database");
+    sqlx::migrate!("./migrations/postgres")
+        .run(&migration_pool)
+        .await?;
+
+    migration_pool.close().await;
+
+    Ok(())
+}
 
 #[derive(Debug, FromRow)]
 struct TableRow {
@@ -152,12 +201,14 @@ impl PostgresStoreConfig {
             .password(&config.pg_password)
             .host(&config.pg_host)
             .port(config.pg_port);
+
         if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
             let url = conn_opts.to_url_lossy();
             let new_url =
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
             conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
         }
+
         Self {
             pg_connection: conn_opts,
             pg_database_name: config.pg_database_name.clone(),

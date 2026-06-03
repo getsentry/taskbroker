@@ -9,7 +9,6 @@ pub mod kafka;
 pub mod logging;
 pub mod metrics;
 pub mod push;
-pub mod run;
 pub mod runtime_config;
 pub mod store;
 pub mod test_utils;
@@ -27,7 +26,7 @@ pub fn get_version() -> &'static str {
 }
 
 /// What are we running?
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
 pub enum Run {
     Migrations,
     Broker,

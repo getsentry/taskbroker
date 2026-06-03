@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
+use crate::store::adapters::postgres::{self, PostgresStore, PostgresStoreConfig};
 use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
 use crate::store::traits::ActivationStore;
 
@@ -284,13 +284,15 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
             .unwrap(),
         ) as Arc<dyn ActivationStore>,
         "postgres" => {
+            let config = create_integration_config();
+            postgres::migrate(&config).await.unwrap();
+
             let store = Arc::new(
-                PostgresStore::new(PostgresStoreConfig::from_config(
-                    &create_integration_config(),
-                ))
-                .await
-                .unwrap(),
+                PostgresStore::new(PostgresStoreConfig::from_config(&config))
+                    .await
+                    .unwrap(),
             ) as Arc<dyn ActivationStore>;
+
             store.assign_partitions(vec![0]).unwrap();
             store
         }

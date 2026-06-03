@@ -13,6 +13,7 @@ use validator::{Validate, ValidationError};
 use crate::Args;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
+use crate::store::adapters::postgres;
 
 /// Configuration for a single Kafka topic in multi-topic mode.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -128,6 +129,18 @@ pub enum DatabaseAdapter {
 
     /// PostgreSQL database adapter
     Postgres,
+}
+
+impl DatabaseAdapter {
+    pub async fn migrate(&self, config: &Config) -> Result<()> {
+        match self {
+            Self::Postgres => postgres::migrate(config).await,
+            Self::Sqlite => {
+                warn!("Standalone migration not supported for SQLite");
+                Ok(())
+            }
+        }
+    }
 }
 
 /// How the taskbroker delivers tasks to workers.
