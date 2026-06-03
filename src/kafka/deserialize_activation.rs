@@ -48,6 +48,7 @@ pub fn new(
 
         metrics::histogram!(
             "consumer.message.payload_size_bytes",
+            "topic" => msg.topic().to_string(),
             "namespace" => namespace.clone(),
             "taskname" => taskname.clone()
         )

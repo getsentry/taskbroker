@@ -69,6 +69,11 @@ test-upkeep-retry: build reset-kafka ## Run the upkeep retry integration test
 	rm -r integration_tests/.tests_output/test_upkeep_retry
 .PHONY: test-upkeep-retry
 
+test-multi-topic: build reset-kafka ## Run the multi-topic consumption integration test
+	python -m pytest integration_tests/integration_tests/test_multi_topic.py -s
+	rm -r integration_tests/.tests_output/test_multi_topic
+.PHONY: test-multi-topic
+
 test-upkeep-expiry: build reset-kafka ## Run the upkeep expiry integration test
 	python -m pytest integration_tests/integration_tests/test_upkeep_expiry.py -s
 	rm -r integration_tests/.tests_output/test_upkeep_expiry

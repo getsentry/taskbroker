@@ -16,6 +16,9 @@ use super::consumer::{
 };
 
 pub struct ActivationWriterConfig {
+    /// The consumed topic this writer belongs to, used as a metric tag. Each
+    /// consumer has its own writer, so writer metrics are per-topic.
+    pub topic: String,
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
     pub max_processing_activations: usize,
@@ -25,9 +28,11 @@ pub struct ActivationWriterConfig {
 }
 
 impl ActivationWriterConfig {
-    /// Convert from application configuration into ActivationWriter config.
-    pub fn from_config(config: &Config) -> Self {
+    /// Convert from application configuration into ActivationWriter config for a
+    /// single consumed topic.
+    pub fn from_topic(config: &Config, topic: &str) -> Self {
         Self {
+            topic: topic.to_owned(),
             db_max_size: config.db_max_size,
             max_buf_len: config.db_insert_batch_max_len,
             max_pending_activations: config.max_pending_count,
@@ -133,6 +138,7 @@ impl Reducer for ActivationWriter {
             };
             metrics::counter!(
                 "consumer.inflight_activation_writer.backpressure",
+                "topic" => self.config.topic.clone(),
                 "reason" => reason,
             )
             .increment(1);
@@ -160,11 +166,21 @@ impl Reducer for ActivationWriter {
                         .min_by_key(|item| item.timestamp())
                         .unwrap();
 
-                metrics::histogram!("consumer.inflight_activation_writer.write_to_store")
-                    .record(write_to_store_start.elapsed());
-                metrics::histogram!("consumer.inflight_activation_writer.insert_lag")
-                    .record(lag.num_seconds() as f64);
-                metrics::counter!("consumer.inflight_activation_writer.stored").increment(entries);
+                metrics::histogram!(
+                    "consumer.inflight_activation_writer.write_to_store",
+                    "topic" => self.config.topic.clone(),
+                )
+                .record(write_to_store_start.elapsed());
+                metrics::histogram!(
+                    "consumer.inflight_activation_writer.insert_lag",
+                    "topic" => self.config.topic.clone(),
+                )
+                .record(lag.num_seconds() as f64);
+                metrics::counter!(
+                    "consumer.inflight_activation_writer.stored",
+                    "topic" => self.config.topic.clone(),
+                )
+                .increment(entries);
                 debug!(
                     "Inserted {:?} entries with max lag: {:?}s",
                     entries,
@@ -174,7 +190,11 @@ impl Reducer for ActivationWriter {
             }
             Err(err) => {
                 error!("Unable to write to sqlite: {}", err);
-                metrics::counter!("consumer.inflight_activation_writer.write_failed").increment(1);
+                metrics::counter!(
+                    "consumer.inflight_activation_writer.write_failed",
+                    "topic" => self.config.topic.clone(),
+                )
+                .increment(1);
                 sleep(Duration::from_millis(self.config.write_failure_backoff_ms)).await;
                 Ok(None)
             }
@@ -216,6 +236,7 @@ mod tests {
     async fn test_writer_flush_batch(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
@@ -262,6 +283,7 @@ mod tests {
     async fn test_writer_flush_only_pending(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
@@ -297,6 +319,7 @@ mod tests {
     async fn test_writer_flush_only_delay(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 0,
@@ -337,6 +360,7 @@ mod tests {
     async fn test_writer_backpressure_pending_limit_reached(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 0,
@@ -386,6 +410,7 @@ mod tests {
     ) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
@@ -433,6 +458,7 @@ mod tests {
     async fn test_writer_backpressure_processing_limit_reached(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
@@ -502,6 +528,7 @@ mod tests {
     async fn test_writer_backpressure_db_size_limit_reached(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             // 200 rows is ~50KB
             db_max_size: Some(50_000),
             max_buf_len: 100,
@@ -534,6 +561,7 @@ mod tests {
     async fn test_writer_flush_empty_batch(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
+            topic: "test-topic".to_string(),
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
