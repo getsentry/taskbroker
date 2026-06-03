@@ -340,7 +340,8 @@ async fn main() -> Result<(), Error> {
         .on_completion(log_task_completion("maintenance_task", maintenance_task));
 
     for (topic, handle) in consumer_tasks {
-        departure = departure.on_completion(log_task_completion(format!("consumer:{topic}"), handle));
+        departure =
+            departure.on_completion(log_task_completion(format!("consumer:{topic}"), handle));
     }
 
     if let Some(task) = grpc_server_task {

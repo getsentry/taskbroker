@@ -24,10 +24,7 @@ pub async fn create_missing_topics(
         .create()
         .map_err(|e| anyhow!("Unable to create rdkafka admin client: {e}"))?;
 
-    info!(
-        "Creating topics {:?} if they do not already exist",
-        topics
-    );
+    info!("Creating topics {:?} if they do not already exist", topics);
     let new_topics: Vec<NewTopic> = topics
         .iter()
         .map(|(name, partitions)| NewTopic::new(name, *partitions, TopicReplication::Fixed(1)))

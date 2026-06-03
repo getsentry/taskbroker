@@ -2,7 +2,6 @@ import signal
 import subprocess
 import time
 
-import pytest
 import yaml
 
 from integration_tests.helpers import (
