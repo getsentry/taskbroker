@@ -41,7 +41,10 @@ pub async fn start_consumer(
 ) -> Result<(), Error> {
     let (client_shutdown_sender, client_shutdown_receiver) = oneshot::channel();
     let (event_sender, event_receiver) = unbounded_channel();
-    let context = KafkaContext::new(event_sender.clone());
+    // Each consumer subscribes to a single topic; join defensively in case that
+    // ever changes. Used as the `topic` tag on this consumer's metrics.
+    let topic = topics.join(",");
+    let context = KafkaContext::new(event_sender.clone(), topic.clone());
     let consumer: Arc<StreamConsumer<KafkaContext>> = Arc::new(
         kafka_client_config
             .create_with_context(context)
@@ -54,13 +57,14 @@ pub async fn start_consumer(
 
     handle_shutdown_signals(event_sender.clone());
     poll_consumer_client(consumer.clone(), client_shutdown_receiver);
-    metrics::gauge!("arroyo.consumer.current_partitions").set(0);
+    metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone()).set(0);
     handle_events(
         consumer,
         event_receiver,
         activation_store,
         client_shutdown_sender,
         spawn_actors,
+        topic,
     )
     .await
 }
@@ -109,11 +113,16 @@ pub fn poll_consumer_client(
 #[derive(Debug)]
 pub struct KafkaContext {
     event_sender: UnboundedSender<(Event, SyncSender<()>)>,
+    /// The topic(s) this consumer is subscribed to, used as a metric tag.
+    topic: String,
 }
 
 impl KafkaContext {
-    pub fn new(event_sender: UnboundedSender<(Event, SyncSender<()>)>) -> Self {
-        Self { event_sender }
+    pub fn new(event_sender: UnboundedSender<(Event, SyncSender<()>)>, topic: String) -> Self {
+        Self {
+            event_sender,
+            topic,
+        }
     }
 }
 
@@ -140,8 +149,11 @@ impl ConsumerContext for KafkaContext {
                 info!("Partition assignment event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
-                metrics::counter!("arroyo.consumer.partitions_assigned.count")
-                    .increment(tpl.count() as u64);
+                metrics::counter!(
+                    "arroyo.consumer.partitions_assigned.count",
+                    "topic" => self.topic.clone(),
+                )
+                .increment(tpl.count() as u64);
             }
             Rebalance::Revoke(tpl) => {
                 debug!("Got pre-rebalance callback, kind: Revoke");
@@ -159,8 +171,11 @@ impl ConsumerContext for KafkaContext {
                 info!("Partition revocation event sent, waiting for rendezvous...");
                 let _ = rendezvous_receiver.recv();
                 info!("Rendezvous complete");
-                metrics::counter!("arroyo.consumer.partitions_revoked.count")
-                    .increment(tpl.count() as u64);
+                metrics::counter!(
+                    "arroyo.consumer.partitions_revoked.count",
+                    "topic" => self.topic.clone(),
+                )
+                .increment(tpl.count() as u64);
             }
             Rebalance::Error(err) => {
                 debug!("Got pre-rebalance callback, kind: Error");
@@ -337,6 +352,7 @@ pub async fn handle_events(
         Arc<StreamConsumer<KafkaContext>>,
         &BTreeSet<(String, i32)>,
     ) -> ActorHandles,
+    topic: String,
 ) -> Result<(), anyhow::Error> {
     const CALLBACK_DURATION: Duration = Duration::from_secs(4);
 
@@ -363,7 +379,8 @@ pub async fn handle_events(
                 info!("Received event: {:?}", event);
                 state = match (state, event) {
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
-                        metrics::gauge!("arroyo.consumer.current_partitions").set(tpl.len() as f64);
+                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone())
+                            .set(tpl.len() as f64);
                         // Note: This assumes we only process one topic per consumer.
                         let mut partitions = Vec::<i32>::new();
                         for (_, partition) in tpl.iter() {
@@ -386,7 +403,7 @@ pub async fn handle_events(
                         );
                         activation_store.assign_partitions(vec![]).unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
-                        metrics::gauge!("arroyo.consumer.current_partitions").set(0);
+                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone()).set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
@@ -394,7 +411,7 @@ pub async fn handle_events(
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
-                        metrics::gauge!("arroyo.consumer.current_partitions").set(0);
+                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone()).set(0);
                         ConsumerState::Stopped
                     }
                     (ConsumerState::Stopped, _) => {

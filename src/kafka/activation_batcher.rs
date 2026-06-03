@@ -19,7 +19,6 @@ use super::consumer::{
 
 pub struct ActivationBatcherConfig {
     pub producer_config: ClientConfig,
-    pub kafka_cluster: String,
     pub kafka_topic: String,
     pub kafka_long_topic: String,
     pub send_timeout_ms: u64,
@@ -29,18 +28,12 @@ pub struct ActivationBatcherConfig {
 }
 
 impl ActivationBatcherConfig {
-    /// Convert from application configuration into ActivationBatcher config.
-    pub fn from_config(config: &Config) -> Self {
-        let (topic_name, topic_config) = config
-            .consumable_topic()
-            .expect("no consumable topic configured");
-        let cluster = config
-            .cluster(&topic_config.cluster)
-            .expect("cluster not found");
-
+    /// Convert from application configuration into ActivationBatcher config for a
+    /// single consumed topic. Each consumer has its own batcher, so the topic is
+    /// passed explicitly rather than derived from "the" consumable topic.
+    pub fn from_topic(config: &Config, topic_name: &str) -> Self {
         Self {
             producer_config: config.kafka_producer_config(),
-            kafka_cluster: cluster.address.clone(),
             kafka_topic: topic_name.to_owned(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
@@ -104,15 +97,23 @@ impl Reducer for ActivationBatcher {
         let namespace = &t.namespace;
 
         if runtime_config.drop_task_killswitch.contains(task_name) {
-            metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
-                .increment(1);
+            metrics::counter!(
+                "filter.drop_task_killswitch",
+                "topic" => self.config.kafka_topic.clone(),
+                "taskname" => task_name.clone(),
+            )
+            .increment(1);
             return Ok(());
         }
 
         if let Some(expires_at) = t.expires_at
             && Utc::now() > expires_at
         {
-            metrics::counter!("filter.expired_at_consumer").increment(1);
+            metrics::counter!(
+                "filter.expired_at_consumer",
+                "topic" => self.config.kafka_topic.clone(),
+            )
+            .increment(1);
             return Ok(());
         }
 
@@ -120,6 +121,7 @@ impl Reducer for ActivationBatcher {
             if forward_topic == self.config.kafka_topic {
                 metrics::counter!(
                     "filter.forward_task_demoted_namespace.skipped",
+                    "topic" => self.config.kafka_topic.clone(),
                     "namespace" => namespace.clone(),
                     "taskname" => task_name.clone(),
                 )
@@ -127,6 +129,7 @@ impl Reducer for ActivationBatcher {
             } else {
                 metrics::counter!(
                     "filter.forward_task_demoted_namespace",
+                    "topic" => self.config.kafka_topic.clone(),
                     "namespace" => namespace.clone(),
                     "taskname" => task_name.clone(),
                 )
@@ -147,16 +150,28 @@ impl Reducer for ActivationBatcher {
             return Ok(None);
         }
 
-        metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
-        metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
+        metrics::histogram!("consumer.batch_rows", "topic" => self.config.kafka_topic.clone())
+            .record(self.batch.len() as f64);
+        metrics::histogram!("consumer.batch_bytes", "topic" => self.config.kafka_topic.clone())
+            .record(self.batch_size as f64);
 
         // Send all forward batch in parallel
         if !self.forward_batch.is_empty() {
             let runtime_config = self.runtime_config_manager.read().await;
-            let forward_cluster = runtime_config
-                .demoted_topic_cluster
-                .clone()
-                .unwrap_or(self.config.kafka_cluster.clone());
+            // The forwarding producer authenticates against the deadletter
+            // cluster, so default demoted forwarding there too (and consistently
+            // with upkeep) when no demoted_topic_cluster is configured.
+            let forward_cluster =
+                runtime_config
+                    .demoted_topic_cluster
+                    .clone()
+                    .unwrap_or_else(|| {
+                        self.config
+                            .producer_config
+                            .get("bootstrap.servers")
+                            .expect("producer config always sets bootstrap.servers")
+                            .to_string()
+                    });
             if self.producer_cluster != forward_cluster {
                 let mut new_config = self.config.producer_config.clone();
                 new_config.set("bootstrap.servers", &forward_cluster);
@@ -181,9 +196,12 @@ impl Reducer for ActivationBatcher {
             let results = join_all(sends).await;
             let success_count = results.iter().filter(|r| r.is_ok()).count();
 
-            metrics::histogram!("consumer.forward_attempts").record(results.len() as f64);
-            metrics::histogram!("consumer.forward_successes").record(success_count as f64);
-            metrics::histogram!("consumer.forward_failures")
+            let topic = self.config.kafka_topic.clone();
+            metrics::histogram!("consumer.forward_attempts", "topic" => topic.clone())
+                .record(results.len() as f64);
+            metrics::histogram!("consumer.forward_successes", "topic" => topic.clone())
+                .record(success_count as f64);
+            metrics::histogram!("consumer.forward_failures", "topic" => topic)
                 .record((results.len() - success_count) as f64);
 
             self.forward_batch.clear();
@@ -252,7 +270,7 @@ demoted_namespaces:
         config.normalize_and_validate().unwrap();
         let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -275,7 +293,7 @@ demoted_namespaces:
         config.normalize_and_validate().unwrap();
         let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -304,7 +322,7 @@ demoted_namespaces:
         let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -334,7 +352,7 @@ demoted_namespaces:
         let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -380,11 +398,11 @@ demoted_topic: taskworker-demoted"#;
         config.normalize_and_validate().unwrap();
         let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
-        let (_, topic_config) = config.consumable_topic().unwrap();
+        let (_, topic_config) = config.consumable_topics().unwrap()[0];
         let cluster_address = config
             .cluster(&topic_config.cluster)
             .unwrap()

@@ -354,12 +354,12 @@ pub fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
 
 /// Reset a kafka topic by destroying it and recreating it.
 pub async fn reset_topic(config: Arc<Config>) {
+    let (main_topic, _) = config.consumable_topics().expect("no consumable topic")[0];
     let admin_client: AdminClient<_> = config
-        .kafka_consumer_config()
+        .kafka_consumer_config_for(main_topic)
         .create()
         .expect("Could not create admin client");
 
-    let (main_topic, _) = config.consumable_topic().expect("no consumable topic");
     let options = AdminOptions::default();
     admin_client
         .delete_topics(&[main_topic, &config.kafka_deadletter_topic], &options)
@@ -385,7 +385,7 @@ pub async fn consume_topic(
     num_records: usize,
 ) -> Vec<TaskActivation> {
     let consumer: StreamConsumer = config
-        .kafka_consumer_config()
+        .kafka_consumer_config_for(topic)
         .create()
         .expect("could not create consumer");
     consumer.subscribe(&[topic]).expect("could not subscribe");

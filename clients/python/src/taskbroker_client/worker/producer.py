@@ -16,15 +16,21 @@ _pending_futures: set[ProducerFuture[BrokerValue[KafkaPayload]]] = set()
 class TaskProducer:
     """
     TaskProducer is a producer abstraction that should be used by tasks
-    when producing to Kafka is a side effect of a task function.
-    After a TaskWorker child process executes a task function, it will collect all
-    producer futures tracked by TaskProducer, and will only register the activation as
-    a success if all producer futures from that task were successful.
+    that produce to Kafka as a side effect of their task function.
+    After a TaskWorker child process executes a task activation, it will collect all
+    producer futures tracked by TaskProducer, and will only register the task activation as
+    a success if all producer futures from that activation were successful.
     Otherwise, the activation will be retried.
     """
 
-    def __init__(self, producer: ProducerProtocol) -> None:
-        self._inner_producer = producer
+    def __init__(self, producer_factory: Callable[[], ProducerProtocol]) -> None:
+        self._producer_factory = producer_factory
+        self._inner_producer: ProducerProtocol | None = None
+
+    def _get(self) -> ProducerProtocol:
+        if self._inner_producer is None:
+            self._inner_producer = self._producer_factory()
+        return self._inner_producer
 
     def track_future(self, future: ProducerFuture[BrokerValue[KafkaPayload]]) -> None:
         _pending_futures.add(future)
@@ -53,7 +59,7 @@ class TaskProducer:
             callbacks: List of Callables to add to the future as done callbacks. The future itself
                        is the only arg passed to the callback.
         """
-        future = self._inner_producer.produce(topic, payload)
+        future = self._get().produce(topic, payload)
         self.track_future(future)
         if callbacks:
             # Arroyo producers can return a SimpleProducerFuture,

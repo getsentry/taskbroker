@@ -89,6 +89,35 @@ impl ClusterConfig {
             || self.ssl_certificate_location.is_some()
             || self.ssl_key_location.is_some()
     }
+
+    /// Apply this cluster's `bootstrap.servers` and any configured sasl/ssl
+    /// auth onto an rdkafka `ClientConfig`. Shared by the consumer, producer and
+    /// admin config builders so they all authenticate identically.
+    fn apply_to(&self, config: &mut ClientConfig) {
+        config.set("bootstrap.servers", self.address.clone());
+
+        if let Some(ref sasl_mechanism) = self.sasl_mechanism {
+            config.set("sasl.mechanism", sasl_mechanism);
+        }
+        if let Some(ref sasl_username) = self.sasl_username {
+            config.set("sasl.username", sasl_username);
+        }
+        if let Some(ref sasl_password) = self.sasl_password {
+            config.set("sasl.password", sasl_password);
+        }
+        if let Some(ref security_protocol) = self.security_protocol {
+            config.set("security.protocol", security_protocol);
+        }
+        if let Some(ref ssl_ca_location) = self.ssl_ca_location {
+            config.set("ssl.ca.location", ssl_ca_location);
+        }
+        if let Some(ref ssl_certificate_location) = self.ssl_certificate_location {
+            config.set("ssl.certificate.location", ssl_certificate_location);
+        }
+        if let Some(ref ssl_private_key_location) = self.ssl_key_location {
+            config.set("ssl.key.location", ssl_private_key_location);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
@@ -626,8 +655,9 @@ impl Config {
 
         let uses_new_format = !self.kafka_topics.is_empty() || !self.kafka_clusters.is_empty();
         // Any explicitly-set deprecated field describing a cluster (the main
-        // consumed cluster or the deadletter cluster). kafka_deadletter_topic is
-        // NOT deprecated and is intentionally excluded.
+        // consumed cluster or the deadletter cluster) or the deprecated global
+        // raw mode. kafka_deadletter_topic is NOT deprecated and is intentionally
+        // excluded.
         let uses_legacy = self.kafka_topic.is_some()
             || self.kafka_cluster.is_some()
             || self.kafka_consumer_group.is_some()
@@ -645,7 +675,10 @@ impl Config {
             || self.kafka_deadletter_sasl_password.is_some()
             || self.kafka_deadletter_ssl_ca_location.is_some()
             || self.kafka_deadletter_ssl_certificate_location.is_some()
-            || self.kafka_deadletter_ssl_key_location.is_some();
+            || self.kafka_deadletter_ssl_key_location.is_some()
+            // Global raw mode is a deprecated legacy field; in the new format raw
+            // mode is configured per topic via kafka_topics.<topic>.raw.
+            || self.raw_mode;
 
         if uses_new_format && uses_legacy {
             return Err(anyhow!(
@@ -684,6 +717,9 @@ impl Config {
                     "kafka_deadletter_cluster is deprecated, declare the deadletter topic in \
                      kafka_topics with a cluster reference instead"
                 );
+            }
+            if self.raw_mode {
+                warn!("raw_mode is deprecated, use kafka_topics.<topic>.raw instead");
             }
 
             let topic_name = self
@@ -827,8 +863,25 @@ impl Config {
             })?;
         }
 
-        // Validate exactly one consumable topic
-        self.consumable_topic()?;
+        // Validate at least one consumable topic.
+        let consumable = self.consumable_topics()?;
+
+        // Multi-topic consumption is only supported on the sqlite adapter for
+        // now. The postgres adapter filters claims by a single shared partition
+        // list, but those partition numbers aren't unique across topics, so the
+        // filter would mix partitions from different topics together. Note this
+        // filtering exists only to avoid lock contention between brokers, not for
+        // correctness; supporting multi-topic on postgres means reworking how we
+        // avoid that contention (e.g. filtering by (topic, partition) or another
+        // mechanism entirely). Reject the combination here, before any consumer
+        // spawns.
+        if consumable.len() > 1 && self.database_adapter == DatabaseAdapter::Postgres {
+            return Err(anyhow!(
+                "multi-topic consumption ({} consumable topics) is not supported with the \
+                 postgres database adapter; use the sqlite adapter or a single consumable topic",
+                consumable.len()
+            ));
+        }
 
         // The deadletter topic must be a declared topic so the producer can
         // resolve its cluster. In legacy mode it was added above; in the new
@@ -848,8 +901,39 @@ impl Config {
         // would be published to the wrong brokers. In the legacy format the
         // retry topic is registered above; in the new format the user must
         // declare it in kafka_topics.
-        let (consumed_topic, _) = self.consumable_topic()?;
-        let retry_target = self.kafka_retry_topic.as_deref().unwrap_or(consumed_topic);
+        // Normalize the retry topic so downstream code can always rely on it
+        // being set:
+        // - explicitly configured: used as-is.
+        // - single non-raw consumed topic: retries loop back to that topic.
+        // - raw mode: raw messages aren't activations, so retries must go to a
+        //   separate activation-encoded topic; a retry topic is mandatory.
+        // - multiple consumed topics: no unambiguous fallback, so a single
+        //   shared retry topic is mandatory.
+        if self.kafka_retry_topic.is_none() {
+            let has_raw = consumable.iter().any(|(_, cfg)| cfg.raw.is_some());
+            let count = consumable.len();
+            let single_topic = (count == 1).then(|| consumable[0].0.to_owned());
+
+            if has_raw {
+                return Err(anyhow!(
+                    "kafka_retry_topic must be set explicitly when a consumed topic uses raw mode"
+                ));
+            }
+            match single_topic {
+                Some(topic) => self.kafka_retry_topic = Some(topic),
+                None => {
+                    return Err(anyhow!(
+                        "kafka_retry_topic is required when consuming from multiple topics ({} \
+                         consumable topics configured)",
+                        count
+                    ));
+                }
+            }
+        }
+        let retry_target = self
+            .kafka_retry_topic
+            .as_deref()
+            .expect("kafka_retry_topic is set above");
         let retry_topic_config = self.kafka_topics.get(retry_target).ok_or_else(|| {
             Box::new(figment::Error::from(format!(
                 "kafka_retry_topic '{retry_target}' is not defined in kafka_topics"
@@ -870,36 +954,80 @@ impl Config {
             ));
         }
 
+        // Validate raw-mode topics up front. The raw fields are optional on
+        // `RawModeConfig` (they don't apply to non-raw topics), but a raw topic
+        // requires all of them. Catch missing fields here as a config error
+        // rather than panicking when the consumer builds its deserializer.
+        for (topic_name, topic_config) in &self.kafka_topics {
+            let Some(raw) = &topic_config.raw else {
+                continue;
+            };
+            let application = raw.application.as_deref().ok_or_else(|| {
+                anyhow!("topic '{topic_name}' enables raw mode but is missing raw.application")
+            })?;
+            if !self.worker_map.contains_key(application) {
+                return Err(anyhow!(
+                    "topic '{topic_name}' raw.application '{application}' is not in worker_map"
+                ));
+            }
+            if raw.namespace.is_none() {
+                return Err(anyhow!(
+                    "topic '{topic_name}' enables raw mode but is missing raw.namespace"
+                ));
+            }
+            if raw.taskname.is_none() {
+                return Err(anyhow!(
+                    "topic '{topic_name}' enables raw mode but is missing raw.taskname"
+                ));
+            }
+            if raw.processing_deadline_duration.is_none() {
+                return Err(anyhow!(
+                    "topic '{topic_name}' enables raw mode but is missing \
+                     raw.processing_deadline_duration"
+                ));
+            }
+            // Raw messages aren't activations, so retries must go to a separate
+            // activation-encoded topic, never back to the raw topic itself.
+            if self.kafka_retry_topic.as_deref() == Some(topic_name.as_str()) {
+                return Err(anyhow!(
+                    "kafka_retry_topic must differ from raw topic '{topic_name}'"
+                ));
+            }
+        }
+
         Ok(())
     }
 
-    /// Get the single consumable topic and its config.
-    /// Returns an error if there are zero or multiple consumable topics.
-    pub fn consumable_topic(&self) -> Result<(&str, &TopicConfig), Box<figment::Error>> {
-        let mut consumable = self
+    /// Get all consumable (non-`produce_only`) topics and their configs, in
+    /// `kafka_topics` (BTreeMap) order. Returns an error only when there are no
+    /// consumable topics. This is the sole accessor for consumed topics; callers
+    /// that only handle a single topic should iterate and select explicitly
+    /// rather than assuming exactly one.
+    pub fn consumable_topics(&self) -> Result<Vec<(&str, &TopicConfig)>, Box<figment::Error>> {
+        let consumable: Vec<(&str, &TopicConfig)> = self
             .kafka_topics
             .iter()
-            .filter(|(_, cfg)| !cfg.produce_only);
+            .filter(|(_, cfg)| !cfg.produce_only)
+            .map(|(name, cfg)| (name.as_str(), cfg))
+            .collect();
 
-        let first = consumable.next().ok_or_else(|| {
-            Box::new(figment::Error::from(
+        if consumable.is_empty() {
+            return Err(Box::new(figment::Error::from(
                 "no consumable topic configured (all topics have produce_only: true)".to_owned(),
-            ))
-        })?;
-
-        if consumable.next().is_some() {
-            let count = self
-                .kafka_topics
-                .values()
-                .filter(|t| !t.produce_only)
-                .count();
-            return Err(Box::new(figment::Error::from(format!(
-                "multi-topic consumption is not yet supported: {} consumable topics configured, maximum is 1",
-                count
-            ))));
+            )));
         }
 
-        Ok((first.0.as_str(), first.1))
+        Ok(consumable)
+    }
+
+    /// The topic retries are produced to. `normalize_and_validate` always sets
+    /// `kafka_retry_topic` (it defaults to the single consumed topic when only
+    /// one non-raw topic is configured), so this is infallible after validation.
+    /// Panics if config wasn't validated (call from_args, not extract directly).
+    pub fn retry_topic(&self) -> &str {
+        self.kafka_retry_topic
+            .as_deref()
+            .expect("kafka_retry_topic unset - was config validated?")
     }
 
     /// Get cluster config by name.
@@ -910,13 +1038,15 @@ impl Config {
             .ok_or_else(|| Box::new(figment::Error::from(format!("unknown cluster: {}", name))))
     }
 
-    /// Convert the application Config into rdkafka::ClientConfig for consumer.
-    /// Uses the single consumable topic's cluster.
-    /// Panics if config wasn't validated (call from_args, not extract directly).
-    pub fn kafka_consumer_config(&self) -> ClientConfig {
-        let (_, topic_config) = self
-            .consumable_topic()
-            .expect("consumable_topic failed - was config validated?");
+    /// Convert the application Config into rdkafka::ClientConfig for the consumer
+    /// of a specific topic. Each consumed topic has its own consumer (own
+    /// `group.id` and cluster), so multi-topic spawns one consumer per topic.
+    /// Panics if `topic_name` isn't a declared topic (call from_args first).
+    pub fn kafka_consumer_config_for(&self, topic_name: &str) -> ClientConfig {
+        let topic_config = self
+            .kafka_topics
+            .get(topic_name)
+            .unwrap_or_else(|| panic!("unknown topic '{topic_name}' - was config validated?"));
         let cluster = self
             .cluster(&topic_config.cluster)
             .expect("cluster lookup failed - was config validated?");
@@ -933,9 +1063,9 @@ impl Config {
             .clone()
             .unwrap_or_else(|| self.kafka_auto_offset_reset.clone());
 
-        let mut new_config = ClientConfig::new();
-        let config = new_config
-            .set("bootstrap.servers", cluster.address.clone())
+        let mut config = ClientConfig::new();
+        cluster.apply_to(&mut config);
+        config
             .set("group.id", topic_config.consumer_group.clone())
             .set("session.timeout.ms", session_timeout_ms.to_string())
             .set("enable.partition.eof", "false")
@@ -947,29 +1077,21 @@ impl Config {
             .set("auto.offset.reset", auto_offset_reset)
             .set("enable.auto.offset.store", "false");
 
-        if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
-            config.set("sasl.mechanism", sasl_mechanism);
-        }
-        if let Some(ref sasl_username) = cluster.sasl_username {
-            config.set("sasl.username", sasl_username);
-        }
-        if let Some(ref sasl_password) = cluster.sasl_password {
-            config.set("sasl.password", sasl_password);
-        }
-        if let Some(ref security_protocol) = cluster.security_protocol {
-            config.set("security.protocol", security_protocol);
-        }
-        if let Some(ref ssl_ca_location) = cluster.ssl_ca_location {
-            config.set("ssl.ca.location", ssl_ca_location);
-        }
-        if let Some(ref ssl_certificate_location) = cluster.ssl_certificate_location {
-            config.set("ssl.certificate.location", ssl_certificate_location);
-        }
-        if let Some(ref ssl_private_key_location) = cluster.ssl_key_location {
-            config.set("ssl.key.location", ssl_private_key_location);
-        }
+        config
+    }
 
-        config.clone()
+    /// Build an rdkafka::ClientConfig for an admin client on a named cluster.
+    /// Carries only `bootstrap.servers` + that cluster's auth (no consumer
+    /// settings), so topic creation targets the correct brokers.
+    /// Panics if the cluster isn't declared (call from_args first).
+    pub fn kafka_admin_config(&self, cluster_name: &str) -> ClientConfig {
+        let cluster = self
+            .cluster(cluster_name)
+            .expect("cluster lookup failed - was config validated?");
+
+        let mut config = ClientConfig::new();
+        cluster.apply_to(&mut config);
+        config
     }
 
     /// The cluster the deadletter / forwarding producer connects to: the
@@ -993,33 +1115,10 @@ impl Config {
     pub fn kafka_producer_config(&self) -> ClientConfig {
         let cluster = self.kafka_producer_cluster();
 
-        let mut new_config = ClientConfig::new();
-        let config = new_config
-            .set("bootstrap.servers", cluster.address.clone())
-            .set("message.max.bytes", format!("{}", self.max_message_size));
-        if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
-            config.set("sasl.mechanism", sasl_mechanism);
-        }
-        if let Some(ref sasl_username) = cluster.sasl_username {
-            config.set("sasl.username", sasl_username);
-        }
-        if let Some(ref sasl_password) = cluster.sasl_password {
-            config.set("sasl.password", sasl_password);
-        }
-        if let Some(ref security_protocol) = cluster.security_protocol {
-            config.set("security.protocol", security_protocol);
-        }
-        if let Some(ref ssl_ca_location) = cluster.ssl_ca_location {
-            config.set("ssl.ca.location", ssl_ca_location);
-        }
-        if let Some(ref ssl_certificate_location) = cluster.ssl_certificate_location {
-            config.set("ssl.certificate.location", ssl_certificate_location);
-        }
-        if let Some(ref ssl_private_key_location) = cluster.ssl_key_location {
-            config.set("ssl.key.location", ssl_private_key_location);
-        }
-
-        config.clone()
+        let mut config = ClientConfig::new();
+        cluster.apply_to(&mut config);
+        config.set("message.max.bytes", format!("{}", self.max_message_size));
+        config
     }
 }
 
@@ -1211,7 +1310,7 @@ mod tests {
             // kafka_consumer_group is unset in the yaml, so the legacy field
             // stays None and normalization applies the "taskworker" default.
             assert_eq!(config.kafka_consumer_group, None);
-            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "error-tasks");
             assert_eq!(topic_config.consumer_group, "taskworker");
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
@@ -1279,7 +1378,7 @@ mod tests {
             // Zero-config: legacy fields stay None, but normalization applies
             // the historical "taskworker" default as the consumable topic.
             assert_eq!(config.kafka_topic, None);
-            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "taskworker");
             assert_eq!(
                 config.cluster(&topic_config.cluster).unwrap().address,
@@ -1338,7 +1437,7 @@ mod tests {
             config: None,
         };
         let config = Config::from_args(&args).unwrap();
-        let consumer_config = config.kafka_consumer_config();
+        let consumer_config = config.kafka_consumer_config_for("taskworker");
 
         assert_eq!(
             consumer_config.get("bootstrap.servers").unwrap(),
@@ -1361,7 +1460,7 @@ mod tests {
                 config: None,
             };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("taskworker");
 
             assert_eq!(
                 consumer_config.get("security.protocol").unwrap(),
@@ -1399,7 +1498,7 @@ mod tests {
                 config: None,
             };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("taskworker");
 
             assert_eq!(
                 consumer_config.get("ssl.ca.location").unwrap(),
@@ -1558,13 +1657,20 @@ mod tests {
                 "config.yaml",
                 r#"
 kafka_deadletter_topic: profiles-dlq
+kafka_retry_topic: profiles-retry
+
+worker_map:
+  profiles: http://worker-profiles:50052
 
 kafka_topics:
   profiles:
     cluster: profiles-cluster
     consumer_group: taskbroker-profiles
     raw:
+      namespace: profiles
       application: profiles
+      taskname: profiles.process
+      processing_deadline_duration: 30
   profiles-retry:
     cluster: profiles-cluster
     consumer_group: taskbroker-profiles-retry
@@ -1596,10 +1702,10 @@ kafka_clusters:
             assert_eq!(
                 profiles.raw,
                 Some(RawModeConfig {
-                    namespace: None,
+                    namespace: Some("profiles".to_owned()),
                     application: Some("profiles".to_owned()),
-                    taskname: None,
-                    processing_deadline_duration: None,
+                    taskname: Some("profiles.process".to_owned()),
+                    processing_deadline_duration: Some(30),
                 })
             );
 
@@ -1626,12 +1732,66 @@ kafka_clusters:
             assert!(!clusters.contains_key("default"));
 
             // Test consumable_topic() and cluster() helpers
-            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "profiles");
             assert_eq!(topic_config.cluster, "profiles-cluster");
 
             let cluster = config.cluster("profiles-cluster").unwrap();
             assert_eq!(cluster.address, "10.0.0.1:9092");
+
+            Ok(())
+        });
+    }
+
+    /// A raw topic missing a required field must be rejected at config time with
+    /// a clear error, not panic later when the consumer builds its deserializer.
+    #[test]
+    fn test_raw_mode_missing_field_rejected_cleanly() {
+        Jail::expect_with(|jail| {
+            // raw is missing `namespace` (application/taskname/deadline present).
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_deadletter_topic: profiles-dlq
+kafka_retry_topic: profiles-retry
+
+worker_map:
+  profiles: http://worker-profiles:50052
+
+kafka_topics:
+  profiles:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles
+    raw:
+      application: profiles
+      taskname: profiles.process
+      processing_deadline_duration: 30
+  profiles-retry:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles-retry
+    produce_only: true
+  profiles-dlq:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles-dlq
+    produce_only: true
+
+kafka_clusters:
+  profiles-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                run: Run::Broker,
+                config: Some("config.yaml".to_owned()),
+            };
+            // A clean error, not a panic.
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains("raw.namespace"),
+                "expected a clean missing-field error, got: {}",
+                err
+            );
 
             Ok(())
         });
@@ -1688,7 +1848,7 @@ kafka_clusters:
             assert!(!clusters.contains_key("default"));
 
             // Test consumable_topic() helper
-            let (topic_name, _) = config.consumable_topic().unwrap();
+            let (topic_name, _) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "profiles");
 
             Ok(())
@@ -1792,12 +1952,18 @@ kafka_clusters:
     }
 
     #[test]
-    fn test_multi_topic_rejects_multiple_consumable_topics() {
+    fn test_multi_topic_rejected_on_postgres() {
         Jail::expect_with(|jail| {
-            // Two consumable topics - the guard for this PR rejects this.
+            // Multiple consumable topics are allowed on sqlite but rejected on
+            // postgres, whose claim filtering can't distinguish partitions
+            // across topics.
             jail.create_file(
                 "config.yaml",
                 r#"
+database_adapter: postgres
+kafka_deadletter_topic: tasks-dlq
+kafka_retry_topic: tasks-retry
+
 kafka_topics:
   profiles:
     cluster: my-cluster
@@ -1805,6 +1971,14 @@ kafka_topics:
   subscriptions:
     cluster: my-cluster
     consumer_group: taskbroker-subscriptions
+  tasks-retry:
+    cluster: my-cluster
+    consumer_group: taskbroker-retry
+    produce_only: true
+  tasks-dlq:
+    cluster: my-cluster
+    consumer_group: taskbroker-dlq
+    produce_only: true
 
 kafka_clusters:
   my-cluster:
@@ -1819,7 +1993,7 @@ kafka_clusters:
             let err = Config::from_args(&args).unwrap_err();
             assert!(
                 err.to_string()
-                    .contains("multi-topic consumption is not yet supported"),
+                    .contains("not supported with the postgres database adapter"),
                 "unexpected error: {}",
                 err
             );
@@ -1871,7 +2045,7 @@ kafka_clusters:
             assert!(topics.get("profiles-dlq").unwrap().produce_only);
 
             // consumable_topic() returns the one consumable topic
-            let (topic_name, _) = config.consumable_topic().unwrap();
+            let (topic_name, _) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "profiles");
 
             Ok(())
@@ -2034,7 +2208,7 @@ kafka_clusters:
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("profiles");
 
             // Per-topic values win over the globals.
             assert_eq!(consumer_config.get("session.timeout.ms").unwrap(), "12000");
@@ -2082,7 +2256,7 @@ kafka_clusters:
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("profiles");
 
             // No per-topic overrides, so the globals are used.
             assert_eq!(consumer_config.get("session.timeout.ms").unwrap(), "7000");

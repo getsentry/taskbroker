@@ -16,7 +16,8 @@ pub struct RuntimeConfig {
     /// to prevent them from blocking other tasks in shared namespaces.
     pub demoted_namespaces: Vec<String>,
     /// The cluster to forward tasks from demoted namespaces to.
-    /// If not set, the current cluster taskbroker is consuming from will be used.
+    /// If not set, the deadletter cluster is used (the forwarding producer
+    /// authenticates against it, so it is the only reliably reachable default).
     pub demoted_topic_cluster: Option<String>,
     /// The topic to forward tasks from demoted namespaces to.
     /// If not set, the taskworker-long topic will be used
