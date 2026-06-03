@@ -502,6 +502,13 @@ pub struct Config {
     /// After normalization, this always contains at least the "default" cluster.
     #[serde(default)]
     pub kafka_clusters: BTreeMap<String, ClusterConfig>,
+
+    /// Run in drain mode: start with zero consumable topics (no consumers) and
+    /// just flush whatever is already in the store out to workers, then run
+    /// upkeep (retries/deadletters are still produced to their declared topics).
+    /// Used to move a topic off a broker by editing config: the old broker
+    /// keeps draining its DB. Without this, zero consumable topics is an error.
+    pub drain: bool,
 }
 
 impl Default for Config {
@@ -603,6 +610,7 @@ impl Default for Config {
             raw_processing_deadline_duration: 30,
             kafka_topics: BTreeMap::new(),
             kafka_clusters: BTreeMap::new(),
+            drain: false,
         }
     }
 }
@@ -855,8 +863,21 @@ impl Config {
             })?;
         }
 
-        // Validate at least one consumable topic.
-        let consumable = self.consumable_topics()?;
+        // Consumable (non-produce_only) topics; may be empty in drain mode.
+        let consumable: Vec<(&str, &TopicConfig)> = self
+            .kafka_topics
+            .iter()
+            .filter(|(_, cfg)| !cfg.produce_only)
+            .map(|(name, cfg)| (name.as_str(), cfg))
+            .collect();
+        // A broker with no consumers is only meaningful in drain mode (it just
+        // flushes its existing store); otherwise it's a misconfiguration.
+        if consumable.is_empty() && !self.drain {
+            return Err(anyhow!(
+                "no consumable topic configured (all topics have produce_only: true); \
+                 set drain: true to run a broker with no consumers"
+            ));
+        }
 
         // Multi-topic consumption is only supported on the sqlite adapter for
         // now. The postgres adapter filters claims by a single shared partition
@@ -913,6 +934,14 @@ impl Config {
             }
             match single_topic {
                 Some(topic) => self.kafka_retry_topic = Some(topic),
+                None if count == 0 => {
+                    // Drain mode (the only way to reach zero consumable topics):
+                    // retries are still produced, so a retry topic is required.
+                    return Err(anyhow!(
+                        "kafka_retry_topic is required in drain mode (no consumable topic to \
+                         fall back to)"
+                    ));
+                }
                 None => {
                     return Err(anyhow!(
                         "kafka_retry_topic is required when consuming from multiple topics ({} \
@@ -1897,6 +1926,69 @@ kafka_clusters:
             // consumable_topic() returns the one consumable topic
             let (topic_name, _) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "profiles");
+
+            Ok(())
+        });
+    }
+
+    /// drain mode lets the broker start with zero consumable topics (only
+    /// produce-only retry/dlq topics remain) so it can flush its store.
+    const DRAIN_CONFIG: &str = r#"
+drain: true
+kafka_deadletter_topic: tasks-dlq
+kafka_retry_topic: tasks-retry
+
+kafka_topics:
+  tasks-retry:
+    cluster: my-cluster
+    consumer_group: tasks-retry
+    produce_only: true
+  tasks-dlq:
+    cluster: my-cluster
+    consumer_group: tasks-dlq
+    produce_only: true
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#;
+
+    #[test]
+    fn test_drain_mode_allows_zero_consumable_topics() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", DRAIN_CONFIG)?;
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            assert!(config.drain);
+            // No consumable topics: consumable_topics() errors, but the config
+            // is valid because drain mode permits it.
+            assert!(config.consumable_topics().is_err());
+            assert_eq!(config.retry_topic(), "tasks-retry");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_zero_consumable_topics_rejected_without_drain() {
+        Jail::expect_with(|jail| {
+            // Same config as drain, but drain disabled -> rejected.
+            jail.create_file(
+                "config.yaml",
+                &DRAIN_CONFIG.replace("drain: true", "drain: false"),
+            )?;
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains("no consumable topic configured"),
+                "unexpected error: {}",
+                err
+            );
 
             Ok(())
         });

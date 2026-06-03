@@ -152,13 +152,19 @@ async fn main() -> Result<(), Error> {
 
     // Consumer(s) from kafka. Each consumed topic gets its own consumer (own
     // group.id and cluster), so we spawn one consumer task per consumable topic,
-    // all sharing the one activation store.
+    // all sharing the one activation store. In drain mode there are no consumable
+    // topics, so this is empty and we spawn no consumers — the broker just
+    // flushes its existing store via upkeep and the delivery path.
     let consumer_topics: Vec<String> = config
         .consumable_topics()
-        .expect("invalid config: no consumable topic")
+        .unwrap_or_default()
         .into_iter()
         .map(|(name, _)| name.to_owned())
         .collect();
+
+    if consumer_topics.is_empty() {
+        info!("No consumable topics configured; running in drain mode (no consumers)");
+    }
 
     let mut consumer_tasks: Vec<(String, JoinHandle<Result<(), Error>>)> = Vec::new();
     for topic in consumer_topics {

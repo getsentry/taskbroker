@@ -316,7 +316,9 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
-    let consumable = config.consumable_topics().expect("no consumable topic");
+    // Empty in drain mode (no consumable topics); forwarding still drains
+    // demoted tasks out of the store to the configured forward topic.
+    let consumable = config.consumable_topics().unwrap_or_default();
     // Default the forward cluster to the consumed cluster when there's exactly
     // one consumed topic (legacy behavior). With multiple consumed topics there
     // is no single consumed cluster, so fall back to the producer (deadletter)
