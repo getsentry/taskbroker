@@ -22,7 +22,7 @@ use libsqlite3_sys::{
 };
 use prost::Message;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 use crate::config::Config;
 use crate::store::activation::{Activation, ActivationStatus};
@@ -436,7 +436,9 @@ impl ActivationStore for SqliteStore {
     }
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
-        warn!("assign_partitions: {:?}", partitions);
+        // sqlite owns its whole DB regardless of partition assignment, so this
+        // is a no-op. Fires once per consumer, hence debug rather than warn.
+        debug!("assign_partitions: {:?}", partitions);
         Ok(())
     }
 

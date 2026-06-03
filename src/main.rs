@@ -192,7 +192,7 @@ async fn main() -> Result<(), Error> {
                         ),
                         ActivationWriter::new(
                             consumer_store.clone(),
-                            ActivationWriterConfig::from_config(&consumer_config)
+                            ActivationWriterConfig::from_topic(&consumer_config, &task_topic)
                         ),
 
                 }),

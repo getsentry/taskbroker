@@ -143,6 +143,7 @@ pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation
 
         metrics::histogram!(
             "consumer.raw.payload_size_bytes",
+            "topic" => msg.topic().to_string(),
             "namespace" => config.namespace.clone(),
             "taskname" => config.taskname.clone()
         )

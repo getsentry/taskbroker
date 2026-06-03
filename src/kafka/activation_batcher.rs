@@ -107,15 +107,23 @@ impl Reducer for ActivationBatcher {
         let namespace = &t.namespace;
 
         if runtime_config.drop_task_killswitch.contains(task_name) {
-            metrics::counter!("filter.drop_task_killswitch", "taskname" => task_name.clone())
-                .increment(1);
+            metrics::counter!(
+                "filter.drop_task_killswitch",
+                "topic" => self.config.kafka_topic.clone(),
+                "taskname" => task_name.clone(),
+            )
+            .increment(1);
             return Ok(());
         }
 
         if let Some(expires_at) = t.expires_at
             && Utc::now() > expires_at
         {
-            metrics::counter!("filter.expired_at_consumer").increment(1);
+            metrics::counter!(
+                "filter.expired_at_consumer",
+                "topic" => self.config.kafka_topic.clone(),
+            )
+            .increment(1);
             return Ok(());
         }
 
@@ -123,6 +131,7 @@ impl Reducer for ActivationBatcher {
             if forward_topic == self.config.kafka_topic {
                 metrics::counter!(
                     "filter.forward_task_demoted_namespace.skipped",
+                    "topic" => self.config.kafka_topic.clone(),
                     "namespace" => namespace.clone(),
                     "taskname" => task_name.clone(),
                 )
@@ -130,6 +139,7 @@ impl Reducer for ActivationBatcher {
             } else {
                 metrics::counter!(
                     "filter.forward_task_demoted_namespace",
+                    "topic" => self.config.kafka_topic.clone(),
                     "namespace" => namespace.clone(),
                     "taskname" => task_name.clone(),
                 )
@@ -150,8 +160,10 @@ impl Reducer for ActivationBatcher {
             return Ok(None);
         }
 
-        metrics::histogram!("consumer.batch_rows").record(self.batch.len() as f64);
-        metrics::histogram!("consumer.batch_bytes").record(self.batch_size as f64);
+        metrics::histogram!("consumer.batch_rows", "topic" => self.config.kafka_topic.clone())
+            .record(self.batch.len() as f64);
+        metrics::histogram!("consumer.batch_bytes", "topic" => self.config.kafka_topic.clone())
+            .record(self.batch_size as f64);
 
         // Send all forward batch in parallel
         if !self.forward_batch.is_empty() {
@@ -184,9 +196,12 @@ impl Reducer for ActivationBatcher {
             let results = join_all(sends).await;
             let success_count = results.iter().filter(|r| r.is_ok()).count();
 
-            metrics::histogram!("consumer.forward_attempts").record(results.len() as f64);
-            metrics::histogram!("consumer.forward_successes").record(success_count as f64);
-            metrics::histogram!("consumer.forward_failures")
+            let topic = self.config.kafka_topic.clone();
+            metrics::histogram!("consumer.forward_attempts", "topic" => topic.clone())
+                .record(results.len() as f64);
+            metrics::histogram!("consumer.forward_successes", "topic" => topic.clone())
+                .record(success_count as f64);
+            metrics::histogram!("consumer.forward_failures", "topic" => topic)
                 .record((results.len() - success_count) as f64);
 
             self.forward_batch.clear();
