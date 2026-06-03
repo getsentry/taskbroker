@@ -946,6 +946,47 @@ impl Config {
             ));
         }
 
+        // Validate raw-mode topics up front. The raw fields are optional on
+        // `RawModeConfig` (they don't apply to non-raw topics), but a raw topic
+        // requires all of them. Catch missing fields here as a config error
+        // rather than panicking when the consumer builds its deserializer.
+        for (topic_name, topic_config) in &self.kafka_topics {
+            let Some(raw) = &topic_config.raw else {
+                continue;
+            };
+            let application = raw.application.as_deref().ok_or_else(|| {
+                anyhow!("topic '{topic_name}' enables raw mode but is missing raw.application")
+            })?;
+            if !self.worker_map.contains_key(application) {
+                return Err(anyhow!(
+                    "topic '{topic_name}' raw.application '{application}' is not in worker_map"
+                ));
+            }
+            if raw.namespace.is_none() {
+                return Err(anyhow!(
+                    "topic '{topic_name}' enables raw mode but is missing raw.namespace"
+                ));
+            }
+            if raw.taskname.is_none() {
+                return Err(anyhow!(
+                    "topic '{topic_name}' enables raw mode but is missing raw.taskname"
+                ));
+            }
+            if raw.processing_deadline_duration.is_none() {
+                return Err(anyhow!(
+                    "topic '{topic_name}' enables raw mode but is missing \
+                     raw.processing_deadline_duration"
+                ));
+            }
+            // Raw messages aren't activations, so retries must go to a separate
+            // activation-encoded topic, never back to the raw topic itself.
+            if self.kafka_retry_topic.as_deref() == Some(topic_name.as_str()) {
+                return Err(anyhow!(
+                    "kafka_retry_topic must differ from raw topic '{topic_name}'"
+                ));
+            }
+        }
+
         Ok(())
     }
 
@@ -1578,12 +1619,18 @@ mod tests {
 kafka_deadletter_topic: profiles-dlq
 kafka_retry_topic: profiles-retry
 
+worker_map:
+  profiles: http://worker-profiles:50052
+
 kafka_topics:
   profiles:
     cluster: profiles-cluster
     consumer_group: taskbroker-profiles
     raw:
+      namespace: profiles
       application: profiles
+      taskname: profiles.process
+      processing_deadline_duration: 30
   profiles-retry:
     cluster: profiles-cluster
     consumer_group: taskbroker-profiles-retry
@@ -1614,10 +1661,10 @@ kafka_clusters:
             assert_eq!(
                 profiles.raw,
                 Some(RawModeConfig {
-                    namespace: None,
+                    namespace: Some("profiles".to_owned()),
                     application: Some("profiles".to_owned()),
-                    taskname: None,
-                    processing_deadline_duration: None,
+                    taskname: Some("profiles.process".to_owned()),
+                    processing_deadline_duration: Some(30),
                 })
             );
 
@@ -1650,6 +1697,59 @@ kafka_clusters:
 
             let cluster = config.cluster("profiles-cluster").unwrap();
             assert_eq!(cluster.address, "10.0.0.1:9092");
+
+            Ok(())
+        });
+    }
+
+    /// A raw topic missing a required field must be rejected at config time with
+    /// a clear error, not panic later when the consumer builds its deserializer.
+    #[test]
+    fn test_raw_mode_missing_field_rejected_cleanly() {
+        Jail::expect_with(|jail| {
+            // raw is missing `namespace` (application/taskname/deadline present).
+            jail.create_file(
+                "config.yaml",
+                r#"
+kafka_deadletter_topic: profiles-dlq
+kafka_retry_topic: profiles-retry
+
+worker_map:
+  profiles: http://worker-profiles:50052
+
+kafka_topics:
+  profiles:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles
+    raw:
+      application: profiles
+      taskname: profiles.process
+      processing_deadline_duration: 30
+  profiles-retry:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles-retry
+    produce_only: true
+  profiles-dlq:
+    cluster: profiles-cluster
+    consumer_group: taskbroker-profiles-dlq
+    produce_only: true
+
+kafka_clusters:
+  profiles-cluster:
+    address: 10.0.0.1:9092
+"#,
+            )?;
+
+            let args = Args {
+                config: Some("config.yaml".to_owned()),
+            };
+            // A clean error, not a panic.
+            let err = Config::from_args(&args).unwrap_err();
+            assert!(
+                err.to_string().contains("raw.namespace"),
+                "expected a clean missing-field error, got: {}",
+                err
+            );
 
             Ok(())
         });
