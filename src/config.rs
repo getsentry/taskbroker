@@ -710,6 +710,9 @@ impl Config {
                      kafka_topics with a cluster reference instead"
                 );
             }
+            if self.raw_mode {
+                warn!("raw_mode is deprecated, use kafka_topics.<topic>.raw instead");
+            }
 
             let topic_name = self
                 .kafka_topic
