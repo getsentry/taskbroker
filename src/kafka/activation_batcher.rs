@@ -29,11 +29,14 @@ pub struct ActivationBatcherConfig {
 }
 
 impl ActivationBatcherConfig {
-    /// Convert from application configuration into ActivationBatcher config.
-    pub fn from_config(config: &Config) -> Self {
-        let (topic_name, topic_config) = config
-            .consumable_topic()
-            .expect("no consumable topic configured");
+    /// Convert from application configuration into ActivationBatcher config for a
+    /// single consumed topic. Each consumer has its own batcher, so the topic is
+    /// passed explicitly rather than derived from "the" consumable topic.
+    pub fn from_topic(config: &Config, topic_name: &str) -> Self {
+        let topic_config = config
+            .kafka_topics
+            .get(topic_name)
+            .unwrap_or_else(|| panic!("unknown topic '{topic_name}'"));
         let cluster = config
             .cluster(&topic_config.cluster)
             .expect("cluster not found");
@@ -252,7 +255,7 @@ demoted_namespaces:
         config.normalize_and_validate().unwrap();
         let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -275,7 +278,7 @@ demoted_namespaces:
         config.normalize_and_validate().unwrap();
         let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -304,7 +307,7 @@ demoted_namespaces:
         let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -334,7 +337,7 @@ demoted_namespaces:
         let config = Arc::new(config);
 
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
@@ -380,11 +383,11 @@ demoted_topic: taskworker-demoted"#;
         config.normalize_and_validate().unwrap();
         let config = Arc::new(config);
         let mut batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_config(&config),
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
             runtime_config,
         );
 
-        let (_, topic_config) = config.consumable_topic().unwrap();
+        let (_, topic_config) = config.consumable_topics().unwrap()[0];
         let cluster_address = config
             .cluster(&topic_config.cluster)
             .unwrap()

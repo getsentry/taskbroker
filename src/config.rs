@@ -890,22 +890,39 @@ impl Config {
         // would be published to the wrong brokers. In the legacy format the
         // retry topic is registered above; in the new format the user must
         // declare it in kafka_topics.
-        // With a single consumable topic, retries fall back to that topic when
-        // no retry topic is configured. With multiple consumable topics there is
-        // no unambiguous fallback, so a dedicated retry topic is mandatory (the
-        // design doc specifies a single retry topic shared across all consumed
-        // topics rather than per-topic retry routing).
-        let retry_target = match self.kafka_retry_topic.as_deref() {
-            Some(retry_topic) => retry_topic,
-            None if consumable.len() == 1 => consumable[0].0,
-            None => {
+        // Normalize the retry topic so downstream code can always rely on it
+        // being set:
+        // - explicitly configured: used as-is.
+        // - single non-raw consumed topic: retries loop back to that topic.
+        // - raw mode: raw messages aren't activations, so retries must go to a
+        //   separate activation-encoded topic; a retry topic is mandatory.
+        // - multiple consumed topics: no unambiguous fallback, so a single
+        //   shared retry topic is mandatory.
+        if self.kafka_retry_topic.is_none() {
+            let has_raw = consumable.iter().any(|(_, cfg)| cfg.raw.is_some());
+            let count = consumable.len();
+            let single_topic = (count == 1).then(|| consumable[0].0.to_owned());
+
+            if has_raw {
                 return Err(anyhow!(
-                    "kafka_retry_topic is required when consuming from multiple topics ({} \
-                     consumable topics configured)",
-                    consumable.len()
+                    "kafka_retry_topic must be set explicitly when a consumed topic uses raw mode"
                 ));
             }
-        };
+            match single_topic {
+                Some(topic) => self.kafka_retry_topic = Some(topic),
+                None => {
+                    return Err(anyhow!(
+                        "kafka_retry_topic is required when consuming from multiple topics ({} \
+                         consumable topics configured)",
+                        count
+                    ));
+                }
+            }
+        }
+        let retry_target = self
+            .kafka_retry_topic
+            .as_deref()
+            .expect("kafka_retry_topic is set above");
         let retry_topic_config = self.kafka_topics.get(retry_target).ok_or_else(|| {
             Box::new(figment::Error::from(format!(
                 "kafka_retry_topic '{retry_target}' is not defined in kafka_topics"
@@ -931,9 +948,9 @@ impl Config {
 
     /// Get all consumable (non-`produce_only`) topics and their configs, in
     /// `kafka_topics` (BTreeMap) order. Returns an error only when there are no
-    /// consumable topics. This is the multi-topic entry point; prefer it over
-    /// [`Config::consumable_topic`] for anything that should support more than
-    /// one consumed topic.
+    /// consumable topics. This is the sole accessor for consumed topics; callers
+    /// that only handle a single topic should iterate and select explicitly
+    /// rather than assuming exactly one.
     pub fn consumable_topics(&self) -> Result<Vec<(&str, &TopicConfig)>, Box<figment::Error>> {
         let consumable: Vec<(&str, &TopicConfig)> = self
             .kafka_topics
@@ -951,33 +968,14 @@ impl Config {
         Ok(consumable)
     }
 
-    /// Get the single consumable topic and its config.
-    /// Returns an error if there are zero or multiple consumable topics.
-    pub fn consumable_topic(&self) -> Result<(&str, &TopicConfig), Box<figment::Error>> {
-        let mut consumable = self
-            .kafka_topics
-            .iter()
-            .filter(|(_, cfg)| !cfg.produce_only);
-
-        let first = consumable.next().ok_or_else(|| {
-            Box::new(figment::Error::from(
-                "no consumable topic configured (all topics have produce_only: true)".to_owned(),
-            ))
-        })?;
-
-        if consumable.next().is_some() {
-            let count = self
-                .kafka_topics
-                .values()
-                .filter(|t| !t.produce_only)
-                .count();
-            return Err(Box::new(figment::Error::from(format!(
-                "multi-topic consumption is not yet supported: {} consumable topics configured, maximum is 1",
-                count
-            ))));
-        }
-
-        Ok((first.0.as_str(), first.1))
+    /// The topic retries are produced to. `normalize_and_validate` always sets
+    /// `kafka_retry_topic` (it defaults to the single consumed topic when only
+    /// one non-raw topic is configured), so this is infallible after validation.
+    /// Panics if config wasn't validated (call from_args, not extract directly).
+    pub fn retry_topic(&self) -> &str {
+        self.kafka_retry_topic
+            .as_deref()
+            .expect("kafka_retry_topic unset - was config validated?")
     }
 
     /// Get cluster config by name.
@@ -986,16 +984,6 @@ impl Config {
         self.kafka_clusters
             .get(name)
             .ok_or_else(|| Box::new(figment::Error::from(format!("unknown cluster: {}", name))))
-    }
-
-    /// Convert the application Config into rdkafka::ClientConfig for the consumer
-    /// of the single consumable topic.
-    /// Panics if config wasn't validated (call from_args, not extract directly).
-    pub fn kafka_consumer_config(&self) -> ClientConfig {
-        let (topic_name, _) = self
-            .consumable_topic()
-            .expect("consumable_topic failed - was config validated?");
-        self.kafka_consumer_config_for(topic_name)
     }
 
     /// Convert the application Config into rdkafka::ClientConfig for the consumer
@@ -1269,7 +1257,7 @@ mod tests {
             // kafka_consumer_group is unset in the yaml, so the legacy field
             // stays None and normalization applies the "taskworker" default.
             assert_eq!(config.kafka_consumer_group, None);
-            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "error-tasks");
             assert_eq!(topic_config.consumer_group, "taskworker");
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
@@ -1331,7 +1319,7 @@ mod tests {
             // Zero-config: legacy fields stay None, but normalization applies
             // the historical "taskworker" default as the consumable topic.
             assert_eq!(config.kafka_topic, None);
-            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "taskworker");
             assert_eq!(
                 config.cluster(&topic_config.cluster).unwrap().address,
@@ -1384,7 +1372,7 @@ mod tests {
     fn test_kafka_consumer_config() {
         let args = Args { config: None };
         let config = Config::from_args(&args).unwrap();
-        let consumer_config = config.kafka_consumer_config();
+        let consumer_config = config.kafka_consumer_config_for("taskworker");
 
         assert_eq!(
             consumer_config.get("bootstrap.servers").unwrap(),
@@ -1404,7 +1392,7 @@ mod tests {
 
             let args = Args { config: None };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("taskworker");
 
             assert_eq!(
                 consumer_config.get("security.protocol").unwrap(),
@@ -1439,7 +1427,7 @@ mod tests {
 
             let args = Args { config: None };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("taskworker");
 
             assert_eq!(
                 consumer_config.get("ssl.ca.location").unwrap(),
@@ -1585,6 +1573,7 @@ mod tests {
                 "config.yaml",
                 r#"
 kafka_deadletter_topic: profiles-dlq
+kafka_retry_topic: profiles-retry
 
 kafka_topics:
   profiles:
@@ -1652,7 +1641,7 @@ kafka_clusters:
             assert!(!clusters.contains_key("default"));
 
             // Test consumable_topic() and cluster() helpers
-            let (topic_name, topic_config) = config.consumable_topic().unwrap();
+            let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "profiles");
             assert_eq!(topic_config.cluster, "profiles-cluster");
 
@@ -1711,7 +1700,7 @@ kafka_clusters:
             assert!(!clusters.contains_key("default"));
 
             // Test consumable_topic() helper
-            let (topic_name, _) = config.consumable_topic().unwrap();
+            let (topic_name, _) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "profiles");
 
             Ok(())
@@ -1812,12 +1801,18 @@ kafka_clusters:
     }
 
     #[test]
-    fn test_multi_topic_rejects_multiple_consumable_topics() {
+    fn test_multi_topic_rejected_on_postgres() {
         Jail::expect_with(|jail| {
-            // Two consumable topics - the guard for this PR rejects this.
+            // Multiple consumable topics are allowed on sqlite but rejected on
+            // postgres, whose claim filtering can't distinguish partitions
+            // across topics.
             jail.create_file(
                 "config.yaml",
                 r#"
+database_adapter: postgres
+kafka_deadletter_topic: tasks-dlq
+kafka_retry_topic: tasks-retry
+
 kafka_topics:
   profiles:
     cluster: my-cluster
@@ -1825,6 +1820,14 @@ kafka_topics:
   subscriptions:
     cluster: my-cluster
     consumer_group: taskbroker-subscriptions
+  tasks-retry:
+    cluster: my-cluster
+    consumer_group: taskbroker-retry
+    produce_only: true
+  tasks-dlq:
+    cluster: my-cluster
+    consumer_group: taskbroker-dlq
+    produce_only: true
 
 kafka_clusters:
   my-cluster:
@@ -1838,7 +1841,7 @@ kafka_clusters:
             let err = Config::from_args(&args).unwrap_err();
             assert!(
                 err.to_string()
-                    .contains("multi-topic consumption is not yet supported"),
+                    .contains("not supported with the postgres database adapter"),
                 "unexpected error: {}",
                 err
             );
@@ -1889,7 +1892,7 @@ kafka_clusters:
             assert!(topics.get("profiles-dlq").unwrap().produce_only);
 
             // consumable_topic() returns the one consumable topic
-            let (topic_name, _) = config.consumable_topic().unwrap();
+            let (topic_name, _) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "profiles");
 
             Ok(())
@@ -2043,7 +2046,7 @@ kafka_clusters:
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("profiles");
 
             // Per-topic values win over the globals.
             assert_eq!(consumer_config.get("session.timeout.ms").unwrap(), "12000");
@@ -2090,7 +2093,7 @@ kafka_clusters:
                 config: Some("config.yaml".to_owned()),
             };
             let config = Config::from_args(&args).unwrap();
-            let consumer_config = config.kafka_consumer_config();
+            let consumer_config = config.kafka_consumer_config_for("profiles");
 
             // No per-topic overrides, so the globals are used.
             assert_eq!(consumer_config.get("session.timeout.ms").unwrap(), "7000");

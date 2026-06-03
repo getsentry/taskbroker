@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,25 +75,18 @@ async fn main() -> Result<(), Error> {
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
-        let kafka_client_config = config.kafka_consumer_config();
-        let (main_topic, _) = config
-            .consumable_topic()
-            .map_err(|e| anyhow!("invalid config: {}", e))?;
-        create_missing_topics(
-            kafka_client_config.clone(),
-            main_topic,
-            config.default_topic_partitions,
-        )
-        .await?;
-
-        // Create retry topic if configured
-        if let Some(ref retry_topic) = config.kafka_retry_topic {
-            create_missing_topics(
-                kafka_client_config,
-                retry_topic,
-                config.default_topic_partitions,
-            )
-            .await?;
+        // Group every declared topic by its cluster so each is created on the
+        // right brokers (main, retry, deadletter and produce-only topics, which
+        // may live on different clusters).
+        let mut topics_by_cluster: BTreeMap<&str, Vec<(&str, i32)>> = BTreeMap::new();
+        for (topic_name, topic_config) in &config.kafka_topics {
+            topics_by_cluster
+                .entry(topic_config.cluster.as_str())
+                .or_default()
+                .push((topic_name.as_str(), config.default_topic_partitions));
+        }
+        for (cluster, topics) in topics_by_cluster {
+            create_missing_topics(config.kafka_admin_config(cluster), &topics).await?;
         }
     }
 
@@ -157,25 +150,30 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Consumer from kafka
-    let consumer_task = taskbroker::tokio::spawn({
+    // Consumer(s) from kafka. Each consumed topic gets its own consumer (own
+    // group.id and cluster), so we spawn one consumer task per consumable topic,
+    // all sharing the one activation store.
+    let consumer_topics: Vec<String> = config
+        .consumable_topics()
+        .expect("invalid config: no consumable topic")
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+
+    let mut consumer_tasks: Vec<(String, JoinHandle<Result<(), Error>>)> = Vec::new();
+    for topic in consumer_topics {
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
+        let task_topic = topic.clone();
 
-        // Build list of topics to consume from
-        let (main_topic, _) = consumer_config
-            .consumable_topic()
-            .expect("invalid config: no consumable topic");
-        let topics_to_consume = [main_topic.to_owned()];
-
-        async move {
+        let handle = taskbroker::tokio::spawn(async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
-            let topic_refs: Vec<&str> = topics_to_consume.iter().map(|s| s.as_str()).collect();
+            let topic_refs = [task_topic.as_str()];
             start_consumer(
                 &topic_refs,
-                &consumer_config.kafka_consumer_config(),
+                &consumer_config.kafka_consumer_config_for(&task_topic),
                 consumer_store.clone(),
                 processing_strategy!({
                     err:
@@ -185,11 +183,11 @@ async fn main() -> Result<(), Error> {
                         ),
 
                     map:
-                        deserialize::new(DeserializeConfig::from_config(&consumer_config)),
+                        deserialize::new(DeserializeConfig::from_topic(&consumer_config, &task_topic)),
 
                     reduce:
                         ActivationBatcher::new(
-                            ActivationBatcherConfig::from_config(&consumer_config),
+                            ActivationBatcherConfig::from_topic(&consumer_config, &task_topic),
                             runtime_config_manager.clone()
                         ),
                         ActivationWriter::new(
@@ -200,8 +198,9 @@ async fn main() -> Result<(), Error> {
                 }),
             )
             .await
-        }
-    });
+        });
+        consumer_tasks.push((topic, handle));
+    }
 
     // Status update flush task
     let (status_update_tx, status_update_task) = if config.batch_status_updates {
@@ -337,9 +336,12 @@ async fn main() -> Result<(), Error> {
         .on_sigint()
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
-        .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task));
+
+    for (topic, handle) in consumer_tasks {
+        departure = departure.on_completion(log_task_completion(format!("consumer:{topic}"), handle));
+    }
 
     if let Some(task) = grpc_server_task {
         departure = departure.on_completion(log_task_completion("grpc_server", task));

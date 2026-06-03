@@ -155,13 +155,7 @@ pub async fn do_upkeep(
     // 1. Handle retry tasks
     let handle_retries_start = Instant::now();
     if let Ok(retries) = store.get_retry_activations().await {
-        // Use retry topic if configured, otherwise fall back to main topic
-        let (main_topic, _) = config.consumable_topic().expect("no consumable topic");
-        let main_topic_owned = main_topic.to_owned();
-        let retry_target_topic = config
-            .kafka_retry_topic
-            .as_ref()
-            .unwrap_or(&main_topic_owned);
+        let retry_target_topic = config.retry_topic().to_owned();
 
         // 2. Append retries to kafka
         let deliveries = retries
@@ -322,23 +316,39 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
-    let (main_topic, main_topic_config) = config.consumable_topic().expect("no consumable topic");
-    let main_cluster = config
-        .cluster(&main_topic_config.cluster)
-        .expect("cluster not found")
-        .address
-        .clone();
+    let consumable = config.consumable_topics().expect("no consumable topic");
+    // Default the forward cluster to the consumed cluster when there's exactly
+    // one consumed topic (legacy behavior). With multiple consumed topics there
+    // is no single consumed cluster, so fall back to the producer (deadletter)
+    // cluster, whose credentials the forward producer reuses anyway.
+    let default_forward_cluster = if consumable.len() == 1 {
+        config
+            .cluster(&consumable[0].1.cluster)
+            .expect("cluster not found")
+            .address
+            .clone()
+    } else {
+        config.kafka_producer_cluster().address.clone()
+    };
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or(main_cluster.clone());
+        .unwrap_or(default_forward_cluster);
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
         .unwrap_or(config.kafka_long_topic.clone());
-    let same_cluster = forward_cluster == main_cluster;
-    let same_topic = forward_topic == main_topic;
-    if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
+    // Forwarding to a topic+cluster this broker itself consumes would loop the
+    // tasks straight back in, so treat that as a no-op. For a single consumed
+    // topic this is exactly the old `same_topic && same_cluster` guard.
+    let forwards_to_consumed = consumable.iter().any(|(name, topic_config)| {
+        *name == forward_topic
+            && config
+                .cluster(&topic_config.cluster)
+                .map(|c| c.address == forward_cluster)
+                .unwrap_or(false)
+    });
+    if !(demoted_namespaces.is_empty() || forwards_to_consumed) {
         let forward_demoted_start = Instant::now();
         // The forwarding producer reuses the deadletter cluster's credentials
         // (see Config::kafka_producer_config) and only overrides
@@ -765,7 +775,7 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert_eq!(result_context.retried, 1);
 
-        let (main_topic, _) = config.consumable_topic().unwrap();
+        let (main_topic, _) = config.consumable_topics().unwrap()[0];
         let messages = consume_topic(config.clone(), main_topic, 1).await;
         assert_eq!(messages.len(), 1);
         let activation = &messages[0];
