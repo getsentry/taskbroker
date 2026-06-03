@@ -10,7 +10,7 @@ use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use uuid::Uuid;
 
-use crate::config::Config;
+use crate::config::{Config, RawModeConfig};
 use crate::store::activation::{Activation, ActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
@@ -29,43 +29,45 @@ pub struct RawConfig {
 }
 
 impl RawConfig {
-    pub fn from_config(config: &Config) -> Option<Self> {
-        if !config.raw_mode {
-            return None;
-        }
-        let application = config
-            .raw_application
+    /// Build the raw-mode deserializer config for a single topic from that
+    /// topic's [`RawModeConfig`]. The legacy global `raw_*` fields are migrated
+    /// into the topic's `raw` during config normalization, so this is the single
+    /// runtime source of truth for both legacy and multi-topic formats.
+    pub fn from_topic(config: &Config, topic_name: &str, raw: &RawModeConfig) -> Self {
+        let application = raw
+            .application
             .clone()
-            .expect("raw_application required when raw_mode is enabled");
+            .expect("raw application required when a topic enables raw mode");
 
         assert!(
             config.worker_map.contains_key(&application),
-            "raw_application '{}' must exist in worker_map",
+            "raw application '{}' must exist in worker_map",
             application
         );
 
+        // A raw topic's messages aren't activations, so its retries must go to a
+        // separate (activation-encoded) retry topic, never back to itself.
         if let Some(ref retry_topic) = config.kafka_retry_topic {
-            let (main_topic, _) = config
-                .consumable_topic()
-                .expect("no consumable topic configured");
             assert!(
-                retry_topic != main_topic,
-                "kafka_retry_topic cannot equal kafka_topic when raw_mode is enabled"
+                retry_topic != topic_name,
+                "kafka_retry_topic cannot equal raw topic '{topic_name}'"
             );
         }
 
-        Some(Self {
-            namespace: config
-                .raw_namespace
+        Self {
+            namespace: raw
+                .namespace
                 .clone()
-                .expect("raw_namespace required when raw_mode is enabled"),
+                .expect("raw namespace required when a topic enables raw mode"),
             application,
-            taskname: config
-                .raw_taskname
+            taskname: raw
+                .taskname
                 .clone()
-                .expect("raw_taskname required when raw_mode is enabled"),
-            processing_deadline_duration: config.raw_processing_deadline_duration,
-        })
+                .expect("raw taskname required when a topic enables raw mode"),
+            processing_deadline_duration: raw
+                .processing_deadline_duration
+                .expect("raw processing_deadline_duration required when a topic enables raw mode"),
+        }
     }
 }
 

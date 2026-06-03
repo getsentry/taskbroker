@@ -89,6 +89,35 @@ impl ClusterConfig {
             || self.ssl_certificate_location.is_some()
             || self.ssl_key_location.is_some()
     }
+
+    /// Apply this cluster's `bootstrap.servers` and any configured sasl/ssl
+    /// auth onto an rdkafka `ClientConfig`. Shared by the consumer, producer and
+    /// admin config builders so they all authenticate identically.
+    fn apply_to(&self, config: &mut ClientConfig) {
+        config.set("bootstrap.servers", self.address.clone());
+
+        if let Some(ref sasl_mechanism) = self.sasl_mechanism {
+            config.set("sasl.mechanism", sasl_mechanism);
+        }
+        if let Some(ref sasl_username) = self.sasl_username {
+            config.set("sasl.username", sasl_username);
+        }
+        if let Some(ref sasl_password) = self.sasl_password {
+            config.set("sasl.password", sasl_password);
+        }
+        if let Some(ref security_protocol) = self.security_protocol {
+            config.set("security.protocol", security_protocol);
+        }
+        if let Some(ref ssl_ca_location) = self.ssl_ca_location {
+            config.set("ssl.ca.location", ssl_ca_location);
+        }
+        if let Some(ref ssl_certificate_location) = self.ssl_certificate_location {
+            config.set("ssl.certificate.location", ssl_certificate_location);
+        }
+        if let Some(ref ssl_private_key_location) = self.ssl_key_location {
+            config.set("ssl.key.location", ssl_private_key_location);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
@@ -618,8 +647,9 @@ impl Config {
 
         let uses_new_format = !self.kafka_topics.is_empty() || !self.kafka_clusters.is_empty();
         // Any explicitly-set deprecated field describing a cluster (the main
-        // consumed cluster or the deadletter cluster). kafka_deadletter_topic is
-        // NOT deprecated and is intentionally excluded.
+        // consumed cluster or the deadletter cluster) or the deprecated global
+        // raw mode. kafka_deadletter_topic is NOT deprecated and is intentionally
+        // excluded.
         let uses_legacy = self.kafka_topic.is_some()
             || self.kafka_cluster.is_some()
             || self.kafka_consumer_group.is_some()
@@ -637,7 +667,10 @@ impl Config {
             || self.kafka_deadletter_sasl_password.is_some()
             || self.kafka_deadletter_ssl_ca_location.is_some()
             || self.kafka_deadletter_ssl_certificate_location.is_some()
-            || self.kafka_deadletter_ssl_key_location.is_some();
+            || self.kafka_deadletter_ssl_key_location.is_some()
+            // Global raw mode is a deprecated legacy field; in the new format raw
+            // mode is configured per topic via kafka_topics.<topic>.raw.
+            || self.raw_mode;
 
         if uses_new_format && uses_legacy {
             return Err(anyhow!(
@@ -819,8 +852,25 @@ impl Config {
             })?;
         }
 
-        // Validate exactly one consumable topic
-        self.consumable_topic()?;
+        // Validate at least one consumable topic.
+        let consumable = self.consumable_topics()?;
+
+        // Multi-topic consumption is only supported on the sqlite adapter for
+        // now. The postgres adapter filters claims by a single shared partition
+        // list, but those partition numbers aren't unique across topics, so the
+        // filter would mix partitions from different topics together. Note this
+        // filtering exists only to avoid lock contention between brokers, not for
+        // correctness; supporting multi-topic on postgres means reworking how we
+        // avoid that contention (e.g. filtering by (topic, partition) or another
+        // mechanism entirely). Reject the combination here, before any consumer
+        // spawns.
+        if consumable.len() > 1 && self.database_adapter == DatabaseAdapter::Postgres {
+            return Err(anyhow!(
+                "multi-topic consumption ({} consumable topics) is not supported with the \
+                 postgres database adapter; use the sqlite adapter or a single consumable topic",
+                consumable.len()
+            ));
+        }
 
         // The deadletter topic must be a declared topic so the producer can
         // resolve its cluster. In legacy mode it was added above; in the new
@@ -840,8 +890,22 @@ impl Config {
         // would be published to the wrong brokers. In the legacy format the
         // retry topic is registered above; in the new format the user must
         // declare it in kafka_topics.
-        let (consumed_topic, _) = self.consumable_topic()?;
-        let retry_target = self.kafka_retry_topic.as_deref().unwrap_or(consumed_topic);
+        // With a single consumable topic, retries fall back to that topic when
+        // no retry topic is configured. With multiple consumable topics there is
+        // no unambiguous fallback, so a dedicated retry topic is mandatory (the
+        // design doc specifies a single retry topic shared across all consumed
+        // topics rather than per-topic retry routing).
+        let retry_target = match self.kafka_retry_topic.as_deref() {
+            Some(retry_topic) => retry_topic,
+            None if consumable.len() == 1 => consumable[0].0,
+            None => {
+                return Err(anyhow!(
+                    "kafka_retry_topic is required when consuming from multiple topics ({} \
+                     consumable topics configured)",
+                    consumable.len()
+                ));
+            }
+        };
         let retry_topic_config = self.kafka_topics.get(retry_target).ok_or_else(|| {
             Box::new(figment::Error::from(format!(
                 "kafka_retry_topic '{retry_target}' is not defined in kafka_topics"
@@ -863,6 +927,28 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Get all consumable (non-`produce_only`) topics and their configs, in
+    /// `kafka_topics` (BTreeMap) order. Returns an error only when there are no
+    /// consumable topics. This is the multi-topic entry point; prefer it over
+    /// [`Config::consumable_topic`] for anything that should support more than
+    /// one consumed topic.
+    pub fn consumable_topics(&self) -> Result<Vec<(&str, &TopicConfig)>, Box<figment::Error>> {
+        let consumable: Vec<(&str, &TopicConfig)> = self
+            .kafka_topics
+            .iter()
+            .filter(|(_, cfg)| !cfg.produce_only)
+            .map(|(name, cfg)| (name.as_str(), cfg))
+            .collect();
+
+        if consumable.is_empty() {
+            return Err(Box::new(figment::Error::from(
+                "no consumable topic configured (all topics have produce_only: true)".to_owned(),
+            )));
+        }
+
+        Ok(consumable)
     }
 
     /// Get the single consumable topic and its config.
@@ -902,13 +988,25 @@ impl Config {
             .ok_or_else(|| Box::new(figment::Error::from(format!("unknown cluster: {}", name))))
     }
 
-    /// Convert the application Config into rdkafka::ClientConfig for consumer.
-    /// Uses the single consumable topic's cluster.
+    /// Convert the application Config into rdkafka::ClientConfig for the consumer
+    /// of the single consumable topic.
     /// Panics if config wasn't validated (call from_args, not extract directly).
     pub fn kafka_consumer_config(&self) -> ClientConfig {
-        let (_, topic_config) = self
+        let (topic_name, _) = self
             .consumable_topic()
             .expect("consumable_topic failed - was config validated?");
+        self.kafka_consumer_config_for(topic_name)
+    }
+
+    /// Convert the application Config into rdkafka::ClientConfig for the consumer
+    /// of a specific topic. Each consumed topic has its own consumer (own
+    /// `group.id` and cluster), so multi-topic spawns one consumer per topic.
+    /// Panics if `topic_name` isn't a declared topic (call from_args first).
+    pub fn kafka_consumer_config_for(&self, topic_name: &str) -> ClientConfig {
+        let topic_config = self
+            .kafka_topics
+            .get(topic_name)
+            .unwrap_or_else(|| panic!("unknown topic '{topic_name}' - was config validated?"));
         let cluster = self
             .cluster(&topic_config.cluster)
             .expect("cluster lookup failed - was config validated?");
@@ -925,9 +1023,9 @@ impl Config {
             .clone()
             .unwrap_or_else(|| self.kafka_auto_offset_reset.clone());
 
-        let mut new_config = ClientConfig::new();
-        let config = new_config
-            .set("bootstrap.servers", cluster.address.clone())
+        let mut config = ClientConfig::new();
+        cluster.apply_to(&mut config);
+        config
             .set("group.id", topic_config.consumer_group.clone())
             .set("session.timeout.ms", session_timeout_ms.to_string())
             .set("enable.partition.eof", "false")
@@ -939,29 +1037,21 @@ impl Config {
             .set("auto.offset.reset", auto_offset_reset)
             .set("enable.auto.offset.store", "false");
 
-        if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
-            config.set("sasl.mechanism", sasl_mechanism);
-        }
-        if let Some(ref sasl_username) = cluster.sasl_username {
-            config.set("sasl.username", sasl_username);
-        }
-        if let Some(ref sasl_password) = cluster.sasl_password {
-            config.set("sasl.password", sasl_password);
-        }
-        if let Some(ref security_protocol) = cluster.security_protocol {
-            config.set("security.protocol", security_protocol);
-        }
-        if let Some(ref ssl_ca_location) = cluster.ssl_ca_location {
-            config.set("ssl.ca.location", ssl_ca_location);
-        }
-        if let Some(ref ssl_certificate_location) = cluster.ssl_certificate_location {
-            config.set("ssl.certificate.location", ssl_certificate_location);
-        }
-        if let Some(ref ssl_private_key_location) = cluster.ssl_key_location {
-            config.set("ssl.key.location", ssl_private_key_location);
-        }
+        config
+    }
 
-        config.clone()
+    /// Build an rdkafka::ClientConfig for an admin client on a named cluster.
+    /// Carries only `bootstrap.servers` + that cluster's auth (no consumer
+    /// settings), so topic creation targets the correct brokers.
+    /// Panics if the cluster isn't declared (call from_args first).
+    pub fn kafka_admin_config(&self, cluster_name: &str) -> ClientConfig {
+        let cluster = self
+            .cluster(cluster_name)
+            .expect("cluster lookup failed - was config validated?");
+
+        let mut config = ClientConfig::new();
+        cluster.apply_to(&mut config);
+        config
     }
 
     /// The cluster the deadletter / forwarding producer connects to: the
@@ -985,33 +1075,10 @@ impl Config {
     pub fn kafka_producer_config(&self) -> ClientConfig {
         let cluster = self.kafka_producer_cluster();
 
-        let mut new_config = ClientConfig::new();
-        let config = new_config
-            .set("bootstrap.servers", cluster.address.clone())
-            .set("message.max.bytes", format!("{}", self.max_message_size));
-        if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
-            config.set("sasl.mechanism", sasl_mechanism);
-        }
-        if let Some(ref sasl_username) = cluster.sasl_username {
-            config.set("sasl.username", sasl_username);
-        }
-        if let Some(ref sasl_password) = cluster.sasl_password {
-            config.set("sasl.password", sasl_password);
-        }
-        if let Some(ref security_protocol) = cluster.security_protocol {
-            config.set("security.protocol", security_protocol);
-        }
-        if let Some(ref ssl_ca_location) = cluster.ssl_ca_location {
-            config.set("ssl.ca.location", ssl_ca_location);
-        }
-        if let Some(ref ssl_certificate_location) = cluster.ssl_certificate_location {
-            config.set("ssl.certificate.location", ssl_certificate_location);
-        }
-        if let Some(ref ssl_private_key_location) = cluster.ssl_key_location {
-            config.set("ssl.key.location", ssl_private_key_location);
-        }
-
-        config.clone()
+        let mut config = ClientConfig::new();
+        cluster.apply_to(&mut config);
+        config.set("message.max.bytes", format!("{}", self.max_message_size));
+        config
     }
 }
 
