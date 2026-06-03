@@ -7,7 +7,7 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
 use sqlx::ConnectOptions;
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
@@ -389,13 +389,18 @@ pub async fn migrations(config: Arc<Config>) -> Result<(), Error> {
             .await?;
     }
 
-    // Close the default pool
     default_pool.close().await;
+
+    let migration_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(conn_opts.database(&config.pg_database_name))
+        .await?;
 
     println!("Running migrations on database");
     sqlx::migrate!("./migrations/postgres")
-        .run(&default_pool)
+        .run(&migration_pool)
         .await?;
+    migration_pool.close().await;
 
     Ok(())
 }
