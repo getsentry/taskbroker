@@ -225,7 +225,18 @@ class RequestSignatureServerInterceptor(ServerInterceptor):
                 _RPC_SIGNATURE_AUTH_TLS.failed = True
                 return inner_deserializer(b"")
 
-            return inner_deserializer(serialized_request)
+            try:
+                return inner_deserializer(serialized_request)
+            except Exception:
+                # gRPC swallows deserializer exceptions in `grpc._common._transform`
+                # (it logs to the `grpc._common` logger and returns None), and the server
+                # then aborts the call with an opaque INTERNAL "Exception deserializing
+                # request!". Log here so the failure is visible on our own logger.
+                logger.exception(
+                    "taskworker.grpc_server.request_deserialization_failed",
+                    extra={"method": method},
+                )
+                raise
 
         def unary_unary(request: Any, context: grpc.ServicerContext) -> Any:
             if getattr(_RPC_SIGNATURE_AUTH_TLS, "failed", False):
