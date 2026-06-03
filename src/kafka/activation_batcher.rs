@@ -19,7 +19,6 @@ use super::consumer::{
 
 pub struct ActivationBatcherConfig {
     pub producer_config: ClientConfig,
-    pub kafka_cluster: String,
     pub kafka_topic: String,
     pub kafka_long_topic: String,
     pub send_timeout_ms: u64,
@@ -33,17 +32,8 @@ impl ActivationBatcherConfig {
     /// single consumed topic. Each consumer has its own batcher, so the topic is
     /// passed explicitly rather than derived from "the" consumable topic.
     pub fn from_topic(config: &Config, topic_name: &str) -> Self {
-        let topic_config = config
-            .kafka_topics
-            .get(topic_name)
-            .unwrap_or_else(|| panic!("unknown topic '{topic_name}'"));
-        let cluster = config
-            .cluster(&topic_config.cluster)
-            .expect("cluster not found");
-
         Self {
             producer_config: config.kafka_producer_config(),
-            kafka_cluster: cluster.address.clone(),
             kafka_topic: topic_name.to_owned(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
@@ -168,10 +158,20 @@ impl Reducer for ActivationBatcher {
         // Send all forward batch in parallel
         if !self.forward_batch.is_empty() {
             let runtime_config = self.runtime_config_manager.read().await;
-            let forward_cluster = runtime_config
-                .demoted_topic_cluster
-                .clone()
-                .unwrap_or(self.config.kafka_cluster.clone());
+            // The forwarding producer authenticates against the deadletter
+            // cluster, so default demoted forwarding there too (and consistently
+            // with upkeep) when no demoted_topic_cluster is configured.
+            let forward_cluster =
+                runtime_config
+                    .demoted_topic_cluster
+                    .clone()
+                    .unwrap_or_else(|| {
+                        self.config
+                            .producer_config
+                            .get("bootstrap.servers")
+                            .expect("producer config always sets bootstrap.servers")
+                            .to_string()
+                    });
             if self.producer_cluster != forward_cluster {
                 let mut new_config = self.config.producer_config.clone();
                 new_config.set("bootstrap.servers", &forward_cluster);

@@ -317,23 +317,15 @@ pub async fn do_upkeep(
     // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
     let consumable = config.consumable_topics().expect("no consumable topic");
-    // Default the forward cluster to the consumed cluster when there's exactly
-    // one consumed topic (legacy behavior). With multiple consumed topics there
-    // is no single consumed cluster, so fall back to the producer (deadletter)
-    // cluster, whose credentials the forward producer reuses anyway.
-    let default_forward_cluster = if consumable.len() == 1 {
-        config
-            .cluster(&consumable[0].1.cluster)
-            .expect("cluster not found")
-            .address
-            .clone()
-    } else {
-        config.kafka_producer_cluster().address.clone()
-    };
+    // The forward producer authenticates against the deadletter cluster, so
+    // default demoted forwarding there too (and consistently with the
+    // consumer-side batcher) when no demoted_topic_cluster is configured. For
+    // legacy single-topic configs the deadletter cluster address defaults to the
+    // consumed cluster's address, so this is unchanged there.
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or(default_forward_cluster);
+        .unwrap_or_else(|| config.kafka_producer_cluster().address.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
