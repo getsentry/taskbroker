@@ -320,8 +320,9 @@ pub async fn do_upkeep(
     // The forward producer authenticates against the deadletter cluster, so
     // default demoted forwarding there too (and consistently with the
     // consumer-side batcher) when no demoted_topic_cluster is configured. For
-    // legacy single-topic configs the deadletter cluster address defaults to the
-    // consumed cluster's address, so this is unchanged there.
+    // legacy configs where kafka_deadletter_cluster is unset the deadletter
+    // cluster address defaults to the consumed cluster's address, so this is
+    // unchanged there; it only differs when a distinct deadletter cluster is set.
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
