@@ -16,7 +16,7 @@ for name in $deployments; do
     --label-selector="${LABEL_SELECTOR}" \
     --container-name="taskbroker" \
     --try-deployments-and-statefulsets \
-    "taskbroker-migrations" \
+    "${name}-migrations" \
     "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
     /opt/taskbroker \
     -- \
