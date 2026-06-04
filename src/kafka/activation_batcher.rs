@@ -134,7 +134,7 @@ impl Reducer for ActivationBatcher {
                     "taskname" => task_name.clone(),
                 )
                 .increment(1);
-                self.forward_batch.push(t.activation.clone());
+                self.forward_batch.push(t.activation);
                 return Ok(());
             }
         }

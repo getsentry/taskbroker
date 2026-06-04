@@ -149,7 +149,6 @@ impl Reducer for ActivationWriter {
         let insert_id = Utc::now().timestamp_millis();
         debug!("Preparing insert {:?}", insert_id);
 
-        let batch = self.batch.clone().unwrap();
         let write_to_store_start = Instant::now();
         let res = self.store.store(batch.clone()).await;
 
@@ -158,7 +157,7 @@ impl Reducer for ActivationWriter {
 
         match res {
             Ok(entries) => {
-                self.batch.take();
+                let batch = self.batch.take().unwrap();
                 let lag = Utc::now()
                     - batch
                         .iter()

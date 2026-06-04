@@ -52,8 +52,7 @@ impl PushThread {
     }
 
     async fn push_task(&mut self, activation: Activation) {
-        // Store the ID for later since `push_task` claims ownership over `activation`
-        let id = activation.id.clone();
+        let id = &activation.id;
 
         // First, determine the correct worker service
         let Some(worker) = self.workers.get_mut(&activation.application) else {
@@ -70,7 +69,7 @@ impl PushThread {
 
         // Then, push the task to that service
         let result = timed!(
-            worker.push_task(activation.clone()),
+            worker.push_task(&activation),
             "worker.push_task.duration"
         );
 
@@ -86,7 +85,7 @@ impl PushThread {
             // Revert claimed task back to pending
             if let Err(e) = self
                 .store
-                .set_status(&id, ActivationStatus::Pending, None, None)
+                .set_status(id, ActivationStatus::Pending, None, None)
                 .await
             {
                 metrics::counter!("push.undo_claim", "result" => "error").increment(1);
@@ -124,7 +123,7 @@ impl PushThread {
 
         // Finally, mark the activation as processing
         let result = timed!(
-            self.store.mark_activation_processing(&id),
+            self.store.mark_activation_processing(id),
             "push.mark_activation_processing.duration"
         );
 
