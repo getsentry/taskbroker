@@ -68,10 +68,7 @@ impl PushThread {
         };
 
         // Then, push the task to that service
-        let result = timed!(
-            worker.push_task(&activation),
-            "worker.push_task.duration"
-        );
+        let result = timed!(worker.push_task(&activation), "worker.push_task.duration");
 
         if let Err(e) = result {
             metrics::counter!("worker.push_task", "result" => "error").increment(1);

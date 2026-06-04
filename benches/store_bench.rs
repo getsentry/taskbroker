@@ -41,7 +41,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     let namespace = generate_unique_namespace();
 
     for chunk in make_activations_with_namespace(namespace.clone(), num_activations).chunks(1024) {
-        store.store(chunk.to_vec()).await.unwrap();
+        store.store(chunk).await.unwrap();
     }
 
     assert_eq!(
@@ -106,7 +106,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
     let namespace = generate_unique_namespace();
 
     for chunk in make_activations_with_namespace(namespace, num_activations).chunks(1024) {
-        store.store(chunk.to_vec()).await.unwrap();
+        store.store(chunk).await.unwrap();
     }
 
     assert_eq!(

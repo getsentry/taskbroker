@@ -749,7 +749,7 @@ mod tests {
         records[0].activation = activation.encode_to_vec();
 
         records[1].added_at += Duration::from_secs(1);
-        assert!(store.store(records.clone()).await.is_ok());
+        assert!(store.store(&records).await.is_ok());
 
         let result_context = do_upkeep(
             config.clone(),
@@ -811,7 +811,7 @@ mod tests {
         // Make a task with a future processing deadline
         batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline = Some(Utc::now() + TimeDelta::minutes(5));
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let _ = do_upkeep(
             config,
@@ -849,7 +849,7 @@ mod tests {
         batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         // Should start off with one in processing
         assert_eq!(
@@ -907,7 +907,7 @@ mod tests {
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].processing_attempts = 0;
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         // Should start off with one in processing
         assert_eq!(
@@ -977,7 +977,7 @@ mod tests {
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].at_most_once = true;
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -1025,7 +1025,7 @@ mod tests {
         batch[2].processing_attempts = config.max_processing_attempts as i32;
         batch[2].added_at += Duration::from_secs(2);
 
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
         let result_context = do_upkeep(
             config,
             store.clone(),
@@ -1088,7 +1088,7 @@ mod tests {
         );
         records[0].status = ActivationStatus::Failure;
         records[1].added_at += Duration::from_secs(1);
-        assert!(store.store(records.clone()).await.is_ok());
+        assert!(store.store(&records).await.is_ok());
 
         let result_context = do_upkeep(
             config.clone(),
@@ -1135,7 +1135,7 @@ mod tests {
         let mut batch = make_activations(2);
         batch[0].status = ActivationStatus::Failure;
         batch[1].added_at += Duration::from_secs(1);
-        assert!(store.store(batch).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -1187,7 +1187,7 @@ mod tests {
         batch[3].expires_at = Some(Utc::now() + Duration::from_secs(100));
         batch[3].added_at += Duration::from_secs(1);
 
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
         let result_context = do_upkeep(
             config,
             store.clone(),
@@ -1256,7 +1256,7 @@ mod tests {
         batch[1].status = ActivationStatus::Delay;
         batch[1].delay_until = Some(Utc::now() + Duration::from_secs(1));
 
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
         assert_eq!(
             store
                 .count_by_status(ActivationStatus::Delay)
@@ -1359,7 +1359,7 @@ demoted_namespaces:
 
         batch[1].namespace = "bad_namespace2".to_string();
         batch[4].namespace = "bad_namespace1".to_string();
-        assert!(store.store(batch).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -1421,7 +1421,7 @@ demoted_namespaces:
         batch[2].taskname = "task_to_be_killswitched".to_string();
         batch[4].taskname = "task_to_be_killswitched".to_string();
 
-        assert!(store.store(batch).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -1462,7 +1462,7 @@ demoted_namespaces:
         let mut last_vacuum = Instant::now() - Duration::from_secs(60);
 
         let batch = make_activations(2);
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let _ = do_upkeep(
             config,
