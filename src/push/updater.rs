@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::store::traits::ActivationStore;
+use crate::timed;
 
 /// Represents an entity that can update tasks in some way. Meant to abstract away
 /// the update logic, which varies between delivery modes, batching configurations, and so on.
@@ -57,6 +58,36 @@ impl LazyUpdater {
             buffer,
             last_flush,
             stop,
+        }
+    }
+
+    async fn lock_buffer(&self, operation: &'static str) -> MutexGuard<'_, Vec<String>> {
+        match self.buffer.try_lock() {
+            Ok(buffer) => {
+                metrics::counter!(
+                    "push.updater.buffer.lock",
+                    "operation" => operation,
+                    "result" => "uncontended"
+                )
+                .increment(1);
+
+                buffer
+            }
+
+            Err(_) => {
+                metrics::counter!(
+                    "push.updater.buffer.lock",
+                    "operation" => operation,
+                    "result" => "contended"
+                )
+                .increment(1);
+
+                timed!(
+                    self.buffer.lock(),
+                    "push.updater.buffer.lock.wait",
+                    "operation" => operation
+                )
+            }
         }
     }
 
@@ -112,7 +143,7 @@ impl Updater for LazyUpdater {
 
                 _ = interval.tick(), if self.config.batch_push_updates => {
                     // Lock the ID buffer
-                    let mut buffer = self.buffer.lock().await;
+                    let mut buffer = self.lock_buffer("tick").await;
 
                     // Make sure we aren't flushing too soon
                     let now = Utc::now().timestamp_millis();
@@ -140,7 +171,7 @@ impl Updater for LazyUpdater {
         }
 
         // Perform one last flush before exiting
-        let mut buffer = self.buffer.lock().await;
+        let mut buffer = self.lock_buffer("exit").await;
 
         match self.flush(&mut buffer).await {
             Ok(_) => metrics::counter!("push.updater.flush", "reason" => "exit", "result" => "ok")
@@ -163,7 +194,7 @@ impl Updater for LazyUpdater {
 
     async fn update(&self, id: String) -> Result<()> {
         // Lock the ID buffer
-        let mut buffer = self.buffer.lock().await;
+        let mut buffer = self.lock_buffer("update").await;
 
         if buffer.len() >= self.config.push_update_batch_size {
             // Flush first
