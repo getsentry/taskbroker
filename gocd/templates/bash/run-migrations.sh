@@ -5,9 +5,8 @@ eval $(regions-project-env-vars --region="${SENTRY_REGION}")
 
 k8s-spawn-job \
   --label-selector="${LABEL_SELECTOR}" \
-  --image="us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
   --container-name="taskbroker" \
-  --name="taskbroker-migrations" \
-  -- \
+  "taskbroker-migrations" \
+  "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
   /opt/taskbroker \
   --run migrations
