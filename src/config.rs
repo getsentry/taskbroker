@@ -475,9 +475,11 @@ pub struct Config {
     pub batch_push_updates: bool,
 
     /// The size of a batch of dispatch updates.
+    #[validate(range(min = 1))]
     pub push_update_batch_size: usize,
 
     /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
+    #[validate(range(min = 1))]
     pub push_update_interval_ms: u32,
 
     /// Maps every application to its worker endpoint, both represented as strings.
