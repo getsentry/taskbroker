@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use anyhow::Error;
 use chrono::{DateTime, Utc};
@@ -102,8 +101,8 @@ fn encode_raw_params(raw_bytes: &[u8]) -> Vec<u8> {
 
 /// Create a deserializer closure for raw mode.
 /// Wraps raw Kafka message bytes into a TaskActivation with msgpack-encoded parameters_bytes.
-pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation, Error> {
-    move |msg: Arc<OwnedMessage>| {
+pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Error> {
+    move |msg: &OwnedMessage| {
         // Whether a message without payload is valid is technically not up to taskbroker, and we
         // can't DLQ messages here. It's easier to convert it to an empty bytestring and let the
         // task fail. Failed tasks can be DLQed in upkeep.rs
@@ -130,7 +129,7 @@ pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation
             #[allow(deprecated)]
             parameters: String::new(),
             parameters_bytes,
-            headers: extract_headers(&msg),
+            headers: extract_headers(msg),
             received_at: Some(received_at),
             retry_state: None,
             processing_deadline_duration: config.processing_deadline_duration.into(),
@@ -175,7 +174,6 @@ pub fn new(config: RawConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use rdkafka::Timestamp;
     use rdkafka::message::{Header, OwnedHeaders, OwnedMessage};
@@ -233,7 +231,7 @@ mod tests {
             None,
         );
 
-        let result = deserializer(Arc::new(message));
+        let result = deserializer(&message);
         assert!(result.is_ok());
 
         let inflight = result.unwrap();
@@ -273,7 +271,7 @@ mod tests {
             None,
         );
 
-        let result = deserializer(Arc::new(message));
+        let result = deserializer(&message);
         assert!(result.is_ok());
 
         let inflight = result.unwrap();
@@ -321,7 +319,7 @@ mod tests {
             Some(headers),
         );
 
-        let result = deserializer(Arc::new(message));
+        let result = deserializer(&message);
         assert!(result.is_ok());
 
         let inflight = result.unwrap();

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Error;
 use rdkafka::Message;
 use rdkafka::message::OwnedMessage;
@@ -40,12 +38,12 @@ impl DeserializeConfig {
 /// In raw mode, raw Kafka bytes are wrapped into a TaskActivation.
 /// In normal mode, Kafka messages are expected to contain encoded TaskActivation protos.
 /// Messages from the retry topic are always deserialized as activations.
-pub fn new(config: DeserializeConfig) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation, Error> {
+pub fn new(config: DeserializeConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Error> {
     let raw_deserializer = config.raw_config.map(deserialize_raw::new);
     let activation_deserializer = deserialize_activation::new(config.activation_config);
     let retry_topic = config.retry_topic;
 
-    move |msg: Arc<OwnedMessage>| {
+    move |msg: &OwnedMessage| {
         // Messages from the retry topic are always activations
         if let Some(ref retry_topic) = retry_topic
             && msg.topic() == retry_topic
