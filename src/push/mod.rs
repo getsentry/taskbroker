@@ -29,6 +29,7 @@ const QUERY_MS: u64 = 1000;
 /// - The longest possible time to submit one claimed fetch batch into a full queue
 /// - The longest possible time for the push queue to drain
 /// - The (roughly) longest possible time to update every task to "processing" (or "pending")
+/// - When push updates are batched, the longest time a successful push can sit in the updater buffer
 ///
 /// This computation could definitely use some refinement, but it's more accurate than
 /// what we had before, and it's located in one place rather than being copied between
@@ -50,11 +51,18 @@ pub fn compute_claim_lease_ms(config: &Config) -> u64 {
     // In the worst case, every task in the push queue will time out when pushing
     let drain_ms = rounds * config.push_timeout_ms;
 
-    // In the worst case, every task in the push queue will take `QUERY_MS` time to update from claimed to processing
+    // In the worst case, the tasks in the push queue will take `QUERY_MS` time to update from claimed to processing
     // Since query timeouts aren't actually enforced right now, this is merely an approximation
-    let update_ms = rounds * QUERY_MS;
+    let update_query_ms = rounds * QUERY_MS;
 
-    queue_ms + drain_ms + update_ms
+    // Batched push updates can wait in the updater buffer until either the batch fills or the periodic flush runs
+    let batch_delay_ms = if config.batch_push_updates {
+        config.push_update_interval_ms as u64
+    } else {
+        0
+    };
+
+    queue_ms + drain_ms + update_query_ms + batch_delay_ms
 }
 
 /// Error returned when enqueueing an activation for the push workers fails.
