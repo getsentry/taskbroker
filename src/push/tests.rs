@@ -185,7 +185,10 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let workers = vec![test_worker_map(false, notify.clone())];
     let updater = test_eager_updater(store.clone());
 
-    tokio::spawn(async move { pool.start(workers, updater).await });
+    tokio::spawn({
+        let store = store.clone();
+        async move { pool.start(workers, updater, store.clone()).await }
+    });
 
     let activation = make_activations(1).remove(0);
     assert_eq!(activation.processing_attempts, 0);
@@ -228,7 +231,10 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     let workers = vec![test_worker_map(false, notify.clone())];
     let updater = test_eager_updater(store.clone());
 
-    tokio::spawn(async move { pool.start(workers, updater).await });
+    tokio::spawn({
+        let store = store.clone();
+        async move { pool.start(workers, updater, store.clone()).await }
+    });
 
     let mut activation = make_activations(1).remove(0);
     activation.processing_attempts = 1;
@@ -268,7 +274,10 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     let workers = vec![test_worker_map(true, notify.clone())];
     let updater = test_eager_updater(store.clone());
 
-    tokio::spawn(async move { pool.start(workers, updater).await });
+    tokio::spawn({
+        let store = store.clone();
+        async move { pool.start(workers, updater, store.clone()).await }
+    });
 
     let activation = make_activations(1).remove(0);
     let time = Instant::now();

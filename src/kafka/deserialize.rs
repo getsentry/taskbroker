@@ -18,10 +18,19 @@ pub struct DeserializeConfig {
 }
 
 impl DeserializeConfig {
-    pub fn from_config(config: &Config) -> Self {
+    /// Build the deserializer config for a single consumed topic. Raw mode is
+    /// taken from that topic's `kafka_topics.<topic>.raw`, so each consumer
+    /// (legacy single-topic included) deserializes according to its own topic.
+    pub fn from_topic(config: &Config, topic_name: &str) -> Self {
+        let raw_config = config
+            .kafka_topics
+            .get(topic_name)
+            .and_then(|topic| topic.raw.as_ref())
+            .map(|raw| RawConfig::from_topic(config, topic_name, raw));
+
         Self {
             activation_config: DeserializeActivationConfig::from_config(config),
-            raw_config: RawConfig::from_config(config),
+            raw_config,
             retry_topic: config.kafka_retry_topic.clone(),
         }
     }

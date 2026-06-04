@@ -27,7 +27,14 @@ def main(context: dict[str, str]) -> int:
 
     print("syncing .venv ...")
     proc.run(
-        (f"{reporoot}/.devenv/bin/uv", "sync", "--frozen", "--quiet", "--active"),
+        (
+            f"{reporoot}/.devenv/bin/uv",
+            "sync",
+            "--frozen",
+            "--quiet",
+            "--active",
+            "--all-packages",
+        ),
     )
 
     print("installing pre-commit hooks ...")

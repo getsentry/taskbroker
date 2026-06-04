@@ -22,9 +22,10 @@ use libsqlite3_sys::{
 };
 use prost::Message;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
-use tracing::{instrument, warn};
+use tracing::{debug, instrument, warn};
 
 use crate::config::Config;
+use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
@@ -140,7 +141,6 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
 pub struct SqliteStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
-    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
     pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
@@ -152,7 +152,7 @@ impl SqliteStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
+            claim_lease_ms: compute_claim_lease_ms(config),
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
     }
@@ -436,7 +436,9 @@ impl ActivationStore for SqliteStore {
     }
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
-        warn!("assign_partitions: {:?}", partitions);
+        // sqlite owns its whole DB regardless of partition assignment, so this
+        // is a no-op. Fires once per consumer, hence debug rather than warn.
+        debug!("assign_partitions: {:?}", partitions);
         Ok(())
     }
 
@@ -560,7 +562,7 @@ impl ActivationStore for SqliteStore {
             query_builder.push_bind(ActivationStatus::Processing);
         } else {
             query_builder.push(format!(
-                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
+                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds'), processing_deadline = NULL, status = ",
                 self.config.claim_lease_ms as f64 / 1000.0,
             ));
 
@@ -679,7 +681,7 @@ impl ActivationStore for SqliteStore {
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
     async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
-        let result = sqlx::query(
+        let result = match sqlx::query(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
             WHERE status = $1
@@ -689,10 +691,17 @@ impl ActivationStore for SqliteStore {
             ",
         )
         .bind(ActivationStatus::Pending)
-        .fetch_one(&self.read_pool)
-        .await;
+        .fetch_optional(&self.read_pool)
+        .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                warn!("pending_activation_max_lag query failed: {e}");
+                return 0.0;
+            }
+        };
 
-        if let Ok(row) = result {
+        if let Some(row) = result {
             let received_at: DateTime<Utc> = row.get("received_at");
             let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
             let millis = now.signed_duration_since(received_at).num_milliseconds()
@@ -703,7 +712,7 @@ impl ActivationStore for SqliteStore {
                 });
             millis as f64 / 1000.0
         } else {
-            // If we couldn't find a row, there is no latency.
+            // No pending activations means no latency
             0.0
         }
     }

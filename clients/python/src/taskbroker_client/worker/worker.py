@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import queue
 import signal
 import threading
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, List
 
 import grpc
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from sentry_protos.taskbroker.v1 import taskbroker_pb2_grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     FetchNextTask,
@@ -22,10 +24,12 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import (
+    DEFAULT_GRPC_MAX_MESSAGE_SIZE,
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
     MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE,
+    WORKER_CHILD_JOIN_TIMEOUT_SEC,
 )
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.client import (
@@ -45,6 +49,8 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
 
 
 class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
@@ -241,6 +247,7 @@ class PushTaskWorker:
         # Running shutdown() within the signal handler can lead to deadlocks
 
         server: grpc.Server | None = None
+        health_servicer: health.HealthServicer | None = None
 
         def signal_handler(*args: Any) -> None:
             if server:
@@ -257,16 +264,35 @@ class PushTaskWorker:
             if self._grpc_secrets:
                 interceptors = [RequestSignatureServerInterceptor(self._grpc_secrets)]
 
+            max_message_size = int(
+                os.environ.get("TASKBROKER_GRPC_MAX_MESSAGE_SIZE", DEFAULT_GRPC_MAX_MESSAGE_SIZE)
+            )
             server = grpc.server(
                 ThreadPoolExecutor(max_workers=self._concurrency),
                 interceptors=interceptors,
+                options=[
+                    ("grpc.max_receive_message_length", max_message_size),
+                    ("grpc.max_send_message_length", max_message_size),
+                ],
             )
 
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
                 WorkerServicer(self.worker_pool), server
             )
+
+            # The health service is used by the K8s readiness check
+            health_servicer = health.HealthServicer()
+            health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+            health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
+            health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
+
             server.add_insecure_port(f"[::]:{self._grpc_port}")
             server.start()
+
+            # Indicate that the server is ready
+            health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+            health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
+
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
 
             try:
@@ -276,6 +302,10 @@ class PushTaskWorker:
                 pass
 
         finally:
+            if health_servicer is not None:
+                health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
+                health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
+
             if server is not None:
                 server.stop(grace=5)
 
@@ -706,7 +736,10 @@ class TaskWorkerProcessingPool:
         for child in self._children:
             child.terminate()
         for child in self._children:
-            child.join()
+            child.join(WORKER_CHILD_JOIN_TIMEOUT_SEC)
+            if child.is_alive():
+                child.kill()
+                child.join()
 
         logger.info("taskworker.worker.shutdown.result")
         if self._result_thread:

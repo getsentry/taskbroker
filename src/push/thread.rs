@@ -9,7 +9,8 @@ use flume::Receiver;
 use tracing::{debug, error};
 
 use crate::push::updater::Updater;
-use crate::store::activation::Activation;
+use crate::store::activation::{Activation, ActivationStatus};
+use crate::store::traits::ActivationStore;
 use crate::timed;
 use crate::worker::WorkerMap;
 
@@ -26,6 +27,9 @@ pub struct PushThread {
 
     /// Entity that marks tasks as processing.
     pub(super) updater: Arc<dyn Updater>,
+
+    /// Store for reverting claimed tasks back to pending.
+    pub(super) store: Arc<dyn ActivationStore>,
 }
 
 impl PushThread {
@@ -80,8 +84,27 @@ impl PushThread {
             error!(
                 task_id = %id,
                 error = ?e,
-                "Failed to send activation to worker"
+                "Failed to send activation to worker: {e}"
             );
+
+            // Revert claimed task back to pending
+            if let Err(e) = self
+                .store
+                .set_status(&id, ActivationStatus::Pending, None, None)
+                .await
+            {
+                metrics::counter!("push.undo_claim", "result" => "error").increment(1);
+
+                error!(
+                    task_id = %id,
+                    error = ?e,
+                    "Failed to undo claim on send failure"
+                );
+
+                return;
+            }
+
+            metrics::counter!("push.undo_claim", "result" => "ok").increment(1);
 
             return;
         }

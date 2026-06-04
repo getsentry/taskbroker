@@ -220,6 +220,18 @@ wheels = [
 ]
 
 [[package]]
+name = "grpcio-health-checking"
+version = "1.67.1"
+source = { registry = "https://pypi.devinfra.sentry.io/simple" }
+dependencies = [
+    { name = "grpcio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio_health_checking-1.67.1-py3-none-any.whl", hash = "sha256:93753da5062152660aef2286c9b261e07dd87124a65e4dc9fbd47d1ce966b39d" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
@@ -703,12 +715,13 @@ dev = [
 
 [[package]]
 name = "taskbroker-client"
-version = "0.16.0"
+version = "0.18.1"
 source = { editable = "clients/python" }
 dependencies = [
     { name = "confluent-kafka", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "cronsim", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "grpcio", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "grpcio-health-checking", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "msgpack", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "orjson", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -746,7 +759,8 @@ requires-dist = [
     { name = "click", marker = "extra == 'examples'", specifier = ">=8.3" },
     { name = "confluent-kafka", specifier = ">=2.3.0" },
     { name = "cronsim", specifier = ">=2.6" },
-    { name = "grpcio", specifier = ">=1.67.0" },
+    { name = "grpcio", specifier = ">=1.67.1" },
+    { name = "grpcio-health-checking", specifier = ">=1.67.1" },
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "orjson", specifier = ">=3.10.10" },
     { name = "protobuf", specifier = ">=5.28.3" },

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,7 +14,7 @@ use sentry_protos::taskbroker::v1::TaskActivation;
 use tokio::{fs, join, select, time};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
 use crate::SERVICE_NAME;
@@ -45,6 +46,7 @@ pub async fn upkeep(
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
+    let mut emitted_partitions: HashSet<i32> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
@@ -55,6 +57,7 @@ pub async fn upkeep(
                     startup_time,
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
+                    &mut emitted_partitions,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
@@ -126,6 +129,7 @@ pub async fn do_upkeep(
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
+    emitted_partitions: &mut HashSet<i32>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -151,11 +155,7 @@ pub async fn do_upkeep(
     // 1. Handle retry tasks
     let handle_retries_start = Instant::now();
     if let Ok(retries) = store.get_retry_activations().await {
-        // Use retry topic if configured, otherwise fall back to main topic
-        let retry_target_topic = config
-            .kafka_retry_topic
-            .as_ref()
-            .unwrap_or(&config.kafka_topic);
+        let retry_target_topic = config.retry_topic().to_owned();
 
         // 2. Append retries to kafka
         let deliveries = retries
@@ -316,18 +316,47 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
+    let consumable = config.consumable_topics().expect("no consumable topic");
+    // The forward producer authenticates against the deadletter cluster, so
+    // default demoted forwarding there too (and consistently with the
+    // consumer-side batcher) when no demoted_topic_cluster is configured. For
+    // legacy configs where kafka_deadletter_cluster is unset the deadletter
+    // cluster address defaults to the consumed cluster's address, so this is
+    // unchanged there; it only differs when a distinct deadletter cluster is set.
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or(config.kafka_cluster.clone());
+        .unwrap_or_else(|| config.kafka_producer_cluster().address.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
         .unwrap_or(config.kafka_long_topic.clone());
-    let same_cluster = forward_cluster == config.kafka_cluster;
-    let same_topic = forward_topic == config.kafka_topic;
-    if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
+    // Forwarding to a topic+cluster this broker itself consumes would loop the
+    // tasks straight back in, so treat that as a no-op. For a single consumed
+    // topic this is exactly the old `same_topic && same_cluster` guard.
+    let forwards_to_consumed = consumable.iter().any(|(name, topic_config)| {
+        *name == forward_topic
+            && config
+                .cluster(&topic_config.cluster)
+                .map(|c| c.address == forward_cluster)
+                .unwrap_or(false)
+    });
+    if !(demoted_namespaces.is_empty() || forwards_to_consumed) {
         let forward_demoted_start = Instant::now();
+        // The forwarding producer reuses the deadletter cluster's credentials
+        // (see Config::kafka_producer_config) and only overrides
+        // bootstrap.servers. If we're forwarding to a different cluster that has
+        // its own auth, those credentials won't apply there and publishing will
+        // fail. We keep the legacy behavior (reuse + override) for compatibility
+        // but warn so the misconfiguration is visible.
+        let dlq_cluster = config.kafka_producer_cluster();
+        if forward_cluster != dlq_cluster.address && dlq_cluster.has_auth() {
+            warn!(
+                "forwarding demoted-namespace tasks to cluster '{}', but the producer reuses the \
+                 deadletter cluster '{}' credentials; publishing may fail if their auth differs",
+                forward_cluster, dlq_cluster.address
+            );
+        }
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
         let forward_producer: Arc<FutureProducer> = Arc::new(
@@ -403,17 +432,19 @@ pub async fn do_upkeep(
 
     let now = Utc::now();
     let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
-        store.count_depths(),
+        store.count_depths_per_partition(),
         store.pending_activation_max_lag(&now),
         fs::metadata(config.db_path.clone()),
         fs::metadata(config.db_path.clone() + "-wal")
     );
 
-    if let Ok(depths) = depth_counts {
-        result_context.pending = depths.pending as u32;
-        result_context.delay = depths.delay as u32;
-        result_context.claimed = depths.claimed as u32;
-        result_context.processing = depths.processing as u32;
+    if let Ok(ref depths) = depth_counts {
+        for counts in depths.values() {
+            result_context.pending += counts.pending as u32;
+            result_context.delay += counts.delay as u32;
+            result_context.claimed += counts.claimed as u32;
+            result_context.processing += counts.processing as u32;
+        }
     }
 
     if !result_context.empty() {
@@ -464,11 +495,37 @@ pub async fn do_upkeep(
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
-    // State of activations
-    metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
-    metrics::gauge!("upkeep.current_claimed_tasks").set(result_context.claimed);
-    metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
-    metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
+    // State of activations, tagged per partition. Dashboards aggregating
+    // without a partition filter still see the global total via tag sum.
+    // Zero out gauges for partitions we emitted last cycle but no longer own.
+    if let Ok(depths) = depth_counts {
+        let current: HashSet<i32> = depths.keys().copied().collect();
+
+        for partition in emitted_partitions.difference(&current) {
+            let partition = partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition).set(0.0);
+        }
+
+        for (partition, counts) in &depths {
+            let partition = partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+                .set(counts.pending as f64);
+            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+                .set(counts.claimed as f64);
+            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+                .set(counts.processing as f64);
+            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition)
+                .set(counts.delay as f64);
+        }
+
+        *emitted_partitions = current;
+    }
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
     if let Ok(db_file_meta) = db_file_meta {
@@ -540,6 +597,7 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
@@ -558,7 +616,7 @@ mod tests {
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
-        create_integration_config_with_topic, create_producer, create_test_store, make_activations,
+        create_integration_config_from_base, create_producer, create_test_store, make_activations,
         replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
@@ -649,10 +707,11 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
 
         let start_time = Utc::now();
@@ -701,6 +760,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -708,7 +768,8 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert_eq!(result_context.retried, 1);
 
-        let messages = consume_topic(config.clone(), config.kafka_topic.as_ref(), 1).await;
+        let (main_topic, _) = config.consumable_topics().unwrap()[0];
+        let messages = consume_topic(config.clone(), main_topic, 1).await;
         assert_eq!(messages.len(), 1);
         let activation = &messages[0];
 
@@ -761,6 +822,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -812,6 +874,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -871,6 +934,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -924,6 +988,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -970,6 +1035,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -999,10 +1065,11 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
-        let config = Arc::new(Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
-            ..create_integration_config_with_topic(format!("taskbroker-test-{adapter}"))
-        });
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
@@ -1032,6 +1099,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1078,6 +1146,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1128,6 +1197,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1210,6 +1280,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1242,6 +1313,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1298,6 +1370,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1359,6 +1432,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1377,11 +1451,11 @@ demoted_namespaces:
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
-        let raw_config = Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            kafka_topic: Some(format!("taskbroker-test-full-vacuum-{adapter}")),
             full_vacuum_on_start: true,
             ..Default::default()
-        };
-        let config = Arc::new(raw_config);
+        }));
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_test_store(adapter).await;
@@ -1399,6 +1473,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 

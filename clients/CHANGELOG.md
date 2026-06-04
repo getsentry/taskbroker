@@ -1,4 +1,28 @@
 # Changelog
+## 0.18.1
+
+### New Features ✨
+
+- (TaskProducer) Lazy load inner producer by @bmckerry in [#670](https://github.com/getsentry/taskbroker/pull/670)
+
+## 0.18.0
+
+### New Features ✨
+
+- (client) Workerchild awaits TaskProducer futures by @bmckerry in [#642](https://github.com/getsentry/taskbroker/pull/642)
+
+## 0.17.1
+
+### Bug Fixes 🐛
+
+- (grpc) Increase max message size to 10MB by @untitaker in [#658](https://github.com/getsentry/taskbroker/pull/658)
+
+## 0.17.0
+
+### New Features ✨
+
+- (taskworker) Add Health Check Service by @george-sentry in [#656](https://github.com/getsentry/taskbroker/pull/656)
+
 ## 0.16.0
 
 ### Bug Fixes 🐛

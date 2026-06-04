@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -16,6 +17,7 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
+use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::ActivationStore;
@@ -137,7 +139,6 @@ pub struct PostgresStoreConfig {
     pub run_migrations: bool,
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
-    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
     pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
@@ -165,7 +166,7 @@ impl PostgresStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
+            claim_lease_ms: compute_claim_lease_ms(config),
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
             retry_config: RetryConfig::from_config(config),
         }
@@ -508,7 +509,7 @@ impl ActivationStore for PostgresStore {
             } else {
                 query_builder.push(format!(
                     "UPDATE inflight_taskactivations
-                     SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond') + (interval '{grace_period} seconds'),
+                     SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond'),
                          processing_deadline = NULL,
                          status = "
                 ));
@@ -630,11 +631,19 @@ impl ActivationStore for PostgresStore {
 
         query_builder.push(" ORDER BY received_at ASC LIMIT 1");
 
-        let result = query_builder
+        let result = match query_builder
             .build_query_as::<(DateTime<Utc>, Option<DateTime<Utc>>)>()
-            .fetch_one(&self.read_pool)
-            .await;
-        if let Ok(row) = result {
+            .fetch_optional(&self.read_pool)
+            .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                warn!("pending_activation_max_lag query failed: {e}");
+                return 0.0;
+            }
+        };
+
+        if let Some(row) = result {
             let received_at: DateTime<Utc> = row.0;
             let delay_until: Option<DateTime<Utc>> = row.1;
             let millis = now.signed_duration_since(received_at).num_milliseconds()
@@ -645,7 +654,7 @@ impl ActivationStore for PostgresStore {
                 });
             millis as f64 / 1000.0
         } else {
-            // If we couldn't find a row, there is no latency.
+            // No pending activations means no latency
             0.0
         }
     }
@@ -711,6 +720,60 @@ impl ActivationStore for PostgresStore {
             })
         })
         .await
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
+    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
+        let assigned: Vec<i32> = self.partitions.read().unwrap().clone();
+        if assigned.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut query_builder = QueryBuilder::new(
+            "SELECT partition,
+                    COUNT(*) FILTER (WHERE status = 'Pending'),
+                    COUNT(*) FILTER (WHERE status = 'Delay'),
+                    COUNT(*) FILTER (WHERE status = 'Claimed'),
+                    COUNT(*) FILTER (WHERE status = 'Processing')
+             FROM inflight_taskactivations WHERE partition IN (",
+        );
+        let mut separated = query_builder.separated(", ");
+        for partition in &assigned {
+            separated.push_bind(*partition);
+        }
+        query_builder.push(") GROUP BY partition");
+
+        let rows: Vec<(i32, i64, i64, i64, i64)> = query_builder
+            .build_query_as()
+            .fetch_all(&self.read_pool)
+            .await?;
+
+        let mut counts: HashMap<i32, DepthCounts> = rows
+            .into_iter()
+            .map(|(partition, pending, delay, claimed, processing)| {
+                (
+                    partition,
+                    DepthCounts {
+                        pending: pending as usize,
+                        delay: delay as usize,
+                        claimed: claimed as usize,
+                        processing: processing as usize,
+                    },
+                )
+            })
+            .collect();
+
+        for partition in &assigned {
+            counts.entry(*partition).or_insert(DepthCounts {
+                pending: 0,
+                delay: 0,
+                claimed: 0,
+                processing: 0,
+            });
+        }
+
+        Ok(counts)
     }
 
     /// Update the status of a specific activation.

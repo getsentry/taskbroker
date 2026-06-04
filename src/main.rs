@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -76,22 +76,18 @@ async fn main() -> Result<(), Error> {
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
-        let kafka_client_config = config.kafka_consumer_config();
-        create_missing_topics(
-            kafka_client_config.clone(),
-            &config.kafka_topic,
-            config.default_topic_partitions,
-        )
-        .await?;
-
-        // Create retry topic if configured
-        if let Some(ref retry_topic) = config.kafka_retry_topic {
-            create_missing_topics(
-                kafka_client_config,
-                retry_topic,
-                config.default_topic_partitions,
-            )
-            .await?;
+        // Group every declared topic by its cluster so each is created on the
+        // right brokers (main, retry, deadletter and produce-only topics, which
+        // may live on different clusters).
+        let mut topics_by_cluster: BTreeMap<&str, Vec<(&str, i32)>> = BTreeMap::new();
+        for (topic_name, topic_config) in &config.kafka_topics {
+            topics_by_cluster
+                .entry(topic_config.cluster.as_str())
+                .or_default()
+                .push((topic_name.as_str(), config.default_topic_partitions));
+        }
+        for (cluster, topics) in topics_by_cluster {
+            create_missing_topics(config.kafka_admin_config(cluster), &topics).await?;
         }
     }
 
@@ -113,7 +109,7 @@ async fn main() -> Result<(), Error> {
         .await;
 
     // Upkeep loop
-    let upkeep_task = tokio::spawn({
+    let upkeep_task = taskbroker::tokio::spawn({
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
@@ -131,7 +127,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Maintenance task loop
-    let maintenance_task = tokio::spawn({
+    let maintenance_task = taskbroker::tokio::spawn({
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
         let maintenance_store = store.clone();
         let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
@@ -155,27 +151,30 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Consumer from kafka
-    let consumer_task = tokio::spawn({
+    // Consumer(s) from kafka. Each consumed topic gets its own consumer (own
+    // group.id and cluster), so we spawn one consumer task per consumable topic,
+    // all sharing the one activation store.
+    let consumer_topics: Vec<String> = config
+        .consumable_topics()
+        .expect("invalid config: no consumable topic")
+        .into_iter()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+
+    let mut consumer_tasks: Vec<(String, JoinHandle<Result<(), Error>>)> = Vec::new();
+    for topic in consumer_topics {
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
+        let task_topic = topic.clone();
 
-        // Build list of topics to consume from
-        let mut topics_to_consume = vec![consumer_config.kafka_topic.clone()];
-        if consumer_config.kafka_consume_retry_topic
-            && let Some(ref retry_topic) = consumer_config.kafka_retry_topic
-        {
-            topics_to_consume.push(retry_topic.clone());
-        }
-
-        async move {
+        let handle = taskbroker::tokio::spawn(async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
-            let topic_refs: Vec<&str> = topics_to_consume.iter().map(|s| s.as_str()).collect();
+            let topic_refs = [task_topic.as_str()];
             start_consumer(
                 &topic_refs,
-                &consumer_config.kafka_consumer_config(),
+                &consumer_config.kafka_consumer_config_for(&task_topic),
                 consumer_store.clone(),
                 processing_strategy!({
                     err:
@@ -185,32 +184,33 @@ async fn main() -> Result<(), Error> {
                         ),
 
                     map:
-                        deserialize::new(DeserializeConfig::from_config(&consumer_config)),
+                        deserialize::new(DeserializeConfig::from_topic(&consumer_config, &task_topic)),
 
                     reduce:
                         ActivationBatcher::new(
-                            ActivationBatcherConfig::from_config(&consumer_config),
+                            ActivationBatcherConfig::from_topic(&consumer_config, &task_topic),
                             runtime_config_manager.clone()
                         ),
                         ActivationWriter::new(
                             consumer_store.clone(),
-                            ActivationWriterConfig::from_config(&consumer_config)
+                            ActivationWriterConfig::from_topic(&consumer_config, &task_topic)
                         ),
 
                 }),
             )
             .await
-        }
-    });
+        });
+        consumer_tasks.push((topic, handle));
+    }
 
     // Status update flush task
     let (status_update_tx, status_update_task) = if config.batch_status_updates {
-        let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size.max(1));
+        let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size);
 
         let flusher_store = store.clone();
         let flusher_config = config.clone();
 
-        let handle = tokio::spawn(async move {
+        let handle = taskbroker::tokio::spawn(async move {
             flusher::run_flusher(
                 rx,
                 flusher_config.status_update_batch_size,
@@ -227,7 +227,7 @@ async fn main() -> Result<(), Error> {
 
     // GRPC server - only start if port is configured (port 0 disables it)
     let grpc_server_task = if config.grpc_port > 0 {
-        Some(tokio::spawn({
+        Some(taskbroker::tokio::spawn({
             let grpc_store = store.clone();
             let grpc_config = config.clone();
             let grpc_status_tx = status_update_tx.clone();
@@ -294,7 +294,7 @@ async fn main() -> Result<(), Error> {
         let mut workers: Vec<WorkerMap> = vec![];
 
         // For every push thread, create a map from applications to worker connections
-        for _ in 0..config.push_threads.max(1) {
+        for _ in 0..config.push_threads {
             let mut map = HashMap::new();
 
             for (application, endpoint) in config.worker_map.clone() {
@@ -325,8 +325,8 @@ async fn main() -> Result<(), Error> {
             Arc::new(eager) as Arc<dyn Updater>
         };
 
-        Some(tokio::spawn(async move {
-            push_pool.start(workers, updater).await
+        Some(taskbroker::tokio::spawn(async move {
+            push_pool.start(workers, updater, store.clone()).await
         }))
     } else {
         None
@@ -334,7 +334,9 @@ async fn main() -> Result<(), Error> {
 
     // Initialize fetch threads
     let fetch_task = if config.delivery_mode == DeliveryMode::Push {
-        Some(tokio::spawn(async move { fetch_pool.start().await }))
+        Some(taskbroker::tokio::spawn(
+            async move { fetch_pool.start().await },
+        ))
     } else {
         None
     };
@@ -344,9 +346,13 @@ async fn main() -> Result<(), Error> {
         .on_sigint()
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
-        .on_completion(log_task_completion("consumer", consumer_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task));
+
+    for (topic, handle) in consumer_tasks {
+        departure =
+            departure.on_completion(log_task_completion(format!("consumer:{topic}"), handle));
+    }
 
     if let Some(task) = grpc_server_task {
         departure = departure.on_completion(log_task_completion("grpc_server", task));

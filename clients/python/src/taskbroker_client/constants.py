@@ -46,6 +46,12 @@ MAX_PARAMETER_BYTES_BEFORE_COMPRESSION = 3000000  # 3MB
 The maximum number of bytes before a task parameter is compressed.
 """
 
+DEFAULT_GRPC_MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
+"""
+The maximum size of a gRPC message in bytes.
+Can be overridden via TASKBROKER_GRPC_MAX_MESSAGE_SIZE env var.
+"""
+
 DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH = 1.0
 """
 The number of gRPC requests before touching the health check file
@@ -56,6 +62,12 @@ ALWAYS_EAGER = False
 """
 Whether or not tasks should be invoked eagerly (synchronously)
 This can be mutated by application test harnesses to run tasks without Kafka.
+"""
+
+WORKER_CHILD_JOIN_TIMEOUT_SEC = 5
+"""
+How long the parent worker process should allow child processes
+to drain pending produce futures on shutdown before sending SIGKILL.
 """
 
 
