@@ -9,4 +9,5 @@ k8s-spawn-job \
   "taskbroker-migrations" \
   "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
   /opt/taskbroker \
+  -- \
   --run migrations
