@@ -12,6 +12,7 @@ for name in $deployments; do
   k8s-spawn-job \
     --label-selector="${LABEL_SELECTOR}" \
     --container-name="taskbroker" \
+    --try-deployments-and-statefulsets \
     "taskbroker-migrations" \
     "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
     /opt/taskbroker \
