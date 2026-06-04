@@ -25,9 +25,6 @@ local run_migrations_stage = {
       'run-migrations': {
         timeout: 60,
         elastic_profile_id: 'taskbroker',
-        environment_variables: {
-          LABEL_SELECTOR: 'service=taskbroker',
-        },
         tasks: [
           gocdtasks.script(importstr '../bash/run-migrations.sh'),
         ],
