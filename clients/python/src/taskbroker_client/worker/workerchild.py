@@ -284,17 +284,16 @@ def child_process(
             )
 
         def check_task_future_completion() -> None:
+            # Records how many activations with pending producer futures
+            # the worker child has.
+            metrics.gauge(
+                "taskworker.worker.activations_with_pending_futures",
+                len(pending_task_futures),
+                tags={
+                    "processing_pool": processing_pool_name,
+                },
+            )
             if len(pending_task_futures) > 0:
-                # Records a distribution of how many activations with pending producer futures
-                # a processing pool has across all worker child processes.
-                # Only reports if the worker actually has pending futures.
-                metrics.distribution(
-                    "taskworker.worker.activations_with_pending_futures",
-                    len(pending_task_futures),
-                    tags={
-                        "processing_pool": processing_pool_name,
-                    },
-                )
                 for task in pending_task_futures.copy():
                     if all([f.done() for f in task.pending_futures]):
                         await_task_futures(task)
