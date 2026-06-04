@@ -1,9 +1,11 @@
 #!/bin/bash
 
-eval $(regions-project-env-vars --region="${SENTRY_REGION}")
+set -euo pipefail
+
+eval "$(regions-project-env-vars --region="${SENTRY_REGION}")"
 /devinfra/scripts/get-cluster-credentials
 
-deployments=$(kubectl get deployments | grep 'task-.*-broker' | awk '{print $1}')
+deployments=$(kubectl get deployments -o name | awk -F/ '/task-.*-broker/ {print $2}')
 
 for name in $deployments; do
   LABEL_SELECTOR="app=$name"
