@@ -125,7 +125,10 @@ impl PushPool {
             }
         }
 
-        // We must be shutting down, so we should stop the updater daemon
+        // We may have exited the `while` loop due to push thread failure, wait until all others are closed
+        threads.shutdown().await;
+
+        // Stop the updater daemon
         updater.stop();
         upd.await??;
 
