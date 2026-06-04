@@ -26,16 +26,16 @@ use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
 use taskbroker::kafka::deserialize::{self, DeserializeConfig};
 use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
-use taskbroker::logging;
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{PostgresStore, PostgresStoreConfig};
+use taskbroker::store::adapters::postgres::{self, PostgresStore, PostgresStoreConfig};
 use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
 use taskbroker::store::traits::ActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
+use taskbroker::{Run, logging};
 use taskbroker::{SERVICE_NAME, flusher};
 
 async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
@@ -65,11 +65,19 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
+    if args.run == Run::Migrations {
+        return config.database_adapter.migrate(&config).await;
+    }
+
     let store: Arc<dyn ActivationStore> = match config.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
             SqliteStore::new(&config.db_path, SqliteStoreConfig::from_config(&config)).await?,
         ),
         DatabaseAdapter::Postgres => {
+            if config.run_migrations {
+                postgres::migrate(&config).await?;
+            }
+
             Arc::new(PostgresStore::new(PostgresStoreConfig::from_config(&config)).await?)
         }
     };
