@@ -577,6 +577,41 @@ impl ActivationStore for PostgresStore {
         .await
     }
 
+    #[instrument(skip_all)]
+    #[framed]
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        retry_query(
+            &self.config.retry_config,
+            "mark_processing_batch",
+            || async {
+                let mut conn = self
+                    .acquire_write_conn_metric("mark_processing_batch")
+                    .await?;
+
+                let result = sqlx::query(&format!(
+                    "UPDATE inflight_taskactivations SET
+                        status = $1,
+                        processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                        claim_expires_at = NULL
+                    WHERE id = ANY($2) AND status = $3",
+                ))
+                .bind(ActivationStatus::Processing.to_string())
+                .bind(ids)
+                .bind(ActivationStatus::Claimed.to_string())
+                .execute(&mut *conn)
+                .await?;
+
+                Ok(result.rows_affected())
+            },
+        )
+        .await
+    }
+
     /// Get the age of the oldest pending activation in seconds.
     /// Only activations with status=pending and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.

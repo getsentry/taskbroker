@@ -6,6 +6,7 @@ use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
+use taskbroker::push::updater::{EagerUpdater, LazyUpdater, Updater};
 use taskbroker::worker::{Worker, WorkerClient, WorkerMap};
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
@@ -285,7 +286,7 @@ async fn main() -> Result<(), Error> {
     let (sender, receiver) = flume::bounded(config.push_queue_size);
 
     // Initialize push and fetch pools
-    let push_pool = PushPool::new(receiver, config.clone(), store.clone());
+    let push_pool = PushPool::new(receiver, config.clone());
     let fetch_pool = FetchPool::new(sender, store.clone(), config.clone());
 
     // Initialize push threads
@@ -315,8 +316,17 @@ async fn main() -> Result<(), Error> {
             workers.push(map);
         }
 
+        // Create the correct kind of push updater
+        let updater = if config.batch_push_updates {
+            let lazy = LazyUpdater::new(config.clone(), store.clone());
+            Arc::new(lazy) as Arc<dyn Updater>
+        } else {
+            let eager = EagerUpdater::new(store.clone());
+            Arc::new(eager) as Arc<dyn Updater>
+        };
+
         Some(taskbroker::tokio::spawn(async move {
-            push_pool.start(workers).await
+            push_pool.start(workers, updater, store.clone()).await
         }))
     } else {
         None

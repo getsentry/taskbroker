@@ -646,6 +646,35 @@ impl ActivationStore for SqliteStore {
         Ok(())
     }
 
+    #[instrument(skip_all)]
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self
+            .acquire_write_conn_metric("mark_processing_batch")
+            .await?;
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET status = ");
+        query_builder.push_bind(ActivationStatus::Processing);
+        query_builder.push(format!(
+            ", processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL WHERE status = ",
+        ));
+        query_builder.push_bind(ActivationStatus::Claimed);
+        query_builder.push(" AND id IN (");
+
+        let mut separated = query_builder.separated(", ");
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+
+        let result = query_builder.build().execute(&mut *conn).await?;
+        Ok(result.rows_affected())
+    }
+
     /// Get the age of the oldest pending activation in seconds.
     /// Only activations with status=pending and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
