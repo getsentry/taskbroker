@@ -1,4 +1,10 @@
 # Changelog
+## 0.18.2
+
+### Internal Changes 🔧
+
+- (workerchild) Add metric tracking pending futures by @bmckerry in [#671](https://github.com/getsentry/taskbroker/pull/671)
+
 ## 0.18.1
 
 ### New Features ✨
