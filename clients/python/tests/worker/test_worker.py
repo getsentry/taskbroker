@@ -1452,7 +1452,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
 ) -> None:
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
-    _pending_futures.add(leftover_future)
+    _pending_futures.append(leftover_future)
     assert len(_pending_futures) == 1
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()

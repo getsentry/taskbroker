@@ -70,6 +70,13 @@ How long the parent worker process should allow child processes
 to drain pending produce futures on shutdown before sending SIGKILL.
 """
 
+TASK_PRODUCER_MAX_PENDING_FUTURES = 10_000
+"""
+Maximum number of pending futures that can be in the TaskProducer module's
+`_pending_futures` list. This list is a global, so is shared between all instances
+of TaskProducer.
+"""
+
 
 class CompressionType(Enum):
     """
