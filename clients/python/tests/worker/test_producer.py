@@ -49,7 +49,7 @@ def clear_pending_futures() -> Iterator[None]:
 
 
 def test_producer_tracks_futures() -> None:
-    producer = TaskProducer(partial(get_dummy_producer, use_simple_futures=True))
+    producer = TaskProducer("test.producer", partial(get_dummy_producer, use_simple_futures=True))
     producer.produce(Topic("test"), make_kafka_payload())
     assert len(_pending_futures) == 1
     future = next(iter(TaskProducer.collect_futures()))
@@ -58,7 +58,7 @@ def test_producer_tracks_futures() -> None:
 
 
 def test_producer_executes_callbacks() -> None:
-    producer = TaskProducer(partial(get_dummy_producer, use_simple_futures=False))
+    producer = TaskProducer("test.producer", partial(get_dummy_producer, use_simple_futures=False))
     received: list[Future[BrokerValue[KafkaPayload]]] = []
 
     def callback(future: Future[BrokerValue[KafkaPayload]]) -> None:
@@ -73,7 +73,7 @@ def test_producer_executes_callbacks() -> None:
 
 
 def test_producer_rejects_callbacks_for_simple_futures() -> None:
-    producer = TaskProducer(partial(get_dummy_producer, use_simple_futures=True))
+    producer = TaskProducer("test.producer", partial(get_dummy_producer, use_simple_futures=True))
 
     def callback(future: Future[BrokerValue[KafkaPayload]]) -> None:
         pass
@@ -83,7 +83,7 @@ def test_producer_rejects_callbacks_for_simple_futures() -> None:
 
 
 def test_pending_futures_max_len() -> None:
-    producer = TaskProducer(partial(get_dummy_producer, use_simple_futures=True))
+    producer = TaskProducer("test.producer", partial(get_dummy_producer, use_simple_futures=True))
     for _ in range(10001):
         producer.produce(Topic("test"), make_kafka_payload())
     assert len(_pending_futures) == 10000

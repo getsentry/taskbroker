@@ -8,6 +8,7 @@ from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 
 from taskbroker_client.constants import TASK_PRODUCER_MAX_PENDING_FUTURES
+from taskbroker_client.metrics import MetricsBackend, NoOpMetricsBackend
 from taskbroker_client.types import ProducerProtocol
 
 # This is global as TaskWorker needs to be able to call TaskProducer.collect_futures()
@@ -29,12 +30,22 @@ class TaskProducer:
     Otherwise, the activation will be retried.
 
     Args:
+        name: Unique identifying name of this TaskProducer. Used in metric tags.
         producer_factory: Callable that returns a producer object.
+        metrics_backend: Application metrics backend this producer should use.
+                         Defaults to NoOpMetricsBackend.
     """
 
-    def __init__(self, producer_factory: Callable[[], ProducerProtocol]) -> None:
+    def __init__(
+        self,
+        name: str,
+        producer_factory: Callable[[], ProducerProtocol],
+        metrics_backend: MetricsBackend | None = None,
+    ) -> None:
+        self.name = name
         self._producer_factory = producer_factory
         self._inner_producer: ProducerProtocol | None = None
+        self.metrics = metrics_backend if metrics_backend is not None else NoOpMetricsBackend()
 
     def _get(self) -> ProducerProtocol:
         if self._inner_producer is None:
@@ -43,6 +54,11 @@ class TaskProducer:
 
     def track_future(self, future: ProducerFuture[BrokerValue[KafkaPayload]]) -> None:
         _pending_futures.append(future)
+        self.metrics.gauge(
+            "task.producer.pending.futures",
+            len(_pending_futures),
+            tags={"producer_name": self.name},
+        )
 
     @staticmethod
     def collect_futures() -> set[ProducerFuture[BrokerValue[KafkaPayload]]]:
