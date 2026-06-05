@@ -229,7 +229,7 @@ impl ConsumerService for TaskbrokerServer {
 
         // Updates can be broken into different batches based on the status and the retry state.
         let mut batches: HashMap<ActivationStatus, Vec<String>> = HashMap::new();
-        let mut retry_batches: Vec<SetTaskStatusRequest> = Vec::new();
+        let mut retry_updates: Vec<SetTaskStatusRequest> = Vec::new();
 
         for update in updates {
             let id = update.id.clone();
@@ -238,29 +238,57 @@ impl ConsumerService for TaskbrokerServer {
                     Status::invalid_argument(format!("Unable to deserialize status: {e:?}"))
                 })?
                 .into();
-            if status == TaskActivationStatus::Failure.into() {
+            if !status.is_conclusion() {
+                return Err(Status::invalid_argument(format!(
+                    "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {status:?}"
+                )));
+            }
+            if status == ActivationStatus::Failure {
                 metrics::counter!("grpc_server.set_status.failure").increment(1);
             }
             if update.max_attempts.is_some() || update.delay_on_retry.is_some() {
-                retry_batches.push(update);
+                retry_updates.push(update);
             } else {
                 batches.entry(status).or_default().push(id);
             }
         }
 
+        // For each status and batch of IDs, update the status for those IDs. In the case of a failure, return an error to the worker.
+        // Track and log a warning if the number of rows updated is less than the number of IDs requested.
+        metrics::histogram!("grpc_server.set_batch_activation_status.num_batches")
+            .record(batches.len() as f64);
         for (status, ids) in batches {
-            match set_status_batch(self.store.clone(), &ids, status).await {
+            let requested = ids.len() as u64;
+            metrics::histogram!("grpc_server.set_batch_activation_status.batch_size", "status" => status.to_string()).record(requested as f64);
+            match self.store.set_status_batch(&ids, status).await {
                 Ok(affected) => {
-                    metrics::histogram!("grpc_server.batch_activation_status.requested", "status" => status.to_string())
-                        .record(affected as f64);
+                    metrics::histogram!("grpc_server.batch_activation_status.affected_diff", "status" => status.to_string())
+                        .record((requested - affected) as f64);
+                    if affected < requested {
+                        metrics::histogram!(
+                            "grpc_server.set_batch_activation_status.partial",
+                            "status" => status.to_string()
+                        )
+                        .record((requested - affected) as f64);
+                        warn!(
+                            ?status,
+                            requested, affected, "Updated fewer rows than IDs requested in batch"
+                        );
+                    }
                 }
                 Err(e) => {
+                    metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);
+                    metrics::histogram!("grpc_server.batch_activation_status.duration")
+                        .record(start_time.elapsed());
                     error!("Failed to set batch activation status: {:?}", e);
+                    return Err(Status::internal("Failed to set batch activation status"));
                 }
             }
         }
 
-        for update in retry_batches {
+        metrics::histogram!("grpc_server.set_batch_activation_status.retry_updates")
+            .record(retry_updates.len() as f64);
+        for update in retry_updates {
             let id = update.id.clone();
             let status: ActivationStatus = TaskActivationStatus::try_from(update.status)
                 .map_err(|e| {
@@ -274,43 +302,23 @@ impl ConsumerService for TaskbrokerServer {
                 .set_status(&id, status, max_attempts, delay_on_retry)
                 .await
             {
-                Ok(Some(_)) => metrics::counter!(
-                    "grpc_server.set_status",
-                    "result" => "ok",
-                    "status" => status.to_string()
-                )
-                .increment(1),
-
-                Ok(None) => metrics::counter!(
-                    "grpc_server.set_status",
-                    "result" => "not_found",
-                    "status" => status.to_string()
-                )
-                .increment(1),
+                Ok(Some(_)) => metrics::counter!("grpc_server.set_status", "result" => "ok", "status" => status.to_string()).increment(1),
+                Ok(None) => metrics::counter!("grpc_server.set_status", "result" => "not_found", "status" => status.to_string()).increment(1),
 
                 Err(e) => {
-                    metrics::counter!(
-                        "grpc_server.set_status",
-                        "result" => "error",
-                        "status" => status.to_string()
-                    )
-                    .increment(1);
+                    metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(1);
 
-                    error!(
-                        ?id,
-                        ?status,
-                        "Unable to update status of activation: {:?}",
-                        e,
-                    );
+                    error!("Unable to update status of activation in batch {:?} to {:?}: {:?}", id, status, e);
 
-                    metrics::histogram!("grpc_server.set_status.duration")
-                        .record(start_time.elapsed());
+                    metrics::histogram!("grpc_server.batch_activation_status.duration").record(start_time.elapsed());
                     return Err(Status::internal(format!(
-                        "Unable to update status of {id:?} to {status:?}"
+                        "Unable to update status of activation in batch {id:?} to {status:?}"
                     )));
                 }
             }
         }
+        metrics::histogram!("grpc_server.set_batch_activation_status.duration")
+            .record(start_time.elapsed());
         return Ok(Response::new(SetBatchActivationStatusResponse {}));
     }
 }
@@ -335,73 +343,51 @@ pub async fn flush_updates(store: Arc<dyn ActivationStore>, buffer: &mut Vec<Sta
         metrics::histogram!("grpc_server.flush_updates.requested", "status" => st.clone())
             .record(requested as f64);
 
-        match set_status_batch(store.clone(), &ids, status).await {
-            Ok(_) => {}
-            Err(_) => {
-                // Push failed updates back into the buffer so they can be retried on next flush
-                for id in ids {
-                    buffer.push((id, status));
-                }
-            }
-        }
-    }
-}
-
-pub async fn set_status_batch(
-    store: Arc<dyn ActivationStore>,
-    ids: &[String],
-    status: ActivationStatus,
-) -> Result<u64, Error> {
-    let requested = ids.len() as u64;
-    let st = status.to_string();
-    match store.set_status_batch(ids, status).await {
-        Ok(affected) => {
-            metrics::histogram!(
-                "grpc_server.flush_updates.affected",
-                "status" => st.clone()
-            )
-            .record(affected as f64);
-
-            metrics::counter!(
-                "grpc_server.flush_updates.updated",
-                "status" => st.clone()
-            )
-            .increment(affected);
-
-            metrics::counter!("grpc_server.flush_updates", "result" => "ok").increment(1);
-
-            if affected < requested {
-                metrics::counter!(
-                    "grpc_server.flush_updates.partial",
+        match store.set_status_batch(&ids, status).await {
+            Ok(affected) => {
+                metrics::histogram!(
+                    "grpc_server.flush_updates.affected",
                     "status" => st.clone()
                 )
-                .increment(1);
+                .record(affected as f64);
 
-                warn!(
+                metrics::counter!(
+                    "grpc_server.flush_updates.updated",
+                    "status" => st.clone()
+                )
+                .increment(affected);
+
+                metrics::counter!("grpc_server.flush_updates", "result" => "ok").increment(1);
+
+                if affected < requested {
+                    metrics::counter!(
+                        "grpc_server.flush_updates.partial",
+                        "status" => st.clone()
+                    )
+                    .increment(1);
+
+                    warn!(
+                        ?status,
+                        requested, affected, "Updated fewer rows than IDs requested from server"
+                    );
+                }
+
+                debug!(
                     ?status,
-                    requested, affected, "Updated fewer rows than IDs requested from server"
+                    affected, requested, "Flushed status batch from server"
                 );
             }
 
-            debug!(
-                ?status,
-                affected, requested, "Flushed status batch from server"
-            );
+            Err(e) => {
+                metrics::counter!("grpc_server.flush_updates", "result" => "error").increment(1);
 
-            Ok(affected)
-        }
-
-        Err(e) => {
-            metrics::counter!("grpc_server.flush_updates", "result" => "error").increment(1);
-
-            error!(
-                ?status,
-                requested,
-                error = ?e,
-                "Failed to set status batch"
-            );
-
-            Err(e)
+                error!(
+                    ?status,
+                    requested,
+                    error = ?e,
+                    "Failed to set status batch"
+                );
+            }
         }
     }
 }
