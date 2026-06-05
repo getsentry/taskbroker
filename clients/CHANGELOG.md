@@ -1,4 +1,14 @@
 # Changelog
+## 0.18.3
+
+### New Features ✨
+
+- (TaskProducer) Add metrics on queue size by @bmckerry in [#681](https://github.com/getsentry/taskbroker/pull/681)
+
+### Bug Fixes 🐛
+
+- (TaskProducer) Bounded queue of pending futures by @bmckerry in [#678](https://github.com/getsentry/taskbroker/pull/678)
+
 ## 0.18.2
 
 ### Internal Changes 🔧
