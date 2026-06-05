@@ -80,3 +80,10 @@ def test_producer_rejects_callbacks_for_simple_futures() -> None:
 
     with pytest.raises(RuntimeError, match="SimpleProducerFuture"):
         producer.produce(Topic("test"), make_kafka_payload(), callbacks=[callback])
+
+
+def test_pending_futures_max_len() -> None:
+    producer = TaskProducer(partial(get_dummy_producer, use_simple_futures=True))
+    for _ in range(10001):
+        producer.produce(Topic("test"), make_kafka_payload())
+    assert len(_pending_futures) == 10000

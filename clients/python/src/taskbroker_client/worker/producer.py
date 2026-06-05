@@ -1,3 +1,4 @@
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, Sequence
@@ -6,11 +7,16 @@ from arroyo.backends.abstract import ProducerFuture, SimpleProducerFuture
 from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 
+from taskbroker_client.constants import TASK_PRODUCER_MAX_PENDING_FUTURES
 from taskbroker_client.types import ProducerProtocol
 
 # This is global as TaskWorker needs to be able to call TaskProducer.collect_futures()
 # without a reference to a task's specific instance of TaskProducer.
-_pending_futures: set[ProducerFuture[BrokerValue[KafkaPayload]]] = set()
+# Has a max_len to prevent unbounded future growth if TaskProducer.collect_futures()
+# is never called.
+_pending_futures: deque[ProducerFuture[BrokerValue[KafkaPayload]]] = deque(
+    maxlen=TASK_PRODUCER_MAX_PENDING_FUTURES
+)
 
 
 class TaskProducer:
@@ -21,6 +27,9 @@ class TaskProducer:
     producer futures tracked by TaskProducer, and will only register the task activation as
     a success if all producer futures from that activation were successful.
     Otherwise, the activation will be retried.
+
+    Args:
+        producer_factory: Callable that returns a producer object.
     """
 
     def __init__(self, producer_factory: Callable[[], ProducerProtocol]) -> None:
@@ -33,13 +42,13 @@ class TaskProducer:
         return self._inner_producer
 
     def track_future(self, future: ProducerFuture[BrokerValue[KafkaPayload]]) -> None:
-        _pending_futures.add(future)
+        _pending_futures.append(future)
 
     @staticmethod
     def collect_futures() -> set[ProducerFuture[BrokerValue[KafkaPayload]]]:
         futures = _pending_futures.copy()
         _pending_futures.clear()
-        return futures
+        return set(futures)
 
     def produce(
         self,
