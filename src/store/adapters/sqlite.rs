@@ -675,8 +675,8 @@ impl ActivationStore for SqliteStore {
         Ok(result.rows_affected())
     }
 
-    /// Get the age of the oldest pending activation in seconds.
-    /// Only activations with status=pending and processing_attempts=0 are considered
+    /// Get the age of the oldest pending/claimed activation in seconds.
+    /// Only activations with status=pending/claimed and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
@@ -684,13 +684,14 @@ impl ActivationStore for SqliteStore {
         let result = match sqlx::query(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
-            WHERE status = $1
+            WHERE (status = $1 or status = $2)
             AND processing_attempts = 0
             ORDER BY received_at ASC
             LIMIT 1
             ",
         )
         .bind(ActivationStatus::Pending)
+        .bind(ActivationStatus::Claimed)
         .fetch_optional(&self.read_pool)
         .await
         {

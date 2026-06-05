@@ -1897,7 +1897,7 @@ async fn test_pending_activation_max_lag_no_pending(#[case] adapter: &str) {
     processing[0].status = ActivationStatus::Processing;
     assert!(store.store(processing).await.is_ok());
 
-    // No pending activations, max lag is 0
+    // No pending or claimed activations, max lag is 0
     assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
     store.remove_db().await.unwrap();
 }
@@ -1910,10 +1910,12 @@ async fn test_pending_activation_max_lag_use_oldest(#[case] adapter: &str) {
     let now = Utc::now();
     let store = create_test_store(adapter).await;
 
-    let mut pending = make_activations(2);
-    pending[0].received_at = now - Duration::from_secs(10);
-    pending[1].received_at = now - Duration::from_secs(500);
-    assert!(store.store(pending).await.is_ok());
+    let mut activations = make_activations(3);
+    activations[0].received_at = now - Duration::from_secs(10);
+    activations[1].received_at = now - Duration::from_secs(500);
+    activations[2].status = ActivationStatus::Claimed;
+    activations[2].received_at = now - Duration::from_secs(50);
+    assert!(store.store(activations).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(11.0 < result, "Should not get the small record");
@@ -1929,11 +1931,14 @@ async fn test_pending_activation_max_lag_ignore_processing_attempts(#[case] adap
     let now = Utc::now().round_subsecs(0);
     let store = create_test_store(adapter).await;
 
-    let mut pending = make_activations(2);
-    pending[0].received_at = now - Duration::from_secs(10);
-    pending[1].received_at = now - Duration::from_secs(500);
-    pending[1].processing_attempts = 1;
-    assert!(store.store(pending).await.is_ok());
+    let mut activations = make_activations(3);
+    activations[0].received_at = now - Duration::from_secs(10);
+    activations[1].received_at = now - Duration::from_secs(500);
+    activations[1].processing_attempts = 1;
+    activations[2].status = ActivationStatus::Claimed;
+    activations[2].received_at = now - Duration::from_secs(500);
+    activations[2].processing_attempts = 1;
+    assert!(store.store(activations).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert_eq!(result, 10.0, "max lag: {result:?}");
@@ -1948,12 +1953,13 @@ async fn test_pending_activation_max_lag_account_for_delayed(#[case] adapter: &s
     let now = Utc::now();
     let store = create_test_store(adapter).await;
 
-    let mut pending = make_activations(2);
+    let mut activations = make_activations(3);
     // delayed tasks are received well before they become pending
     // the lag of a delayed task should begin *after* the delay has passed.
-    pending[0].received_at = now - Duration::from_secs(520);
-    pending[0].delay_until = Some(now - Duration::from_millis(22020));
-    assert!(store.store(pending).await.is_ok());
+    activations[0].received_at = now - Duration::from_secs(520);
+    activations[0].delay_until = Some(now - Duration::from_millis(22020));
+    activations[1].status = ActivationStatus::Claimed;
+    assert!(store.store(activations).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(22.00 < result, "result: {result}");
