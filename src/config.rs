@@ -609,7 +609,7 @@ impl Default for Config {
             maintenance_task_interval_ms: 6000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
-            grpc_max_message_size: 10 * 1024 * 1024, // 10MB
+            grpc_max_message_size: 12 * 1024 * 1024, // 12MB
             vacuum_page_count: None,
             full_vacuum_on_start: true,
             full_vacuum_on_upkeep: true,
