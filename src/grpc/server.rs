@@ -262,7 +262,7 @@ impl ConsumerService for TaskbrokerServer {
             metrics::histogram!("grpc_server.set_batch_activation_status.batch_size", "status" => status.to_string()).record(requested as f64);
             match self.store.set_status_batch(&ids, status).await {
                 Ok(affected) => {
-                    metrics::histogram!("grpc_server.batch_activation_status.affected_diff", "status" => status.to_string())
+                    metrics::histogram!("grpc_server.set_batch_activation_status.affected_diff", "status" => status.to_string())
                         .record((requested - affected) as f64);
                     if affected < requested {
                         metrics::histogram!(
@@ -278,7 +278,7 @@ impl ConsumerService for TaskbrokerServer {
                 }
                 Err(e) => {
                     metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);
-                    metrics::histogram!("grpc_server.batch_activation_status.duration")
+                    metrics::histogram!("grpc_server.set_batch_activation_status.duration")
                         .record(start_time.elapsed());
                     error!("Failed to set batch activation status: {:?}", e);
                     return Err(Status::internal("Failed to set batch activation status"));
@@ -310,7 +310,7 @@ impl ConsumerService for TaskbrokerServer {
 
                     error!("Unable to update status of activation in batch {:?} to {:?}: {:?}", id, status, e);
 
-                    metrics::histogram!("grpc_server.batch_activation_status.duration").record(start_time.elapsed());
+                    metrics::histogram!("grpc_server.set_batch_activation_status.duration").record(start_time.elapsed());
                     return Err(Status::internal(format!(
                         "Unable to update status of activation in batch {id:?} to {status:?}"
                     )));
