@@ -385,8 +385,13 @@ pub async fn flush_updates(store: Arc<dyn ActivationStore>, buffer: &mut Vec<Sta
                     ?status,
                     requested,
                     error = ?e,
-                    "Failed to set status batch"
+                    "Failed to flush status batch from server"
                 );
+
+                // Push failed updates back into the buffer so they can be retried on next flush
+                for id in ids {
+                    buffer.push((id, status));
+                }
             }
         }
     }
