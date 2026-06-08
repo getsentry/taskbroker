@@ -31,7 +31,7 @@ impl MockStore {
 
 #[async_trait]
 impl ActivationStore for MockStore {
-    async fn store(&self, _batch: Vec<Activation>) -> Result<u64> {
+    async fn store(&self, _batch: &[Activation]) -> Result<u64> {
         Ok(0)
     }
 

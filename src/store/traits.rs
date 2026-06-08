@@ -13,7 +13,7 @@ use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 pub trait ActivationStore: Send + Sync {
     /// CONSUMER OPERATIONS
     /// Store a batch of activations
-    async fn store(&self, batch: Vec<Activation>) -> Result<u64, Error>;
+    async fn store(&self, batch: &[Activation]) -> Result<u64, Error>;
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
 

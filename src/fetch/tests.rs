@@ -68,7 +68,7 @@ impl ActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn store(&self, _batch: Vec<Activation>) -> Result<u64, Error> {
+    async fn store(&self, _batch: &[Activation]) -> Result<u64, Error> {
         unimplemented!()
     }
 
