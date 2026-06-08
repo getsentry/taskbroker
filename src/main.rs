@@ -20,8 +20,7 @@ use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
-use taskbroker::kafka::activation_batcher::{ActivationBatcher, ActivationBatcherConfig};
-use taskbroker::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
+use taskbroker::kafka::activation_writer::{self, ActivationWriterClient, ActivationWriterConfig};
 use taskbroker::kafka::admin::create_missing_topics;
 use taskbroker::kafka::consumer::start_consumer;
 use taskbroker::kafka::deserialize::{self, DeserializeConfig};
@@ -169,12 +168,21 @@ async fn main() -> Result<(), Error> {
         .map(|(name, _)| name.to_owned())
         .collect();
 
+    // One process-wide activation writer fed by every consumer. It filters,
+    // forwards and writes activations, coalescing batches across consumers into
+    // larger DB writes through a single shared producer/store.
+    let (writer_tx, writer_task) = activation_writer::spawn(
+        store.clone(),
+        runtime_config_manager.clone(),
+        ActivationWriterConfig::from_config(&config),
+    );
+
     let mut consumer_tasks: Vec<(String, JoinHandle<Result<(), Error>>)> = Vec::new();
     for topic in consumer_topics {
         let consumer_store = store.clone();
         let consumer_config = config.clone();
-        let runtime_config_manager = runtime_config_manager.clone();
         let task_topic = topic.clone();
+        let writer_tx = writer_tx.clone();
 
         let handle = taskbroker::tokio::spawn(async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
@@ -195,14 +203,7 @@ async fn main() -> Result<(), Error> {
                         deserialize::new(DeserializeConfig::from_topic(&consumer_config, &task_topic)),
 
                     reduce:
-                        ActivationBatcher::new(
-                            ActivationBatcherConfig::from_topic(&consumer_config, &task_topic),
-                            runtime_config_manager.clone()
-                        ),
-                        ActivationWriter::new(
-                            consumer_store.clone(),
-                            ActivationWriterConfig::from_topic(&consumer_config, &task_topic)
-                        ),
+                        ActivationWriterClient::new(writer_tx.clone(), &task_topic, &consumer_config),
 
                 }),
             )
@@ -210,6 +211,9 @@ async fn main() -> Result<(), Error> {
         });
         consumer_tasks.push((topic, handle));
     }
+    // The writer outlives individual consumers; drop our handle so it can finish
+    // draining once every consumer has stopped.
+    drop(writer_tx);
 
     // Status update flush task
     let (status_update_tx, status_update_task) = if config.batch_status_updates {
@@ -361,6 +365,8 @@ async fn main() -> Result<(), Error> {
         departure =
             departure.on_completion(log_task_completion(format!("consumer:{topic}"), handle));
     }
+
+    departure = departure.on_completion(log_task_completion("activation_writer", writer_task));
 
     if let Some(task) = grpc_server_task {
         departure = departure.on_completion(log_task_completion("grpc_server", task));
