@@ -26,7 +26,7 @@ class DummyProducer:
         self.use_simple_futures = use_simple_futures
 
     def produce(
-        self, topic: Topic, payload: KafkaPayload
+        self, destination: Topic | Partition, payload: KafkaPayload
     ) -> ProducerFuture[BrokerValue[KafkaPayload]]:
         future: ProducerFuture[BrokerValue[KafkaPayload]]
         if self.use_simple_futures:
