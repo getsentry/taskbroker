@@ -15,7 +15,8 @@ use tonic::transport::Server;
 use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
 
-use taskbroker::config::{Config, DatabaseAdapter, DeliveryMode};
+use taskbroker::config::store::DatabaseAdapter;
+use taskbroker::config::{Config, DeliveryMode};
 use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
