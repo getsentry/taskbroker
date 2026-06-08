@@ -1,4 +1,11 @@
 # Changelog
+## 0.18.4
+
+### Bug Fixes 🐛
+
+- (producer) TaskProducer can produce to partitions by @bmckerry in [#685](https://github.com/getsentry/taskbroker/pull/685)
+- (worker) Keep worker health checks alive while idle in push mode by @lvthanh03 in [#683](https://github.com/getsentry/taskbroker/pull/683)
+
 ## 0.18.3
 
 ### New Features ✨
