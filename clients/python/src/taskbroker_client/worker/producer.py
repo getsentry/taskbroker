@@ -5,7 +5,7 @@ from typing import Any, Sequence
 
 from arroyo.backends.abstract import ProducerFuture, SimpleProducerFuture
 from arroyo.backends.kafka import KafkaPayload
-from arroyo.types import BrokerValue, Topic
+from arroyo.types import BrokerValue, Partition, Topic
 
 from taskbroker_client.constants import TASK_PRODUCER_MAX_PENDING_FUTURES
 from taskbroker_client.metrics import MetricsBackend, NoOpMetricsBackend
@@ -68,7 +68,7 @@ class TaskProducer:
 
     def produce(
         self,
-        topic: Topic,
+        dest: Topic | Partition,
         payload: KafkaPayload,
         callbacks: Sequence[Callable[[Future[BrokerValue[KafkaPayload]]], Any]] = [],
     ) -> None:
@@ -79,12 +79,12 @@ class TaskProducer:
         to the future via the `callbacks` arg.
 
         Args:
-            topic: Topic to produce to.
+            dest: Topic (or specific partition) to produce to.
             payload: KafkaPayload to produce.
             callbacks: List of Callables to add to the future as done callbacks. The future itself
                        is the only arg passed to the callback.
         """
-        future = self._get().produce(topic, payload)
+        future = self._get().produce(dest, payload)
         self.track_future(future)
         if callbacks:
             # Arroyo producers can return a SimpleProducerFuture,

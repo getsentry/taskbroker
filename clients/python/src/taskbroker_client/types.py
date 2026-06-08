@@ -5,7 +5,7 @@ from typing import Any, Callable, Protocol
 
 from arroyo.backends.abstract import ProducerFuture
 from arroyo.backends.kafka import KafkaPayload
-from arroyo.types import BrokerValue, Topic
+from arroyo.types import BrokerValue, Partition, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation, TaskActivationStatus
 
 TaskHeaders = dict[str, str]
@@ -38,7 +38,7 @@ class ProducerProtocol(Protocol):
     """Interface for producers that tasks depend on."""
 
     def produce(
-        self, topic: Topic, payload: KafkaPayload
+        self, dest: Topic | Partition, payload: KafkaPayload
     ) -> ProducerFuture[BrokerValue[KafkaPayload]]: ...
 
 
