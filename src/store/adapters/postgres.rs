@@ -671,8 +671,8 @@ impl ActivationStore for PostgresStore {
         .await
     }
 
-    /// Get the age of the oldest pending activation in seconds.
-    /// Only activations with status=pending and processing_attempts=0 are considered
+    /// Get the age of the oldest pending/claimed activation in seconds.
+    /// Only activations with status=pending/claimed and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
@@ -681,9 +681,12 @@ impl ActivationStore for PostgresStore {
         let mut query_builder = QueryBuilder::new(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
-            WHERE status = ",
+            WHERE status IN (",
         );
-        query_builder.push_bind(ActivationStatus::Pending.to_string());
+        let mut separated = query_builder.separated(", ");
+        separated.push_bind(ActivationStatus::Pending.to_string());
+        separated.push_bind(ActivationStatus::Claimed.to_string());
+        query_builder.push(")");
         query_builder.push(" AND processing_attempts = 0");
 
         self.add_partition_condition(&mut query_builder, false);
