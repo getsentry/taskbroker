@@ -22,7 +22,7 @@ pub trait Updater: Send + Sync {
     }
 
     /// Update activation in some way given its ID.
-    async fn update(&self, id: String) -> Result<()>;
+    async fn update(&self, id: &str) -> Result<()>;
 
     /// Stop the updater. Useful for updaters that run a background task.
     fn stop(&self) {}
@@ -192,7 +192,7 @@ impl Updater for LazyUpdater {
         Ok(())
     }
 
-    async fn update(&self, id: String) -> Result<()> {
+    async fn update(&self, id: &str) -> Result<()> {
         // Lock the ID buffer
         let mut buffer = self.lock_buffer("update").await;
 
@@ -217,7 +217,7 @@ impl Updater for LazyUpdater {
             }
         }
 
-        buffer.push(id);
+        buffer.push(id.to_string());
         Ok(())
     }
 
@@ -240,8 +240,8 @@ impl EagerUpdater {
 
 #[async_trait]
 impl Updater for EagerUpdater {
-    async fn update(&self, id: String) -> Result<()> {
-        self.store.mark_activation_processing(&id).await
+    async fn update(&self, id: &str) -> Result<()> {
+        self.store.mark_activation_processing(id).await
     }
 }
 

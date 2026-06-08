@@ -123,10 +123,7 @@ impl PushThread {
         }
 
         // Finally, mark the activation as processing
-        let result = timed!(
-            self.updater.update(id.clone()),
-            "push.thread.update.duration"
-        );
+        let result = timed!(self.updater.update(id), "push.thread.update.duration");
 
         if let Err(e) = result {
             metrics::counter!("push.thread.update", "result" => "error").increment(1);
