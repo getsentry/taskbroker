@@ -20,6 +20,12 @@ pub mod store;
 use raw::RawModeConfig;
 use store::DatabaseAdapter;
 
+pub mod raw;
+pub mod store;
+
+use raw::RawModeConfig;
+use store::DatabaseAdapter;
+
 /// Configuration for a single Kafka topic in multi-topic mode.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct TopicConfig {
