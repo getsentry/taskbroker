@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::fs;
 
 pub mod config;
@@ -25,10 +25,21 @@ pub fn get_version() -> &'static str {
     Box::leak(release_name.into_boxed_str())
 }
 
+/// What are we running?
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
+pub enum Run {
+    Migrations,
+    Broker,
+}
+
 #[derive(Parser, Debug)]
 pub struct Args {
-    /// Path to the configuration file
-    #[arg(short, long, help = "The path to a config file")]
+    /// What are we running?
+    #[arg(short, long, default_value = "broker")]
+    pub run: Run,
+
+    /// Path to the configuration file.
+    #[arg(short, long)]
     pub config: Option<String>,
 }
 

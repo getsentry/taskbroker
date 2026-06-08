@@ -101,6 +101,10 @@ impl ActivationStore for MockStore {
         Ok(())
     }
 
+    async fn mark_processing_batch(&self, _ids: &[String]) -> Result<u64, Error> {
+        unimplemented!()
+    }
+
     async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
         unimplemented!()
     }

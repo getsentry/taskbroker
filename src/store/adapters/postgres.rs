@@ -9,7 +9,7 @@ use sqlx::pool::PoolConnection;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
 use sqlx::{FromRow, Pool, Postgres, QueryBuilder, Row, Transaction};
 
-use anyhow::{Error, anyhow};
+use anyhow::{Error, Result, anyhow};
 use async_backtrace::framed;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -23,6 +23,55 @@ use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+
+/// Run migrations.
+pub async fn migrate(config: &Config) -> Result<()> {
+    let mut conn_opts = PgConnectOptions::new()
+        .username(&config.pg_ddl_username)
+        .password(&config.pg_ddl_password)
+        .host(&config.pg_host)
+        .port(config.pg_port);
+
+    if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
+        let url = conn_opts.to_url_lossy();
+        let new_url =
+            url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
+        conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
+    }
+
+    let default_pool =
+        create_default_postgres_pool(&conn_opts, &config.pg_default_database_name).await?;
+
+    // Create the database if it doesn't exist
+    let row: (bool,) =
+        sqlx::query_as("SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )")
+            .bind(&config.pg_database_name)
+            .fetch_one(&default_pool)
+            .await?;
+
+    if !row.0 {
+        println!("Creating database {}", &config.pg_database_name);
+        sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
+            .execute(&default_pool)
+            .await?;
+    }
+
+    default_pool.close().await;
+
+    let migration_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(conn_opts.database(&config.pg_database_name))
+        .await?;
+
+    println!("Running migrations on database");
+    sqlx::migrate!("./migrations/postgres")
+        .run(&migration_pool)
+        .await?;
+
+    migration_pool.close().await;
+
+    Ok(())
+}
 
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
@@ -194,12 +243,14 @@ impl PostgresStoreConfig {
             .password(&config.pg_password)
             .host(&config.pg_host)
             .port(config.pg_port);
+
         if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
             let url = conn_opts.to_url_lossy();
             let new_url =
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
             conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
         }
+
         Self {
             pg_connection: conn_opts,
             pg_database_name: config.pg_database_name.clone(),
@@ -249,41 +300,8 @@ impl PostgresStore {
 
     #[framed]
     pub async fn new(config: PostgresStoreConfig) -> Result<Self, Error> {
-        if config.run_migrations {
-            let default_pool = create_default_postgres_pool(
-                &config.pg_connection,
-                &config.pg_default_database_name,
-            )
-            .await?;
-
-            // Create the database if it doesn't exist
-            let row: (bool,) = sqlx::query_as(
-                "SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )",
-            )
-            .bind(&config.pg_database_name)
-            .fetch_one(&default_pool)
-            .await?;
-
-            if !row.0 {
-                println!("Creating database {}", &config.pg_database_name);
-                sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
-                    .bind(&config.pg_database_name)
-                    .execute(&default_pool)
-                    .await?;
-            }
-            // Close the default pool
-            default_pool.close().await;
-        }
-
         let (read_pool, write_pool) =
             create_postgres_pool(&config.pg_connection, &config.pg_database_name).await?;
-
-        if config.run_migrations {
-            println!("Running migrations on database");
-            sqlx::migrate!("./migrations/postgres")
-                .run(&write_pool)
-                .await?;
-        }
 
         Ok(Self {
             read_pool,
@@ -613,6 +631,41 @@ impl ActivationStore for PostgresStore {
                 }
 
                 Ok(())
+            },
+        )
+        .await
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        retry_query(
+            &self.config.retry_config,
+            "mark_processing_batch",
+            || async {
+                let mut conn = self
+                    .acquire_write_conn_metric("mark_processing_batch")
+                    .await?;
+
+                let result = sqlx::query(&format!(
+                    "UPDATE inflight_taskactivations SET
+                        status = $1,
+                        processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                        claim_expires_at = NULL
+                    WHERE id = ANY($2) AND status = $3",
+                ))
+                .bind(ActivationStatus::Processing.to_string())
+                .bind(ids)
+                .bind(ActivationStatus::Claimed.to_string())
+                .execute(&mut *conn)
+                .await?;
+
+                Ok(result.rows_affected())
             },
         )
         .await
