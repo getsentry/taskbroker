@@ -20,11 +20,24 @@ struct RawParams<'a> {
     kwargs: HashMap<(), ()>,
 }
 
+/// Header key and value identifying zstd-compressed `parameters_bytes`. Must match the
+/// producer/worker contract (`CompressionType.ZSTD` in the Python client) so the worker
+/// decompresses payloads taskbroker compresses in raw mode.
+const COMPRESSION_HEADER: &str = "compression-type";
+const COMPRESSION_ZSTD: &str = "zstd";
+
+/// Default zstd level for raw-mode payloads, matching the producer's zstandard default.
+const DEFAULT_COMPRESSION_LEVEL: i32 = 3;
+/// Sentinel compression level that disables compression entirely.
+const COMPRESSION_DISABLED: i32 = -1;
+
 pub struct RawConfig {
     pub namespace: String,
     pub application: String,
     pub taskname: String,
     pub processing_deadline_duration: u16,
+    /// zstd compression level, or [`COMPRESSION_DISABLED`] (-1) to store payloads uncompressed.
+    pub compression_level: i32,
 }
 
 impl RawConfig {
@@ -66,6 +79,7 @@ impl RawConfig {
             processing_deadline_duration: raw
                 .processing_deadline_duration
                 .expect("raw processing_deadline_duration required when a topic enables raw mode"),
+            compression_level: raw.compression_level.unwrap_or(DEFAULT_COMPRESSION_LEVEL),
         }
     }
 }
@@ -109,7 +123,22 @@ pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Er
         let payload = msg.payload().unwrap_or(b"");
 
         let id = Uuid::new_v4().to_string();
+        let mut headers = extract_headers(msg);
         let parameters_bytes = encode_raw_params(payload);
+        let parameters_bytes = if config.compression_level == COMPRESSION_DISABLED {
+            parameters_bytes
+        } else {
+            headers.insert(COMPRESSION_HEADER.to_string(), COMPRESSION_ZSTD.to_string());
+            // `bulk::compress` embeds the decompressed content size in the zstd frame
+            // header, which the worker's `zstandard.decompress()` requires. Do not switch
+            // to `stream::encode_all`, which omits it.
+            //
+            // Compression only fails on a bug in zstd or taskbroker, so stop the world
+            // rather than trying to recover externally (matches encode_raw_params).
+            zstd::bulk::compress(&parameters_bytes, config.compression_level)
+                .expect("Failed to zstd-compress raw payload")
+        };
+        let stored_payload_size = parameters_bytes.len();
         let now = Utc::now();
         let received_at_time = msg
             .timestamp()
@@ -129,7 +158,7 @@ pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Er
             #[allow(deprecated)]
             parameters: String::new(),
             parameters_bytes,
-            headers: extract_headers(msg),
+            headers,
             received_at: Some(received_at),
             retry_state: None,
             processing_deadline_duration: config.processing_deadline_duration.into(),
@@ -147,6 +176,16 @@ pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Er
             "taskname" => config.taskname.clone()
         )
         .record(payload.len() as f64);
+
+        if config.compression_level != COMPRESSION_DISABLED {
+            metrics::histogram!(
+                "consumer.raw.compressed_payload_size_bytes",
+                "topic" => msg.topic().to_string(),
+                "namespace" => config.namespace.clone(),
+                "taskname" => config.taskname.clone()
+            )
+            .record(stored_payload_size as f64);
+        }
 
         Ok(Activation {
             id,
@@ -209,16 +248,43 @@ mod tests {
         assert!(decoded.kwargs.is_empty());
     }
 
-    #[test]
-    fn test_raw_deserializer() {
-        let config = RawConfig {
+    fn test_config() -> RawConfig {
+        RawConfig {
             namespace: "test-namespace".to_string(),
             application: "test-app".to_string(),
             taskname: "test-task".to_string(),
             processing_deadline_duration: 60,
-        };
+            compression_level: DEFAULT_COMPRESSION_LEVEL,
+        }
+    }
 
-        let deserializer = new(config);
+    /// Decode the raw args[0] out of an activation, transparently zstd-decompressing
+    /// `parameters_bytes` when the `compression-type: zstd` header is present (mirrors what
+    /// the worker does in `load_parameters`).
+    fn decode_raw_arg(activation: &TaskActivation) -> Vec<u8> {
+        use serde::Deserialize;
+        #[derive(Deserialize)]
+        struct Params {
+            args: (serde_bytes::ByteBuf,),
+        }
+
+        let bytes = if activation
+            .headers
+            .get(COMPRESSION_HEADER)
+            .map(String::as_str)
+            == Some(COMPRESSION_ZSTD)
+        {
+            zstd::bulk::decompress(&activation.parameters_bytes, 64 * 1024 * 1024).unwrap()
+        } else {
+            activation.parameters_bytes.clone()
+        };
+        let params: Params = rmp_serde::from_slice(&bytes).unwrap();
+        params.args.0.into_vec()
+    }
+
+    #[test]
+    fn test_raw_deserializer() {
+        let deserializer = new(test_config());
 
         let raw_payload = b"raw kafka message bytes";
         let message = OwnedMessage::new(
@@ -247,19 +313,46 @@ mod tests {
         assert_eq!(activation.namespace, "test-namespace");
         assert_eq!(activation.application, Some("test-app".to_string()));
         assert_eq!(activation.taskname, "test-task");
-        assert!(!activation.parameters_bytes.is_empty());
+
+        // Default config compresses: the worker contract header must be set and the payload
+        // must round-trip back to the original raw bytes.
+        assert_eq!(
+            activation.headers.get(COMPRESSION_HEADER),
+            Some(&COMPRESSION_ZSTD.to_string())
+        );
+        assert_eq!(decode_raw_arg(&activation), raw_payload);
+    }
+
+    #[test]
+    fn test_raw_deserializer_compression_disabled() {
+        let config = RawConfig {
+            compression_level: COMPRESSION_DISABLED,
+            ..test_config()
+        };
+        let deserializer = new(config);
+
+        let raw_payload = b"raw kafka message bytes";
+        let message = OwnedMessage::new(
+            Some(raw_payload.to_vec()),
+            None,
+            "legacy-topic".into(),
+            Timestamp::now(),
+            0,
+            42,
+            None,
+        );
+
+        let inflight = deserializer(&message).unwrap();
+        let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
+
+        // Disabled compression stores plain msgpack with no compression header.
+        assert!(!activation.headers.contains_key(COMPRESSION_HEADER));
+        assert_eq!(decode_raw_arg(&activation), raw_payload);
     }
 
     #[test]
     fn test_raw_deserializer_null_payload() {
-        let config = RawConfig {
-            namespace: "test-namespace".to_string(),
-            application: "test-app".to_string(),
-            taskname: "test-task".to_string(),
-            processing_deadline_duration: 60,
-        };
-
-        let deserializer = new(config);
+        let deserializer = new(test_config());
 
         let message = OwnedMessage::new(
             None, // No payload
@@ -277,26 +370,13 @@ mod tests {
         let inflight = result.unwrap();
         let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
 
-        // Verify empty payload is encoded as empty bytes
-        use serde::Deserialize;
-        #[derive(Deserialize)]
-        struct Params {
-            args: (Vec<u8>,),
-        }
-        let params: Params = rmp_serde::from_slice(&activation.parameters_bytes).unwrap();
-        assert!(params.args.0.is_empty());
+        // Verify empty payload round-trips to empty bytes
+        assert!(decode_raw_arg(&activation).is_empty());
     }
 
     #[test]
     fn test_raw_deserializer_with_headers() {
-        let config = RawConfig {
-            namespace: "test-namespace".to_string(),
-            application: "test-app".to_string(),
-            taskname: "test-task".to_string(),
-            processing_deadline_duration: 60,
-        };
-
-        let deserializer = new(config);
+        let deserializer = new(test_config());
 
         let headers = OwnedHeaders::new()
             .insert(Header {
@@ -332,6 +412,11 @@ mod tests {
         assert_eq!(
             activation.headers.get("request-id"),
             Some(&"req-456".to_string())
+        );
+        // The compression header is added alongside the kafka headers.
+        assert_eq!(
+            activation.headers.get(COMPRESSION_HEADER),
+            Some(&COMPRESSION_ZSTD.to_string())
         );
     }
 }
