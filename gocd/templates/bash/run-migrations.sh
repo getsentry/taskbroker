@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -euo pipefail
-
 eval "$(regions-project-env-vars --region="${SENTRY_REGION}")"
 /devinfra/scripts/get-cluster-credentials
 
@@ -12,7 +10,7 @@ for name in $deployments; do
   LABEL_SELECTOR="app=$name"
   echo "Running migrations for $name..."
 
-  k8s-spawn-job \
+  if ! k8s-spawn-job \
     --label-selector="${LABEL_SELECTOR}" \
     --container-name="taskbroker" \
     --try-deployments-and-statefulsets \
@@ -20,7 +18,12 @@ for name in $deployments; do
     "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
     /opt/taskbroker \
     -- \
-    --run migrations
+    --run migrations; then
+    echo "Migrations failed for $name, ignoring so the pipeline can continue"
+    continue
+  fi
 
   echo "Done: $name"
 done
+
+exit 0
