@@ -54,6 +54,10 @@ pub struct RawModeConfig {
     pub taskname: Option<String>,
     /// Processing deadline duration in seconds for raw mode activations.
     pub processing_deadline_duration: Option<u16>,
+    /// zstd compression level for raw-mode payloads. Defaults to 3 (matching the
+    /// producer's zstandard default). Set to -1 to disable compression.
+    #[serde(default)]
+    pub compression_level: Option<i32>,
 }
 
 /// Configuration for a Kafka cluster.
@@ -813,6 +817,7 @@ impl Config {
                     application: self.raw_application.clone(),
                     taskname: self.raw_taskname.clone(),
                     processing_deadline_duration: Some(self.raw_processing_deadline_duration),
+                    compression_level: None,
                 })
             } else {
                 None
@@ -1733,6 +1738,7 @@ kafka_clusters:
                     application: Some("profiles".to_owned()),
                     taskname: Some("profiles.process".to_owned()),
                     processing_deadline_duration: Some(30),
+                    compression_level: None,
                 })
             );
 
