@@ -2,7 +2,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::{config::Config, store::adapters::postgres};
+use crate::config::Config;
+use crate::store::adapters::postgres;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
