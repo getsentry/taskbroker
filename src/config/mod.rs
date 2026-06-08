@@ -18,6 +18,12 @@ pub mod store;
 
 use store::DatabaseAdapter;
 
+pub mod raw;
+pub mod store;
+
+use raw::RawModeConfig;
+use store::DatabaseAdapter;
+
 /// Configuration for a single Kafka topic in multi-topic mode.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct TopicConfig {
@@ -44,23 +50,6 @@ pub struct TopicConfig {
     /// Falls back to the global `kafka_auto_offset_reset` when unset.
     #[serde(default)]
     pub auto_offset_reset: Option<String>,
-}
-
-/// Raw mode settings for a topic.
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-pub struct RawModeConfig {
-    /// The namespace to assign to raw mode activations.
-    pub namespace: Option<String>,
-    /// The application to assign to raw mode activations.
-    pub application: Option<String>,
-    /// The taskname to assign to raw mode activations.
-    pub taskname: Option<String>,
-    /// Processing deadline duration in seconds for raw mode activations.
-    pub processing_deadline_duration: Option<u16>,
-    /// zstd compression level for raw-mode payloads. Defaults to 3 (matching the
-    /// producer's zstandard default). Set to -1 to disable compression.
-    #[serde(default)]
-    pub compression_level: Option<i32>,
 }
 
 /// Configuration for a Kafka cluster.
