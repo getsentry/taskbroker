@@ -13,7 +13,6 @@ use validator::{Validate, ValidationError};
 use crate::Args;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
-use crate::store::adapters::postgres;
 
 pub mod store;
 
@@ -125,18 +124,6 @@ impl ClusterConfig {
         }
         if let Some(ref ssl_private_key_location) = self.ssl_key_location {
             config.set("ssl.key.location", ssl_private_key_location);
-        }
-    }
-}
-
-impl DatabaseAdapter {
-    pub async fn migrate(&self, config: &Config) -> Result<()> {
-        match self {
-            Self::Postgres => postgres::migrate(config).await,
-            Self::Sqlite => {
-                warn!("Standalone migration not supported for SQLite");
-                Ok(())
-            }
         }
     }
 }
