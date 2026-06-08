@@ -454,7 +454,7 @@ impl MessageQueue for StreamPartitionQueue<KafkaContext> {
 #[instrument(skip_all)]
 pub async fn map<T>(
     queue: impl MessageQueue,
-    transform: impl Fn(Arc<OwnedMessage>) -> Result<T, Error>,
+    transform: impl Fn(&OwnedMessage) -> Result<T, Error>,
     ok: mpsc::Sender<(iter::Once<OwnedMessage>, T)>,
     err: mpsc::Sender<OwnedMessage>,
     shutdown: CancellationToken,
@@ -475,16 +475,10 @@ pub async fn map<T>(
                 let Some(msg) = val else {
                     break;
                 };
-                let msg = Arc::new(msg.detach()?);
-                match transform(msg.clone()) {
+                let msg = msg.detach()?;
+                match transform(&msg) {
                     Ok(transformed) => {
-                        if ok.send((
-                            iter::once(
-                                Arc::try_unwrap(msg)
-                                    .expect("msg should only have a single strong ref"),
-                            ),
-                            transformed,
-                        )).await.is_err() {
+                        if ok.send((iter::once(msg), transformed)).await.is_err() {
                             debug!("Receive half of ok channel is closed, shutting down...");
                             break;
                         }
@@ -497,11 +491,9 @@ pub async fn map<T>(
                             "Failed to map message: {:?}",
                             e,
                         );
-                        err.send(
-                            Arc::try_unwrap(msg).expect("msg should only have a single strong ref"),
-                        )
-                        .await
-                        .expect("reduce_err is not available");
+                        err.send(msg)
+                            .await
+                            .expect("reduce_err is not available");
                     }
                 }
             }
@@ -1836,7 +1828,7 @@ mod tests {
                 ),
 
             map:
-                |_: Arc<OwnedMessage>| Ok(()),
+                |_: &OwnedMessage| Ok(()),
             reduce:
                 NoopReducer::new(),
                 NoopReducer::new(),
@@ -1853,7 +1845,7 @@ mod tests {
                 ),
 
             map:
-                |_: Arc<OwnedMessage>| Ok(()),
+                |_: &OwnedMessage| Ok(()),
             reduce:
                 NoopReducer::new(),
         });

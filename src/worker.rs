@@ -40,7 +40,7 @@ fn sentry_signature_hex(secret: &str, grpc_path: &str, message: &[u8]) -> String
 #[async_trait]
 pub trait WorkerClient: Send + Sync {
     /// Send a single activation to the worker service.
-    async fn push_task(&mut self, activation: Activation) -> Result<()>;
+    async fn push_task(&mut self, activation: &Activation) -> Result<()>;
 }
 
 /// Wrapper around worker connection that provides authentication and timeouts.
@@ -78,7 +78,7 @@ impl Worker {
 #[async_trait]
 impl WorkerClient for Worker {
     #[framed]
-    async fn push_task(&mut self, activation: Activation) -> Result<()> {
+    async fn push_task(&mut self, activation: &Activation) -> Result<()> {
         metrics::counter!("worker.push_task.attempts").increment(1);
 
         // Try to decode activation
@@ -134,9 +134,9 @@ impl MockWorkerClient {
 #[cfg(test)]
 #[async_trait]
 impl WorkerClient for MockWorkerClient {
-    async fn push_task(&mut self, activation: Activation) -> Result<()> {
+    async fn push_task(&mut self, activation: &Activation) -> Result<()> {
         TaskActivation::decode(&activation.activation as &[u8]).map_err(|e| anyhow!(e))?;
-        self.pushed.push(activation.id);
+        self.pushed.push(activation.id.clone());
 
         if self.fail {
             return Err(anyhow!("mock send failure"));
@@ -159,7 +159,7 @@ struct NotifyingWorkerClient {
 #[cfg(test)]
 #[async_trait]
 impl WorkerClient for NotifyingWorkerClient {
-    async fn push_task(&mut self, _activation: Activation) -> Result<()> {
+    async fn push_task(&mut self, _activation: &Activation) -> Result<()> {
         self.notify.notify_one();
 
         if self.fail {
@@ -195,7 +195,7 @@ mod tests {
         let activation = make_activations(1).remove(0);
         let mut worker = MockWorkerClient::new(false);
 
-        let result = worker.push_task(activation.clone()).await;
+        let result = worker.push_task(&activation).await;
         assert!(result.is_ok(), "push_task should succeed");
         assert_eq!(worker.pushed, vec![activation.id]);
     }
@@ -206,7 +206,7 @@ mod tests {
         activation.activation = vec![1, 2, 3, 4];
 
         let mut worker = MockWorkerClient::new(false);
-        let result = worker.push_task(activation).await;
+        let result = worker.push_task(&activation).await;
 
         assert!(result.is_err(), "invalid payload should fail decoding");
         assert!(
@@ -220,7 +220,7 @@ mod tests {
         let activation = make_activations(1).remove(0);
         let mut worker = MockWorkerClient::new(true);
 
-        let result = worker.push_task(activation.clone()).await;
+        let result = worker.push_task(&activation).await;
         assert!(result.is_err(), "worker push errors should propagate");
         assert_eq!(worker.pushed, vec![activation.id]);
     }

@@ -149,16 +149,15 @@ impl Reducer for ActivationWriter {
         let insert_id = Utc::now().timestamp_millis();
         debug!("Preparing insert {:?}", insert_id);
 
-        let batch = self.batch.clone().unwrap();
         let write_to_store_start = Instant::now();
-        let res = self.store.store(batch.clone()).await;
+        let res = self.store.store(batch).await;
 
         // If every "preparing" has a matching "completed" we are good
         debug!("Completed insert {:?}", insert_id);
 
         match res {
             Ok(entries) => {
-                self.batch.take();
+                let batch = self.batch.take().unwrap();
                 let lag = Utc::now()
                     - batch
                         .iter()
@@ -478,7 +477,7 @@ mod tests {
             .status(ActivationStatus::Processing)
             .build(TaskActivationBuilder::new());
 
-        store.store(vec![existing_activation]).await.unwrap();
+        store.store(&[existing_activation]).await.unwrap();
 
         let mut writer = ActivationWriter::new(store.clone(), writer_config);
         let batch = vec![
@@ -538,7 +537,7 @@ mod tests {
             write_failure_backoff_ms: 4000,
         };
         let first_round = make_activations(200);
-        store.store(first_round).await.unwrap();
+        store.store(&first_round).await.unwrap();
         assert!(store.db_size().await.unwrap() > 50_000);
 
         // Make more activations that won't be stored.

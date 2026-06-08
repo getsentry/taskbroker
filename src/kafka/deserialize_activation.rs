@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Error, anyhow};
@@ -35,8 +34,8 @@ pub fn bucket_from_id(id: &str) -> i16 {
 
 pub fn new(
     config: DeserializeActivationConfig,
-) -> impl Fn(Arc<OwnedMessage>) -> Result<Activation, Error> {
-    move |msg: Arc<OwnedMessage>| {
+) -> impl Fn(&OwnedMessage) -> Result<Activation, Error> {
+    move |msg: &OwnedMessage| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
         };
@@ -169,8 +168,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -215,8 +213,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -262,8 +259,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -309,8 +305,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -357,8 +352,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
