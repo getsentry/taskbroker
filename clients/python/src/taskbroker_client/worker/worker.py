@@ -180,6 +180,11 @@ class PushTaskWorker:
         self._metrics = app.metrics
         self._concurrency = concurrency
         self._grpc_sync_event = self._mp_context.Event()
+        self._health_check_sec_per_touch = (
+            None if health_check_file_path is None else health_check_sec_per_touch
+        )
+        self._health_check_stop_event = threading.Event()
+        self._health_check_thread: threading.Thread | None = None
 
         self._setstatus_backoff_seconds = 0
 
@@ -235,6 +240,42 @@ class PushTaskWorker:
             raise RequeueException(f"Failed to update task: {e}")
 
         return None
+
+    def _start_health_check_thread(self) -> None:
+        if self._health_check_sec_per_touch is None:
+            return
+        if self._health_check_thread is not None and self._health_check_thread.is_alive():
+            return
+
+        health_check_sec_per_touch = self._health_check_sec_per_touch
+        self._health_check_stop_event.clear()
+
+        def health_check_thread() -> None:
+            logger.debug("taskworker.worker.health_check_thread.started")
+            while not self._health_check_stop_event.is_set():
+                try:
+                    self.client.emit_health_check()
+                except Exception as e:
+                    logger.warning(
+                        "taskworker.worker.health_check.failed",
+                        extra={
+                            "error": e,
+                            "processing_pool": self._processing_pool_name,
+                        },
+                    )
+
+                self._health_check_stop_event.wait(health_check_sec_per_touch)
+
+        self._health_check_thread = threading.Thread(
+            name="push-health-check", target=health_check_thread, daemon=True
+        )
+        self._health_check_thread.start()
+
+    def _stop_health_check_thread(self) -> None:
+        self._health_check_stop_event.set()
+        if self._health_check_thread is not None:
+            self._health_check_thread.join(timeout=5)
+            self._health_check_thread = None
 
     def start(self) -> int:
         """
@@ -294,6 +335,7 @@ class PushTaskWorker:
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
 
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
+            self._start_health_check_thread()
 
             try:
                 server.wait_for_termination()
@@ -309,6 +351,7 @@ class PushTaskWorker:
             if server is not None:
                 server.stop(grace=5)
 
+            self._stop_health_check_thread()
             self.worker_pool.shutdown()
 
         return 0
@@ -317,6 +360,7 @@ class PushTaskWorker:
         """
         Shutdown the worker.
         """
+        self._stop_health_check_thread()
         self._grpc_sync_event.set()
         self.worker_pool.shutdown()
 
