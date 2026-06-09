@@ -610,6 +610,7 @@ mod tests {
     use tokio::time::sleep;
 
     use crate::config::Config;
+    use crate::config::deprecated::DeprecatedConfig;
     use crate::runtime_config::RuntimeConfigManager;
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
@@ -706,11 +707,15 @@ mod tests {
     #[case::postgres("postgres")]
     async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
         let config = Arc::new(create_integration_config_from_base(Config {
-            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some(format!("taskbroker-test-{adapter}")),
+                ..DeprecatedConfig::default()
+            },
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        reset_topic(config.clone()).await;
 
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -1064,7 +1069,10 @@ mod tests {
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
         let config = Arc::new(create_integration_config_from_base(Config {
-            kafka_topic: Some(format!("taskbroker-test-{adapter}")),
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some(format!("taskbroker-test-{adapter}")),
+                ..DeprecatedConfig::default()
+            },
             kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
             ..Default::default()
         }));
@@ -1450,7 +1458,10 @@ demoted_namespaces:
     #[case::postgres("postgres")]
     async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
         let config = Arc::new(create_integration_config_from_base(Config {
-            kafka_topic: Some(format!("taskbroker-test-full-vacuum-{adapter}")),
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some(format!("taskbroker-test-full-vacuum-{adapter}")),
+                ..DeprecatedConfig::default()
+            },
             full_vacuum_on_start: true,
             ..Default::default()
         }));

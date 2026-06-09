@@ -14,10 +14,12 @@ use crate::Args;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
+pub mod deprecated;
 pub mod kafka;
 pub mod raw;
 pub mod store;
 
+use deprecated::DeprecatedConfig;
 use kafka::{ClusterConfig, TopicConfig};
 use raw::RawModeConfig;
 use store::DatabaseAdapter;
@@ -35,6 +37,9 @@ pub enum DeliveryMode {
 
 #[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct Config {
+    /// Deprecated configuration options. Not meant to be used.
+    pub deprecated: DeprecatedConfig,
+
     /// The sentry DSN to use for error reporting.
     pub sentry_dsn: Option<String>,
 
@@ -67,93 +72,16 @@ pub struct Config {
     /// We support a list of secrets to allow for key rotation.
     pub grpc_shared_secret: Vec<String>,
 
-    /// Comma separated list of kafka brokers to connect to.
-    /// Deprecated: use kafka_clusters instead. Mutually exclusive with the new
-    /// format; defaults to None (the historical "127.0.0.1:9092" default is
-    /// applied during normalization when no kafka config is provided at all).
-    pub kafka_cluster: Option<String>,
-
-    /// The kafka consumer group name.
-    /// Deprecated: use kafka_topics instead. Mutually exclusive with the new
-    /// format; defaults to None (the historical "taskworker" default applies).
-    pub kafka_consumer_group: Option<String>,
-
-    /// The topic to fetch task messages from.
-    /// Deprecated: use kafka_topics instead. Mutually exclusive with the new
-    /// format; defaults to None (the historical "taskworker" default applies).
-    pub kafka_topic: Option<String>,
-
     /// The topic to produce demoted "long" namespace tasks to.
     pub kafka_long_topic: String,
 
-    /// The security method used for authentication eg. sasl_plaintext.
-    /// Deprecated: use kafka_clusters instead.
-    pub kafka_security_protocol: Option<String>,
-
-    /// The hashing algorithm used for authentication eg. scram-sha-256.
-    /// Deprecated: use kafka_clusters instead.
-    pub kafka_sasl_mechanism: Option<String>,
-
-    /// The sasl username for ingesting messages.
-    /// Deprecated: use kafka_clusters instead.
-    pub kafka_sasl_username: Option<String>,
-
-    /// The sasl password for ingesting messages.
-    /// Deprecated: use kafka_clusters instead.
-    pub kafka_sasl_password: Option<String>,
-
-    /// The location to the CA certificate file.
-    /// Deprecated: use kafka_clusters instead.
-    pub kafka_ssl_ca_location: Option<String>,
-
-    /// The location to the certificate file.
-    /// Deprecated: use kafka_clusters instead.
-    pub kafka_ssl_certificate_location: Option<String>,
-
-    /// The location to the private key file.
-    /// Deprecated: use kafka_clusters instead.
-    pub kafka_ssl_key_location: Option<String>,
-
     /// Whether to create missing topics if they don't exist.
     pub create_missing_topics: bool,
-
-    /// Comma separated list of kafka brokers to publish dead letter messages on.
-    /// Deprecated: declare the deadletter topic in kafka_topics (produce_only)
-    /// with a cluster reference instead.
-    pub kafka_deadletter_cluster: Option<String>,
 
     /// The kafka topic to publish dead letter messages on.
     /// Still valid in the new format: it names the produce-only topic in
     /// kafka_topics whose cluster the deadletter producer connects to.
     pub kafka_deadletter_topic: String,
-
-    /// The security method used for authentication to the DLQ eg. sasl_plaintext.
-    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
-    pub kafka_deadletter_security_protocol: Option<String>,
-
-    /// The hashing algorithm used for authentication to the DLQ eg. scram-sha-256.
-    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
-    pub kafka_deadletter_sasl_mechanism: Option<String>,
-
-    /// The sasl username for DLQ publishing.
-    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
-    pub kafka_deadletter_sasl_username: Option<String>,
-
-    /// The sasl password for DLQ publishing.
-    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
-    pub kafka_deadletter_sasl_password: Option<String>,
-
-    /// The location to the DLQ CA certificate file.
-    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
-    pub kafka_deadletter_ssl_ca_location: Option<String>,
-
-    /// The location to the DLQ certificate file.
-    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
-    pub kafka_deadletter_ssl_certificate_location: Option<String>,
-
-    /// The location to the DLQ private key file.
-    /// Deprecated: configure auth on the referenced cluster in kafka_clusters.
-    pub kafka_deadletter_ssl_key_location: Option<String>,
 
     /// The topic to publish retry task activations to.
     /// When set, retries go to this topic instead of kafka_topic.
@@ -383,10 +311,6 @@ pub struct Config {
     /// Maps every application to its worker endpoint, both represented as strings.
     pub worker_map: BTreeMap<String, String>,
 
-    /// Enable raw mode for consuming unstructured Kafka messages.
-    /// In raw mode, Kafka message bytes are wrapped into TaskActivation.
-    pub raw_mode: bool,
-
     /// The namespace to assign to raw mode activations.
     pub raw_namespace: Option<String>,
 
@@ -419,6 +343,7 @@ impl Default for Config {
     /// them from the legacy fields before using the kafka helpers.
     fn default() -> Self {
         Self {
+            deprecated: DeprecatedConfig::default(),
             sentry_dsn: None,
             sentry_env: None,
             traces_sample_rate: Some(0.0),
@@ -429,27 +354,9 @@ impl Default for Config {
             grpc_shared_secret: vec![],
             statsd_addr: "127.0.0.1:8126".parse().unwrap(),
             default_metrics_tags: Default::default(),
-            kafka_cluster: None,
-            kafka_consumer_group: None,
-            kafka_sasl_mechanism: None,
-            kafka_sasl_username: None,
-            kafka_sasl_password: None,
-            kafka_ssl_ca_location: None,
-            kafka_ssl_certificate_location: None,
-            kafka_ssl_key_location: None,
-            kafka_security_protocol: None,
-            kafka_topic: None,
             kafka_long_topic: "taskworker-long".to_owned(),
             create_missing_topics: false,
-            kafka_deadletter_cluster: None,
             kafka_deadletter_topic: "taskworker-dlq".to_owned(),
-            kafka_deadletter_sasl_mechanism: None,
-            kafka_deadletter_sasl_username: None,
-            kafka_deadletter_sasl_password: None,
-            kafka_deadletter_security_protocol: None,
-            kafka_deadletter_ssl_ca_location: None,
-            kafka_deadletter_ssl_certificate_location: None,
-            kafka_deadletter_ssl_key_location: None,
             kafka_retry_topic: None,
             default_topic_partitions: 1,
             kafka_session_timeout_ms: 6000,
@@ -510,7 +417,6 @@ impl Default for Config {
             push_update_batch_size: 1,
             push_update_interval_ms: 100,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
-            raw_mode: false,
             raw_namespace: None,
             raw_application: None,
             raw_taskname: None,
@@ -524,6 +430,10 @@ impl Default for Config {
 impl Config {
     /// Build a config instance from defaults, env vars, file + CLI options
     pub fn from_args(args: &Args) -> Result<Self> {
+        // First, construct the deprecated configuration
+        let deprecated = DeprecatedConfig::from_args(args)?;
+
+        // Next, construct the current configuration
         let mut builder = Figment::from(Config::default());
 
         if let Some(path) = &args.config {
@@ -533,6 +443,9 @@ impl Config {
         // Use "__" for nested configurations via environment variables, like `TASKBROKER_KAFKA_TOPICS__PROFILES__CLUSTER`
         builder = builder.merge(Env::prefixed("TASKBROKER_").split("__"));
         let mut config: Config = builder.extract()?;
+
+        // Assign the deprecated field
+        config.deprecated = deprecated;
 
         // Normalize and validate Kafka values
         config.normalize_and_validate()?;
@@ -564,27 +477,28 @@ impl Config {
         // consumed cluster or the deadletter cluster) or the deprecated global
         // raw mode. kafka_deadletter_topic is NOT deprecated and is intentionally
         // excluded.
-        let uses_legacy = self.kafka_topic.is_some()
-            || self.kafka_cluster.is_some()
-            || self.kafka_consumer_group.is_some()
-            || self.kafka_security_protocol.is_some()
-            || self.kafka_sasl_mechanism.is_some()
-            || self.kafka_sasl_username.is_some()
-            || self.kafka_sasl_password.is_some()
-            || self.kafka_ssl_ca_location.is_some()
-            || self.kafka_ssl_certificate_location.is_some()
-            || self.kafka_ssl_key_location.is_some()
-            || self.kafka_deadletter_cluster.is_some()
-            || self.kafka_deadletter_security_protocol.is_some()
-            || self.kafka_deadletter_sasl_mechanism.is_some()
-            || self.kafka_deadletter_sasl_username.is_some()
-            || self.kafka_deadletter_sasl_password.is_some()
-            || self.kafka_deadletter_ssl_ca_location.is_some()
-            || self.kafka_deadletter_ssl_certificate_location.is_some()
-            || self.kafka_deadletter_ssl_key_location.is_some()
-            // Global raw mode is a deprecated legacy field; in the new format raw
-            // mode is configured per topic via kafka_topics.<topic>.raw.
-            || self.raw_mode;
+        let uses_legacy = self.deprecated.kafka_topic.is_some()
+            || self.deprecated.kafka_cluster.is_some()
+            || self.deprecated.kafka_consumer_group.is_some()
+            || self.deprecated.kafka_security_protocol.is_some()
+            || self.deprecated.kafka_sasl_mechanism.is_some()
+            || self.deprecated.kafka_sasl_username.is_some()
+            || self.deprecated.kafka_sasl_password.is_some()
+            || self.deprecated.kafka_ssl_ca_location.is_some()
+            || self.deprecated.kafka_ssl_certificate_location.is_some()
+            || self.deprecated.kafka_ssl_key_location.is_some()
+            || self.deprecated.kafka_deadletter_cluster.is_some()
+            || self.deprecated.kafka_deadletter_security_protocol.is_some()
+            || self.deprecated.kafka_deadletter_sasl_mechanism.is_some()
+            || self.deprecated.kafka_deadletter_sasl_username.is_some()
+            || self.deprecated.kafka_deadletter_sasl_password.is_some()
+            || self.deprecated.kafka_deadletter_ssl_ca_location.is_some()
+            || self
+                .deprecated
+                .kafka_deadletter_ssl_certificate_location
+                .is_some()
+            || self.deprecated.kafka_deadletter_ssl_key_location.is_some()
+            || self.deprecated.raw_mode.is_some();
 
         if uses_new_format && uses_legacy {
             return Err(anyhow!(
@@ -609,34 +523,37 @@ impl Config {
                 ));
             }
         } else {
-            if self.kafka_cluster.is_some() {
+            if self.deprecated.kafka_cluster.is_some() {
                 warn!("kafka_cluster is deprecated, use kafka_clusters instead");
             }
-            if self.kafka_topic.is_some() {
+            if self.deprecated.kafka_topic.is_some() {
                 warn!("kafka_topic is deprecated, use kafka_topics instead");
             }
-            if self.kafka_consumer_group.is_some() {
+            if self.deprecated.kafka_consumer_group.is_some() {
                 warn!("kafka_consumer_group is deprecated, use kafka_topics instead");
             }
-            if self.kafka_deadletter_cluster.is_some() {
+            if self.deprecated.kafka_deadletter_cluster.is_some() {
                 warn!(
                     "kafka_deadletter_cluster is deprecated, declare the deadletter topic in \
                      kafka_topics with a cluster reference instead"
                 );
             }
-            if self.raw_mode {
+            if self.deprecated.raw_mode.is_some() {
                 warn!("raw_mode is deprecated, use kafka_topics.<topic>.raw instead");
             }
 
             let topic_name = self
+                .deprecated
                 .kafka_topic
                 .clone()
                 .unwrap_or_else(|| DEFAULT_TOPIC.to_owned());
             let address = self
+                .deprecated
                 .kafka_cluster
                 .clone()
                 .unwrap_or_else(|| DEFAULT_CLUSTER_ADDRESS.to_owned());
             let consumer_group = self
+                .deprecated
                 .kafka_consumer_group
                 .clone()
                 .unwrap_or_else(|| DEFAULT_CONSUMER_GROUP.to_owned());
@@ -645,13 +562,16 @@ impl Config {
                 DEFAULT_CLUSTER.to_owned(),
                 ClusterConfig {
                     address: address.clone(),
-                    security_protocol: self.kafka_security_protocol.clone(),
-                    sasl_mechanism: self.kafka_sasl_mechanism.clone(),
-                    sasl_username: self.kafka_sasl_username.clone(),
-                    sasl_password: self.kafka_sasl_password.clone(),
-                    ssl_ca_location: self.kafka_ssl_ca_location.clone(),
-                    ssl_certificate_location: self.kafka_ssl_certificate_location.clone(),
-                    ssl_key_location: self.kafka_ssl_key_location.clone(),
+                    security_protocol: self.deprecated.kafka_security_protocol.clone(),
+                    sasl_mechanism: self.deprecated.kafka_sasl_mechanism.clone(),
+                    sasl_username: self.deprecated.kafka_sasl_username.clone(),
+                    sasl_password: self.deprecated.kafka_sasl_password.clone(),
+                    ssl_ca_location: self.deprecated.kafka_ssl_ca_location.clone(),
+                    ssl_certificate_location: self
+                        .deprecated
+                        .kafka_ssl_certificate_location
+                        .clone(),
+                    ssl_key_location: self.deprecated.kafka_ssl_key_location.clone(),
                 },
             );
             assert!(
@@ -667,18 +587,20 @@ impl Config {
                 DEADLETTER_CLUSTER.to_owned(),
                 ClusterConfig {
                     address: self
+                        .deprecated
                         .kafka_deadletter_cluster
                         .clone()
                         .unwrap_or_else(|| address.clone()),
-                    security_protocol: self.kafka_deadletter_security_protocol.clone(),
-                    sasl_mechanism: self.kafka_deadletter_sasl_mechanism.clone(),
-                    sasl_username: self.kafka_deadletter_sasl_username.clone(),
-                    sasl_password: self.kafka_deadletter_sasl_password.clone(),
-                    ssl_ca_location: self.kafka_deadletter_ssl_ca_location.clone(),
+                    security_protocol: self.deprecated.kafka_deadletter_security_protocol.clone(),
+                    sasl_mechanism: self.deprecated.kafka_deadletter_sasl_mechanism.clone(),
+                    sasl_username: self.deprecated.kafka_deadletter_sasl_username.clone(),
+                    sasl_password: self.deprecated.kafka_deadletter_sasl_password.clone(),
+                    ssl_ca_location: self.deprecated.kafka_deadletter_ssl_ca_location.clone(),
                     ssl_certificate_location: self
+                        .deprecated
                         .kafka_deadletter_ssl_certificate_location
                         .clone(),
-                    ssl_key_location: self.kafka_deadletter_ssl_key_location.clone(),
+                    ssl_key_location: self.deprecated.kafka_deadletter_ssl_key_location.clone(),
                 },
             );
             assert!(
@@ -686,7 +608,7 @@ impl Config {
                 "internal: duplicate '{DEADLETTER_CLUSTER}' cluster"
             );
 
-            let raw_config = if self.raw_mode {
+            let raw_config = if let Some(true) = self.deprecated.raw_mode {
                 Some(RawModeConfig {
                     namespace: self.raw_namespace.clone(),
                     application: self.raw_application.clone(),
@@ -1071,12 +993,6 @@ mod tests {
         assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
-        // The legacy kafka fields default to None now; the historical
-        // "taskworker" default is applied during normalization (see
-        // test_from_args_env_test).
-        assert_eq!(config.kafka_topic, None);
-        assert_eq!(config.kafka_cluster, None);
-        assert_eq!(config.kafka_consumer_group, None);
         assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.max_pending_count, 2048);
         assert_eq!(config.max_processing_count, 2048);
@@ -1207,22 +1123,14 @@ mod tests {
             assert_eq!(config.log_filter, "error");
             assert_eq!(config.log_format, LogFormat::Json);
             assert_eq!(
-                config.kafka_cluster,
-                Some("10.0.0.1:9092,10.0.0.2:9092".to_owned())
-            );
-            assert_eq!(
                 config.default_metrics_tags,
                 BTreeMap::from([("key_1".to_owned(), "value_1".to_owned())])
             );
-            // kafka_consumer_group is unset in the yaml, so the legacy field
-            // stays None and normalization applies the "taskworker" default.
-            assert_eq!(config.kafka_consumer_group, None);
             let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "error-tasks");
             assert_eq!(topic_config.consumer_group, "taskworker");
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
-            assert_eq!(config.kafka_topic, Some("error-tasks".to_owned()));
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.database_adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
@@ -1282,9 +1190,6 @@ mod tests {
             assert_eq!(config.sentry_dsn, None);
             assert_eq!(config.sentry_env, None);
             assert_eq!(config.log_filter, "error");
-            // Zero-config: legacy fields stay None, but normalization applies
-            // the historical "taskworker" default as the consumable topic.
-            assert_eq!(config.kafka_topic, None);
             let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "taskworker");
             assert_eq!(
