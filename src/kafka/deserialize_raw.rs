@@ -9,7 +9,8 @@ use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use uuid::Uuid;
 
-use crate::config::{Config, RawModeConfig};
+use crate::config::Config;
+use crate::config::raw::RawModeConfig;
 use crate::store::activation::{Activation, ActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
