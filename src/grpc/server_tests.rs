@@ -512,7 +512,7 @@ async fn test_set_batch_activation_status_success(#[case] adapter: &str) {
     let config = create_config();
 
     let activations = make_activations(3);
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store: store.clone(),
@@ -624,7 +624,7 @@ async fn test_set_batch_activation_status_retry(#[case] adapter: &str) {
     let config = create_config();
 
     let activations = make_activations(1);
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store: store.clone(),
@@ -663,7 +663,7 @@ async fn test_set_batch_activation_status_mixed(#[case] adapter: &str) {
     let config = create_config();
 
     let activations = make_activations(3);
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store: store.clone(),
