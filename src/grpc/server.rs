@@ -190,7 +190,7 @@ impl ConsumerService for TaskbrokerServer {
             }
 
             Ok(None) => {
-                warn!("No pending activations");
+                debug!("No pending activations");
 
                 // If we return an error, the worker will place the result back in its internal queue and send the update again in the future, which is not desired
                 Ok(Response::new(SetTaskStatusResponse { task: None }))

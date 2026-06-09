@@ -1,16 +1,23 @@
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, Sequence
 
 from arroyo.backends.abstract import ProducerFuture, SimpleProducerFuture
 from arroyo.backends.kafka import KafkaPayload
-from arroyo.types import BrokerValue, Topic
+from arroyo.types import BrokerValue, Partition, Topic
 
+from taskbroker_client.constants import TASK_PRODUCER_MAX_PENDING_FUTURES
+from taskbroker_client.metrics import MetricsBackend, NoOpMetricsBackend
 from taskbroker_client.types import ProducerProtocol
 
 # This is global as TaskWorker needs to be able to call TaskProducer.collect_futures()
 # without a reference to a task's specific instance of TaskProducer.
-_pending_futures: set[ProducerFuture[BrokerValue[KafkaPayload]]] = set()
+# Has a max_len to prevent unbounded future growth if TaskProducer.collect_futures()
+# is never called.
+_pending_futures: deque[ProducerFuture[BrokerValue[KafkaPayload]]] = deque(
+    maxlen=TASK_PRODUCER_MAX_PENDING_FUTURES
+)
 
 
 class TaskProducer:
@@ -21,11 +28,24 @@ class TaskProducer:
     producer futures tracked by TaskProducer, and will only register the task activation as
     a success if all producer futures from that activation were successful.
     Otherwise, the activation will be retried.
+
+    Args:
+        name: Unique identifying name of this TaskProducer. Used in metric tags.
+        producer_factory: Callable that returns a producer object.
+        metrics_backend: Application metrics backend this producer should use.
+                         Defaults to NoOpMetricsBackend.
     """
 
-    def __init__(self, producer_factory: Callable[[], ProducerProtocol]) -> None:
+    def __init__(
+        self,
+        name: str,
+        producer_factory: Callable[[], ProducerProtocol],
+        metrics_backend: MetricsBackend | None = None,
+    ) -> None:
+        self.name = name
         self._producer_factory = producer_factory
         self._inner_producer: ProducerProtocol | None = None
+        self.metrics = metrics_backend if metrics_backend is not None else NoOpMetricsBackend()
 
     def _get(self) -> ProducerProtocol:
         if self._inner_producer is None:
@@ -33,17 +53,22 @@ class TaskProducer:
         return self._inner_producer
 
     def track_future(self, future: ProducerFuture[BrokerValue[KafkaPayload]]) -> None:
-        _pending_futures.add(future)
+        _pending_futures.append(future)
+        self.metrics.gauge(
+            "task.producer.pending.futures",
+            len(_pending_futures),
+            tags={"producer_name": self.name},
+        )
 
     @staticmethod
     def collect_futures() -> set[ProducerFuture[BrokerValue[KafkaPayload]]]:
         futures = _pending_futures.copy()
         _pending_futures.clear()
-        return futures
+        return set(futures)
 
     def produce(
         self,
-        topic: Topic,
+        dest: Topic | Partition,
         payload: KafkaPayload,
         callbacks: Sequence[Callable[[Future[BrokerValue[KafkaPayload]]], Any]] = [],
     ) -> None:
@@ -54,12 +79,12 @@ class TaskProducer:
         to the future via the `callbacks` arg.
 
         Args:
-            topic: Topic to produce to.
+            dest: Topic (or specific partition) to produce to.
             payload: KafkaPayload to produce.
             callbacks: List of Callables to add to the future as done callbacks. The future itself
                        is the only arg passed to the callback.
         """
-        future = self._get().produce(topic, payload)
+        future = self._get().produce(dest, payload)
         self.track_future(future)
         if callbacks:
             # Arroyo producers can return a SimpleProducerFuture,

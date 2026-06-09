@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::RwLock;
@@ -5,10 +6,10 @@ use std::time::Instant;
 
 use sqlx::ConnectOptions;
 use sqlx::pool::PoolConnection;
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
-use sqlx::{FromRow, Pool, Postgres, QueryBuilder, Transaction};
+use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions, PgRow};
+use sqlx::{FromRow, Pool, Postgres, QueryBuilder, Row, Transaction};
 
-use anyhow::{Error, anyhow};
+use anyhow::{Error, Result, anyhow};
 use async_backtrace::framed;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -17,15 +18,72 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
+use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
-#[derive(Debug, FromRow)]
-struct TableRow {
-    pub id: String,
-    pub activation: Vec<u8>,
+/// Run migrations.
+pub async fn migrate(config: &Config) -> Result<()> {
+    let mut conn_opts = PgConnectOptions::new()
+        .username(&config.pg_ddl_username)
+        .password(&config.pg_ddl_password)
+        .host(&config.pg_host)
+        .port(config.pg_port);
+
+    if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
+        let url = conn_opts.to_url_lossy();
+        let new_url =
+            url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
+        conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
+    }
+
+    let default_pool =
+        create_default_postgres_pool(&conn_opts, &config.pg_default_database_name).await?;
+
+    // Create the database if it doesn't exist
+    let row: (bool,) =
+        sqlx::query_as("SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )")
+            .bind(&config.pg_database_name)
+            .fetch_one(&default_pool)
+            .await?;
+
+    if !row.0 {
+        println!("Creating database {}", &config.pg_database_name);
+        sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
+            .execute(&default_pool)
+            .await?;
+    }
+
+    default_pool.close().await;
+
+    let migration_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(conn_opts.database(&config.pg_database_name))
+        .await?;
+
+    println!("Running migrations on database");
+    sqlx::migrate!("./migrations/postgres")
+        .run(&migration_pool)
+        .await?;
+
+    migration_pool.close().await;
+
+    Ok(())
+}
+
+/// Database representation of an [`Activation`], used for both reads and
+/// writes.
+///
+/// On the write path it is built with `TableRow::from(&Activation)` and
+/// borrows the activation's strings and payload, so storing a batch does not
+/// copy it. On the read path sqlx decodes a fully owned `TableRow<'static>`,
+/// which is converted into an [`Activation`] without further copies.
+#[derive(Debug)]
+struct TableRow<'a> {
+    pub id: Cow<'a, str>,
+    pub activation: Cow<'a, [u8]>,
     pub partition: i32,
     pub offset: i64,
     pub added_at: DateTime<Utc>,
@@ -36,23 +94,20 @@ struct TableRow {
     pub processing_deadline_duration: i32,
     pub processing_deadline: Option<DateTime<Utc>>,
     pub claim_expires_at: Option<DateTime<Utc>>,
-    pub status: String,
+    pub status: Cow<'a, str>,
     pub at_most_once: bool,
-    pub application: String,
-    pub namespace: String,
-    pub taskname: String,
-    #[sqlx(try_from = "i32")]
+    pub application: Cow<'a, str>,
+    pub namespace: Cow<'a, str>,
+    pub taskname: Cow<'a, str>,
     pub on_attempts_exceeded: OnAttemptsExceeded,
     pub bucket: i16,
 }
 
-impl TryFrom<Activation> for TableRow {
-    type Error = anyhow::Error;
-
-    fn try_from(value: Activation) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: value.id,
-            activation: value.activation,
+impl<'a> From<&'a Activation> for TableRow<'a> {
+    fn from(value: &'a Activation) -> Self {
+        Self {
+            id: Cow::Borrowed(&value.id),
+            activation: Cow::Borrowed(&value.activation),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -63,22 +118,24 @@ impl TryFrom<Activation> for TableRow {
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
-            status: value.status.to_string(),
+            status: Cow::Owned(value.status.to_string()),
             at_most_once: value.at_most_once,
-            application: value.application,
-            namespace: value.namespace,
-            taskname: value.taskname,
+            application: Cow::Borrowed(&value.application),
+            namespace: Cow::Borrowed(&value.namespace),
+            taskname: Cow::Borrowed(&value.taskname),
             on_attempts_exceeded: value.on_attempts_exceeded,
             bucket: value.bucket,
-        })
+        }
     }
 }
 
-impl From<TableRow> for Activation {
-    fn from(value: TableRow) -> Self {
+impl From<TableRow<'_>> for Activation {
+    fn from(value: TableRow<'_>) -> Self {
+        // On the read path we're using TableRow<'static>, which already has
+        // owned strings inside. Therefore into_owned() does nothing.
         Self {
-            id: value.id,
-            activation: value.activation,
+            id: value.id.into_owned(),
+            activation: value.activation.into_owned(),
             status: ActivationStatus::from_str(&value.status).unwrap(),
             partition: value.partition,
             offset: value.offset,
@@ -91,12 +148,47 @@ impl From<TableRow> for Activation {
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
             at_most_once: value.at_most_once,
-            application: value.application,
-            namespace: value.namespace,
-            taskname: value.taskname,
+            application: value.application.into_owned(),
+            namespace: value.namespace.into_owned(),
+            taskname: value.taskname.into_owned(),
             on_attempts_exceeded: value.on_attempts_exceeded,
             bucket: value.bucket,
         }
+    }
+}
+
+/// Decode an owned row. Hand-written rather than derived because the derive
+/// would bind the struct's lifetime parameter to the row's, which
+/// `query_as`/`fetch_all` (which drop the row) cannot express.
+impl FromRow<'_, PgRow> for TableRow<'static> {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: Cow::Owned(row.try_get::<String, _>("id")?),
+            activation: Cow::Owned(row.try_get::<Vec<u8>, _>("activation")?),
+            partition: row.try_get("partition")?,
+            offset: row.try_get("offset")?,
+            added_at: row.try_get("added_at")?,
+            received_at: row.try_get("received_at")?,
+            processing_attempts: row.try_get("processing_attempts")?,
+            expires_at: row.try_get("expires_at")?,
+            delay_until: row.try_get("delay_until")?,
+            processing_deadline_duration: row.try_get("processing_deadline_duration")?,
+            processing_deadline: row.try_get("processing_deadline")?,
+            claim_expires_at: row.try_get("claim_expires_at")?,
+            status: Cow::Owned(row.try_get::<String, _>("status")?),
+            at_most_once: row.try_get("at_most_once")?,
+            application: Cow::Owned(row.try_get::<String, _>("application")?),
+            namespace: Cow::Owned(row.try_get::<String, _>("namespace")?),
+            taskname: Cow::Owned(row.try_get::<String, _>("taskname")?),
+            on_attempts_exceeded: row
+                .try_get::<i32, _>("on_attempts_exceeded")?
+                .try_into()
+                .map_err(|err| sqlx::Error::ColumnDecode {
+                    index: "on_attempts_exceeded".into(),
+                    source: Box::new(err),
+                })?,
+            bucket: row.try_get("bucket")?,
+        })
     }
 }
 
@@ -138,7 +230,6 @@ pub struct PostgresStoreConfig {
     pub run_migrations: bool,
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
-    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
     pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
@@ -152,12 +243,14 @@ impl PostgresStoreConfig {
             .password(&config.pg_password)
             .host(&config.pg_host)
             .port(config.pg_port);
+
         if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
             let url = conn_opts.to_url_lossy();
             let new_url =
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
             conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
         }
+
         Self {
             pg_connection: conn_opts,
             pg_database_name: config.pg_database_name.clone(),
@@ -166,7 +259,7 @@ impl PostgresStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
+            claim_lease_ms: compute_claim_lease_ms(config),
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
             retry_config: RetryConfig::from_config(config),
         }
@@ -207,41 +300,8 @@ impl PostgresStore {
 
     #[framed]
     pub async fn new(config: PostgresStoreConfig) -> Result<Self, Error> {
-        if config.run_migrations {
-            let default_pool = create_default_postgres_pool(
-                &config.pg_connection,
-                &config.pg_default_database_name,
-            )
-            .await?;
-
-            // Create the database if it doesn't exist
-            let row: (bool,) = sqlx::query_as(
-                "SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )",
-            )
-            .bind(&config.pg_database_name)
-            .fetch_one(&default_pool)
-            .await?;
-
-            if !row.0 {
-                println!("Creating database {}", &config.pg_database_name);
-                sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
-                    .bind(&config.pg_database_name)
-                    .execute(&default_pool)
-                    .await?;
-            }
-            // Close the default pool
-            default_pool.close().await;
-        }
-
         let (read_pool, write_pool) =
             create_postgres_pool(&config.pg_connection, &config.pg_database_name).await?;
-
-        if config.run_migrations {
-            println!("Running migrations on database");
-            sqlx::migrate!("./migrations/postgres")
-                .run(&write_pool)
-                .await?;
-        }
 
         Ok(Self {
             read_pool,
@@ -359,15 +419,10 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn store(&self, batch: Vec<Activation>) -> Result<u64, Error> {
+    async fn store(&self, batch: &[Activation]) -> Result<u64, Error> {
         if batch.is_empty() {
             return Ok(0);
         }
-
-        let rows = batch
-            .into_iter()
-            .map(TableRow::try_from)
-            .collect::<Result<Vec<TableRow>, _>>()?;
 
         retry_query(&self.config.retry_config, "store", || async {
             let mut query_builder = QueryBuilder::<Postgres>::new(
@@ -397,9 +452,13 @@ impl ActivationStore for PostgresStore {
                 ",
             );
             let query = query_builder
-                .push_values(&rows, |mut b, row| {
-                    b.push_bind(&row.id);
-                    b.push_bind(&row.activation);
+                .push_values(batch.iter().map(TableRow::from), |mut b, row| {
+                    b.push_bind(row.id);
+                    // Cow<[u8]> has no Encode impl, so bind the variants directly.
+                    match row.activation {
+                        Cow::Borrowed(bytes) => b.push_bind(bytes),
+                        Cow::Owned(bytes) => b.push_bind(bytes),
+                    };
                     b.push_bind(row.partition);
                     b.push_bind(row.offset);
                     b.push_bind(row.added_at);
@@ -418,11 +477,11 @@ impl ActivationStore for PostgresStore {
                     } else {
                         b.push("null");
                     }
-                    b.push_bind(&row.status);
+                    b.push_bind(row.status);
                     b.push_bind(row.at_most_once);
-                    b.push_bind(&row.application);
-                    b.push_bind(&row.namespace);
-                    b.push_bind(&row.taskname);
+                    b.push_bind(row.application);
+                    b.push_bind(row.namespace);
+                    b.push_bind(row.taskname);
                     b.push_bind(row.on_attempts_exceeded as i32);
                     b.push_bind(row.bucket);
                 })
@@ -509,7 +568,7 @@ impl ActivationStore for PostgresStore {
             } else {
                 query_builder.push(format!(
                     "UPDATE inflight_taskactivations
-                     SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond') + (interval '{grace_period} seconds'),
+                     SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond'),
                          processing_deadline = NULL,
                          status = "
                 ));
@@ -577,8 +636,43 @@ impl ActivationStore for PostgresStore {
         .await
     }
 
-    /// Get the age of the oldest pending activation in seconds.
-    /// Only activations with status=pending and processing_attempts=0 are considered
+    #[instrument(skip_all)]
+    #[framed]
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        retry_query(
+            &self.config.retry_config,
+            "mark_processing_batch",
+            || async {
+                let mut conn = self
+                    .acquire_write_conn_metric("mark_processing_batch")
+                    .await?;
+
+                let result = sqlx::query(&format!(
+                    "UPDATE inflight_taskactivations SET
+                        status = $1,
+                        processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                        claim_expires_at = NULL
+                    WHERE id = ANY($2) AND status = $3",
+                ))
+                .bind(ActivationStatus::Processing.to_string())
+                .bind(ids)
+                .bind(ActivationStatus::Claimed.to_string())
+                .execute(&mut *conn)
+                .await?;
+
+                Ok(result.rows_affected())
+            },
+        )
+        .await
+    }
+
+    /// Get the age of the oldest pending/claimed activation in seconds.
+    /// Only activations with status=pending/claimed and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
@@ -587,9 +681,12 @@ impl ActivationStore for PostgresStore {
         let mut query_builder = QueryBuilder::new(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
-            WHERE status = ",
+            WHERE status IN (",
         );
-        query_builder.push_bind(ActivationStatus::Pending.to_string());
+        let mut separated = query_builder.separated(", ");
+        separated.push_bind(ActivationStatus::Pending.to_string());
+        separated.push_bind(ActivationStatus::Claimed.to_string());
+        query_builder.push(")");
         query_builder.push(" AND processing_attempts = 0");
 
         self.add_partition_condition(&mut query_builder, false);
@@ -799,7 +896,7 @@ impl ActivationStore for PostgresStore {
                 .execute(&mut *tx)
                 .await?;
 
-                row.activation = updated_activation;
+                row.activation = Cow::Owned(updated_activation);
             }
 
             tx.commit().await?;

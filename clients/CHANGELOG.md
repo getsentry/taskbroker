@@ -1,4 +1,27 @@
 # Changelog
+## 0.18.4
+
+### Bug Fixes 🐛
+
+- (producer) TaskProducer can produce to partitions by @bmckerry in [#685](https://github.com/getsentry/taskbroker/pull/685)
+- (worker) Keep worker health checks alive while idle in push mode by @lvthanh03 in [#683](https://github.com/getsentry/taskbroker/pull/683)
+
+## 0.18.3
+
+### New Features ✨
+
+- (TaskProducer) Add metrics on queue size by @bmckerry in [#681](https://github.com/getsentry/taskbroker/pull/681)
+
+### Bug Fixes 🐛
+
+- (TaskProducer) Bounded queue of pending futures by @bmckerry in [#678](https://github.com/getsentry/taskbroker/pull/678)
+
+## 0.18.2
+
+### Internal Changes 🔧
+
+- (workerchild) Add metric tracking pending futures by @bmckerry in [#671](https://github.com/getsentry/taskbroker/pull/671)
+
 ## 0.18.1
 
 ### New Features ✨

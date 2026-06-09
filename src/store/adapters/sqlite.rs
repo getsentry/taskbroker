@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -25,14 +26,22 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{debug, instrument, warn};
 
 use crate::config::Config;
+use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
 
-#[derive(Debug, FromRow)]
-pub struct TableRow {
-    pub id: String,
-    pub activation: Vec<u8>,
+/// Database representation of an [`Activation`], used for both reads and
+/// writes.
+///
+/// On the write path it is built with `TableRow::from(&Activation)` and
+/// borrows the activation's strings and payload, so storing a batch does not
+/// copy it. On the read path sqlx decodes a fully owned `TableRow<'static>`,
+/// which is converted into an [`Activation`] without further copies.
+#[derive(Debug)]
+pub struct TableRow<'a> {
+    pub id: Cow<'a, str>,
+    pub activation: Cow<'a, [u8]>,
     pub partition: i32,
     pub offset: i64,
     pub added_at: DateTime<Utc>,
@@ -43,23 +52,20 @@ pub struct TableRow {
     pub processing_deadline_duration: i32,
     pub processing_deadline: Option<DateTime<Utc>>,
     pub claim_expires_at: Option<DateTime<Utc>>,
-    pub status: String,
+    pub status: Cow<'a, str>,
     pub at_most_once: bool,
-    pub application: String,
-    pub namespace: String,
-    pub taskname: String,
-    #[sqlx(try_from = "i32")]
+    pub application: Cow<'a, str>,
+    pub namespace: Cow<'a, str>,
+    pub taskname: Cow<'a, str>,
     pub on_attempts_exceeded: OnAttemptsExceeded,
     pub bucket: i16,
 }
 
-impl TryFrom<Activation> for TableRow {
-    type Error = anyhow::Error;
-
-    fn try_from(value: Activation) -> Result<Self, Self::Error> {
-        Ok(Self {
-            id: value.id,
-            activation: value.activation,
+impl<'a> From<&'a Activation> for TableRow<'a> {
+    fn from(value: &'a Activation) -> Self {
+        Self {
+            id: Cow::Borrowed(&value.id),
+            activation: Cow::Borrowed(&value.activation),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -70,22 +76,24 @@ impl TryFrom<Activation> for TableRow {
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
-            status: value.status.to_string(),
+            status: Cow::Owned(value.status.to_string()),
             at_most_once: value.at_most_once,
-            application: value.application,
-            namespace: value.namespace,
-            taskname: value.taskname,
+            application: Cow::Borrowed(&value.application),
+            namespace: Cow::Borrowed(&value.namespace),
+            taskname: Cow::Borrowed(&value.taskname),
             on_attempts_exceeded: value.on_attempts_exceeded,
             bucket: value.bucket,
-        })
+        }
     }
 }
 
-impl From<TableRow> for Activation {
-    fn from(value: TableRow) -> Self {
+impl From<TableRow<'_>> for Activation {
+    fn from(value: TableRow<'_>) -> Self {
+        // On the read path we're using TableRow<'static>, which already has
+        // owned strings inside. Therefore into_owned() does nothing.
         Self {
-            id: value.id,
-            activation: value.activation,
+            id: value.id.into_owned(),
+            activation: value.activation.into_owned(),
             status: ActivationStatus::from_str(&value.status).unwrap(),
             partition: value.partition,
             offset: value.offset,
@@ -98,12 +106,47 @@ impl From<TableRow> for Activation {
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
             at_most_once: value.at_most_once,
-            application: value.application,
-            namespace: value.namespace,
-            taskname: value.taskname,
+            application: value.application.into_owned(),
+            namespace: value.namespace.into_owned(),
+            taskname: value.taskname.into_owned(),
             on_attempts_exceeded: value.on_attempts_exceeded,
             bucket: value.bucket,
         }
+    }
+}
+
+/// Decode an owned row. Hand-written rather than derived because the derive
+/// would bind the struct's lifetime parameter to the row's, which
+/// `query_as`/`fetch_all` (which drop the row) cannot express.
+impl FromRow<'_, SqliteRow> for TableRow<'static> {
+    fn from_row(row: &SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(Self {
+            id: Cow::Owned(row.try_get::<String, _>("id")?),
+            activation: Cow::Owned(row.try_get::<Vec<u8>, _>("activation")?),
+            partition: row.try_get("partition")?,
+            offset: row.try_get("offset")?,
+            added_at: row.try_get("added_at")?,
+            received_at: row.try_get("received_at")?,
+            processing_attempts: row.try_get("processing_attempts")?,
+            expires_at: row.try_get("expires_at")?,
+            delay_until: row.try_get("delay_until")?,
+            processing_deadline_duration: row.try_get("processing_deadline_duration")?,
+            processing_deadline: row.try_get("processing_deadline")?,
+            claim_expires_at: row.try_get("claim_expires_at")?,
+            status: Cow::Owned(row.try_get::<String, _>("status")?),
+            at_most_once: row.try_get("at_most_once")?,
+            application: Cow::Owned(row.try_get::<String, _>("application")?),
+            namespace: Cow::Owned(row.try_get::<String, _>("namespace")?),
+            taskname: Cow::Owned(row.try_get::<String, _>("taskname")?),
+            on_attempts_exceeded: row
+                .try_get::<i32, _>("on_attempts_exceeded")?
+                .try_into()
+                .map_err(|err| sqlx::Error::ColumnDecode {
+                    index: "on_attempts_exceeded".into(),
+                    source: Box::new(err),
+                })?,
+            bucket: row.try_get("bucket")?,
+        })
     }
 }
 
@@ -140,7 +183,6 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
 pub struct SqliteStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
-    /// Milliseconds added to `claim_expires_at` before grace: `fetch_batch_size * push_queue_timeout_ms`.
     pub claim_lease_ms: u64,
     pub vacuum_page_count: Option<usize>,
     pub enable_sqlite_status_metrics: bool,
@@ -152,7 +194,7 @@ impl SqliteStoreConfig {
             max_processing_attempts: config.max_processing_attempts,
             vacuum_page_count: config.vacuum_page_count,
             processing_deadline_grace_sec: config.processing_deadline_grace_sec,
-            claim_lease_ms: config.fetch_batch_size.max(1) as u64 * config.push_queue_timeout_ms,
+            claim_lease_ms: compute_claim_lease_ms(config),
             enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
         }
     }
@@ -443,7 +485,7 @@ impl ActivationStore for SqliteStore {
     }
 
     #[instrument(skip_all)]
-    async fn store(&self, batch: Vec<Activation>) -> Result<u64, Error> {
+    async fn store(&self, batch: &[Activation]) -> Result<u64, Error> {
         if batch.is_empty() {
             return Ok(0);
         }
@@ -474,15 +516,14 @@ impl ActivationStore for SqliteStore {
                 )
             ",
         );
-        let rows = batch
-            .into_iter()
-            .map(TableRow::try_from)
-            .collect::<Result<Vec<TableRow>, _>>()?;
-
         let query = query_builder
-            .push_values(rows, |mut b, row| {
+            .push_values(batch.iter().map(TableRow::from), |mut b, row| {
                 b.push_bind(row.id);
-                b.push_bind(row.activation);
+                // Cow<[u8]> has no Encode impl, so bind the variants directly.
+                match row.activation {
+                    Cow::Borrowed(bytes) => b.push_bind(bytes),
+                    Cow::Owned(bytes) => b.push_bind(bytes),
+                };
                 b.push_bind(row.partition);
                 b.push_bind(row.offset);
                 b.push_bind(row.added_at.timestamp());
@@ -562,7 +603,7 @@ impl ActivationStore for SqliteStore {
             query_builder.push_bind(ActivationStatus::Processing);
         } else {
             query_builder.push(format!(
-                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds', '+' || {grace_period} || ' seconds'), processing_deadline = NULL, status = ",
+                "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds'), processing_deadline = NULL, status = ",
                 self.config.claim_lease_ms as f64 / 1000.0,
             ));
 
@@ -646,8 +687,37 @@ impl ActivationStore for SqliteStore {
         Ok(())
     }
 
-    /// Get the age of the oldest pending activation in seconds.
-    /// Only activations with status=pending and processing_attempts=0 are considered
+    #[instrument(skip_all)]
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut conn = self
+            .acquire_write_conn_metric("mark_processing_batch")
+            .await?;
+
+        let grace_period = self.config.processing_deadline_grace_sec;
+        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET status = ");
+        query_builder.push_bind(ActivationStatus::Processing);
+        query_builder.push(format!(
+            ", processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL WHERE status = ",
+        ));
+        query_builder.push_bind(ActivationStatus::Claimed);
+        query_builder.push(" AND id IN (");
+
+        let mut separated = query_builder.separated(", ");
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
+
+        let result = query_builder.build().execute(&mut *conn).await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Get the age of the oldest pending/claimed activation in seconds.
+    /// Only activations with status=pending/claimed and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
     /// Tasks with delay_until set, will have their age adjusted based on their
     /// delay time. No tasks = 0 lag
@@ -655,13 +725,14 @@ impl ActivationStore for SqliteStore {
         let result = match sqlx::query(
             "SELECT received_at, delay_until
             FROM inflight_taskactivations
-            WHERE status = $1
+            WHERE (status = $1 or status = $2)
             AND processing_attempts = 0
             ORDER BY received_at ASC
             LIMIT 1
             ",
         )
         .bind(ActivationStatus::Pending)
+        .bind(ActivationStatus::Claimed)
         .fetch_optional(&self.read_pool)
         .await
         {
@@ -759,7 +830,7 @@ impl ActivationStore for SqliteStore {
                 .execute(&mut *tx)
                 .await?;
 
-            row.activation = updated_activation;
+            row.activation = Cow::Owned(updated_activation);
         }
 
         tx.commit().await?;

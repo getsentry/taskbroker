@@ -8,13 +8,14 @@ use elegant_departure::get_shutdown_guard;
 use flume::Receiver;
 use tracing::{debug, error};
 
+use crate::push::updater::Updater;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::timed;
 use crate::worker::WorkerMap;
 
 /// Alias for ergonomics.
-pub type Submission = (Activation, Instant);
+pub type PushItem = (Activation, Instant);
 
 /// Abstraction for a single push thread.
 pub struct PushThread {
@@ -22,9 +23,12 @@ pub struct PushThread {
     pub(super) workers: WorkerMap,
 
     /// Channel containing claimed activations to be pushed.
-    pub(super) receiver: Receiver<Submission>,
+    pub(super) receiver: Receiver<PushItem>,
 
     /// Entity that marks tasks as processing.
+    pub(super) updater: Arc<dyn Updater>,
+
+    /// Store for reverting claimed tasks back to pending.
     pub(super) store: Arc<dyn ActivationStore>,
 }
 
@@ -52,8 +56,7 @@ impl PushThread {
     }
 
     async fn push_task(&mut self, activation: Activation) {
-        // Store the ID for later since `push_task` claims ownership over `activation`
-        let id = activation.id.clone();
+        let id = &activation.id;
 
         // First, determine the correct worker service
         let Some(worker) = self.workers.get_mut(&activation.application) else {
@@ -69,10 +72,7 @@ impl PushThread {
         };
 
         // Then, push the task to that service
-        let result = timed!(
-            worker.push_task(activation.clone()),
-            "worker.push_task.duration"
-        );
+        let result = timed!(worker.push_task(&activation), "worker.push_task.duration");
 
         if let Err(e) = result {
             metrics::counter!("worker.push_task", "result" => "error").increment(1);
@@ -86,7 +86,7 @@ impl PushThread {
             // Revert claimed task back to pending
             if let Err(e) = self
                 .store
-                .set_status(&id, ActivationStatus::Pending, None, None)
+                .set_status(id, ActivationStatus::Pending, None, None)
                 .await
             {
                 metrics::counter!("push.undo_claim", "result" => "error").increment(1);
@@ -123,18 +123,15 @@ impl PushThread {
         }
 
         // Finally, mark the activation as processing
-        let result = timed!(
-            self.store.mark_activation_processing(&id),
-            "push.mark_activation_processing.duration"
-        );
+        let result = timed!(self.updater.update(id), "push.thread.update.duration");
 
         if let Err(e) = result {
-            metrics::counter!("push.mark_activation_processing", "result" => "error").increment(1);
+            metrics::counter!("push.thread.update", "result" => "error").increment(1);
 
             error!(
                 task_id = %id,
                 error = ?e,
-                "Failed to mark activation as sent after push"
+                "Failed to mark sent activation as processing"
             );
         }
     }

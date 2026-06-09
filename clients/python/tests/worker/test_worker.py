@@ -9,6 +9,7 @@ from collections.abc import Iterator, MutableMapping
 from concurrent.futures import Future
 from datetime import datetime
 from multiprocessing import Event, get_context
+from pathlib import Path
 from typing import Any
 from unittest import TestCase, mock
 
@@ -533,6 +534,29 @@ class TestTaskWorker(TestCase):
 
         self.assertTrue(taskworker.client is not None)
         self.assertEqual(taskworker._grpc_port, 50099)
+
+
+def test_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
+    taskworker = PushTaskWorker(
+        app_module="examples.app:app",
+        broker_service="127.0.0.1:50051",
+        max_child_task_count=100,
+        process_type="fork",
+        health_check_file_path=str(tmp_path / "health"),
+        health_check_sec_per_touch=0.01,
+    )
+
+    with mock.patch.object(taskworker.client, "emit_health_check") as mock_emit:
+        taskworker._start_health_check_thread()
+        try:
+            start = time.time()
+            while mock_emit.call_count < 2 and time.time() - start < 1:
+                time.sleep(0.01)
+        finally:
+            taskworker._stop_health_check_thread()
+
+    assert mock_emit.call_count >= 2
+    assert taskworker._health_check_thread is None
 
 
 class TestWorkerServicer(TestCase):
@@ -1452,7 +1476,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
 ) -> None:
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
-    _pending_futures.add(leftover_future)
+    _pending_futures.append(leftover_future)
     assert len(_pending_futures) == 1
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()

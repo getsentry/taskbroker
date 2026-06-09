@@ -560,6 +560,9 @@ class PushTaskbrokerClient:
             channel = grpc.intercept_channel(channel, RequestSignatureInterceptor(secrets))
         return ConsumerServiceStub(channel)
 
+    def emit_health_check(self) -> None:
+        self._emit_health_check()
+
     def update_task(
         self,
         processing_result: ProcessingResult,

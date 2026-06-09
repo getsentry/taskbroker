@@ -13,12 +13,12 @@ use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 pub trait ActivationStore: Send + Sync {
     /// CONSUMER OPERATIONS
     /// Store a batch of activations
-    async fn store(&self, batch: Vec<Activation>) -> Result<u64, Error>;
+    async fn store(&self, batch: &[Activation]) -> Result<u64, Error>;
 
     fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
 
     /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
-    /// If `mark_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
+    /// If `mark_activation_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
     /// If no limit is provided, all matching activations will be returned.
     async fn claim_activations(
         &self,
@@ -72,6 +72,9 @@ pub trait ActivationStore: Send + Sync {
 
     /// Record successful push.
     async fn mark_activation_processing(&self, id: &str) -> Result<(), Error>;
+
+    /// Record a batch of successful pushes.
+    async fn mark_processing_batch(&self, ids: &[String]) -> Result<u64, Error>;
 
     /// Update the status of a specific activation.
     /// If max_attempts or delay_on_retry is provided (for Retry status), also updates the activation's retry_state.

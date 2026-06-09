@@ -140,7 +140,7 @@ async fn test_get_task_success(#[case] adapter: &str) {
     let config = create_config();
 
     let activations = make_activations(1);
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store: store.clone(),
@@ -180,7 +180,7 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
     activations[1].activation = payload.encode_to_vec();
     activations[1].application = "hammers".into();
 
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store,
@@ -214,7 +214,7 @@ async fn test_get_task_with_namespace_requires_application(#[case] adapter: &str
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store,
@@ -244,7 +244,7 @@ async fn test_set_task_status_success(#[case] adapter: &str) {
     let config = create_config();
 
     let activations = make_activations(2);
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store,
@@ -298,7 +298,7 @@ async fn test_set_task_status_with_application(#[case] adapter: &str) {
     activations[1].activation = payload.encode_to_vec();
     activations[1].application = "hammers".into();
 
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store,
@@ -345,7 +345,7 @@ async fn test_set_task_status_with_application_no_match(#[case] adapter: &str) {
     activations[1].activation = payload.encode_to_vec();
     activations[1].application = "hammers".into();
 
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store,
@@ -382,7 +382,7 @@ async fn test_set_task_status_with_namespace_requires_application(#[case] adapte
     let activations = make_activations(2);
     let namespace = activations[0].namespace.clone();
 
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store,
@@ -421,7 +421,7 @@ async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) 
     let (update_tx, mut update_rx) = mpsc::channel::<StatusUpdate>(8);
 
     let activations = make_activations(2);
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store: store.clone(),
@@ -478,7 +478,7 @@ async fn test_set_task_status_update_channel_closed_returns_internal() {
     drop(update_rx);
 
     let activations = make_activations(1);
-    store.store(activations).await.unwrap();
+    store.store(&activations).await.unwrap();
 
     let service = TaskbrokerServer {
         store,
