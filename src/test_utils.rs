@@ -312,7 +312,7 @@ pub fn create_integration_config_from_base(base: Config) -> Config {
         deprecated: DeprecatedConfig {
             kafka_cluster: Some("127.0.0.1:9092".into()),
             kafka_consumer_group: Some("taskworker".into()),
-            ..DeprecatedConfig::default()
+            ..base.deprecated
         },
         pg_host: get_pg_host(),
         pg_port: get_pg_port(),
