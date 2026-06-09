@@ -14,10 +14,6 @@ use crate::Args;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
-pub mod store;
-
-use store::DatabaseAdapter;
-
 pub mod raw;
 pub mod store;
 
