@@ -715,7 +715,6 @@ mod tests {
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        reset_topic(config.clone()).await;
 
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
