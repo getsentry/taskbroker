@@ -1,10 +1,4 @@
-use anyhow::Result;
-use figment::providers::{Env, Format, Yaml};
-use figment::value::{Dict, Map};
-use figment::{Figment, Metadata, Profile, Provider};
 use serde::{Deserialize, Serialize};
-
-use crate::Args;
 
 #[derive(PartialEq, Debug, Deserialize, Serialize, Default)]
 pub struct DeprecatedConfig {
@@ -88,29 +82,4 @@ pub struct DeprecatedConfig {
     /// Enable raw mode for consuming unstructured Kafka messages.
     /// In raw mode, Kafka message bytes are wrapped into TaskActivation.
     pub raw_mode: Option<bool>,
-}
-
-impl DeprecatedConfig {
-    pub fn from_args(args: &Args) -> Result<Self> {
-        let mut builder = Figment::from(DeprecatedConfig::default());
-
-        if let Some(path) = &args.config {
-            builder = builder.merge(Yaml::file(path));
-        }
-
-        builder = builder.merge(Env::prefixed("TASKBROKER_"));
-        let config: DeprecatedConfig = builder.extract()?;
-
-        Ok(config)
-    }
-}
-
-impl Provider for DeprecatedConfig {
-    fn metadata(&self) -> Metadata {
-        Metadata::named("Taskbroker config")
-    }
-
-    fn data(&self) -> Result<Map<Profile, Dict>, figment::Error> {
-        figment::providers::Serialized::defaults(DeprecatedConfig::default()).data()
-    }
 }

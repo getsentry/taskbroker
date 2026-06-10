@@ -38,6 +38,7 @@ pub enum DeliveryMode {
 #[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct Config {
     /// Deprecated configuration options. Not meant to be used.
+    #[serde(flatten)]
     pub deprecated: DeprecatedConfig,
 
     /// The sentry DSN to use for error reporting.
@@ -430,10 +431,6 @@ impl Default for Config {
 impl Config {
     /// Build a config instance from defaults, env vars, file + CLI options
     pub fn from_args(args: &Args) -> Result<Self> {
-        // First, construct the deprecated configuration
-        let deprecated = DeprecatedConfig::from_args(args)?;
-
-        // Next, construct the current configuration
         let mut builder = Figment::from(Config::default());
 
         if let Some(path) = &args.config {
@@ -443,9 +440,6 @@ impl Config {
         // Use "__" for nested configurations via environment variables, like `TASKBROKER_KAFKA_TOPICS__PROFILES__CLUSTER`
         builder = builder.merge(Env::prefixed("TASKBROKER_").split("__"));
         let mut config: Config = builder.extract()?;
-
-        // Assign the deprecated field
-        config.deprecated = deprecated;
 
         // Normalize and validate Kafka values
         config.normalize_and_validate()?;
