@@ -6,9 +6,7 @@ macro_rules! map {
     () => {};
 
     ($deprecated:expr => some($current:expr), $($rest:tt)*) => {
-        if let Some(v) = $deprecated.take() {
-            $current = Some(v);
-        }
+        $current = $deprecated.take();
 
         $crate::config::deprecated::map!($($rest)*);
     };
@@ -22,9 +20,7 @@ macro_rules! map {
     };
 
     ($deprecated:expr => some($current:expr)) => {
-        if let Some(v) = $deprecated.take() {
-            $current = Some(v);
-        }
+        $current = $deprecated.take();
     };
 
     ($deprecated:expr => $current:expr) => {

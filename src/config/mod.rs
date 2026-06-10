@@ -337,6 +337,12 @@ impl Config {
         Ok(config)
     }
 
+    /// Map deprecated options to new options.
+    /// If the deprecated value is plain (like an integer or a string), it's ONLY used when it's actually provided.
+    /// If the deprecated value is optional, it's ALWAYS used no matter what. So...
+    /// - If `db_max_size` is not provided, then `store.db_max_size` is `None`
+    /// - If `db_max_size` is `null`, then `store.db_max_size` is `None`
+    /// - If `db_max_size` is 5, then `store.db_max_size` is `Some(5)`
     fn map_deprecated_options(&mut self) {
         // Map store configuration options
         deprecated::map! {
