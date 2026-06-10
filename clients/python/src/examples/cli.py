@@ -77,17 +77,35 @@ def scheduler() -> None:
     "--push-mode", help="Whether to run in PUSH or PULL mode.", default=False, is_flag=True
 )
 @click.option(
+    "--batch-push-mode", help="Whether to run in BATCH PUSH mode.", default=False, is_flag=True
+)
+@click.option(
     "--grpc-port",
     help="Port for the gRPC server to listen on.",
     default=50052,
     type=int,
 )
-def worker(rpc_host: str, concurrency: int, push_mode: bool, grpc_port: int) -> None:
-    from taskbroker_client.worker import PushTaskWorker, TaskWorker
+def worker(
+    rpc_host: str, concurrency: int, push_mode: bool, batch_push_mode: bool, grpc_port: int
+) -> None:
+    from taskbroker_client.worker import BatchPushTaskWorker, PushTaskWorker, TaskWorker
 
     click.echo("Starting worker")
-    if push_mode:
-        worker: PushTaskWorker | TaskWorker = PushTaskWorker(
+    if batch_push_mode:
+        worker: PushTaskWorker | TaskWorker = BatchPushTaskWorker(
+            app_module="examples.app:app",
+            broker_service=rpc_host,
+            max_child_task_count=100,
+            concurrency=concurrency,
+            child_tasks_queue_maxsize=concurrency * 2,
+            result_queue_maxsize=concurrency * 2,
+            rebalance_after=32,
+            processing_pool_name="examples",
+            process_type="forkserver",
+            grpc_port=grpc_port,
+        )
+    elif push_mode:
+        worker = PushTaskWorker(
             app_module="examples.app:app",
             broker_service=rpc_host,
             max_child_task_count=100,
