@@ -322,7 +322,7 @@ pub fn create_integration_config_from_base(base: Config) -> Config {
             pg_password: get_pg_password(),
             pg_database_name: get_pg_database_name(),
             run_migrations: true,
-            ..StoreConfig::default()
+            ..base.store
         },
         kafka_auto_offset_reset: "earliest".into(),
         ..base

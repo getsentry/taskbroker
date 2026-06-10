@@ -325,6 +325,9 @@ impl Config {
         builder = builder.merge(Env::prefixed("TASKBROKER_").split("__"));
         let mut config: Config = builder.extract()?;
 
+        // Map deprecated fields to current fields
+        config.map_deprecated_options();
+
         // Normalize and validate Kafka values
         config.normalize_and_validate()?;
 
@@ -332,6 +335,38 @@ impl Config {
         config.validate()?;
 
         Ok(config)
+    }
+
+    fn map_deprecated_options(&mut self) {
+        // Map store configuration options
+        deprecated::map! {
+            self.deprecated.database_adapter               => self.store.database_adapter,
+            self.deprecated.run_migrations                 => self.store.run_migrations,
+            self.deprecated.pg_host                        => self.store.pg_host,
+            self.deprecated.pg_port                        => self.store.pg_port,
+            self.deprecated.pg_ddl_username                => self.store.pg_ddl_username,
+            self.deprecated.pg_username                    => self.store.pg_username,
+            self.deprecated.pg_password                    => self.store.pg_password,
+            self.deprecated.pg_ddl_password                => self.store.pg_ddl_password,
+            self.deprecated.pg_database_name               => self.store.pg_database_name,
+            self.deprecated.pg_default_database_name       => self.store.pg_default_database_name,
+            self.deprecated.pg_extra_query_params          => some(self.store.pg_extra_query_params),
+            self.deprecated.db_path                        => self.store.db_path,
+            self.deprecated.db_write_failure_backoff_ms    => self.store.db_write_failure_backoff_ms,
+            self.deprecated.db_query_max_retries           => some(self.store.db_query_max_retries),
+            self.deprecated.db_query_retry_delay_ms        => self.store.db_query_retry_delay_ms,
+            self.deprecated.db_insert_batch_max_len        => self.store.db_insert_batch_max_len,
+            self.deprecated.db_insert_batch_max_size       => self.store.db_insert_batch_max_size,
+            self.deprecated.db_insert_batch_max_time_ms    => self.store.db_insert_batch_max_time_ms,
+            self.deprecated.db_max_size                    => some(self.store.db_max_size),
+            self.deprecated.max_pending_count              => self.store.max_pending_count,
+            self.deprecated.max_delay_count                => self.store.max_delay_count,
+            self.deprecated.max_processing_count           => self.store.max_processing_count,
+            self.deprecated.max_processing_attempts        => self.store.max_processing_attempts,
+            self.deprecated.processing_deadline_grace_sec  => self.store.processing_deadline_grace_sec,
+            self.deprecated.vacuum_page_count              => some(self.store.vacuum_page_count),
+            self.deprecated.enable_sqlite_status_metrics   => self.store.enable_sqlite_status_metrics,
+        };
     }
 
     /// Normalize the legacy single-topic config into the new multi-topic
