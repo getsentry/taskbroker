@@ -4,7 +4,8 @@ use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    FetchNextTask, GetTaskRequest, SetTaskStatusRequest, TaskActivation,
+    FetchNextTask, GetTaskRequest, SetBatchActivationStatusRequest, SetTaskStatusRequest,
+    TaskActivation,
 };
 use tokio::sync::mpsc;
 use tonic::{Code, Request};
@@ -499,4 +500,214 @@ async fn test_set_task_status_update_channel_closed_returns_internal() {
     let e = response.unwrap_err();
     assert_eq!(e.code(), Code::Internal);
     assert_eq!(e.message(), "Status update channel closed");
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+#[allow(deprecated)]
+async fn test_set_batch_activation_status_success(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let config = create_config();
+
+    let activations = make_activations(3);
+    store.store(&activations).await.unwrap();
+
+    let service = TaskbrokerServer {
+        store: store.clone(),
+        config,
+        update_tx: None,
+    };
+
+    // All updates share a conclusion status and have no retry state, so they
+    // are grouped into set_status_batch calls keyed by status.
+    let request = SetBatchActivationStatusRequest {
+        updates: vec![
+            SetTaskStatusRequest {
+                id: "id_0".to_string(),
+                status: 5, // Complete
+                fetch_next_task: None,
+                max_attempts: None,
+                delay_on_retry: None,
+            },
+            SetTaskStatusRequest {
+                id: "id_1".to_string(),
+                status: 5, // Complete
+                fetch_next_task: None,
+                max_attempts: None,
+                delay_on_retry: None,
+            },
+            SetTaskStatusRequest {
+                id: "id_2".to_string(),
+                status: 3, // Failure
+                fetch_next_task: None,
+                max_attempts: None,
+                delay_on_retry: None,
+            },
+        ],
+    };
+
+    let response = service
+        .set_batch_activation_status(Request::new(request))
+        .await;
+    assert!(response.is_ok());
+
+    let row0 = store.get_by_id("id_0").await.unwrap().expect("row exists");
+    assert_eq!(row0.status, ActivationStatus::Complete);
+    let row1 = store.get_by_id("id_1").await.unwrap().expect("row exists");
+    assert_eq!(row1.status, ActivationStatus::Complete);
+    let row2 = store.get_by_id("id_2").await.unwrap().expect("row exists");
+    assert_eq!(row2.status, ActivationStatus::Failure);
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_set_batch_activation_status_empty(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let config = create_config();
+
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
+    let request = SetBatchActivationStatusRequest { updates: vec![] };
+
+    let response = service
+        .set_batch_activation_status(Request::new(request))
+        .await;
+    assert!(response.is_ok());
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn test_set_batch_activation_status_invalid_status() {
+    let store = create_test_store("sqlite").await;
+    let config = create_config();
+
+    let service = TaskbrokerServer {
+        store,
+        config,
+        update_tx: None,
+    };
+
+    // 99 is not a valid TaskActivationStatus value, so deserialization fails.
+    let request = SetBatchActivationStatusRequest {
+        updates: vec![SetTaskStatusRequest {
+            id: "test_task".to_string(),
+            status: 99,
+            fetch_next_task: None,
+            max_attempts: None,
+            delay_on_retry: None,
+        }],
+    };
+
+    let response = service
+        .set_batch_activation_status(Request::new(request))
+        .await;
+    assert!(response.is_err());
+    let e = response.unwrap_err();
+    assert_eq!(e.code(), Code::InvalidArgument);
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+#[allow(deprecated)]
+async fn test_set_batch_activation_status_retry(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let config = create_config();
+
+    let activations = make_activations(1);
+    store.store(&activations).await.unwrap();
+
+    let service = TaskbrokerServer {
+        store: store.clone(),
+        config,
+        update_tx: None,
+    };
+
+    // max_attempts is set, so this update is applied individually via set_status
+    // rather than being grouped into a batch.
+    let request = SetBatchActivationStatusRequest {
+        updates: vec![SetTaskStatusRequest {
+            id: "id_0".to_string(),
+            status: 4, // Retry
+            fetch_next_task: None,
+            max_attempts: Some(5),
+            delay_on_retry: Some(60),
+        }],
+    };
+
+    let response = service
+        .set_batch_activation_status(Request::new(request))
+        .await;
+    assert!(response.is_ok());
+
+    let row = store.get_by_id("id_0").await.unwrap().expect("row exists");
+    assert_eq!(row.status, ActivationStatus::Retry);
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+#[allow(deprecated)]
+async fn test_set_batch_activation_status_mixed(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let config = create_config();
+
+    let activations = make_activations(3);
+    store.store(&activations).await.unwrap();
+
+    let service = TaskbrokerServer {
+        store: store.clone(),
+        config,
+        update_tx: None,
+    };
+
+    // Two batched conclusion updates plus one retry update that carries retry
+    // state, exercising both the batch path and the individual set_status path.
+    let request = SetBatchActivationStatusRequest {
+        updates: vec![
+            SetTaskStatusRequest {
+                id: "id_0".to_string(),
+                status: 5, // Complete
+                fetch_next_task: None,
+                max_attempts: None,
+                delay_on_retry: None,
+            },
+            SetTaskStatusRequest {
+                id: "id_1".to_string(),
+                status: 5, // Complete
+                fetch_next_task: None,
+                max_attempts: None,
+                delay_on_retry: None,
+            },
+            SetTaskStatusRequest {
+                id: "id_2".to_string(),
+                status: 4, // Retry
+                fetch_next_task: None,
+                max_attempts: Some(3),
+                delay_on_retry: Some(60),
+            },
+        ],
+    };
+
+    let response = service
+        .set_batch_activation_status(Request::new(request))
+        .await;
+    assert!(response.is_ok());
+
+    let row0 = store.get_by_id("id_0").await.unwrap().expect("row exists");
+    assert_eq!(row0.status, ActivationStatus::Complete);
+    let row1 = store.get_by_id("id_1").await.unwrap().expect("row exists");
+    assert_eq!(row1.status, ActivationStatus::Complete);
+    let row2 = store.get_by_id("id_2").await.unwrap().expect("row exists");
+    assert_eq!(row2.status, ActivationStatus::Retry);
 }

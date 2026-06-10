@@ -7,8 +7,9 @@ use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    FetchNextTask, GetTaskRequest, GetTaskResponse, SetTaskStatusRequest, SetTaskStatusResponse,
-    TaskActivation, TaskActivationStatus,
+    FetchNextTask, GetTaskRequest, GetTaskResponse, SetBatchActivationStatusRequest,
+    SetBatchActivationStatusResponse, SetTaskStatusRequest, SetTaskStatusResponse, TaskActivation,
+    TaskActivationStatus,
 };
 use tokio::sync::mpsc::Sender;
 use tonic::{Request, Response, Status};
@@ -216,6 +217,109 @@ impl ConsumerService for TaskbrokerServer {
         };
         metrics::histogram!("grpc_server.fetch_next.duration").record(start_time.elapsed());
         res
+    }
+
+    #[instrument(skip_all)]
+    async fn set_batch_activation_status(
+        &self,
+        request: Request<SetBatchActivationStatusRequest>,
+    ) -> Result<Response<SetBatchActivationStatusResponse>, Status> {
+        let start_time = Instant::now();
+        let updates = request.get_ref().updates.clone();
+
+        // Updates can be broken into different batches based on the status and the retry state.
+        let mut batches: HashMap<ActivationStatus, Vec<String>> = HashMap::new();
+        let mut retry_updates: Vec<SetTaskStatusRequest> = Vec::new();
+
+        for update in updates {
+            let id = update.id.clone();
+            let status: ActivationStatus = TaskActivationStatus::try_from(update.status)
+                .map_err(|e| {
+                    Status::invalid_argument(format!("Unable to deserialize status: {e:?}"))
+                })?
+                .into();
+            if !status.is_conclusion() {
+                return Err(Status::invalid_argument(format!(
+                    "Invalid status, expects 3 (Failure), 4 (Retry), or 5 (Complete), but got: {status:?}"
+                )));
+            }
+            if status == ActivationStatus::Failure {
+                metrics::counter!("grpc_server.set_status.failure").increment(1);
+            }
+            if update.max_attempts.is_some() || update.delay_on_retry.is_some() {
+                retry_updates.push(update);
+            } else {
+                batches.entry(status).or_default().push(id);
+            }
+        }
+
+        // For each status and batch of IDs, update the status for those IDs. In the case of a failure, return an error to the worker.
+        // Track and log a warning if the number of rows updated is less than the number of IDs requested.
+        metrics::histogram!("grpc_server.set_batch_activation_status.num_batches")
+            .record(batches.len() as f64);
+        for (status, ids) in batches {
+            let requested = ids.len() as u64;
+            metrics::histogram!("grpc_server.set_batch_activation_status.batch_size", "status" => status.to_string()).record(requested as f64);
+            match self.store.set_status_batch(&ids, status).await {
+                Ok(affected) => {
+                    metrics::histogram!("grpc_server.set_batch_activation_status.affected_diff", "status" => status.to_string())
+                        .record((requested - affected) as f64);
+                    if affected < requested {
+                        metrics::histogram!(
+                            "grpc_server.set_batch_activation_status.partial",
+                            "status" => status.to_string()
+                        )
+                        .record((requested - affected) as f64);
+                        warn!(
+                            ?status,
+                            requested, affected, "Updated fewer rows than IDs requested in batch"
+                        );
+                    }
+                }
+                Err(e) => {
+                    metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);
+                    metrics::histogram!("grpc_server.set_batch_activation_status.duration")
+                        .record(start_time.elapsed());
+                    error!("Failed to set batch activation status: {:?}", e);
+                    return Err(Status::internal("Failed to set batch activation status"));
+                }
+            }
+        }
+
+        metrics::histogram!("grpc_server.set_batch_activation_status.retry_updates")
+            .record(retry_updates.len() as f64);
+        for update in retry_updates {
+            let id = update.id.clone();
+            let status: ActivationStatus = TaskActivationStatus::try_from(update.status)
+                .map_err(|e| {
+                    Status::invalid_argument(format!("Unable to deserialize status: {e:?}"))
+                })?
+                .into();
+            let max_attempts = update.max_attempts;
+            let delay_on_retry = update.delay_on_retry;
+            match self
+                .store
+                .set_status(&id, status, max_attempts, delay_on_retry)
+                .await
+            {
+                Ok(Some(_)) => metrics::counter!("grpc_server.set_status", "result" => "ok", "status" => status.to_string()).increment(1),
+                Ok(None) => metrics::counter!("grpc_server.set_status", "result" => "not_found", "status" => status.to_string()).increment(1),
+
+                Err(e) => {
+                    metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(1);
+
+                    error!("Unable to update status of activation in batch {:?} to {:?}: {:?}", id, status, e);
+
+                    metrics::histogram!("grpc_server.set_batch_activation_status.duration").record(start_time.elapsed());
+                    return Err(Status::internal(format!(
+                        "Unable to update status of activation in batch {id:?} to {status:?}"
+                    )));
+                }
+            }
+        }
+        metrics::histogram!("grpc_server.set_batch_activation_status.duration")
+            .record(start_time.elapsed());
+        return Ok(Response::new(SetBatchActivationStatusResponse {}));
     }
 }
 
