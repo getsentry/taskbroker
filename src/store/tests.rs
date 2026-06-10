@@ -13,6 +13,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
 use crate::config::Config;
+use crate::config::store::StoreConfig;
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::PostgresStoreConfig;
 use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig, create_sqlite_pool};
@@ -1394,14 +1395,14 @@ async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     let mut batch = make_activations(3);
     batch[0].status = ActivationStatus::Pending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[0].processing_attempts = config.max_processing_attempts as i32;
+    batch[0].processing_attempts = config.store.max_processing_attempts as i32;
 
     batch[1].status = ActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
     batch[2].status = ActivationStatus::Pending;
     batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[2].processing_attempts = config.max_processing_attempts as i32;
+    batch[2].processing_attempts = config.store.max_processing_attempts as i32;
 
     assert!(store.store(&batch).await.is_ok());
     assert_counts(
@@ -1846,7 +1847,10 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
 #[tokio::test]
 async fn test_vacuum_db_incremental() {
     let config = Config {
-        vacuum_page_count: Some(10),
+        store: StoreConfig {
+            vacuum_page_count: Some(10),
+            ..StoreConfig::default()
+        },
         ..Config::default()
     };
     let store = SqliteStore::new(

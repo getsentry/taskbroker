@@ -16,8 +16,8 @@ pub struct RetryConfig {
 impl RetryConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            max_retries: config.db_query_max_retries.unwrap_or(0),
-            retry_delay: Duration::from_millis(config.db_query_retry_delay_ms),
+            max_retries: config.store.db_query_max_retries.unwrap_or(0),
+            retry_delay: Duration::from_millis(config.store.db_query_retry_delay_ms),
         }
     }
 }
@@ -79,6 +79,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::config::store::StoreConfig;
+
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -222,7 +224,10 @@ mod tests {
     #[test]
     fn test_config_none_means_zero_retries() {
         let config = RetryConfig::from_config(&Arc::new(Config {
-            db_query_max_retries: None,
+            store: StoreConfig {
+                db_query_max_retries: None,
+                ..StoreConfig::default()
+            },
             ..Config::default()
         }));
         assert_eq!(config.max_retries, 0);
@@ -231,7 +236,10 @@ mod tests {
     #[test]
     fn test_config_uses_configured_retries() {
         let config = RetryConfig::from_config(&Arc::new(Config {
-            db_query_max_retries: Some(5),
+            store: StoreConfig {
+                db_query_max_retries: Some(5),
+                ..StoreConfig::default()
+            },
             ..Config::default()
         }));
         assert_eq!(config.max_retries, 5);

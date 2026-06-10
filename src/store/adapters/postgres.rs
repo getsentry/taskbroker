@@ -27,12 +27,12 @@ use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 /// Run migrations.
 pub async fn migrate(config: &Config) -> Result<()> {
     let mut conn_opts = PgConnectOptions::new()
-        .username(&config.pg_ddl_username)
-        .password(&config.pg_ddl_password)
-        .host(&config.pg_host)
-        .port(config.pg_port);
+        .username(&config.store.pg_ddl_username)
+        .password(&config.store.pg_ddl_password)
+        .host(&config.store.pg_host)
+        .port(config.store.pg_port);
 
-    if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
+    if let Some(extra_query_params) = config.store.pg_extra_query_params.as_ref() {
         let url = conn_opts.to_url_lossy();
         let new_url =
             url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
@@ -40,18 +40,18 @@ pub async fn migrate(config: &Config) -> Result<()> {
     }
 
     let default_pool =
-        create_default_postgres_pool(&conn_opts, &config.pg_default_database_name).await?;
+        create_default_postgres_pool(&conn_opts, &config.store.pg_default_database_name).await?;
 
     // Create the database if it doesn't exist
     let row: (bool,) =
         sqlx::query_as("SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )")
-            .bind(&config.pg_database_name)
+            .bind(&config.store.pg_database_name)
             .fetch_one(&default_pool)
             .await?;
 
     if !row.0 {
-        println!("Creating database {}", &config.pg_database_name);
-        sqlx::query(format!("CREATE DATABASE {}", &config.pg_database_name).as_str())
+        println!("Creating database {}", &config.store.pg_database_name);
+        sqlx::query(format!("CREATE DATABASE {}", &config.store.pg_database_name).as_str())
             .execute(&default_pool)
             .await?;
     }
@@ -60,7 +60,7 @@ pub async fn migrate(config: &Config) -> Result<()> {
 
     let migration_pool = PgPoolOptions::new()
         .max_connections(1)
-        .connect_with(conn_opts.database(&config.pg_database_name))
+        .connect_with(conn_opts.database(&config.store.pg_database_name))
         .await?;
 
     println!("Running migrations on database");
@@ -239,12 +239,12 @@ pub struct PostgresStoreConfig {
 impl PostgresStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         let mut conn_opts = PgConnectOptions::new()
-            .username(&config.pg_username)
-            .password(&config.pg_password)
-            .host(&config.pg_host)
-            .port(config.pg_port);
+            .username(&config.store.pg_username)
+            .password(&config.store.pg_password)
+            .host(&config.store.pg_host)
+            .port(config.store.pg_port);
 
-        if let Some(extra_query_params) = config.pg_extra_query_params.as_ref() {
+        if let Some(extra_query_params) = config.store.pg_extra_query_params.as_ref() {
             let url = conn_opts.to_url_lossy();
             let new_url =
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
@@ -253,14 +253,14 @@ impl PostgresStoreConfig {
 
         Self {
             pg_connection: conn_opts,
-            pg_database_name: config.pg_database_name.clone(),
-            pg_default_database_name: config.pg_default_database_name.clone(),
-            run_migrations: config.run_migrations,
-            max_processing_attempts: config.max_processing_attempts,
-            vacuum_page_count: config.vacuum_page_count,
-            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            pg_database_name: config.store.pg_database_name.clone(),
+            pg_default_database_name: config.store.pg_default_database_name.clone(),
+            run_migrations: config.store.run_migrations,
+            max_processing_attempts: config.store.max_processing_attempts,
+            vacuum_page_count: config.store.vacuum_page_count,
+            processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
             claim_lease_ms: compute_claim_lease_ms(config),
-            enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
+            enable_sqlite_status_metrics: config.store.enable_sqlite_status_metrics,
             retry_config: RetryConfig::from_config(config),
         }
     }
