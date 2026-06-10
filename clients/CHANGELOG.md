@@ -1,4 +1,14 @@
 # Changelog
+## 0.18.5
+
+### Bug Fixes 🐛
+
+- (producer) DummyProducer typing by @bmckerry in [#688](https://github.com/getsentry/taskbroker/pull/688)
+
+### Internal Changes 🔧
+
+- (producer) Minor metrics improvements by @bmckerry in [#694](https://github.com/getsentry/taskbroker/pull/694)
+
 ## 0.18.4
 
 ### Bug Fixes 🐛
