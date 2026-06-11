@@ -25,6 +25,9 @@ use kafka::{ClusterConfig, TopicConfig};
 use raw::RawModeConfig;
 use store::DatabaseAdapter;
 
+/// Used to identify whether a configuration option was provided by a user, or whether it is a default.
+const DEFAULT_CONFIG_PROVIDER: &str = "TaskbrokerConfig";
+
 /// How the taskbroker delivers tasks to workers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -326,7 +329,7 @@ impl Config {
         let mut config: Config = builder.extract()?;
 
         // Map deprecated fields to current fields
-        config.map_deprecated_options();
+        config.map_deprecated_options(&mut builder);
 
         // Normalize and validate Kafka values
         config.normalize_and_validate()?;
@@ -337,42 +340,146 @@ impl Config {
         Ok(config)
     }
 
-    /// Map deprecated options to new options.
-    /// If the deprecated value is plain (like an integer or a string), it's ONLY used when it's actually provided.
-    /// If the deprecated value is optional, it's ALWAYS used no matter what. So...
-    /// - If `db_max_size` is not provided, then `store.db_max_size` is `None`
-    /// - If `db_max_size` is `null`, then `store.db_max_size` is `None`
-    /// - If `db_max_size` is 5, then `store.db_max_size` is `Some(5)`
-    fn map_deprecated_options(&mut self) {
-        // Map store configuration options
-        deprecated::map! {
-            self.deprecated.database_adapter               => self.store.database_adapter,
-            self.deprecated.run_migrations                 => self.store.run_migrations,
-            self.deprecated.pg_host                        => self.store.pg_host,
-            self.deprecated.pg_port                        => self.store.pg_port,
-            self.deprecated.pg_ddl_username                => self.store.pg_ddl_username,
-            self.deprecated.pg_username                    => self.store.pg_username,
-            self.deprecated.pg_password                    => self.store.pg_password,
-            self.deprecated.pg_ddl_password                => self.store.pg_ddl_password,
-            self.deprecated.pg_database_name               => self.store.pg_database_name,
-            self.deprecated.pg_default_database_name       => self.store.pg_default_database_name,
-            self.deprecated.pg_extra_query_params          => some(self.store.pg_extra_query_params),
-            self.deprecated.db_path                        => self.store.db_path,
-            self.deprecated.db_write_failure_backoff_ms    => self.store.db_write_failure_backoff_ms,
-            self.deprecated.db_query_max_retries           => some(self.store.db_query_max_retries),
-            self.deprecated.db_query_retry_delay_ms        => self.store.db_query_retry_delay_ms,
-            self.deprecated.db_insert_batch_max_len        => self.store.db_insert_batch_max_len,
-            self.deprecated.db_insert_batch_max_size       => self.store.db_insert_batch_max_size,
-            self.deprecated.db_insert_batch_max_time_ms    => self.store.db_insert_batch_max_time_ms,
-            self.deprecated.db_max_size                    => some(self.store.db_max_size),
-            self.deprecated.max_pending_count              => self.store.max_pending_count,
-            self.deprecated.max_delay_count                => self.store.max_delay_count,
-            self.deprecated.max_processing_count           => self.store.max_processing_count,
-            self.deprecated.max_processing_attempts        => self.store.max_processing_attempts,
-            self.deprecated.processing_deadline_grace_sec  => self.store.processing_deadline_grace_sec,
-            self.deprecated.vacuum_page_count              => some(self.store.vacuum_page_count),
-            self.deprecated.enable_sqlite_status_metrics   => self.store.enable_sqlite_status_metrics,
-        };
+    /// Map deprecated options to new options to maintain backwards compatability. Here is an example using `db_max_size`...
+    /// - If the user provides the new field `store.db_max_size`, it will be used
+    /// - If the user does not provide `store.db_max_size`, use the deprecated field `db_max_size` instead
+    fn map_deprecated_options(&mut self, builder: &mut Figment) {
+        // Nested function definition since it's not used anywhere else
+        fn user_provided(builder: &Figment, key: &str) -> bool {
+            builder
+                .find_metadata(key)
+                .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER)
+        }
+
+        if !user_provided(builder, "store.database_adapter") {
+            // User did not provide `store.database_adapter`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.database_adapter => self.store.database_adapter);
+        }
+
+        if !user_provided(builder, "store.run_migrations") {
+            // User did not provide `store.run_migrations`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.run_migrations => self.store.run_migrations);
+        }
+
+        if !user_provided(builder, "store.pg_host") {
+            // User did not provide `store.pg_host`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_host => self.store.pg_host);
+        }
+
+        if !user_provided(builder, "store.pg_port") {
+            // User did not provide `store.pg_port`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_port => self.store.pg_port);
+        }
+
+        if !user_provided(builder, "store.pg_ddl_username") {
+            // User did not provide `store.pg_ddl_username`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_ddl_username => self.store.pg_ddl_username);
+        }
+
+        if !user_provided(builder, "store.pg_username") {
+            // User did not provide `store.pg_username`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_username => self.store.pg_username);
+        }
+
+        if !user_provided(builder, "store.pg_password") {
+            // User did not provide `store.pg_password`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_password => self.store.pg_password);
+        }
+
+        if !user_provided(builder, "store.pg_ddl_password") {
+            // User did not provide `store.pg_ddl_password`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_ddl_password => self.store.pg_ddl_password);
+        }
+
+        if !user_provided(builder, "store.pg_database_name") {
+            // User did not provide `store.pg_database_name`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_database_name => self.store.pg_database_name);
+        }
+
+        if !user_provided(builder, "store.pg_default_database_name") {
+            // User did not provide `store.pg_default_database_name`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_default_database_name => self.store.pg_default_database_name);
+        }
+
+        if !user_provided(builder, "store.pg_extra_query_params") {
+            // User did not provide `store.pg_extra_query_params`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.pg_extra_query_params => some(self.store.pg_extra_query_params));
+        }
+
+        if !user_provided(builder, "store.db_path") {
+            // User did not provide `store.db_path`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_path => self.store.db_path);
+        }
+
+        if !user_provided(builder, "store.db_write_failure_backoff_ms") {
+            // User did not provide `store.db_write_failure_backoff_ms`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_write_failure_backoff_ms => self.store.db_write_failure_backoff_ms);
+        }
+
+        if !user_provided(builder, "store.db_query_max_retries") {
+            // User did not provide `store.db_query_max_retries`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_query_max_retries => some(self.store.db_query_max_retries));
+        }
+
+        if !user_provided(builder, "store.db_query_retry_delay_ms") {
+            // User did not provide `store.db_query_retry_delay_ms`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_query_retry_delay_ms => self.store.db_query_retry_delay_ms);
+        }
+
+        if !user_provided(builder, "store.db_insert_batch_max_len") {
+            // User did not provide `store.db_insert_batch_max_len`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_insert_batch_max_len => self.store.db_insert_batch_max_len);
+        }
+
+        if !user_provided(builder, "store.db_insert_batch_max_size") {
+            // User did not provide `store.db_insert_batch_max_size`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_insert_batch_max_size => self.store.db_insert_batch_max_size);
+        }
+
+        if !user_provided(builder, "store.db_insert_batch_max_time_ms") {
+            // User did not provide `store.db_insert_batch_max_time_ms`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_insert_batch_max_time_ms => self.store.db_insert_batch_max_time_ms);
+        }
+
+        if !user_provided(builder, "store.db_max_size") {
+            // User did not provide `store.db_max_size`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.db_max_size => some(self.store.db_max_size));
+        }
+
+        if !user_provided(builder, "store.max_pending_count") {
+            // User did not provide `store.max_pending_count`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.max_pending_count => self.store.max_pending_count);
+        }
+
+        if !user_provided(builder, "store.max_delay_count") {
+            // User did not provide `store.max_delay_count`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.max_delay_count => self.store.max_delay_count);
+        }
+
+        if !user_provided(builder, "store.max_processing_count") {
+            // User did not provide `store.max_processing_count`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.max_processing_count => self.store.max_processing_count);
+        }
+
+        if !user_provided(builder, "store.max_processing_attempts") {
+            // User did not provide `store.max_processing_attempts`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.max_processing_attempts => self.store.max_processing_attempts);
+        }
+
+        if !user_provided(builder, "store.processing_deadline_grace_sec") {
+            // User did not provide `store.processing_deadline_grace_sec`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.processing_deadline_grace_sec => self.store.processing_deadline_grace_sec);
+        }
+
+        if !user_provided(builder, "store.vacuum_page_count") {
+            // User did not provide `store.vacuum_page_count`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.vacuum_page_count => some(self.store.vacuum_page_count));
+        }
+
+        if !user_provided(builder, "store.enable_sqlite_status_metrics") {
+            // User did not provide `store.enable_sqlite_status_metrics`, fall back onto the deprecated version of that field
+            deprecated::map!(self.deprecated.enable_sqlite_status_metrics => self.store.enable_sqlite_status_metrics);
+        }
     }
 
     /// Normalize the legacy single-topic config into the new multi-topic
@@ -872,7 +979,7 @@ impl Config {
 
 impl Provider for Config {
     fn metadata(&self) -> Metadata {
-        Metadata::named("Taskbroker config")
+        Metadata::named(DEFAULT_CONFIG_PROVIDER)
     }
 
     fn data(&self) -> Result<figment::value::Map<Profile, figment::value::Dict>, figment::Error> {
