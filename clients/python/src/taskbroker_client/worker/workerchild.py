@@ -282,6 +282,7 @@ def child_process(
                     "status": produce_status,
                     "processing_pool": processing_pool_name,
                 },
+                sample_rate=1.0,
             )
             pending_task_futures.remove(task)
             _task_execution_complete(
