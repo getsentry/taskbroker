@@ -804,6 +804,9 @@ class TaskWorkerProcessingPool:
                                     "taskworker.worker.result_thread.queue_empty",
                                     tags={"processing_pool": self._processing_pool_name},
                                 )
+                            elif self._update_in_batches:
+                                executor.submit(self.send_results, results, False)
+                                results = []
                             break
 
         self._result_thread = threading.Thread(

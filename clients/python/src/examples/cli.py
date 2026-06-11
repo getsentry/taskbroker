@@ -103,6 +103,7 @@ def worker(
             processing_pool_name="examples",
             process_type="forkserver",
             grpc_port=grpc_port,
+            update_in_batches=True,
         )
     elif push_mode:
         worker = PushTaskWorker(
