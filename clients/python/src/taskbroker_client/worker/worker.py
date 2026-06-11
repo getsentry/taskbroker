@@ -128,7 +128,6 @@ class PushTaskWorker:
         app_module: str,
         broker_service: str,
         max_child_task_count: int | None = None,
-        push_task_timeout: float = 5,
         namespace: str | None = None,
         concurrency: int = 1,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
@@ -140,6 +139,7 @@ class PushTaskWorker:
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
         grpc_port: int = 50052,
+        push_task_timeout: float = 5,
     ) -> None:
         app = import_app(app_module)
 
