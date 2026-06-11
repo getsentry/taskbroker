@@ -462,7 +462,7 @@ class BatchPushTaskWorker(PushTaskWorker):
             )
             logger.info(
                 "taskworker.send_update_task_batch.temporarily_unavailable",
-                extra={"task_id": result.task_id, "error": str(e)},
+                extra={"task_ids": [result.task_id for result in results], "error": str(e)},
             )
             raise RequeueException(f"Failed to update task: {e}")
 
