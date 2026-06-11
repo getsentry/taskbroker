@@ -79,7 +79,7 @@ async fn main() -> Result<(), Error> {
             .await?,
         ),
         DatabaseAdapter::Postgres => {
-            if config.store.run_migrations {
+            if config.store.pg.run_migrations {
                 postgres::migrate(&config).await?;
             }
 

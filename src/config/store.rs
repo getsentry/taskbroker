@@ -28,10 +28,7 @@ impl DatabaseAdapter {
 }
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
-pub struct StoreConfig {
-    /// The database adapter to use for the activation store.
-    pub database_adapter: DatabaseAdapter,
-
+pub struct PgConfig {
     /// Whether to run the migrations on the database.
     /// This is only used by the postgres database adapter, since
     /// in production the migrations shouldn't be run by the taskbroker.
@@ -64,6 +61,32 @@ pub struct StoreConfig {
     /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
     /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
     pub pg_extra_query_params: Option<String>,
+}
+
+impl Default for PgConfig {
+    fn default() -> Self {
+        Self {
+            run_migrations: false,
+            pg_host: "sentry-postgres-1".to_owned(),
+            pg_port: 5432,
+            pg_ddl_username: "postgres".to_owned(),
+            pg_ddl_password: "password".to_owned(),
+            pg_username: "postgres".to_owned(),
+            pg_password: "password".to_owned(),
+            pg_database_name: "default".to_owned(),
+            pg_default_database_name: "postgres".to_owned(),
+            pg_extra_query_params: None,
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Deserialize, Serialize)]
+pub struct StoreConfig {
+    /// The database adapter to use for the activation store.
+    pub database_adapter: DatabaseAdapter,
+
+    /// Postgres configuration.
+    pub pg: PgConfig,
 
     /// The path to the sqlite database
     pub db_path: String,
@@ -130,16 +153,7 @@ impl Default for StoreConfig {
         Self {
             db_path: "./taskbroker-inflight.sqlite".to_owned(),
             database_adapter: DatabaseAdapter::Sqlite,
-            run_migrations: false,
-            pg_host: "sentry-postgres-1".to_owned(),
-            pg_port: 5432,
-            pg_ddl_username: "postgres".to_owned(),
-            pg_ddl_password: "password".to_owned(),
-            pg_username: "postgres".to_owned(),
-            pg_password: "password".to_owned(),
-            pg_database_name: "default".to_owned(),
-            pg_default_database_name: "postgres".to_owned(),
-            pg_extra_query_params: None,
+            pg: PgConfig::default(),
             db_write_failure_backoff_ms: 4000,
             db_query_max_retries: Some(3),
             db_query_retry_delay_ms: 100,
