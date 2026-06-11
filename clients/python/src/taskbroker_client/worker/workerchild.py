@@ -267,6 +267,7 @@ def child_process(
                 # We don't care about the actual result value,
                 # we just care if result() raises or not
                 [f.result(RESULT_TIMEOUT_SEC) for f in task.pending_futures]
+                produce_status = "success"
             # If any pending producer futures failed, retry the task
             except Exception:
                 task.status = TASK_ACTIVATION_STATUS_FAILURE
@@ -274,6 +275,14 @@ def child_process(
                     retry_state = task.inflight.activation.retry_state
                     if not task.task_func.retry.max_attempts_reached(retry_state):
                         task.status = TASK_ACTIVATION_STATUS_RETRY
+                produce_status = "failure"
+            metrics.incr(
+                "taskworker.worker.produce.result",
+                tags={
+                    "status": produce_status,
+                    "processing_pool": processing_pool_name,
+                },
+            )
             pending_task_futures.remove(task)
             _task_execution_complete(
                 inflight=task.inflight,
