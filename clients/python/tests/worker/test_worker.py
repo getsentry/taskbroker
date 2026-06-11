@@ -297,6 +297,51 @@ TASK_WITH_HEADERS = InflightTaskActivation(
 )
 
 
+def _make_processing_result(task_id: str) -> ProcessingResult:
+    return ProcessingResult(
+        task_id=task_id,
+        status=TASK_ACTIVATION_STATUS_COMPLETE,
+        host="localhost:50051",
+        receive_timestamp=0,
+    )
+
+
+class _SendResultCapture:
+    def __init__(self) -> None:
+        self.send_calls: list[tuple[list[ProcessingResult], bool]] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, results: list[ProcessingResult], is_draining: bool) -> None:
+        with self._lock:
+            self.send_calls.append((list(results), is_draining))
+        return None
+
+    def wait_for_calls(self, expected: int, timeout: float = 5) -> None:
+        start = time.time()
+        while len(self.send_calls) < expected and time.time() - start < timeout:
+            time.sleep(0.01)
+        if len(self.send_calls) < expected:
+            raise AssertionError(f"Expected {expected} send calls, got {len(self.send_calls)}")
+
+
+def _make_result_thread_pool(
+    capture: _SendResultCapture,
+    *,
+    concurrency: int = 3,
+    update_in_batches: bool,
+) -> TaskWorkerProcessingPool:
+    return TaskWorkerProcessingPool(
+        app_module="examples.app:app",
+        send_result_fn=capture,
+        mp_context=get_context("fork"),
+        max_child_task_count=100,
+        concurrency=concurrency,
+        processing_pool_name="test",
+        process_type="fork",
+        update_in_batches=update_in_batches,
+    )
+
+
 class TestTaskWorker(TestCase):
     def test_fetch_task(self) -> None:
         taskworker = TaskWorker(
@@ -474,6 +519,57 @@ class TestTaskWorker(TestCase):
         # We cannot enqueue the third task because the queue is full
         result = taskworker.push_task(SIMPLE_TASK, timeout=1)
         self.assertFalse(result)
+
+    def test_result_thread_sends_full_batch(self) -> None:
+        capture = _SendResultCapture()
+        concurrency = 3
+        pool = _make_result_thread_pool(capture, concurrency=concurrency, update_in_batches=True)
+        try:
+            pool.start_result_thread()
+
+            for i in range(concurrency):
+                pool.put_result(_make_processing_result(str(i)))
+
+            capture.wait_for_calls(1)
+            batch, is_draining = capture.send_calls[0]
+            self.assertEqual(len(batch), concurrency)
+            self.assertEqual({result.task_id for result in batch}, {"0", "1", "2"})
+            self.assertFalse(is_draining)
+        finally:
+            pool.shutdown()
+
+    def test_result_thread_flushes_partial_batch_on_queue_empty(self) -> None:
+        capture = _SendResultCapture()
+        pool = _make_result_thread_pool(capture, update_in_batches=True)
+        try:
+            pool.start_result_thread()
+
+            pool.put_result(_make_processing_result("partial-1"))
+            pool.put_result(_make_processing_result("partial-2"))
+
+            capture.wait_for_calls(1, timeout=3)
+            batch, is_draining = capture.send_calls[0]
+            self.assertEqual(len(batch), 2)
+            self.assertEqual({result.task_id for result in batch}, {"partial-1", "partial-2"})
+            self.assertFalse(is_draining)
+        finally:
+            pool.shutdown()
+
+    def test_result_thread_sends_results_individually_without_batching(self) -> None:
+        capture = _SendResultCapture()
+        pool = _make_result_thread_pool(capture, update_in_batches=False)
+        try:
+            pool.start_result_thread()
+
+            pool.put_result(_make_processing_result("single"))
+
+            capture.wait_for_calls(1)
+            batch, is_draining = capture.send_calls[0]
+            self.assertEqual(len(batch), 1)
+            self.assertEqual(batch[0].task_id, "single")
+            self.assertFalse(is_draining)
+        finally:
+            pool.shutdown()
 
     def test_run_once_current_task_state(self) -> None:
         # Run a task that uses retry_task() helper
