@@ -11,6 +11,7 @@ use tracing::warn;
 use validator::{Validate, ValidationError};
 
 use crate::Args;
+use crate::config::store::StoreConfig;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
@@ -23,6 +24,9 @@ use deprecated::DeprecatedConfig;
 use kafka::{ClusterConfig, TopicConfig};
 use raw::RawModeConfig;
 use store::DatabaseAdapter;
+
+/// Used to identify whether a configuration option was provided by a user, or whether it is a default.
+const DEFAULT_CONFIG_PROVIDER: &str = "TaskbrokerConfig";
 
 /// How the taskbroker delivers tasks to workers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
@@ -110,96 +114,11 @@ pub struct Config {
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
-    /// The database adapter to use for the activation store.
-    pub database_adapter: DatabaseAdapter,
-
-    /// Whether to run the migrations on the database.
-    /// This is only used by the postgres database adapter, since
-    /// in production the migrations shouldn't be run by the taskbroker.
-    pub run_migrations: bool,
-
-    /// The host of the postgres database to use for the activation store.
-    pub pg_host: String,
-
-    /// The port of the postgres database to use for the activation store.
-    pub pg_port: u16,
-
-    // User permitted to run DDL operations.
-    pub pg_ddl_username: String,
-
-    /// The username of the postgres database to use for the activation store.
-    pub pg_username: String,
-
-    /// The password of the postgres database to use for the activation store.
-    pub pg_password: String,
-
-    /// Password for the user permitted to run DDL operations.
-    pub pg_ddl_password: String,
-
-    /// The name of the postgres database to use for the activation store.
-    pub pg_database_name: String,
-
-    /// The default postgres database to use for migrations..
-    pub pg_default_database_name: String,
-
-    /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
-    /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
-    pub pg_extra_query_params: Option<String>,
-
-    /// The path to the sqlite database
-    pub db_path: String,
-
-    /// The amount of time to wait before retrying writes to db when write fails.
-    pub db_write_failure_backoff_ms: u64,
-
-    /// The maximum number of times to retry a transient database query error
-    /// before surfacing the error. When None, queries are not retried.
-    pub db_query_max_retries: Option<u32>,
-
-    /// The delay in milliseconds between query retry attempts.
-    pub db_query_retry_delay_ms: u64,
-
-    /// The maximum number of tasks that are buffered
-    /// before being written to ActivationStore (sqlite).
-    pub db_insert_batch_max_len: usize,
-
-    /// The maximum number of bytes that are buffered
-    /// before being written to ActivationStore (sqlite).
-    pub db_insert_batch_max_size: usize,
-
-    /// The time in milliseconds to buffer tasks
-    /// before being written to ActivationStore (sqlite).
-    pub db_insert_batch_max_time_ms: u64,
-
-    /// The maximum size of the sqlite database in bytes.
-    /// If the database reaches or exceeds this size, ingestion will
-    /// pause until the database size is reduced.
-    pub db_max_size: Option<u64>,
+    /// The activation store configuration.
+    pub store: StoreConfig,
 
     /// The path to the runtime config file
     pub runtime_config_path: Option<String>,
-
-    /// The maximum number of pending records that can be
-    /// in the ActivationStore (sqlite)
-    pub max_pending_count: usize,
-
-    /// The maximum number of delay records that can be
-    /// in the ActivationStore (sqlite)
-    pub max_delay_count: usize,
-
-    /// The maximum number of processing records that can be
-    /// in the ActivationStore (sqlite)
-    pub max_processing_count: usize,
-
-    /// The maximum number of times a task can be reset from
-    /// processing back to pending. When this limit is reached,
-    /// the activation will be discarded/deadlettered.
-    pub max_processing_attempts: usize,
-
-    /// The number of additional seconds that processing deadlines
-    /// are extended by. This helps reduce broker deadline resets when
-    /// brokers are under load, or there are small networking delays.
-    pub processing_deadline_grace_sec: u64,
 
     /// The frequency at which upkeep tasks
     /// (discarding, retrying activations, etc.) are executed.
@@ -233,10 +152,6 @@ pub struct Config {
     /// Should be at least as large as max_message_size.
     pub grpc_max_message_size: usize,
 
-    /// The number of pages to vacuum from sqlite when vacuum is run.
-    /// If None, all pages will be vacuumed.
-    pub vacuum_page_count: Option<usize>,
-
     /// Enable to have the application perform `VACUUM` on the database
     /// when it starts up, but before the GRPC server, consumer and upkeep begin.
     pub full_vacuum_on_start: bool,
@@ -247,9 +162,6 @@ pub struct Config {
 
     /// The interval in milliseconds between full `VACUUM`s on the database by the upkeep thread.
     pub vacuum_interval_ms: u64,
-
-    /// Enable additional metrics for the sqlite.
-    pub enable_sqlite_status_metrics: bool,
 
     /// When true, the upkeep loop emits the current `async_backtrace::taskdump_tree`
     /// snapshot at `debug!` every 30 seconds. Useful for diagnosing hangs in the
@@ -364,31 +276,8 @@ impl Default for Config {
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
             kafka_send_timeout_ms: 500,
-            db_path: "./taskbroker-inflight.sqlite".to_owned(),
-            database_adapter: DatabaseAdapter::Sqlite,
-            run_migrations: false,
-            pg_host: "sentry-postgres-1".to_owned(),
-            pg_port: 5432,
-            pg_ddl_username: "postgres".to_owned(),
-            pg_ddl_password: "password".to_owned(),
-            pg_username: "postgres".to_owned(),
-            pg_password: "password".to_owned(),
-            pg_database_name: "default".to_owned(),
-            pg_default_database_name: "postgres".to_owned(),
-            pg_extra_query_params: None,
-            db_write_failure_backoff_ms: 4000,
-            db_query_max_retries: Some(3),
-            db_query_retry_delay_ms: 100,
-            db_insert_batch_max_len: 256,
-            db_insert_batch_max_size: 16_000_000,
-            db_insert_batch_max_time_ms: 1000,
-            db_max_size: Some(3000000000),
+            store: StoreConfig::default(),
             runtime_config_path: None,
-            max_pending_count: 2048,
-            max_delay_count: 8192,
-            max_processing_count: 2048,
-            max_processing_attempts: 5,
-            processing_deadline_grace_sec: 3,
             upkeep_task_interval_ms: 1000,
             upkeep_unhealthy_interval_ms: 5000,
             health_check_killswitched: false,
@@ -397,11 +286,9 @@ impl Default for Config {
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
             grpc_max_message_size: 52 * 1024 * 1024, // 52MB
-            vacuum_page_count: None,
             full_vacuum_on_start: true,
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
-            enable_sqlite_status_metrics: true,
             log_async_backtrace: false,
             delivery_mode: DeliveryMode::Pull,
             fetch_threads: 1,
@@ -441,6 +328,9 @@ impl Config {
         builder = builder.merge(Env::prefixed("TASKBROKER_").split("__"));
         let mut config: Config = builder.extract()?;
 
+        // Map deprecated fields to current fields
+        config.map_deprecated_options(&mut builder);
+
         // Normalize and validate Kafka values
         config.normalize_and_validate()?;
 
@@ -448,6 +338,176 @@ impl Config {
         config.validate()?;
 
         Ok(config)
+    }
+
+    /// Map deprecated options to maintain backwards compatability.
+    /// Here is an example using `db_max_size`...
+    /// - If the user provides the new field `store.db_max_size`, it will be used
+    /// - If the user does not provide `store.db_max_size`, use the deprecated field `db_max_size` instead
+    fn map_deprecated_options(&mut self, builder: &mut Figment) {
+        // Nested function definition since it's not used anywhere else
+        fn user_provided(builder: &Figment, key: &str) -> bool {
+            builder
+                .find_metadata(key)
+                .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER)
+        }
+
+        // This field was not provided, so use the deprecated version instead
+        if !user_provided(builder, "store.database_adapter") {
+            deprecated::map! {
+                self.deprecated.database_adapter => self.store.database_adapter
+            };
+        }
+
+        if !user_provided(builder, "store.run_migrations") {
+            deprecated::map! {
+                self.deprecated.run_migrations => self.store.run_migrations
+            };
+        }
+
+        if !user_provided(builder, "store.pg_host") {
+            deprecated::map! {
+                self.deprecated.pg_host => self.store.pg_host
+            };
+        }
+
+        if !user_provided(builder, "store.pg_port") {
+            deprecated::map! {
+                self.deprecated.pg_port => self.store.pg_port
+            };
+        }
+
+        if !user_provided(builder, "store.pg_ddl_username") {
+            deprecated::map! {
+                self.deprecated.pg_ddl_username => self.store.pg_ddl_username
+            };
+        }
+
+        if !user_provided(builder, "store.pg_username") {
+            deprecated::map! {
+                self.deprecated.pg_username => self.store.pg_username
+            };
+        }
+
+        if !user_provided(builder, "store.pg_password") {
+            deprecated::map! {
+                self.deprecated.pg_password => self.store.pg_password
+            };
+        }
+
+        if !user_provided(builder, "store.pg_ddl_password") {
+            deprecated::map! {
+                self.deprecated.pg_ddl_password => self.store.pg_ddl_password
+            };
+        }
+
+        if !user_provided(builder, "store.pg_database_name") {
+            deprecated::map! {
+                self.deprecated.pg_database_name => self.store.pg_database_name
+            };
+        }
+
+        if !user_provided(builder, "store.pg_default_database_name") {
+            deprecated::map! {
+                self.deprecated.pg_default_database_name => self.store.pg_default_database_name
+            };
+        }
+
+        if !user_provided(builder, "store.pg_extra_query_params") {
+            deprecated::map! {
+                self.deprecated.pg_extra_query_params => some(self.store.pg_extra_query_params)
+            };
+        }
+
+        if !user_provided(builder, "store.db_path") {
+            deprecated::map! {
+                self.deprecated.db_path => self.store.db_path
+            };
+        }
+
+        if !user_provided(builder, "store.db_write_failure_backoff_ms") {
+            deprecated::map! {
+                self.deprecated.db_write_failure_backoff_ms => self.store.db_write_failure_backoff_ms
+            };
+        }
+
+        if !user_provided(builder, "store.db_query_max_retries") {
+            deprecated::map! {
+                self.deprecated.db_query_max_retries => some(self.store.db_query_max_retries)
+            };
+        }
+
+        if !user_provided(builder, "store.db_query_retry_delay_ms") {
+            deprecated::map! {
+                self.deprecated.db_query_retry_delay_ms => self.store.db_query_retry_delay_ms
+            };
+        }
+
+        if !user_provided(builder, "store.db_insert_batch_max_len") {
+            deprecated::map! {
+                self.deprecated.db_insert_batch_max_len => self.store.db_insert_batch_max_len
+            };
+        }
+
+        if !user_provided(builder, "store.db_insert_batch_max_size") {
+            deprecated::map! {
+                self.deprecated.db_insert_batch_max_size => self.store.db_insert_batch_max_size
+            };
+        }
+
+        if !user_provided(builder, "store.db_insert_batch_max_time_ms") {
+            deprecated::map! {
+                self.deprecated.db_insert_batch_max_time_ms => self.store.db_insert_batch_max_time_ms
+            };
+        }
+
+        if !user_provided(builder, "store.db_max_size") {
+            deprecated::map! {
+                self.deprecated.db_max_size => some(self.store.db_max_size)
+            };
+        }
+
+        if !user_provided(builder, "store.max_pending_count") {
+            deprecated::map! {
+                self.deprecated.max_pending_count => self.store.max_pending_count
+            };
+        }
+
+        if !user_provided(builder, "store.max_delay_count") {
+            deprecated::map! {
+                self.deprecated.max_delay_count => self.store.max_delay_count
+            };
+        }
+
+        if !user_provided(builder, "store.max_processing_count") {
+            deprecated::map! {
+                self.deprecated.max_processing_count => self.store.max_processing_count
+            };
+        }
+
+        if !user_provided(builder, "store.max_processing_attempts") {
+            deprecated::map! {
+                self.deprecated.max_processing_attempts => self.store.max_processing_attempts
+            };
+        }
+
+        if !user_provided(builder, "store.processing_deadline_grace_sec") {
+            deprecated::map! {
+                self.deprecated.processing_deadline_grace_sec => self.store.processing_deadline_grace_sec
+            };
+        }
+
+        if !user_provided(builder, "store.vacuum_page_count") {
+            deprecated::map! {
+                self.deprecated.vacuum_page_count => some(self.store.vacuum_page_count)
+            };
+        }
+
+        if !user_provided(builder, "store.enable_sqlite_status_metrics") {
+            deprecated::map! {
+                self.deprecated.enable_sqlite_status_metrics => self.store.enable_sqlite_status_metrics
+            };
+        }
     }
 
     /// Normalize the legacy single-topic config into the new multi-topic
@@ -698,7 +758,7 @@ impl Config {
         // avoid that contention (e.g. filtering by (topic, partition) or another
         // mechanism entirely). Reject the combination here, before any consumer
         // spawns.
-        if consumable.len() > 1 && self.database_adapter == DatabaseAdapter::Postgres {
+        if consumable.len() > 1 && self.store.database_adapter == DatabaseAdapter::Postgres {
             return Err(anyhow!(
                 "multi-topic consumption ({} consumable topics) is not supported with the \
                  postgres database adapter; use the sqlite adapter or a single consumable topic",
@@ -947,7 +1007,7 @@ impl Config {
 
 impl Provider for Config {
     fn metadata(&self) -> Metadata {
-        Metadata::named("Taskbroker config")
+        Metadata::named(DEFAULT_CONFIG_PROVIDER)
     }
 
     fn data(&self) -> Result<figment::value::Map<Profile, figment::value::Dict>, figment::Error> {
@@ -987,10 +1047,10 @@ mod tests {
         assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
-        assert_eq!(config.db_path, "./taskbroker-inflight.sqlite");
-        assert_eq!(config.max_pending_count, 2048);
-        assert_eq!(config.max_processing_count, 2048);
-        assert_eq!(config.vacuum_page_count, None);
+        assert_eq!(config.store.db_path, "./taskbroker-inflight.sqlite");
+        assert_eq!(config.store.max_pending_count, 2048);
+        assert_eq!(config.store.max_processing_count, 2048);
+        assert_eq!(config.store.vacuum_page_count, None);
         assert_eq!(
             config.worker_map.get("sentry").map(String::as_str),
             Some("http://127.0.0.1:50052")
@@ -1126,13 +1186,13 @@ mod tests {
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
-            assert_eq!(config.database_adapter, DatabaseAdapter::Postgres);
-            assert_eq!(config.db_path, "./taskbroker-error.sqlite".to_owned());
-            assert_eq!(config.max_pending_count, 512);
-            assert_eq!(config.max_processing_count, 512);
-            assert_eq!(config.max_processing_attempts, 5);
-            assert_eq!(config.vacuum_page_count, Some(1000));
-            assert_eq!(config.db_max_size, Some(3_000_000_000));
+            assert_eq!(config.store.database_adapter, DatabaseAdapter::Postgres);
+            assert_eq!(config.store.db_path, "./taskbroker-error.sqlite".to_owned());
+            assert_eq!(config.store.max_pending_count, 512);
+            assert_eq!(config.store.max_processing_count, 512);
+            assert_eq!(config.store.max_processing_attempts, 5);
+            assert_eq!(config.store.vacuum_page_count, Some(1000));
+            assert_eq!(config.store.db_max_size, Some(3_000_000_000));
             assert!(config.full_vacuum_on_start);
             assert_eq!(
                 config.worker_map,
@@ -1162,8 +1222,8 @@ mod tests {
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.log_filter, "error");
-            assert_eq!(config.database_adapter, DatabaseAdapter::Postgres);
-            assert_eq!(config.max_processing_attempts, 5);
+            assert_eq!(config.store.database_adapter, DatabaseAdapter::Postgres);
+            assert_eq!(config.store.max_processing_attempts, 5);
 
             Ok(())
         });
@@ -1191,10 +1251,13 @@ mod tests {
                 "127.0.0.1:9092"
             );
             assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
-            assert_eq!(config.db_path, "./taskbroker-inflight.sqlite".to_owned());
-            assert_eq!(config.max_pending_count, 2048);
-            assert_eq!(config.max_processing_count, 2048);
-            assert_eq!(config.max_processing_attempts, 5);
+            assert_eq!(
+                config.store.db_path,
+                "./taskbroker-inflight.sqlite".to_owned()
+            );
+            assert_eq!(config.store.max_pending_count, 2048);
+            assert_eq!(config.store.max_processing_count, 2048);
+            assert_eq!(config.store.max_processing_attempts, 5);
             assert_eq!(
                 config.default_metrics_tags,
                 BTreeMap::from([("key".to_owned(), "value".to_owned())])

@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::config::deprecated::DeprecatedConfig;
+use crate::config::store::StoreConfig;
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::{self, PostgresStore, PostgresStoreConfig};
 use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
@@ -314,12 +315,15 @@ pub fn create_integration_config_from_base(base: Config) -> Config {
             kafka_consumer_group: Some("taskworker".into()),
             ..base.deprecated
         },
-        pg_host: get_pg_host(),
-        pg_port: get_pg_port(),
-        pg_username: get_pg_username(),
-        pg_password: get_pg_password(),
-        pg_database_name: get_pg_database_name(),
-        run_migrations: true,
+        store: StoreConfig {
+            pg_host: get_pg_host(),
+            pg_port: get_pg_port(),
+            pg_username: get_pg_username(),
+            pg_password: get_pg_password(),
+            pg_database_name: get_pg_database_name(),
+            run_migrations: true,
+            ..base.store
+        },
         kafka_auto_offset_reset: "earliest".into(),
         ..base
     };
@@ -349,7 +353,10 @@ pub fn create_integration_config_with_ssl() -> Arc<Config> {
             kafka_topic: Some("taskbroker-test".into()),
             ..DeprecatedConfig::default()
         },
-        pg_extra_query_params: Some("sslmode=require".to_string()),
+        store: StoreConfig {
+            pg_extra_query_params: Some("sslmode=require".to_string()),
+            ..StoreConfig::default()
+        },
         ..Config::default()
     }))
 }

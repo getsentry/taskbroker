@@ -191,11 +191,11 @@ pub struct SqliteStoreConfig {
 impl SqliteStoreConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            max_processing_attempts: config.max_processing_attempts,
-            vacuum_page_count: config.vacuum_page_count,
-            processing_deadline_grace_sec: config.processing_deadline_grace_sec,
+            max_processing_attempts: config.store.max_processing_attempts,
+            vacuum_page_count: config.store.vacuum_page_count,
+            processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
             claim_lease_ms: compute_claim_lease_ms(config),
-            enable_sqlite_status_metrics: config.enable_sqlite_status_metrics,
+            enable_sqlite_status_metrics: config.store.enable_sqlite_status_metrics,
         }
     }
 }
