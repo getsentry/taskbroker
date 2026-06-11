@@ -1,4 +1,10 @@
 # Changelog
+## 0.18.6
+
+### Internal Changes 🔧
+
+- (workerchild) Add produce future success/failure metrics by @bmckerry in [#697](https://github.com/getsentry/taskbroker/pull/697)
+
 ## 0.18.5
 
 ### Bug Fixes 🐛
