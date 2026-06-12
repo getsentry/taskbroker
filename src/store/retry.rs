@@ -223,14 +223,9 @@ mod tests {
 
     #[test]
     fn test_config_none_means_zero_retries() {
-        let config = RetryConfig::from_config(&Arc::new(Config {
-            store: StoreConfig {
-                db_query_max_retries: None,
-                ..StoreConfig::default()
-            },
-            ..Config::default()
-        }));
-        assert_eq!(config.max_retries, 0);
+        let config = Config::default().store(StoreConfig::default().db_query_max_retries(None));
+        let retry_config = RetryConfig::from_config(&Arc::new(config));
+        assert_eq!(retry_config.max_retries, 0);
     }
 
     #[test]

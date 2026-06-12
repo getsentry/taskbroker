@@ -1,4 +1,5 @@
 use anyhow::Result;
+use macros::Setters;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -80,7 +81,7 @@ impl Default for PgConfig {
     }
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(PartialEq, Debug, Setters, Deserialize, Serialize)]
 pub struct StoreConfig {
     /// The database adapter to use for the activation store.
     pub database_adapter: DatabaseAdapter,

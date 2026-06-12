@@ -1847,10 +1847,7 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
 #[tokio::test]
 async fn test_vacuum_db_incremental() {
     let config = Config {
-        store: StoreConfig {
-            vacuum_page_count: Some(10),
-            ..StoreConfig::default()
-        },
+        store: StoreConfig::default().vacuum_page_count(Some(10)),
         ..Config::default()
     };
     let store = SqliteStore::new(

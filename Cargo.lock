@@ -1640,6 +1640,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3406,6 +3414,7 @@ dependencies = [
  "http",
  "http-body-util",
  "libsqlite3-sys",
+ "macros",
  "metrics",
  "metrics-exporter-statsd",
  "prost",

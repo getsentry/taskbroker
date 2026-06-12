@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, anyhow};
 use figment::providers::{Env, Format, Yaml};
 use figment::{Figment, Metadata, Profile, Provider};
+use macros::Setters;
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -39,7 +40,7 @@ pub enum DeliveryMode {
     Push,
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
+#[derive(PartialEq, Debug, Deserialize, Serialize, Validate, Setters)]
 pub struct Config {
     /// Deprecated configuration options. Not meant to be used.
     #[serde(flatten)]
