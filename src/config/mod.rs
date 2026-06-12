@@ -359,61 +359,61 @@ impl Config {
             };
         }
 
-        if !user_provided(builder, "store.run_migrations") {
+        if !user_provided(builder, "store.pg.run_migrations") {
             deprecated::map! {
                 self.deprecated.run_migrations => self.store.pg.run_migrations
             };
         }
 
-        if !user_provided(builder, "store.pg_host") {
+        if !user_provided(builder, "store.pg.pg_host") {
             deprecated::map! {
                 self.deprecated.pg_host => self.store.pg.host
             };
         }
 
-        if !user_provided(builder, "store.pg_port") {
+        if !user_provided(builder, "store.pg.pg_port") {
             deprecated::map! {
                 self.deprecated.pg_port => self.store.pg.port
             };
         }
 
-        if !user_provided(builder, "store.pg_ddl_username") {
+        if !user_provided(builder, "store.pg.pg_ddl_username") {
             deprecated::map! {
                 self.deprecated.pg_ddl_username => self.store.pg.ddl_username
             };
         }
 
-        if !user_provided(builder, "store.pg_username") {
+        if !user_provided(builder, "store.pg.pg_username") {
             deprecated::map! {
                 self.deprecated.pg_username => self.store.pg.username
             };
         }
 
-        if !user_provided(builder, "store.pg_password") {
+        if !user_provided(builder, "store.pg.pg_password") {
             deprecated::map! {
                 self.deprecated.pg_password => self.store.pg.password
             };
         }
 
-        if !user_provided(builder, "store.pg_ddl_password") {
+        if !user_provided(builder, "store.pg.pg_ddl_password") {
             deprecated::map! {
                 self.deprecated.pg_ddl_password => self.store.pg.ddl_password
             };
         }
 
-        if !user_provided(builder, "store.pg_database_name") {
+        if !user_provided(builder, "store.pg.pg_database_name") {
             deprecated::map! {
                 self.deprecated.pg_database_name => self.store.pg.database_name
             };
         }
 
-        if !user_provided(builder, "store.pg_default_database_name") {
+        if !user_provided(builder, "store.pg.pg_default_database_name") {
             deprecated::map! {
                 self.deprecated.pg_default_database_name => self.store.pg.default_database_name
             };
         }
 
-        if !user_provided(builder, "store.pg_extra_query_params") {
+        if !user_provided(builder, "store.pg.pg_extra_query_params") {
             deprecated::map! {
                 self.deprecated.pg_extra_query_params => some(self.store.pg.query_params)
             };
