@@ -81,6 +81,29 @@ impl Default for PgConfig {
 }
 
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
+pub struct SqliteConfig {
+    /// The path to the sqlite database
+    pub path: String,
+
+    /// Enable additional metrics for the sqlite.
+    pub enable_status_metrics: bool,
+
+    /// The number of pages to vacuum from SQLite when vacuum is run.
+    /// If None, all pages will be vacuumed.
+    pub vacuum_page_count: Option<usize>,
+}
+
+impl Default for SqliteConfig {
+    fn default() -> Self {
+        Self {
+            path: "./taskbroker-inflight.sqlite".to_owned(),
+            vacuum_page_count: None,
+            enable_status_metrics: true,
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct StoreConfig {
     /// The database adapter to use for the activation store.
     pub database_adapter: DatabaseAdapter,
@@ -88,8 +111,8 @@ pub struct StoreConfig {
     /// Postgres configuration.
     pub pg: PgConfig,
 
-    /// The path to the sqlite database
-    pub db_path: String,
+    /// SQLite configuration.
+    pub sqlite: SqliteConfig,
 
     /// The amount of time to wait before retrying writes to db when write fails.
     pub db_write_failure_backoff_ms: u64,
@@ -139,21 +162,14 @@ pub struct StoreConfig {
     /// are extended by. This helps reduce broker deadline resets when
     /// brokers are under load, or there are small networking delays.
     pub processing_deadline_grace_sec: u64,
-
-    /// The number of pages to vacuum from sqlite when vacuum is run.
-    /// If None, all pages will be vacuumed.
-    pub vacuum_page_count: Option<usize>,
-
-    /// Enable additional metrics for the sqlite.
-    pub enable_sqlite_status_metrics: bool,
 }
 
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            db_path: "./taskbroker-inflight.sqlite".to_owned(),
             database_adapter: DatabaseAdapter::Sqlite,
             pg: PgConfig::default(),
+            sqlite: SqliteConfig::default(),
             db_write_failure_backoff_ms: 4000,
             db_query_max_retries: Some(3),
             db_query_retry_delay_ms: 100,
@@ -166,8 +182,6 @@ impl Default for StoreConfig {
             max_processing_count: 2048,
             max_processing_attempts: 5,
             processing_deadline_grace_sec: 3,
-            vacuum_page_count: None,
-            enable_sqlite_status_metrics: true,
         }
     }
 }

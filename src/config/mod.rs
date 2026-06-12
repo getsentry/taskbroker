@@ -423,12 +423,6 @@ impl Config {
             };
         }
 
-        if !user_provided(builder, "store.db_path") {
-            deprecated::map! {
-                self.deprecated.db_path => self.store.db_path
-            };
-        }
-
         if !user_provided(builder, "store.db_write_failure_backoff_ms") {
             deprecated::map! {
                 self.deprecated.db_write_failure_backoff_ms => self.store.db_write_failure_backoff_ms
@@ -501,15 +495,21 @@ impl Config {
             };
         }
 
-        if !user_provided(builder, "store.vacuum_page_count") {
+        if !user_provided(builder, "store.sqlite.path") {
             deprecated::map! {
-                self.deprecated.vacuum_page_count => some(self.store.vacuum_page_count)
+                self.deprecated.db_path => self.store.sqlite.path
             };
         }
 
-        if !user_provided(builder, "store.enable_sqlite_status_metrics") {
+        if !user_provided(builder, "store.sqlite.vacuum_page_count") {
             deprecated::map! {
-                self.deprecated.enable_sqlite_status_metrics => self.store.enable_sqlite_status_metrics
+                self.deprecated.vacuum_page_count => some(self.store.sqlite.vacuum_page_count)
+            };
+        }
+
+        if !user_provided(builder, "store.sqlite.enable_status_metrics") {
+            deprecated::map! {
+                self.deprecated.enable_sqlite_status_metrics => self.store.sqlite.enable_status_metrics
             };
         }
     }
@@ -1051,10 +1051,10 @@ mod tests {
         assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
-        assert_eq!(config.store.db_path, "./taskbroker-inflight.sqlite");
+        assert_eq!(config.store.sqlite.path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.store.max_pending_count, 2048);
         assert_eq!(config.store.max_processing_count, 2048);
-        assert_eq!(config.store.vacuum_page_count, None);
+        assert_eq!(config.store.sqlite.vacuum_page_count, None);
         assert_eq!(
             config.worker_map.get("sentry").map(String::as_str),
             Some("http://127.0.0.1:50052")
@@ -1191,11 +1191,14 @@ mod tests {
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
             assert_eq!(config.store.database_adapter, DatabaseAdapter::Postgres);
-            assert_eq!(config.store.db_path, "./taskbroker-error.sqlite".to_owned());
+            assert_eq!(
+                config.store.sqlite.path,
+                "./taskbroker-error.sqlite".to_owned()
+            );
             assert_eq!(config.store.max_pending_count, 512);
             assert_eq!(config.store.max_processing_count, 512);
             assert_eq!(config.store.max_processing_attempts, 5);
-            assert_eq!(config.store.vacuum_page_count, Some(1000));
+            assert_eq!(config.store.sqlite.vacuum_page_count, Some(1000));
             assert_eq!(config.store.db_max_size, Some(3_000_000_000));
             assert!(config.full_vacuum_on_start);
             assert_eq!(
@@ -1256,7 +1259,7 @@ mod tests {
             );
             assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
             assert_eq!(
-                config.store.db_path,
+                config.store.sqlite.path,
                 "./taskbroker-inflight.sqlite".to_owned()
             );
             assert_eq!(config.store.max_pending_count, 2048);
