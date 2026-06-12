@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
 use crate::config::Config;
-use crate::config::store::StoreConfig;
+use crate::config::store::{SqliteConfig, StoreConfig};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::PostgresStoreConfig;
 use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig, create_sqlite_pool};
@@ -1848,7 +1848,10 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
 async fn test_vacuum_db_incremental() {
     let config = Config {
         store: StoreConfig {
-            vacuum_page_count: Some(10),
+            sqlite: SqliteConfig {
+                vacuum_page_count: Some(10),
+                ..SqliteConfig::default()
+            },
             ..StoreConfig::default()
         },
         ..Config::default()
