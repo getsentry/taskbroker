@@ -4,6 +4,7 @@ import base64
 import datetime
 import inspect
 import os
+import random
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
@@ -200,6 +201,45 @@ class Task(Generic[P, R]):
                 wait_for_delivery=self.wait_for_delivery,
             )
 
+    def apply_async_testing(
+        self,
+        args: Any | None = None,
+        kwargs: Any | None = None,
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        sizes: Collection[int] | None = None,
+        **options: Any,
+    ) -> None:
+        """
+        Task dispatch for testing tools like the 'taskbroker-send-tasks' command in Sentry.
+
+        Argument `sizes` contains minimum activation sizes in KB, parsed from repeated `--activation-size` values.
+        Normal `delay` and `apply_async` calls do not use this path.
+        """
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
+
+        self._signal_send(task=self, args=args, kwargs=kwargs)
+
+        activation = self.create_testing_activation(
+            args=args,
+            kwargs=kwargs,
+            headers=headers,
+            expires=expires,
+            countdown=countdown,
+            activation_sizes=sizes,
+        )
+        if ALWAYS_EAGER:
+            self._call_func(*args, **kwargs)
+        else:
+            self._namespace.send_task(
+                activation,
+                wait_for_delivery=self.wait_for_delivery,
+            )
+
     def _call_func(self, *args: Any, **kwargs: Any) -> None:
         # Overridden in ExternalTask
         if self.pass_headers:
@@ -337,6 +377,45 @@ class Task(Generic[P, R]):
             expires=expires,
             delay=countdown,
         )
+
+    def create_testing_activation(
+        self,
+        args: Collection[Any],
+        kwargs: Mapping[Any, Any],
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        activation_sizes: Collection[int] | None = None,
+    ) -> TaskActivation:
+        """
+        Build a `TaskActivation` with optional size padding for testing purposes.
+
+        With one activation size, every activation is padded to at least that size.
+        With multiple sizes, one target size is randomly selected per activation.
+        If the activation size is already ≥ the target, it will be unchanged.
+        """
+        activation = self.create_activation(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+        if not activation_sizes:
+            return activation
+
+        activation_sizes = list(activation_sizes)
+        selected_size = (
+            activation_sizes[0] if len(activation_sizes) == 1 else random.choice(activation_sizes)
+        )
+        target_bytes = selected_size * 1024
+        if activation.ByteSize() >= target_bytes:
+            return activation
+
+        padding_key = "taskbroker-testing-activation-padding"
+        while activation.ByteSize() < target_bytes:
+            missing_bytes = target_bytes - activation.ByteSize()
+            activation.headers[padding_key] = (
+                activation.headers.get(padding_key, "") + "x" * missing_bytes
+            )
+
+        return activation
 
     def _create_retry_state(self) -> RetryState:
         retry = self.retry or self._namespace.default_retry or None
