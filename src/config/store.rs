@@ -35,47 +35,47 @@ pub struct PgConfig {
     pub run_migrations: bool,
 
     /// The host of the postgres database to use for the activation store.
-    pub pg_host: String,
+    pub host: String,
 
     /// The port of the postgres database to use for the activation store.
-    pub pg_port: u16,
+    pub port: u16,
 
     // User permitted to run DDL operations.
-    pub pg_ddl_username: String,
+    pub ddl_username: String,
 
     /// The username of the postgres database to use for the activation store.
-    pub pg_username: String,
+    pub username: String,
 
     /// The password of the postgres database to use for the activation store.
-    pub pg_password: String,
+    pub password: String,
 
     /// Password for the user permitted to run DDL operations.
-    pub pg_ddl_password: String,
+    pub ddl_password: String,
 
     /// The name of the postgres database to use for the activation store.
-    pub pg_database_name: String,
+    pub database_name: String,
 
     /// The default postgres database to use for migrations..
-    pub pg_default_database_name: String,
+    pub default_database_name: String,
 
     /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
     /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
-    pub pg_extra_query_params: Option<String>,
+    pub query_params: Option<String>,
 }
 
 impl Default for PgConfig {
     fn default() -> Self {
         Self {
             run_migrations: false,
-            pg_host: "sentry-postgres-1".to_owned(),
-            pg_port: 5432,
-            pg_ddl_username: "postgres".to_owned(),
-            pg_ddl_password: "password".to_owned(),
-            pg_username: "postgres".to_owned(),
-            pg_password: "password".to_owned(),
-            pg_database_name: "default".to_owned(),
-            pg_default_database_name: "postgres".to_owned(),
-            pg_extra_query_params: None,
+            host: "sentry-postgres-1".to_owned(),
+            port: 5432,
+            ddl_username: "postgres".to_owned(),
+            ddl_password: "password".to_owned(),
+            username: "postgres".to_owned(),
+            password: "password".to_owned(),
+            database_name: "default".to_owned(),
+            default_database_name: "postgres".to_owned(),
+            query_params: None,
         }
     }
 }
