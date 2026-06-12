@@ -317,11 +317,11 @@ pub fn create_integration_config_from_base(base: Config) -> Config {
         },
         store: StoreConfig {
             pg: PgConfig {
-                pg_host: get_pg_host(),
-                pg_port: get_pg_port(),
-                pg_username: get_pg_username(),
-                pg_password: get_pg_password(),
-                pg_database_name: get_pg_database_name(),
+                host: get_pg_host(),
+                port: get_pg_port(),
+                username: get_pg_username(),
+                password: get_pg_password(),
+                database_name: get_pg_database_name(),
                 run_migrations: true,
                 ..base.store.pg
             },
@@ -358,7 +358,7 @@ pub fn create_integration_config_with_ssl() -> Arc<Config> {
         },
         store: StoreConfig {
             pg: PgConfig {
-                pg_extra_query_params: Some("sslmode=require".to_string()),
+                query_params: Some("sslmode=require".to_string()),
                 ..PgConfig::default()
             },
             ..StoreConfig::default()
