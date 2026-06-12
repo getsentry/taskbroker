@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import resource
 import time
 from abc import abstractmethod
@@ -184,7 +185,18 @@ class DatadogMetrics(MetricsBackend):
             client = DogStatsd(
                 host=statsd_host or "localhost",
                 port=int(statsd_port) if statsd_port is not None else 8125,
+                disable_telemetry=True,
+                # Use a background thread to send metrics
+                disable_background_sender=False,
             )
+            # Origin detection is enabled after 0.45 by default.
+            # Disable it since it silently fails.
+            # Ref: https://github.com/DataDog/datadogpy/issues/764
+            client._container_id = None
+
+            # Call wait_for_pending() before exiting to make sure all pending metrics are sent.
+            atexit.register(client.wait_for_pending)
+
         self.client = client
 
     def _build_tag_list(self, tags: Tags | None, *, with_application: bool) -> list[str]:
