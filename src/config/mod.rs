@@ -352,13 +352,7 @@ impl Config {
                 .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER)
         }
 
-        // This field was not provided, so use the deprecated version instead
-        if !user_provided(builder, "store.database_adapter") {
-            deprecated::map! {
-                self.deprecated.database_adapter => self.store.database_adapter
-            };
-        }
-
+        // Map deprecated Postgres configuration options
         if !user_provided(builder, "store.pg.run_migrations") {
             deprecated::map! {
                 self.deprecated.run_migrations => self.store.pg.run_migrations
@@ -416,6 +410,32 @@ impl Config {
         if !user_provided(builder, "store.pg.query_params") {
             deprecated::map! {
                 self.deprecated.pg_extra_query_params => some(self.store.pg.query_params)
+            };
+        }
+
+        // Map deprecated SQLite configuration options
+        if !user_provided(builder, "store.sqlite.path") {
+            deprecated::map! {
+                self.deprecated.db_path => self.store.sqlite.path
+            };
+        }
+
+        if !user_provided(builder, "store.sqlite.vacuum_page_count") {
+            deprecated::map! {
+                self.deprecated.vacuum_page_count => some(self.store.sqlite.vacuum_page_count)
+            };
+        }
+
+        if !user_provided(builder, "store.sqlite.enable_status_metrics") {
+            deprecated::map! {
+                self.deprecated.enable_sqlite_status_metrics => self.store.sqlite.enable_status_metrics
+            };
+        }
+
+        // Map deprecated store configuration options
+        if !user_provided(builder, "store.database_adapter") {
+            deprecated::map! {
+                self.deprecated.database_adapter => self.store.database_adapter
             };
         }
 
@@ -488,24 +508,6 @@ impl Config {
         if !user_provided(builder, "store.processing_deadline_grace_sec") {
             deprecated::map! {
                 self.deprecated.processing_deadline_grace_sec => self.store.processing_deadline_grace_sec
-            };
-        }
-
-        if !user_provided(builder, "store.sqlite.path") {
-            deprecated::map! {
-                self.deprecated.db_path => self.store.sqlite.path
-            };
-        }
-
-        if !user_provided(builder, "store.sqlite.vacuum_page_count") {
-            deprecated::map! {
-                self.deprecated.vacuum_page_count => some(self.store.sqlite.vacuum_page_count)
-            };
-        }
-
-        if !user_provided(builder, "store.sqlite.enable_status_metrics") {
-            deprecated::map! {
-                self.deprecated.enable_sqlite_status_metrics => self.store.sqlite.enable_status_metrics
             };
         }
     }
