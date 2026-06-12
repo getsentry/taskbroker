@@ -145,15 +145,8 @@ impl Reducer for ActivationWriter {
             return Ok(None);
         }
 
-        // I suspect that 'store' occasionally hangs and want to confirm
-        let insert_id = Utc::now().timestamp_millis();
-        debug!("Preparing insert {:?}", insert_id);
-
         let write_to_store_start = Instant::now();
         let res = self.store.store(batch).await;
-
-        // If every "preparing" has a matching "completed" we are good
-        debug!("Completed insert {:?}", insert_id);
 
         match res {
             Ok(entries) => {
