@@ -27,7 +27,7 @@ class MetricsBackend(Protocol):
         value: float,
         instance: str | None = None,
         tags: Tags | None = None,
-        sample_rate: float = 1,
+        sample_rate: float | None = None,
         unit: str | None = None,
         stacklevel: int = 0,
     ) -> None:
@@ -99,7 +99,7 @@ class NoOpMetricsBackend(MetricsBackend):
         value: float,
         instance: str | None = None,
         tags: Tags | None = None,
-        sample_rate: float = 1,
+        sample_rate: float | None = None,
         unit: str | None = None,
         stacklevel: int = 0,
     ) -> None:
@@ -242,7 +242,7 @@ class DatadogMetrics(MetricsBackend):
         value: float,
         instance: str | None = None,
         tags: Tags | None = None,
-        sample_rate: float = 1,
+        sample_rate: float | None = None,
         unit: str | None = None,
         stacklevel: int = 0,
     ) -> None:
