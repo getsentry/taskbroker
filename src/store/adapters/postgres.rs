@@ -18,7 +18,6 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
-use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::{RetryConfig, retry_query};
 use crate::store::traits::ActivationStore;
@@ -256,7 +255,7 @@ impl PostgresStoreConfig {
             run_migrations: config.store.pg.run_migrations,
             max_processing_attempts: config.store.max_processing_attempts,
             processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
-            claim_lease_ms: compute_claim_lease_ms(config),
+            claim_lease_ms: config.store.claim_lease_ms,
             retry_config: RetryConfig::from_config(config),
         }
     }

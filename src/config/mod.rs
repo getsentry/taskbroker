@@ -14,6 +14,7 @@ use crate::Args;
 use crate::config::store::StoreConfig;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
+use crate::push::compute_claim_lease_ms;
 
 pub mod deprecated;
 pub mod kafka;
@@ -336,6 +337,9 @@ impl Config {
 
         // Validate all other values
         config.validate()?;
+
+        // Compute derived fields, such as claim duration
+        config.store.claim_lease_ms = compute_claim_lease_ms(&config);
 
         Ok(config)
     }

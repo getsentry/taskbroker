@@ -26,7 +26,6 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{debug, instrument, warn};
 
 use crate::config::Config;
-use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
@@ -194,7 +193,7 @@ impl SqliteStoreConfig {
             max_processing_attempts: config.store.max_processing_attempts,
             vacuum_page_count: config.store.sqlite.vacuum_page_count,
             processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
-            claim_lease_ms: compute_claim_lease_ms(config),
+            claim_lease_ms: config.store.claim_lease_ms,
             enable_sqlite_status_metrics: config.store.sqlite.enable_status_metrics,
         }
     }

@@ -162,6 +162,11 @@ pub struct StoreConfig {
     /// are extended by. This helps reduce broker deadline resets when
     /// brokers are under load, or there are small networking delays.
     pub processing_deadline_grace_sec: u64,
+
+    /// Number of milliseconds to wait before reverting a claimed activation
+    /// back to pending. This MUST be computed when constructing the configuration.
+    #[serde(skip)]
+    pub claim_lease_ms: u64,
 }
 
 impl Default for StoreConfig {
@@ -182,6 +187,7 @@ impl Default for StoreConfig {
             max_processing_count: 2048,
             max_processing_attempts: 5,
             processing_deadline_grace_sec: 3,
+            claim_lease_ms: 0, // This default is OK because we compute it later anyways
         }
     }
 }
