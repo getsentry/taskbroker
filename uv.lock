@@ -767,7 +767,7 @@ requires-dist = [
     { name = "redis", specifier = ">=3.4.1" },
     { name = "redis-py-cluster", specifier = ">=2.1.0" },
     { name = "sentry-arroyo", specifier = ">=2.38.7" },
-    { name = "sentry-protos", specifier = ">=0.15.0" },
+    { name = "sentry-protos", specifier = ">=0.26.1" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
     { name = "zstandard", specifier = ">=0.18.0" },
