@@ -407,7 +407,11 @@ impl Config {
             };
         }
 
+<<<<<<< HEAD
         if !user_provided(builder, "store.pg.query_params") {
+=======
+        if !user_provided(builder, "store.pg.extra_query_params") {
+>>>>>>> f52c8b2 (Fix Deprecated Options Mapping)
             deprecated::map! {
                 self.deprecated.pg_extra_query_params => some(self.store.pg.query_params)
             };
