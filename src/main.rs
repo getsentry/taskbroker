@@ -73,7 +73,7 @@ async fn main() -> Result<(), Error> {
     let store: Arc<dyn ActivationStore> = match config.store.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
             SqliteStore::new(
-                &config.store.db_path,
+                &config.store.sqlite.path,
                 SqliteStoreConfig::from_config(&config),
             )
             .await?,

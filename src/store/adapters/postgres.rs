@@ -231,8 +231,6 @@ pub struct PostgresStoreConfig {
     pub max_processing_attempts: usize,
     pub processing_deadline_grace_sec: u64,
     pub claim_lease_ms: u64,
-    pub vacuum_page_count: Option<usize>,
-    pub enable_sqlite_status_metrics: bool,
     pub retry_config: RetryConfig,
 }
 
@@ -257,10 +255,8 @@ impl PostgresStoreConfig {
             pg_default_database_name: config.store.pg.default_database_name.clone(),
             run_migrations: config.store.pg.run_migrations,
             max_processing_attempts: config.store.max_processing_attempts,
-            vacuum_page_count: config.store.vacuum_page_count,
             processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
             claim_lease_ms: compute_claim_lease_ms(config),
-            enable_sqlite_status_metrics: config.store.enable_sqlite_status_metrics,
             retry_config: RetryConfig::from_config(config),
         }
     }
