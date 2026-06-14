@@ -214,7 +214,7 @@ class Task(Generic[P, R]):
         """
         Task dispatch for testing tools like the 'taskbroker-send-tasks' command in Sentry.
 
-        Argument `sizes` contains minimum activation sizes in KB, parsed from repeated `--activation-size` values.
+        Argument `sizes` contains minimum activation sizes in bytes, parsed from repeated `--activation-size` values.
         Normal `delay` and `apply_async` calls do not use this path.
         """
         if args is None:
@@ -404,7 +404,7 @@ class Task(Generic[P, R]):
         selected_size = (
             activation_sizes[0] if len(activation_sizes) == 1 else random.choice(activation_sizes)
         )
-        target_bytes = selected_size * 1024
+        target_bytes = selected_size
         if activation.ByteSize() >= target_bytes:
             return activation
 
