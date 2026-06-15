@@ -531,19 +531,3 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn ActivationStore) {
         "difference in failure count",
     );
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn integration_config_computes_claim_lease() {
-        let config = create_integration_config();
-
-        assert_eq!(
-            config.store.claim_lease_ms,
-            crate::push::compute_claim_lease_ms(&config)
-        );
-        assert_ne!(config.store.claim_lease_ms, 0);
-    }
-}

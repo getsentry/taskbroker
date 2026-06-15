@@ -252,11 +252,11 @@ pub struct Config {
 }
 
 impl Default for Config {
-    /// Field defaults. `kafka_topics`/`kafka_clusters` are left empty; call
-    /// [`Config::normalize_and_validate`] (as `from_args` does) to populate
-    /// them from the legacy fields before using the kafka helpers.
+    /// Field defaults. Note that `kafka_topics` and `kafka_clusters` are left empty.
+    /// Call `finalize` (as `from_args` does) to populate them from the legacy fields
+    /// before using the Kafka helpers.
     fn default() -> Self {
-        Self {
+        let mut config = Self {
             deprecated: DeprecatedConfig::default(),
             sentry_dsn: None,
             sentry_env: None,
@@ -312,7 +312,12 @@ impl Default for Config {
             raw_processing_deadline_duration: 30,
             kafka_topics: BTreeMap::new(),
             kafka_clusters: BTreeMap::new(),
-        }
+        };
+
+        // Compute `claim_lease_ms` before returning
+        config.store.claim_lease_ms = compute_claim_lease_ms(&config);
+
+        config
     }
 }
 
@@ -332,6 +337,7 @@ impl Config {
         // Map deprecated fields to current fields
         config.map_deprecated_options(&mut builder);
 
+        // Normalize and validate
         config.finalize()?;
 
         Ok(config)
@@ -344,9 +350,6 @@ impl Config {
 
         // Validate all other values
         self.validate()?;
-
-        // Compute derived fields, such as claim duration
-        self.store.claim_lease_ms = compute_claim_lease_ms(self);
 
         Ok(())
     }
