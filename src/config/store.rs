@@ -176,7 +176,7 @@ impl Default for StoreConfig {
             pg: PgConfig::default(),
             sqlite: SqliteConfig::default(),
             db_write_failure_backoff_ms: 4000,
-            db_query_max_retries: 0, // Do not retry by default
+            db_query_max_retries: 3,
             db_query_retry_delay: Duration::from_millis(100),
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
