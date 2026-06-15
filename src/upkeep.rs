@@ -434,8 +434,8 @@ pub async fn do_upkeep(
     let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
         store.count_depths_per_partition(),
         store.pending_activation_max_lag(&now),
-        fs::metadata(config.db_path.clone()),
-        fs::metadata(config.db_path.clone() + "-wal")
+        fs::metadata(config.store.db_path.clone()),
+        fs::metadata(config.store.db_path.clone() + "-wal")
     );
 
     if let Ok(ref depths) = depth_counts {
@@ -1021,12 +1021,12 @@ mod tests {
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].processing_attempts = config.max_processing_attempts as i32;
+        batch[0].processing_attempts = config.store.max_processing_attempts as i32;
 
         batch[1].status = ActivationStatus::Complete;
         batch[1].added_at += Duration::from_secs(1);
 
-        batch[2].processing_attempts = config.max_processing_attempts as i32;
+        batch[2].processing_attempts = config.store.max_processing_attempts as i32;
         batch[2].added_at += Duration::from_secs(2);
 
         assert!(store.store(&batch).await.is_ok());

@@ -41,6 +41,7 @@ from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.producer import TaskProducer, _pending_futures
 from taskbroker_client.worker.worker import (
+    BatchPushTaskWorker,
     PushTaskWorker,
     TaskWorker,
     TaskWorkerProcessingPool,
@@ -296,6 +297,51 @@ TASK_WITH_HEADERS = InflightTaskActivation(
 )
 
 
+def _make_processing_result(task_id: str) -> ProcessingResult:
+    return ProcessingResult(
+        task_id=task_id,
+        status=TASK_ACTIVATION_STATUS_COMPLETE,
+        host="localhost:50051",
+        receive_timestamp=0,
+    )
+
+
+class _SendResultCapture:
+    def __init__(self) -> None:
+        self.send_calls: list[tuple[list[ProcessingResult], bool]] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, results: list[ProcessingResult], is_draining: bool) -> None:
+        with self._lock:
+            self.send_calls.append((list(results), is_draining))
+        return None
+
+    def wait_for_calls(self, expected: int, timeout: float = 5) -> None:
+        start = time.time()
+        while len(self.send_calls) < expected and time.time() - start < timeout:
+            time.sleep(0.01)
+        if len(self.send_calls) < expected:
+            raise AssertionError(f"Expected {expected} send calls, got {len(self.send_calls)}")
+
+
+def _make_result_thread_pool(
+    capture: _SendResultCapture,
+    *,
+    concurrency: int = 3,
+    update_in_batches: bool,
+) -> TaskWorkerProcessingPool:
+    return TaskWorkerProcessingPool(
+        app_module="examples.app:app",
+        send_result_fn=capture,
+        mp_context=get_context("fork"),
+        max_child_task_count=100,
+        concurrency=concurrency,
+        processing_pool_name="test",
+        process_type="fork",
+        update_in_batches=update_in_batches,
+    )
+
+
 class TestTaskWorker(TestCase):
     def test_fetch_task(self) -> None:
         taskworker = TaskWorker(
@@ -474,6 +520,57 @@ class TestTaskWorker(TestCase):
         result = taskworker.push_task(SIMPLE_TASK, timeout=1)
         self.assertFalse(result)
 
+    def test_result_thread_sends_full_batch(self) -> None:
+        capture = _SendResultCapture()
+        concurrency = 3
+        pool = _make_result_thread_pool(capture, concurrency=concurrency, update_in_batches=True)
+        try:
+            pool.start_result_thread()
+
+            for i in range(concurrency):
+                pool.put_result(_make_processing_result(str(i)))
+
+            capture.wait_for_calls(1)
+            batch, is_draining = capture.send_calls[0]
+            self.assertEqual(len(batch), concurrency)
+            self.assertEqual({result.task_id for result in batch}, {"0", "1", "2"})
+            self.assertFalse(is_draining)
+        finally:
+            pool.shutdown()
+
+    def test_result_thread_flushes_partial_batch_on_queue_empty(self) -> None:
+        capture = _SendResultCapture()
+        pool = _make_result_thread_pool(capture, update_in_batches=True)
+        try:
+            pool.start_result_thread()
+
+            pool.put_result(_make_processing_result("partial-1"))
+            pool.put_result(_make_processing_result("partial-2"))
+
+            capture.wait_for_calls(1, timeout=3)
+            batch, is_draining = capture.send_calls[0]
+            self.assertEqual(len(batch), 2)
+            self.assertEqual({result.task_id for result in batch}, {"partial-1", "partial-2"})
+            self.assertFalse(is_draining)
+        finally:
+            pool.shutdown()
+
+    def test_result_thread_sends_results_individually_without_batching(self) -> None:
+        capture = _SendResultCapture()
+        pool = _make_result_thread_pool(capture, update_in_batches=False)
+        try:
+            pool.start_result_thread()
+
+            pool.put_result(_make_processing_result("single"))
+
+            capture.wait_for_calls(1)
+            batch, is_draining = capture.send_calls[0]
+            self.assertEqual(len(batch), 1)
+            self.assertEqual(batch[0].task_id, "single")
+            self.assertFalse(is_draining)
+        finally:
+            pool.shutdown()
+
     def test_run_once_current_task_state(self) -> None:
         # Run a task that uses retry_task() helper
         # to raise and catch a NoRetriesRemainingError
@@ -535,6 +632,19 @@ class TestTaskWorker(TestCase):
         self.assertTrue(taskworker.client is not None)
         self.assertEqual(taskworker._grpc_port, 50099)
 
+    def test_constructor_batch_push_mode(self) -> None:
+        taskworker = BatchPushTaskWorker(
+            app_module="examples.app:app",
+            broker_service="127.0.0.1:50051",
+            max_child_task_count=100,
+            process_type="fork",
+            grpc_port=50099,
+            update_in_batches=True,
+        )
+
+        self.assertTrue(taskworker.client is not None)
+        self.assertEqual(taskworker._grpc_port, 50099)
+
 
 def test_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
     taskworker = PushTaskWorker(
@@ -544,6 +654,30 @@ def test_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
         process_type="fork",
         health_check_file_path=str(tmp_path / "health"),
         health_check_sec_per_touch=0.01,
+    )
+
+    with mock.patch.object(taskworker.client, "emit_health_check") as mock_emit:
+        taskworker._start_health_check_thread()
+        try:
+            start = time.time()
+            while mock_emit.call_count < 2 and time.time() - start < 1:
+                time.sleep(0.01)
+        finally:
+            taskworker._stop_health_check_thread()
+
+    assert mock_emit.call_count >= 2
+    assert taskworker._health_check_thread is None
+
+
+def test_batch_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
+    taskworker = BatchPushTaskWorker(
+        app_module="examples.app:app",
+        broker_service="127.0.0.1:50051",
+        max_child_task_count=100,
+        process_type="fork",
+        health_check_file_path=str(tmp_path / "health"),
+        health_check_sec_per_touch=0.01,
+        update_in_batches=True,
     )
 
     with mock.patch.object(taskworker.client, "emit_health_check") as mock_emit:
@@ -586,6 +720,33 @@ class TestWorkerServicer(TestCase):
         self.assertEqual(inflight.activation.id, SIMPLE_TASK.activation.id)
         self.assertEqual(inflight.host, "broker-host:50051")
 
+    def test_batch_push_task_success(self) -> None:
+        taskworker = BatchPushTaskWorker(
+            app_module="examples.app:app",
+            broker_service="127.0.0.1:50051",
+            max_child_task_count=100,
+            process_type="fork",
+            update_in_batches=True,
+        )
+        with mock.patch.object(
+            taskworker.worker_pool, "push_task", return_value=True
+        ) as mock_push_task:
+            request = PushTaskRequest(
+                task=SIMPLE_TASK.activation,
+                callback_url="broker-host:50051",
+            )
+            mock_context = mock.MagicMock()
+            servicer = WorkerServicer(taskworker.worker_pool)
+
+            response = servicer.PushTask(request, mock_context)
+
+        self.assertIsInstance(response, PushTaskResponse)
+        mock_context.abort.assert_not_called()
+        mock_push_task.assert_called_once_with(mock.ANY, timeout=5)
+        (inflight,) = mock_push_task.call_args[0]
+        self.assertEqual(inflight.activation.id, SIMPLE_TASK.activation.id)
+        self.assertEqual(inflight.host, "broker-host:50051")
+
     def test_push_task_worker_busy(self) -> None:
         taskworker = PushTaskWorker(
             app_module="examples.app:app",
@@ -593,6 +754,29 @@ class TestWorkerServicer(TestCase):
             max_child_task_count=100,
             process_type="fork",
             child_tasks_queue_maxsize=1,
+        )
+        with mock.patch.object(taskworker.worker_pool, "push_task", return_value=False):
+            request = PushTaskRequest(
+                task=SIMPLE_TASK.activation,
+                callback_url="broker-host:50051",
+            )
+            mock_context = mock.MagicMock()
+            servicer = WorkerServicer(taskworker.worker_pool)
+
+            servicer.PushTask(request, mock_context)
+
+            mock_context.abort.assert_called_once_with(
+                grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy"
+            )
+
+    def test_batch_push_task_worker_busy(self) -> None:
+        taskworker = BatchPushTaskWorker(
+            app_module="examples.app:app",
+            broker_service="127.0.0.1:50051",
+            max_child_task_count=100,
+            process_type="fork",
+            child_tasks_queue_maxsize=1,
+            update_in_batches=True,
         )
         with mock.patch.object(taskworker.worker_pool, "push_task", return_value=False):
             request = PushTaskRequest(

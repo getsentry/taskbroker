@@ -1,3 +1,3 @@
-from .worker import PushTaskWorker, TaskWorker
+from .worker import BatchPushTaskWorker, PushTaskWorker, TaskWorker
 
-__all__ = ("TaskWorker", "PushTaskWorker")
+__all__ = ("TaskWorker", "PushTaskWorker", "BatchPushTaskWorker")

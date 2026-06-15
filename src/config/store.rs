@@ -26,3 +26,134 @@ impl DatabaseAdapter {
         }
     }
 }
+
+#[derive(PartialEq, Debug, Deserialize, Serialize)]
+pub struct StoreConfig {
+    /// The database adapter to use for the activation store.
+    pub database_adapter: DatabaseAdapter,
+
+    /// Whether to run the migrations on the database.
+    /// This is only used by the postgres database adapter, since
+    /// in production the migrations shouldn't be run by the taskbroker.
+    pub run_migrations: bool,
+
+    /// The host of the postgres database to use for the activation store.
+    pub pg_host: String,
+
+    /// The port of the postgres database to use for the activation store.
+    pub pg_port: u16,
+
+    // User permitted to run DDL operations.
+    pub pg_ddl_username: String,
+
+    /// The username of the postgres database to use for the activation store.
+    pub pg_username: String,
+
+    /// The password of the postgres database to use for the activation store.
+    pub pg_password: String,
+
+    /// Password for the user permitted to run DDL operations.
+    pub pg_ddl_password: String,
+
+    /// The name of the postgres database to use for the activation store.
+    pub pg_database_name: String,
+
+    /// The default postgres database to use for migrations..
+    pub pg_default_database_name: String,
+
+    /// Extra query parameters that can be added to the postgres connection string. Should be in the format of "key=value&key2=value2".
+    /// For example, "sslmode=require&sslrootcert=/path/to/root.crt".
+    pub pg_extra_query_params: Option<String>,
+
+    /// The path to the sqlite database
+    pub db_path: String,
+
+    /// The amount of time to wait before retrying writes to db when write fails.
+    pub db_write_failure_backoff_ms: u64,
+
+    /// The maximum number of times to retry a transient database query error
+    /// before surfacing the error. When None, queries are not retried.
+    pub db_query_max_retries: Option<u32>,
+
+    /// The delay in milliseconds between query retry attempts.
+    pub db_query_retry_delay_ms: u64,
+
+    /// The maximum number of tasks that are buffered
+    /// before being written to ActivationStore (sqlite).
+    pub db_insert_batch_max_len: usize,
+
+    /// The maximum number of bytes that are buffered
+    /// before being written to ActivationStore (sqlite).
+    pub db_insert_batch_max_size: usize,
+
+    /// The time in milliseconds to buffer tasks
+    /// before being written to ActivationStore (sqlite).
+    pub db_insert_batch_max_time_ms: u64,
+
+    /// The maximum size of the sqlite database in bytes.
+    /// If the database reaches or exceeds this size, ingestion will
+    /// pause until the database size is reduced.
+    pub db_max_size: Option<u64>,
+
+    /// The maximum number of pending records that can be
+    /// in the ActivationStore (sqlite)
+    pub max_pending_count: usize,
+
+    /// The maximum number of delay records that can be
+    /// in the ActivationStore (sqlite)
+    pub max_delay_count: usize,
+
+    /// The maximum number of processing records that can be
+    /// in the ActivationStore (sqlite)
+    pub max_processing_count: usize,
+
+    /// The maximum number of times a task can be reset from
+    /// processing back to pending. When this limit is reached,
+    /// the activation will be discarded/deadlettered.
+    pub max_processing_attempts: usize,
+
+    /// The number of additional seconds that processing deadlines
+    /// are extended by. This helps reduce broker deadline resets when
+    /// brokers are under load, or there are small networking delays.
+    pub processing_deadline_grace_sec: u64,
+
+    /// The number of pages to vacuum from sqlite when vacuum is run.
+    /// If None, all pages will be vacuumed.
+    pub vacuum_page_count: Option<usize>,
+
+    /// Enable additional metrics for the sqlite.
+    pub enable_sqlite_status_metrics: bool,
+}
+
+impl Default for StoreConfig {
+    fn default() -> Self {
+        Self {
+            db_path: "./taskbroker-inflight.sqlite".to_owned(),
+            database_adapter: DatabaseAdapter::Sqlite,
+            run_migrations: false,
+            pg_host: "sentry-postgres-1".to_owned(),
+            pg_port: 5432,
+            pg_ddl_username: "postgres".to_owned(),
+            pg_ddl_password: "password".to_owned(),
+            pg_username: "postgres".to_owned(),
+            pg_password: "password".to_owned(),
+            pg_database_name: "default".to_owned(),
+            pg_default_database_name: "postgres".to_owned(),
+            pg_extra_query_params: None,
+            db_write_failure_backoff_ms: 4000,
+            db_query_max_retries: Some(3),
+            db_query_retry_delay_ms: 100,
+            db_insert_batch_max_len: 256,
+            db_insert_batch_max_size: 16_000_000,
+            db_insert_batch_max_time_ms: 1000,
+            db_max_size: Some(3000000000),
+            max_pending_count: 2048,
+            max_delay_count: 8192,
+            max_processing_count: 2048,
+            max_processing_attempts: 5,
+            processing_deadline_grace_sec: 3,
+            vacuum_page_count: None,
+            enable_sqlite_status_metrics: true,
+        }
+    }
+}

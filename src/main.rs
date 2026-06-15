@@ -67,15 +67,19 @@ async fn main() -> Result<(), Error> {
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
     if args.run == Run::Migrations {
-        return config.database_adapter.migrate(&config).await;
+        return config.store.database_adapter.migrate(&config).await;
     }
 
-    let store: Arc<dyn ActivationStore> = match config.database_adapter {
+    let store: Arc<dyn ActivationStore> = match config.store.database_adapter {
         DatabaseAdapter::Sqlite => Arc::new(
-            SqliteStore::new(&config.db_path, SqliteStoreConfig::from_config(&config)).await?,
+            SqliteStore::new(
+                &config.store.db_path,
+                SqliteStoreConfig::from_config(&config),
+            )
+            .await?,
         ),
         DatabaseAdapter::Postgres => {
-            if config.run_migrations {
+            if config.store.run_migrations {
                 postgres::migrate(&config).await?;
             }
 
