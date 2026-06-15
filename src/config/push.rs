@@ -11,6 +11,7 @@ fn validate_nonzero_duration(duration: &Duration) -> Result<(), ValidationError>
         Ok(())
     }
 }
+
 #[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct PushQueueConfig {
     /// The size of the push queue.

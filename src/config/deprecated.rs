@@ -21,7 +21,7 @@ macro_rules! map {
 
 pub(crate) use map;
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Default, Validate)]
+#[derive(PartialEq, Debug, Deserialize, Serialize, Default)]
 pub struct DeprecatedConfig {
     /// The topic to fetch task messages from.
     /// Deprecated: use kafka_topics instead. Mutually exclusive with the new
@@ -206,10 +206,8 @@ pub struct DeprecatedConfig {
     pub push_timeout_ms: Option<u64>,
 
     /// The size of the push queue.
-    #[validate(range(min = 1))]
     pub push_queue_size: Option<usize>,
 
     /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
-    #[validate(range(min = 1))]
     pub push_queue_timeout_ms: Option<u64>,
 }
