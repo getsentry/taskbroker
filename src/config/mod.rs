@@ -353,6 +353,18 @@ impl Config {
             self.store.db_query_retry_delay = Duration::from_millis(v);
         }
 
+        if !user_provided(builder, "push.queue.size") {
+            deprecated::map! {
+                self.deprecated.push_queue_size => self.push.queue.size
+            };
+        }
+
+        if !user_provided(builder, "push.queue.timeout")
+            && let Some(v) = self.deprecated.push_timeout_ms
+        {
+            self.push.timeout = Duration::from_millis(v);
+        }
+
         // Map deprecated Postgres configuration options
         if !user_provided(builder, "store.pg.run_migrations") {
             deprecated::map! {
