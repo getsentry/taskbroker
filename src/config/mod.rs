@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use figment::providers::{Env, Format, Yaml};
@@ -451,10 +452,10 @@ impl Config {
             };
         }
 
-        if !user_provided(builder, "store.db_query_retry_delay_ms") {
-            deprecated::map! {
-                self.deprecated.db_query_retry_delay_ms => self.store.db_query_retry_delay_ms
-            };
+        if !user_provided(builder, "store.db_query_retry_delay")
+            && let Some(v) = self.deprecated.db_query_retry_delay_ms
+        {
+            self.store.db_query_retry_delay = Duration::from_millis(v);
         }
 
         if !user_provided(builder, "store.db_insert_batch_max_len") {

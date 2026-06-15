@@ -17,7 +17,7 @@ impl RetryConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
             max_retries: config.store.db_query_max_retries.unwrap_or(0),
-            retry_delay: Duration::from_millis(config.store.db_query_retry_delay_ms),
+            retry_delay: config.store.db_query_retry_delay,
         }
     }
 }
