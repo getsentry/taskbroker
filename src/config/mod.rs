@@ -17,8 +17,10 @@ use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
 pub mod deprecated;
+mod deserialize;
 pub mod kafka;
 pub mod raw;
+mod serialize;
 pub mod store;
 
 use deprecated::DeprecatedConfig;
