@@ -351,6 +351,9 @@ impl Config {
         // Validate all other values
         self.validate()?;
 
+        // Ensure `claim_lease_ms` is computed
+        self.store.claim_lease_ms = compute_claim_lease_ms(self);
+
         Ok(())
     }
 
