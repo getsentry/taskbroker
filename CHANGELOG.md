@@ -1,4 +1,10 @@
 # Changelog
+## 26.6.0
+
+### Bug Fixes 🐛
+
+- Allow configuring the push_task_timeout by @evanh in [#698](https://github.com/getsentry/taskbroker/pull/698)
+
 ## 26.5.2
 
 ### New Features ✨
