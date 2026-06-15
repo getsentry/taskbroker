@@ -31,7 +31,7 @@ use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{self, PostgresStore, PostgresStoreConfig};
+use taskbroker::store::adapters::postgres::{self, PostgresStore};
 use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
 use taskbroker::store::traits::ActivationStore;
 use taskbroker::upkeep::upkeep;
@@ -80,10 +80,10 @@ async fn main() -> Result<(), Error> {
         ),
         DatabaseAdapter::Postgres => {
             if config.store.pg.run_migrations {
-                postgres::migrate(&config).await?;
+                postgres::migrate(&config.store).await?;
             }
 
-            Arc::new(PostgresStore::new(PostgresStoreConfig::from_config(&config)).await?)
+            Arc::new(PostgresStore::new(&config).await?)
         }
     };
 

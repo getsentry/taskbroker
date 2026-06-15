@@ -19,7 +19,7 @@ use crate::config::Config;
 use crate::config::deprecated::DeprecatedConfig;
 use crate::config::store::{PgConfig, StoreConfig};
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::{self, PostgresStore, PostgresStoreConfig};
+use crate::store::adapters::postgres::{self, PostgresStore};
 use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
 use crate::store::traits::ActivationStore;
 
@@ -287,13 +287,10 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
         ) as Arc<dyn ActivationStore>,
         "postgres" => {
             let config = create_integration_config();
-            postgres::migrate(&config).await.unwrap();
+            postgres::migrate(&config.store).await.unwrap();
 
-            let store = Arc::new(
-                PostgresStore::new(PostgresStoreConfig::from_config(&config))
-                    .await
-                    .unwrap(),
-            ) as Arc<dyn ActivationStore>;
+            let store =
+                Arc::new(PostgresStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>;
 
             store.assign_partitions(vec![0]).unwrap();
             store
@@ -342,26 +339,6 @@ pub fn create_integration_config() -> Arc<Config> {
         deprecated: DeprecatedConfig {
             kafka_topic: Some("taskbroker-test".into()),
             ..DeprecatedConfig::default()
-        },
-        ..Config::default()
-    }))
-}
-
-/// Create a Config instance that uses SSL
-/// and earliest auto_offset_reset. This is intended to be combined
-/// with [`reset_topic`]
-pub fn create_integration_config_with_ssl() -> Arc<Config> {
-    Arc::new(create_integration_config_from_base(Config {
-        deprecated: DeprecatedConfig {
-            kafka_topic: Some("taskbroker-test".into()),
-            ..DeprecatedConfig::default()
-        },
-        store: StoreConfig {
-            pg: PgConfig {
-                query_params: Some("sslmode=require".to_string()),
-                ..PgConfig::default()
-            },
-            ..StoreConfig::default()
         },
         ..Config::default()
     }))
