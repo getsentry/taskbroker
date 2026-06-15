@@ -20,7 +20,7 @@ use crate::config::deprecated::DeprecatedConfig;
 use crate::config::store::{PgConfig, StoreConfig};
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::{self, PostgresStore};
-use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use crate::store::adapters::sqlite::SqliteStore;
 use crate::store::traits::ActivationStore;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
@@ -276,17 +276,13 @@ pub fn create_config() -> Arc<Config> {
 
 /// Create an ActivationStore instance
 pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
+    let mut config = create_integration_config();
+    config.store.sqlite.path = generate_temp_filename();
+
     match adapter {
-        "sqlite" => Arc::new(
-            SqliteStore::new(
-                &generate_temp_filename(),
-                SqliteStoreConfig::from_config(&create_integration_config()),
-            )
-            .await
-            .unwrap(),
-        ) as Arc<dyn ActivationStore>,
+        "sqlite" => Arc::new(SqliteStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>,
+
         "postgres" => {
-            let config = create_integration_config();
             postgres::migrate(&config.store).await.unwrap();
 
             let store =
@@ -334,14 +330,14 @@ pub fn create_integration_config_from_base(base: Config) -> Config {
 /// Create a Config instance that uses a testing topic
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
-pub fn create_integration_config() -> Arc<Config> {
-    Arc::new(create_integration_config_from_base(Config {
+pub fn create_integration_config() -> Config {
+    create_integration_config_from_base(Config {
         deprecated: DeprecatedConfig {
             kafka_topic: Some("taskbroker-test".into()),
             ..DeprecatedConfig::default()
         },
         ..Config::default()
-    }))
+    })
 }
 
 /// Create a kafka producer for a given config
