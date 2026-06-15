@@ -332,16 +332,23 @@ impl Config {
         // Map deprecated fields to current fields
         config.map_deprecated_options(&mut builder);
 
-        // Normalize and validate Kafka values
-        config.normalize_and_validate()?;
-
-        // Validate all other values
-        config.validate()?;
-
-        // Compute derived fields, such as claim duration
-        config.store.claim_lease_ms = compute_claim_lease_ms(&config);
+        config.finalize()?;
 
         Ok(config)
+    }
+
+    /// Normalize, validate, and compute derived configuration fields.
+    pub(crate) fn finalize(&mut self) -> Result<()> {
+        // Normalize and validate Kafka values
+        self.normalize_and_validate()?;
+
+        // Validate all other values
+        self.validate()?;
+
+        // Compute derived fields, such as claim duration
+        self.store.claim_lease_ms = compute_claim_lease_ms(self);
+
+        Ok(())
     }
 
     /// Map deprecated options to maintain backwards compatability.

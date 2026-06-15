@@ -5,12 +5,12 @@ use crate::config::store::DatabaseAdapter;
 macro_rules! map {
     () => {};
 
-    // An optional deprecated value always wins
+    // An optional deprecated value ALWAYS wins
     ($deprecated:expr => some($current:expr)) => {
         $current = $deprecated.take();
     };
 
-    // A plain deprecated value only wins when it's provided
+    // A plain deprecated value ONLY wins when it's provided
     ($deprecated:expr => $current:expr) => {
         if let Some(v) = $deprecated.take() {
             $current = v;
