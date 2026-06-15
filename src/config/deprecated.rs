@@ -204,4 +204,12 @@ pub struct DeprecatedConfig {
 
     /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     pub push_timeout_ms: Option<u64>,
+
+    /// The size of the push queue.
+    #[validate(range(min = 1))]
+    pub push_queue_size: usize,
+
+    /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
+    #[validate(range(min = 1))]
+    pub push_queue_timeout_ms: u64,
 }

@@ -140,7 +140,7 @@ impl FetchPool {
                                                 warn!(
                                                     task_id = %id,
                                                     "Submit to push pool timed out after {} milliseconds",
-                                                    config.push_queue_timeout_ms
+                                                    config.push.queue.timeout.as_millis()
                                                 );
 
                                                 // Wait for push queue to empty
@@ -205,8 +205,9 @@ async fn push_task(
 ) -> Result<(), QueueError> {
     metrics::gauge!("push.queue.depth").set(sender.len() as f64);
 
-    let duration = Duration::from_millis(config.push_queue_timeout_ms);
-    let timeout = tokio::time::timeout(duration, sender.send_async((activation, time)));
+    let duration = config.push.queue.timeout;
+    let future = sender.send_async((activation, time));
+    let timeout = tokio::time::timeout(duration, future);
 
     match timed!(timeout, "push.queue.wait_duration") {
         // The channel was full so the send timed out

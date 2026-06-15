@@ -190,14 +190,6 @@ pub struct Config {
     #[validate(nested)]
     pub push: PushConfig,
 
-    /// The size of the push queue.
-    #[validate(range(min = 1))]
-    pub push_queue_size: usize,
-
-    /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
-    #[validate(range(min = 1))]
-    pub push_queue_timeout_ms: u64,
-
     /// Update statuses from the gRPC server in batches?
     pub batch_status_updates: bool,
 
@@ -294,8 +286,6 @@ impl Default for Config {
             fetch_wait_ms: 100,
             fetch_batch_size: 1,
             push: PushConfig::default(),
-            push_queue_size: 1,
-            push_queue_timeout_ms: 5000,
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
@@ -1113,17 +1103,17 @@ mod tests {
         assert!(config.validate().is_ok());
 
         // Push queue size cannot be zero
-        config.push_queue_size = 0;
+        config.push.queue.size = 0;
         assert!(config.validate().is_err());
 
-        config.push_queue_size = 1;
+        config.push.queue.size = 1;
         assert!(config.validate().is_ok());
 
         // Push queue timeout cannot be zero
-        config.push_queue_timeout_ms = 0;
+        config.push.queue.timeout = Duration::from_millis(0);
         assert!(config.validate().is_err());
 
-        config.push_queue_timeout_ms = 1;
+        config.push.queue.timeout = Duration::from_millis(1);
         assert!(config.validate().is_ok());
 
         // Push timeout cannot be zero
