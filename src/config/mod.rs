@@ -450,7 +450,7 @@ impl Config {
 
         if !user_provided(builder, "store.db_query_max_retries") {
             deprecated::map! {
-                self.deprecated.db_query_max_retries => some(self.store.db_query_max_retries)
+                self.deprecated.db_query_max_retries => self.store.db_query_max_retries
             };
         }
 
