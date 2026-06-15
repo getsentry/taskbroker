@@ -15,7 +15,7 @@ use crate::worker::WorkerMap;
 mod thread;
 pub mod updater;
 
-/// Approximately the longest time it should take to perform a task update query (used by `compute_claim_lease_ms`).
+/// Approximately the longest time it should take to perform a task update query (used by `compute_claim_duration_ms`).
 /// Setting this too low will not impact correctness, but in the worst case, it may cause tasks to excute more than once.
 const QUERY_MS: u64 = 1000;
 
@@ -34,7 +34,7 @@ const QUERY_MS: u64 = 1000;
 /// This computation could definitely use some refinement, but it's more accurate than
 /// what we had before, and it's located in one place rather than being copied between
 /// the SQLite and Postgres adapters.
-pub fn compute_claim_lease_ms(config: &Config) -> u64 {
+pub fn compute_claim_duration_ms(config: &Config) -> u64 {
     // Imagine we are computing the lease for some task in a batch of N tasks
     let fetch_batch_size = config.fetch_batch_size.max(1) as u64;
     let push_threads = config.push_threads.max(1) as u64;

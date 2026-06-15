@@ -19,7 +19,7 @@ use tracing::{instrument, warn};
 
 use crate::config::Config;
 use crate::config::store::StoreConfig;
-use crate::push::compute_claim_lease_ms;
+use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
@@ -230,7 +230,7 @@ pub struct PostgresStore {
     write_pool: PgPool,
     config: StoreConfig,
     partitions: RwLock<Vec<i32>>,
-    claim_lease_ms: u64,
+    claim_duration_ms: u64,
 }
 
 impl PostgresStore {
@@ -282,7 +282,7 @@ impl PostgresStore {
             write_pool,
             config: config.store.clone(),
             partitions: RwLock::new(vec![]),
-            claim_lease_ms: compute_claim_lease_ms(config),
+            claim_duration_ms: compute_claim_duration_ms(config),
         })
     }
 
@@ -481,7 +481,7 @@ impl ActivationStore for PostgresStore {
         mark_processing: bool,
     ) -> Result<Vec<Activation>, Error> {
         let grace_period = self.config.processing_deadline_grace_sec;
-        let claim_lease_ms = self.claim_lease_ms as i64;
+        let claim_duration_ms = self.claim_duration_ms as i64;
 
         retry_query(&self.config.retry, "claim_activations", || async {
             let now = Utc::now();
@@ -542,7 +542,7 @@ impl ActivationStore for PostgresStore {
             } else {
                 query_builder.push(format!(
                     "UPDATE inflight_taskactivations
-                     SET claim_expires_at = now() + ({claim_lease_ms} * interval '1 millisecond'),
+                     SET claim_expires_at = now() + ({claim_duration_ms} * interval '1 millisecond'),
                          processing_deadline = NULL,
                          status = "
                 ));
