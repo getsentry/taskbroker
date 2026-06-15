@@ -434,8 +434,8 @@ pub async fn do_upkeep(
     let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
         store.count_depths_per_partition(),
         store.pending_activation_max_lag(&now),
-        fs::metadata(config.store.db_path.clone()),
-        fs::metadata(config.store.db_path.clone() + "-wal")
+        fs::metadata(config.store.sqlite.path.clone()),
+        fs::metadata(config.store.sqlite.path.clone() + "-wal")
     );
 
     if let Ok(ref depths) = depth_counts {
