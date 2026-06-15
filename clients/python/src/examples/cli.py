@@ -117,6 +117,7 @@ def worker(
             processing_pool_name="examples",
             process_type="forkserver",
             grpc_port=grpc_port,
+            push_task_timeout=5,
         )
     else:
         worker = TaskWorker(
