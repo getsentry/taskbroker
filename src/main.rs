@@ -307,7 +307,7 @@ async fn main() -> Result<(), Error> {
         let mut workers: Vec<WorkerMap> = vec![];
 
         // For every push thread, create a map from applications to worker connections
-        for _ in 0..config.push_threads {
+        for _ in 0..config.push.threads {
             let mut map = HashMap::new();
 
             for (application, endpoint) in config.worker_map.clone() {

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use validator::Validate;
 
 use crate::config::store::DatabaseAdapter;
 
@@ -20,7 +21,7 @@ macro_rules! map {
 
 pub(crate) use map;
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Default)]
+#[derive(PartialEq, Debug, Deserialize, Serialize, Default, Validate)]
 pub struct DeprecatedConfig {
     /// The topic to fetch task messages from.
     /// Deprecated: use kafka_topics instead. Mutually exclusive with the new
@@ -197,4 +198,10 @@ pub struct DeprecatedConfig {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: Option<bool>,
+
+    /// The number of concurrent push threads to run.
+    pub push_threads: Option<usize>,
+
+    /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
+    pub push_timeout_ms: Option<u64>,
 }

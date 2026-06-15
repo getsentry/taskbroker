@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
 use crate::config::Config;
+use crate::config::push::PushConfig;
 use crate::push::updater::test_eager_updater;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
@@ -174,7 +175,10 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let notify = Arc::new(Notify::new());
     let config = Arc::new(Config {
         worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
+        push: PushConfig {
+            threads: 1,
+            ..PushConfig::default()
+        },
         push_queue_size: 10,
         ..Config::default()
     });
@@ -220,7 +224,10 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
     let notify = Arc::new(Notify::new());
     let config = Arc::new(Config {
         worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
+        push: PushConfig {
+            threads: 1,
+            ..PushConfig::default()
+        },
         push_queue_size: 10,
         ..Config::default()
     });
@@ -263,7 +270,10 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     let notify = Arc::new(Notify::new());
     let config = Arc::new(Config {
         worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
+        push: PushConfig {
+            threads: 1,
+            ..PushConfig::default()
+        },
         push_queue_size: 10,
         ..Config::default()
     });

@@ -12,12 +12,14 @@ use tracing::warn;
 use validator::{Validate, ValidationError};
 
 use crate::Args;
+use crate::config::push::PushConfig;
 use crate::config::store::StoreConfig;
 use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
 pub mod deprecated;
 pub mod kafka;
+pub mod push;
 pub mod raw;
 pub mod store;
 
@@ -184,9 +186,9 @@ pub struct Config {
     #[validate(range(min = 1))]
     pub fetch_batch_size: i32,
 
-    /// The number of concurrent push threads to run.
-    #[validate(range(min = 1))]
-    pub push_threads: usize,
+    /// Push pool / thread configuration.
+    #[validate(nested)]
+    pub push: PushConfig,
 
     /// The size of the push queue.
     #[validate(range(min = 1))]
@@ -195,10 +197,6 @@ pub struct Config {
     /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
     #[validate(range(min = 1))]
     pub push_queue_timeout_ms: u64,
-
-    /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
-    #[validate(range(min = 1))]
-    pub push_timeout_ms: u64,
 
     /// Update statuses from the gRPC server in batches?
     pub batch_status_updates: bool,
@@ -295,10 +293,9 @@ impl Default for Config {
             fetch_threads: 1,
             fetch_wait_ms: 100,
             fetch_batch_size: 1,
-            push_threads: 1,
+            push: PushConfig::default(),
             push_queue_size: 1,
             push_queue_timeout_ms: 5000,
-            push_timeout_ms: 30000,
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
@@ -351,6 +348,19 @@ impl Config {
             builder
                 .find_metadata(key)
                 .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER)
+        }
+
+        // Map deprecated push mode configuration options
+        if !user_provided(builder, "push.threads") {
+            deprecated::map! {
+                self.deprecated.push_threads => self.push.threads
+            };
+        }
+
+        if !user_provided(builder, "push.timeout")
+            && let Some(v) = self.deprecated.push_timeout_ms
+        {
+            self.store.db_query_retry_delay = Duration::from_millis(v);
         }
 
         // Map deprecated Postgres configuration options
@@ -1031,6 +1041,7 @@ fn validate_power_of_two(n: usize) -> Result<(), ValidationError> {
 mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeMap;
+    use std::time::Duration;
 
     use figment::Jail;
     use validator::Validate;
@@ -1095,10 +1106,10 @@ mod tests {
         assert!(config.validate().is_ok());
 
         // Push threads cannot be zero
-        config.push_threads = 0;
+        config.push.threads = 0;
         assert!(config.validate().is_err());
 
-        config.push_threads = 1;
+        config.push.threads = 1;
         assert!(config.validate().is_ok());
 
         // Push queue size cannot be zero
@@ -1116,10 +1127,10 @@ mod tests {
         assert!(config.validate().is_ok());
 
         // Push timeout cannot be zero
-        config.push_timeout_ms = 0;
+        config.push.timeout = Duration::from_millis(0);
         assert!(config.validate().is_err());
 
-        config.push_timeout_ms = 1;
+        config.push.timeout = Duration::from_millis(1);
         assert!(config.validate().is_ok());
 
         // Status update batch size cannot be zero
