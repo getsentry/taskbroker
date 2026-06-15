@@ -1,4 +1,14 @@
 # Changelog
+## 0.19.1
+
+### New Features ✨
+
+- Add a BatchPushTaskWorker for batched updates to the broker by @evanh in [#695](https://github.com/getsentry/taskbroker/pull/695)
+
+### Bug Fixes 🐛
+
+- Allow configuring the push_task_timeout by @evanh in [#698](https://github.com/getsentry/taskbroker/pull/698)
+
 ## 0.18.6
 
 ### Internal Changes 🔧
