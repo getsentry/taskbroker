@@ -37,9 +37,9 @@ impl ActivationBatcherConfig {
             kafka_topic: topic_name.to_owned(),
             kafka_long_topic: config.kafka_long_topic.clone(),
             send_timeout_ms: config.kafka_send_timeout_ms,
-            max_batch_time_ms: config.store.db_insert_batch_max_time_ms,
-            max_batch_len: config.store.db_insert_batch_max_len,
-            max_batch_size: config.store.db_insert_batch_max_size,
+            max_batch_time_ms: config.store.insert_batch_max_time_ms,
+            max_batch_len: config.store.insert_batch_max_length,
+            max_batch_size: config.store.insert_batch_max_bytes,
         }
     }
 }
@@ -316,8 +316,8 @@ demoted_namespaces:
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let mut config = Config {
             store: StoreConfig {
-                db_insert_batch_max_size: 1,
-                db_insert_batch_max_len: 2,
+                insert_batch_max_bytes: 1,
+                insert_batch_max_length: 2,
                 ..StoreConfig::default()
             },
             ..Default::default()
@@ -349,8 +349,8 @@ demoted_namespaces:
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let mut config = Config {
             store: StoreConfig {
-                db_insert_batch_max_size: 100000,
-                db_insert_batch_max_len: 2,
+                insert_batch_max_bytes: 100000,
+                insert_batch_max_length: 2,
                 ..StoreConfig::default()
             },
             ..Default::default()

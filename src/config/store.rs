@@ -129,7 +129,7 @@ impl Default for RetryConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct StoreConfig {
     /// The database adapter to use for the activation store.
-    pub database_adapter: DatabaseAdapter,
+    pub adapter: DatabaseAdapter,
 
     /// Postgres configuration.
     pub pg: PgConfig,
@@ -141,24 +141,24 @@ pub struct StoreConfig {
     pub retry: RetryConfig,
 
     /// The amount of time to wait before retrying writes to db when write fails.
-    pub db_write_failure_backoff_ms: u64,
+    pub insert_failure_backoff_ms: u64,
 
     /// The maximum number of tasks that are buffered
     /// before being written to ActivationStore (sqlite).
-    pub db_insert_batch_max_len: usize,
+    pub insert_batch_max_length: usize,
 
     /// The maximum number of bytes that are buffered
     /// before being written to ActivationStore (sqlite).
-    pub db_insert_batch_max_size: usize,
+    pub insert_batch_max_bytes: usize,
 
     /// The time in milliseconds to buffer tasks
     /// before being written to ActivationStore (sqlite).
-    pub db_insert_batch_max_time_ms: u64,
+    pub insert_batch_max_time_ms: u64,
 
     /// The maximum size of the sqlite database in bytes.
     /// If the database reaches or exceeds this size, ingestion will
     /// pause until the database size is reduced.
-    pub db_max_size: Option<u64>,
+    pub max_size: Option<u64>,
 
     /// The maximum number of pending records that can be
     /// in the ActivationStore (sqlite)
@@ -186,15 +186,15 @@ pub struct StoreConfig {
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            database_adapter: DatabaseAdapter::Sqlite,
+            adapter: DatabaseAdapter::Sqlite,
             pg: PgConfig::default(),
             sqlite: SqliteConfig::default(),
             retry: RetryConfig::default(),
-            db_write_failure_backoff_ms: 4000,
-            db_insert_batch_max_len: 256,
-            db_insert_batch_max_size: 16_000_000,
-            db_insert_batch_max_time_ms: 1000,
-            db_max_size: Some(3000000000),
+            insert_failure_backoff_ms: 4000,
+            insert_batch_max_length: 256,
+            insert_batch_max_bytes: 16_000_000,
+            insert_batch_max_time_ms: 1000,
+            max_size: Some(3000000000),
             max_pending_count: 2048,
             max_delay_count: 8192,
             max_processing_count: 2048,
