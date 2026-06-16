@@ -433,6 +433,19 @@ impl Config {
             };
         }
 
+        // Map deprecated retry configuration options
+        if !user_provided(builder, "store.retry.max_retries") {
+            deprecated::map! {
+                self.deprecated.db_query_max_retries => self.store.retry.max_retries
+            };
+        }
+
+        if !user_provided(builder, "store.retry.delay")
+            && let Some(v) = self.deprecated.db_query_retry_delay_ms
+        {
+            self.store.retry.delay = Duration::from_millis(v);
+        }
+
         // Map deprecated store configuration options
         if !user_provided(builder, "store.database_adapter") {
             deprecated::map! {
@@ -444,18 +457,6 @@ impl Config {
             deprecated::map! {
                 self.deprecated.db_write_failure_backoff_ms => self.store.db_write_failure_backoff_ms
             };
-        }
-
-        if !user_provided(builder, "store.db_query_max_retries") {
-            deprecated::map! {
-                self.deprecated.db_query_max_retries => self.store.db_query_max_retries
-            };
-        }
-
-        if !user_provided(builder, "store.db_query_retry_delay")
-            && let Some(v) = self.deprecated.db_query_retry_delay_ms
-        {
-            self.store.db_query_retry_delay = Duration::from_millis(v);
         }
 
         if !user_provided(builder, "store.db_insert_batch_max_len") {

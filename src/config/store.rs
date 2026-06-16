@@ -105,6 +105,27 @@ impl Default for SqliteConfig {
     }
 }
 
+/// Configuration for query retry behavior.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct RetryConfig {
+    /// The maximum number of times to retry a transient database query error
+    /// before surfacing the error. When zero, queries are not retried.
+    pub max_retries: u32,
+
+    /// The delay between query retry attempts.
+    #[serde(with = "crate::serde::duration")]
+    pub delay: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            delay: Duration::from_millis(100),
+        }
+    }
+}
+
 #[derive(PartialEq, Debug, Deserialize, Serialize)]
 pub struct StoreConfig {
     /// The database adapter to use for the activation store.
@@ -116,16 +137,11 @@ pub struct StoreConfig {
     /// SQLite configuration.
     pub sqlite: SqliteConfig,
 
+    /// Query retry configuration.
+    pub retry: RetryConfig,
+
     /// The amount of time to wait before retrying writes to db when write fails.
     pub db_write_failure_backoff_ms: u64,
-
-    /// The maximum number of times to retry a transient database query error
-    /// before surfacing the error. When zero, queries are not retried.
-    pub db_query_max_retries: u32,
-
-    /// The delay between query retry attempts.
-    #[serde(with = "crate::serde::duration")]
-    pub db_query_retry_delay: Duration,
 
     /// The maximum number of tasks that are buffered
     /// before being written to ActivationStore (sqlite).
@@ -173,9 +189,8 @@ impl Default for StoreConfig {
             database_adapter: DatabaseAdapter::Sqlite,
             pg: PgConfig::default(),
             sqlite: SqliteConfig::default(),
+            retry: RetryConfig::default(),
             db_write_failure_backoff_ms: 4000,
-            db_query_max_retries: 3,
-            db_query_retry_delay: Duration::from_millis(100),
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
             db_insert_batch_max_time_ms: 1000,

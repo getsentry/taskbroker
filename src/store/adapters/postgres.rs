@@ -18,9 +18,10 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
+use crate::config::store::RetryConfig;
 use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
-use crate::store::retry::{RetryConfig, retry_query};
+use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
@@ -257,7 +258,7 @@ impl PostgresStoreConfig {
             max_processing_attempts: config.store.max_processing_attempts,
             processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
             claim_lease_ms: compute_claim_lease_ms(config),
-            retry_config: RetryConfig::from_config(config),
+            retry_config: config.store.retry.clone(),
         }
     }
 }
