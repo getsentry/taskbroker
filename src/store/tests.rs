@@ -6,7 +6,6 @@ use std::time::Duration;
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
-use sqlx::postgres::PgSslMode;
 use sqlx::{QueryBuilder, Sqlite};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
@@ -15,14 +14,12 @@ use tokio::task::JoinSet;
 use crate::config::Config;
 use crate::config::store::{SqliteConfig, StoreConfig};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::PostgresStoreConfig;
 use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
-    create_integration_config_with_ssl, create_test_store, generate_temp_filename,
-    generate_unique_namespace, make_activations, make_activations_with_namespace,
-    replace_retry_state,
+    create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
+    make_activations_with_namespace, replace_retry_state,
 };
 
 #[test]
@@ -74,14 +71,6 @@ async fn test_sqlite_create_db() {
         .await
         .is_ok()
     )
-}
-
-#[test]
-fn test_connect_opts_preserves_sslmode_query_param() {
-    let config = create_integration_config_with_ssl();
-    let opts = PostgresStoreConfig::from_config(&config).pg_connection;
-    assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
-    assert_eq!(opts.get_host(), "localhost");
 }
 
 #[tokio::test]

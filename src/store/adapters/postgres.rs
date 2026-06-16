@@ -18,7 +18,7 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{instrument, warn};
 
 use crate::config::Config;
-use crate::config::store::RetryConfig;
+use crate::config::store::StoreConfig;
 use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
@@ -26,14 +26,14 @@ use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
 
 /// Run migrations.
-pub async fn migrate(config: &Config) -> Result<()> {
+pub async fn migrate(config: &StoreConfig) -> Result<()> {
     let mut conn_opts = PgConnectOptions::new()
-        .username(&config.store.pg.ddl_username)
-        .password(&config.store.pg.ddl_password)
-        .host(&config.store.pg.host)
-        .port(config.store.pg.port);
+        .username(&config.pg.ddl_username)
+        .password(&config.pg.ddl_password)
+        .host(&config.pg.host)
+        .port(config.pg.port);
 
-    if let Some(extra_query_params) = config.store.pg.query_params.as_ref() {
+    if let Some(extra_query_params) = config.pg.query_params.as_ref() {
         let url = conn_opts.to_url_lossy();
         let new_url =
             url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
@@ -41,18 +41,18 @@ pub async fn migrate(config: &Config) -> Result<()> {
     }
 
     let default_pool =
-        create_default_postgres_pool(&conn_opts, &config.store.pg.default_database_name).await?;
+        create_default_postgres_pool(&conn_opts, &config.pg.default_database_name).await?;
 
     // Create the database if it doesn't exist
     let row: (bool,) =
         sqlx::query_as("SELECT EXISTS ( SELECT 1 FROM pg_catalog.pg_database WHERE datname = $1 )")
-            .bind(&config.store.pg.database_name)
+            .bind(&config.pg.database_name)
             .fetch_one(&default_pool)
             .await?;
 
     if !row.0 {
-        println!("Creating database {}", &config.store.pg.database_name);
-        sqlx::query(format!("CREATE DATABASE {}", &config.store.pg.database_name).as_str())
+        println!("Creating database {}", &config.pg.database_name);
+        sqlx::query(format!("CREATE DATABASE {}", &config.pg.database_name).as_str())
             .execute(&default_pool)
             .await?;
     }
@@ -61,7 +61,7 @@ pub async fn migrate(config: &Config) -> Result<()> {
 
     let migration_pool = PgPoolOptions::new()
         .max_connections(1)
-        .connect_with(conn_opts.database(&config.store.pg.database_name))
+        .connect_with(conn_opts.database(&config.pg.database_name))
         .await?;
 
     println!("Running migrations on database");
@@ -224,50 +224,13 @@ pub async fn create_default_postgres_pool(
     Ok(default_pool)
 }
 
-pub struct PostgresStoreConfig {
-    pub pg_connection: PgConnectOptions,
-    pub pg_database_name: String,
-    pub pg_default_database_name: String,
-    pub run_migrations: bool,
-    pub max_processing_attempts: usize,
-    pub processing_deadline_grace_sec: u64,
-    pub claim_lease_ms: u64,
-    pub retry_config: RetryConfig,
-}
-
-impl PostgresStoreConfig {
-    pub fn from_config(config: &Config) -> Self {
-        let mut conn_opts = PgConnectOptions::new()
-            .username(&config.store.pg.username)
-            .password(&config.store.pg.password)
-            .host(&config.store.pg.host)
-            .port(config.store.pg.port);
-
-        if let Some(extra_query_params) = config.store.pg.query_params.as_ref() {
-            let url = conn_opts.to_url_lossy();
-            let new_url =
-                url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
-            conn_opts = PgConnectOptions::from_str(&new_url).unwrap();
-        }
-
-        Self {
-            pg_connection: conn_opts,
-            pg_database_name: config.store.pg.database_name.clone(),
-            pg_default_database_name: config.store.pg.default_database_name.clone(),
-            run_migrations: config.store.pg.run_migrations,
-            max_processing_attempts: config.store.max_processing_attempts,
-            processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
-            claim_lease_ms: compute_claim_lease_ms(config),
-            retry_config: config.store.retry.clone(),
-        }
-    }
-}
-
 pub struct PostgresStore {
+    connection: PgConnectOptions,
     read_pool: PgPool,
     write_pool: PgPool,
-    config: PostgresStoreConfig,
+    config: StoreConfig,
     partitions: RwLock<Vec<i32>>,
+    claim_lease_ms: u64,
 }
 
 impl PostgresStore {
@@ -296,15 +259,30 @@ impl PostgresStore {
     }
 
     #[framed]
-    pub async fn new(config: PostgresStoreConfig) -> Result<Self, Error> {
+    pub async fn new(config: &Config) -> Result<Self, Error> {
+        let mut connection = PgConnectOptions::new()
+            .username(&config.store.pg.username)
+            .password(&config.store.pg.password)
+            .host(&config.store.pg.host)
+            .port(config.store.pg.port);
+
+        if let Some(extra_query_params) = config.store.pg.query_params.as_ref() {
+            let url = connection.to_url_lossy();
+            let new_url =
+                url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
+            connection = PgConnectOptions::from_str(&new_url).unwrap();
+        }
+
         let (read_pool, write_pool) =
-            create_postgres_pool(&config.pg_connection, &config.pg_database_name).await?;
+            create_postgres_pool(&connection, &config.store.pg.database_name).await?;
 
         Ok(Self {
+            connection,
             read_pool,
             write_pool,
-            config,
+            config: config.store.clone(),
             partitions: RwLock::new(vec![]),
+            claim_lease_ms: compute_claim_lease_ms(config),
         })
     }
 
@@ -351,9 +329,9 @@ impl ActivationStore for PostgresStore {
     /// Get the size of the database in bytes based on SQLite metadata queries.
     #[framed]
     async fn db_size(&self) -> Result<u64, Error> {
-        let row_result: (i64,) = retry_query(&self.config.retry_config, "db_size", || async {
+        let row_result: (i64,) = retry_query(&self.config.retry, "db_size", || async {
             Ok(sqlx::query_as("SELECT pg_database_size($1) as size")
-                .bind(&self.config.pg_database_name)
+                .bind(&self.config.pg.database_name)
                 .fetch_one(&self.read_pool)
                 .await?)
         })
@@ -367,10 +345,9 @@ impl ActivationStore for PostgresStore {
     /// Get an activation by id. Primarily used for testing
     #[framed]
     async fn get_by_id(&self, id: &str) -> Result<Option<Activation>, Error> {
-        let row_result: Option<TableRow> =
-            retry_query(&self.config.retry_config, "get_by_id", || async {
-                Ok(sqlx::query_as(
-                    "
+        let row_result: Option<TableRow> = retry_query(&self.config.retry, "get_by_id", || async {
+            Ok(sqlx::query_as(
+                "
                     SELECT id,
                         activation,
                         partition,
@@ -393,12 +370,12 @@ impl ActivationStore for PostgresStore {
                     FROM inflight_taskactivations
                     WHERE id = $1
                     ",
-                )
-                .bind(id)
-                .fetch_optional(&self.read_pool)
-                .await?)
-            })
-            .await?;
+            )
+            .bind(id)
+            .fetch_optional(&self.read_pool)
+            .await?)
+        })
+        .await?;
 
         let Some(row) = row_result else {
             return Ok(None);
@@ -421,7 +398,7 @@ impl ActivationStore for PostgresStore {
             return Ok(0);
         }
 
-        retry_query(&self.config.retry_config, "store", || async {
+        retry_query(&self.config.retry, "store", || async {
             let mut query_builder = QueryBuilder::<Postgres>::new(
                 "
                 INSERT INTO inflight_taskactivations
@@ -504,9 +481,9 @@ impl ActivationStore for PostgresStore {
         mark_processing: bool,
     ) -> Result<Vec<Activation>, Error> {
         let grace_period = self.config.processing_deadline_grace_sec;
-        let claim_lease_ms = self.config.claim_lease_ms as i64;
+        let claim_lease_ms = self.claim_lease_ms as i64;
 
-        retry_query(&self.config.retry_config, "claim_activations", || async {
+        retry_query(&self.config.retry, "claim_activations", || async {
             let now = Utc::now();
 
             let mut query_builder = QueryBuilder::<Postgres>::new(
@@ -594,7 +571,7 @@ impl ActivationStore for PostgresStore {
         let grace_period = self.config.processing_deadline_grace_sec;
 
         retry_query(
-            &self.config.retry_config,
+            &self.config.retry,
             "mark_activation_processing",
             || async {
                 let mut conn = self
@@ -642,7 +619,7 @@ impl ActivationStore for PostgresStore {
 
         let grace_period = self.config.processing_deadline_grace_sec;
         retry_query(
-            &self.config.retry_config,
+            &self.config.retry,
             "mark_processing_batch",
             || async {
                 let mut conn = self
@@ -721,7 +698,7 @@ impl ActivationStore for PostgresStore {
     #[instrument(skip_all)]
     #[framed]
     async fn count_by_status(&self, status: ActivationStatus) -> Result<usize, Error> {
-        retry_query(&self.config.retry_config, "count_by_status", || async {
+        retry_query(&self.config.retry, "count_by_status", || async {
             let mut query_builder = QueryBuilder::new(
                 "SELECT COUNT(*) as count FROM inflight_taskactivations WHERE status = ",
             );
@@ -738,7 +715,7 @@ impl ActivationStore for PostgresStore {
 
     #[framed]
     async fn count(&self) -> Result<usize, Error> {
-        retry_query(&self.config.retry_config, "count", || async {
+        retry_query(&self.config.retry, "count", || async {
             let mut query_builder =
                 QueryBuilder::new("SELECT COUNT(*) as count FROM inflight_taskactivations");
             self.add_partition_condition(&mut query_builder, true);
@@ -754,7 +731,7 @@ impl ActivationStore for PostgresStore {
     #[instrument(skip_all)]
     #[framed]
     async fn count_depths(&self) -> Result<DepthCounts, Error> {
-        retry_query(&self.config.retry_config, "count_depths", || async {
+        retry_query(&self.config.retry, "count_depths", || async {
             // Notice that statuses are embedded into the query for simplicity - if the enum is every changed, this must change too!
             let mut query_builder = QueryBuilder::new(
                 "SELECT COUNT(*) FILTER (WHERE status = 'Pending'),
@@ -846,7 +823,7 @@ impl ActivationStore for PostgresStore {
         max_attempts: Option<u32>,
         delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>, Error> {
-        retry_query(&self.config.retry_config, "set_status", || async {
+        retry_query(&self.config.retry, "set_status", || async {
             let mut tx = self.begin_write_tx_metric("set_status").await?;
 
             let result: Option<TableRow> = sqlx::query_as(
@@ -914,7 +891,7 @@ impl ActivationStore for PostgresStore {
             return Ok(0);
         }
 
-        retry_query(&self.config.retry_config, "set_status_batch", || async {
+        retry_query(&self.config.retry, "set_status_batch", || async {
             let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
 
             let result =
@@ -936,30 +913,26 @@ impl ActivationStore for PostgresStore {
         id: &str,
         deadline: Option<DateTime<Utc>>,
     ) -> Result<(), Error> {
-        retry_query(
-            &self.config.retry_config,
-            "set_processing_deadline",
-            || async {
-                let mut conn = self
-                    .acquire_write_conn_metric("set_processing_deadline")
-                    .await?;
-                sqlx::query(
-                    "UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2",
-                )
-                .bind(deadline.unwrap())
-                .bind(id)
-                .execute(&mut *conn)
+        retry_query(&self.config.retry, "set_processing_deadline", || async {
+            let mut conn = self
+                .acquire_write_conn_metric("set_processing_deadline")
                 .await?;
-                Ok(())
-            },
-        )
+            sqlx::query(
+                "UPDATE inflight_taskactivations SET processing_deadline = $1 WHERE id = $2",
+            )
+            .bind(deadline.unwrap())
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+            Ok(())
+        })
         .await
     }
 
     #[instrument(skip_all)]
     #[framed]
     async fn delete_activation(&self, id: &str) -> Result<(), Error> {
-        retry_query(&self.config.retry_config, "delete_activation", || async {
+        retry_query(&self.config.retry, "delete_activation", || async {
             let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
             sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
                 .bind(id)
@@ -973,12 +946,9 @@ impl ActivationStore for PostgresStore {
     #[instrument(skip_all)]
     #[framed]
     async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error> {
-        retry_query(
-            &self.config.retry_config,
-            "get_retry_activations",
-            || async {
-                let mut query_builder = QueryBuilder::new(
-                    "SELECT id,
+        retry_query(&self.config.retry, "get_retry_activations", || async {
+            let mut query_builder = QueryBuilder::new(
+                "SELECT id,
                         activation,
                         partition,
                         kafka_offset AS offset,
@@ -999,19 +969,18 @@ impl ActivationStore for PostgresStore {
                         bucket
                     FROM inflight_taskactivations
                     WHERE status = ",
-                );
-                query_builder.push_bind(ActivationStatus::Retry.to_string());
-                self.add_partition_condition(&mut query_builder, false);
+            );
+            query_builder.push_bind(ActivationStatus::Retry.to_string());
+            self.add_partition_condition(&mut query_builder, false);
 
-                Ok(query_builder
-                    .build_query_as::<TableRow>()
-                    .fetch_all(&self.read_pool)
-                    .await?
-                    .into_iter()
-                    .map(|row: TableRow| row.into())
-                    .collect())
-            },
-        )
+            Ok(query_builder
+                .build_query_as::<TableRow>()
+                .fetch_all(&self.read_pool)
+                .await?
+                .into_iter()
+                .map(|row: TableRow| row.into())
+                .collect())
+        })
         .await
     }
 
@@ -1252,7 +1221,7 @@ impl ActivationStore for PostgresStore {
     #[instrument(skip_all)]
     #[framed]
     async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
-        retry_query(&self.config.retry_config, "mark_completed", || async {
+        retry_query(&self.config.retry, "mark_completed", || async {
             let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
             query_builder
                 .push("SET status = ")
@@ -1312,13 +1281,11 @@ impl ActivationStore for PostgresStore {
     async fn remove_db(&self) -> Result<(), Error> {
         self.read_pool.close().await;
         self.write_pool.close().await;
-        let default_pool = create_default_postgres_pool(
-            &self.config.pg_connection,
-            &self.config.pg_default_database_name,
-        )
-        .await?;
-        let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg_database_name).as_str())
-            .bind(&self.config.pg_database_name)
+        let default_pool =
+            create_default_postgres_pool(&self.connection, &self.config.pg.default_database_name)
+                .await?;
+        let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg.database_name).as_str())
+            .bind(&self.config.pg.database_name)
             .execute(&default_pool)
             .await;
         let _ = default_pool.close().await;

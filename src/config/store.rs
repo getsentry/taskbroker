@@ -20,7 +20,7 @@ pub enum DatabaseAdapter {
 impl DatabaseAdapter {
     pub async fn migrate(&self, config: &Config) -> Result<()> {
         match self {
-            Self::Postgres => postgres::migrate(config).await,
+            Self::Postgres => postgres::migrate(&config.store).await,
             Self::Sqlite => {
                 warn!("Standalone migration not supported for SQLite");
                 Ok(())
@@ -29,7 +29,7 @@ impl DatabaseAdapter {
     }
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct PgConfig {
     /// Whether to run the migrations on the database.
     /// This is only used by the postgres database adapter, since
@@ -82,7 +82,7 @@ impl Default for PgConfig {
     }
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct SqliteConfig {
     /// The path to the sqlite database
     pub path: String,
@@ -126,7 +126,7 @@ impl Default for RetryConfig {
     }
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct StoreConfig {
     /// The database adapter to use for the activation store.
     pub database_adapter: DatabaseAdapter,
