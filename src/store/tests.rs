@@ -2000,6 +2000,7 @@ async fn test_db_status_calls_ok() {
             max_processing_attempts: 3,
             processing_deadline_grace_sec: 0,
             sqlite: SqliteConfig {
+                path: db_path,
                 vacuum_page_count: None,
                 enable_status_metrics: false,
                 ..SqliteConfig::default()
