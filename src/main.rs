@@ -325,7 +325,7 @@ async fn main() -> Result<(), Error> {
         }
 
         // Create the correct kind of push updater
-        let updater = if config.batch_push_updates {
+        let updater = if config.push.update.batched {
             let lazy = LazyUpdater::new(config.clone(), store.clone());
             Arc::new(lazy) as Arc<dyn Updater>
         } else {

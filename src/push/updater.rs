@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -131,7 +130,7 @@ impl Updater for LazyUpdater {
         let guard = get_shutdown_guard();
 
         // Flush every `interval` milliseconds
-        let period = Duration::from_millis(self.config.push_update_interval_ms as u64);
+        let period = self.config.push.update.batch.interval;
         let mut interval = tokio::time::interval(period);
 
         loop {
@@ -141,7 +140,7 @@ impl Updater for LazyUpdater {
                     break;
                 }
 
-                _ = interval.tick(), if self.config.batch_push_updates => {
+                _ = interval.tick(), if self.config.push.update.batched => {
                     // Lock the ID buffer
                     let mut buffer = self.lock_buffer("tick").await;
 
@@ -149,7 +148,7 @@ impl Updater for LazyUpdater {
                     let now = Utc::now().timestamp_millis();
                     let elapsed = now - self.last_flush.read().await.timestamp_millis();
 
-                    if elapsed < (self.config.push_update_interval_ms as i64) {
+                    if elapsed < (self.config.push.update.batch.interval.as_millis() as i64) {
                         // Too soon!
                         continue;
                     }
@@ -196,7 +195,7 @@ impl Updater for LazyUpdater {
         // Lock the ID buffer
         let mut buffer = self.lock_buffer("update").await;
 
-        if buffer.len() >= self.config.push_update_batch_size {
+        if buffer.len() >= self.config.push.update.batch.length {
             // Flush first
             match self.flush(&mut buffer).await {
                 Ok(_) => {
