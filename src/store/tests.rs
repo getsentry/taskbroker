@@ -2003,7 +2003,6 @@ async fn test_db_status_calls_ok() {
                 path: db_path,
                 vacuum_page_count: None,
                 enable_status_metrics: false,
-                ..SqliteConfig::default()
             },
             ..StoreConfig::default()
         },
