@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::Config;
-use crate::config::deserialize;
-use crate::config::serialize;
 use crate::store::adapters::postgres;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
