@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::Config;
-use crate::config::deserialize;
-use crate::config::serialize;
 use crate::store::adapters::postgres;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
@@ -115,10 +113,7 @@ pub struct RetryConfig {
     pub max_retries: u32,
 
     /// The delay between query retry attempts.
-    #[serde(
-        serialize_with = "serialize::duration",
-        deserialize_with = "deserialize::duration"
-    )]
+    #[serde(with = "crate::serde::duration")]
     pub delay: Duration,
 }
 
