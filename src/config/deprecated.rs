@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use validator::Validate;
 
 use crate::config::store::DatabaseAdapter;
 

@@ -350,7 +350,7 @@ impl Config {
         if !user_provided(builder, "push.timeout")
             && let Some(v) = self.deprecated.push_timeout_ms
         {
-            self.store.db_query_retry_delay = Duration::from_millis(v);
+            self.push.timeout = Duration::from_millis(v);
         }
 
         if !user_provided(builder, "push.queue.size") {
@@ -360,9 +360,9 @@ impl Config {
         }
 
         if !user_provided(builder, "push.queue.timeout")
-            && let Some(v) = self.deprecated.push_timeout_ms
+            && let Some(v) = self.deprecated.push_queue_timeout_ms
         {
-            self.push.timeout = Duration::from_millis(v);
+            self.push.queue.timeout = Duration::from_millis(v);
         }
 
         // Map deprecated Postgres configuration options
