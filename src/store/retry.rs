@@ -16,7 +16,7 @@ pub struct RetryConfig {
 impl RetryConfig {
     pub fn from_config(config: &Config) -> Self {
         Self {
-            max_retries: config.store.db_query_max_retries.unwrap_or(0),
+            max_retries: config.store.db_query_max_retries,
             retry_delay: config.store.db_query_retry_delay,
         }
     }
@@ -225,7 +225,7 @@ mod tests {
     fn test_config_none_means_zero_retries() {
         let config = RetryConfig::from_config(&Arc::new(Config {
             store: StoreConfig {
-                db_query_max_retries: None,
+                db_query_max_retries: 0,
                 ..StoreConfig::default()
             },
             ..Config::default()
@@ -237,7 +237,7 @@ mod tests {
     fn test_config_uses_configured_retries() {
         let config = RetryConfig::from_config(&Arc::new(Config {
             store: StoreConfig {
-                db_query_max_retries: Some(5),
+                db_query_max_retries: 5,
                 ..StoreConfig::default()
             },
             ..Config::default()

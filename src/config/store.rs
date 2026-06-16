@@ -120,8 +120,8 @@ pub struct StoreConfig {
     pub db_write_failure_backoff_ms: u64,
 
     /// The maximum number of times to retry a transient database query error
-    /// before surfacing the error. When None, queries are not retried.
-    pub db_query_max_retries: Option<u32>,
+    /// before surfacing the error. When zero, queries are not retried.
+    pub db_query_max_retries: u32,
 
     /// The delay between query retry attempts.
     #[serde(with = "crate::serde::duration")]
@@ -174,7 +174,7 @@ impl Default for StoreConfig {
             pg: PgConfig::default(),
             sqlite: SqliteConfig::default(),
             db_write_failure_backoff_ms: 4000,
-            db_query_max_retries: Some(3),
+            db_query_max_retries: 3,
             db_query_retry_delay: Duration::from_millis(100),
             db_insert_batch_max_len: 256,
             db_insert_batch_max_size: 16_000_000,
