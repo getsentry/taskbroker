@@ -120,7 +120,7 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_retries: 0, // Do not retry by default
+            max_retries: 3,
             delay: Duration::from_millis(100),
         }
     }
