@@ -36,7 +36,7 @@ const QUERY_MS: u64 = 1000;
 /// the SQLite and Postgres adapters.
 pub fn compute_claim_duration_ms(config: &Config) -> u64 {
     // Imagine we are computing the lease for some task in a batch of N tasks
-    let fetch_batch_size = config.fetch_batch_size.max(1) as u64;
+    let fetch_batch_size = config.fetch.batch_length.max(1) as u64;
     let push_threads = config.push.threads.max(1) as u64;
     let push_queue_size = config.push.queue.size.max(1) as u64;
 

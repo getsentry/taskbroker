@@ -9,15 +9,16 @@ use figment::{Figment, Metadata, Profile, Provider};
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
-use validator::{Validate, ValidationError};
+use validator::Validate;
 
 use crate::Args;
+use crate::config::fetch::FetchConfig;
 use crate::config::push::PushConfig;
 use crate::config::store::StoreConfig;
-use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
 pub mod deprecated;
+pub mod fetch;
 pub mod kafka;
 pub mod push;
 pub mod raw;
@@ -175,16 +176,9 @@ pub struct Config {
     /// How to deliver tasks to workers: "push" or "pull".
     pub delivery_mode: DeliveryMode,
 
-    /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
-    #[validate(range(min = 1, max = MAX_FETCH_THREADS), custom(function = "validate_power_of_two"))]
-    pub fetch_threads: usize,
-
-    /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
-    pub fetch_wait_ms: u64,
-
-    /// The number of activations to claim with a single fetch query.
-    #[validate(range(min = 1))]
-    pub fetch_batch_size: i32,
+    /// Fetch pool / thread configuration.
+    #[validate(nested)]
+    pub fetch: FetchConfig,
 
     /// Push pool / thread configuration.
     #[validate(nested)]
@@ -282,9 +276,7 @@ impl Default for Config {
             vacuum_interval_ms: 30000,
             log_async_backtrace: false,
             delivery_mode: DeliveryMode::Pull,
-            fetch_threads: 1,
-            fetch_wait_ms: 100,
-            fetch_batch_size: 1,
+            fetch: FetchConfig::default(),
             push: PushConfig::default(),
             batch_status_updates: false,
             status_update_batch_size: 1,
@@ -341,6 +333,24 @@ impl Config {
         }
 
         // Map deprecated push mode configuration options
+        if !user_provided(builder, "fetch.threads") {
+            deprecated::map! {
+                self.deprecated.fetch_threads => self.fetch.threads
+            };
+        }
+
+        if !user_provided(builder, "fetch.backoff")
+            && let Some(v) = self.deprecated.fetch_wait_ms
+        {
+            self.fetch.backoff = Duration::from_millis(v);
+        }
+
+        if !user_provided(builder, "fetch.batch_length") {
+            deprecated::map! {
+                self.deprecated.fetch_batch_size => self.fetch.batch_length
+            };
+        }
+
         if !user_provided(builder, "push.threads") {
             deprecated::map! {
                 self.deprecated.push_threads => self.push.threads
@@ -1031,15 +1041,6 @@ impl Provider for Config {
     }
 }
 
-/// Ensures that `n` is a power of two, used to validate `fetch_threads`.
-fn validate_power_of_two(n: usize) -> Result<(), ValidationError> {
-    if n.is_power_of_two() {
-        Ok(())
-    } else {
-        Err(ValidationError::new("not_power_of_two"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
@@ -1049,6 +1050,7 @@ mod tests {
     use figment::Jail;
     use validator::Validate;
 
+    use crate::config::fetch::FetchConfig;
     use crate::logging::LogFormat;
     use crate::{Args, Run};
 
@@ -1077,35 +1079,38 @@ mod tests {
     #[test]
     fn test_validate_rejects_invalid_fields() {
         let mut config = Config {
-            fetch_threads: 0,
-            ..Config::default()
+            fetch: FetchConfig {
+                threads: 0,
+                ..Default::default()
+            },
+            ..Default::default()
         };
 
         // Fetch threads cannot be zero
         assert!(config.validate().is_err());
 
-        config.fetch_threads = 1;
+        config.fetch.threads = 1;
         assert!(config.validate().is_ok());
 
         // Fetch threads must be a power of two
-        config.fetch_threads = 3;
+        config.fetch.threads = 3;
         assert!(config.validate().is_err());
 
-        config.fetch_threads = 4;
+        config.fetch.threads = 4;
         assert!(config.validate().is_ok());
 
         // Fetch threads must be ≤ 256
-        config.fetch_threads = 512;
+        config.fetch.threads = 512;
         assert!(config.validate().is_err());
 
-        config.fetch_threads = 1;
+        config.fetch.threads = 1;
         assert!(config.validate().is_ok());
 
         // Fetch batch size cannot be zero
-        config.fetch_batch_size = 0;
+        config.fetch.batch_length = 0;
         assert!(config.validate().is_err());
 
-        config.fetch_batch_size = 1;
+        config.fetch.batch_length = 1;
         assert!(config.validate().is_ok());
 
         // Push threads cannot be zero

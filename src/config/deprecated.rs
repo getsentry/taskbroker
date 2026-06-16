@@ -209,4 +209,13 @@ pub struct DeprecatedConfig {
 
     /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
     pub push_queue_timeout_ms: Option<u64>,
+
+    /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
+    pub fetch_threads: Option<usize>,
+
+    /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
+    pub fetch_wait_ms: Option<u64>,
+
+    /// The number of activations to claim with a single fetch query.
+    pub fetch_batch_size: Option<i32>,
 }
