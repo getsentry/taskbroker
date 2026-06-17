@@ -7,7 +7,7 @@ use tokio::join;
 use tracing::warn;
 
 use crate::store::activation::{Activation, ActivationStatus};
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, StatusUpdate};
 
 #[async_trait]
 pub trait ActivationStore: Send + Sync {
@@ -87,11 +87,14 @@ pub trait ActivationStore: Send + Sync {
     ) -> Result<Option<Activation>, Error>;
 
     /// Update the status of multiple activations in one batch.
-    async fn set_status_batch(
-        &self,
-        ids: &[String],
-        status: ActivationStatus,
-    ) -> Result<u64, Error>;
+    ///
+    /// Updates that carry `max_attempts`/`delay_on_retry` (for Retry status) also have their
+    /// activation's `retry_state` updated. The status and any blob updates for a given activation
+    /// are applied within a single transaction so that a concurrent reader (e.g. upkeep) never
+    /// observes a `Retry` status with a stale `retry_state`.
+    ///
+    /// Returns the number of rows whose status was updated.
+    async fn set_status_batch(&self, updates: &[StatusUpdate]) -> Result<u64, Error>;
 
     /// COUNT OPERATIONS
     /// Get the age of the oldest pending activation in seconds

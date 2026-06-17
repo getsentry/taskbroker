@@ -1,4 +1,18 @@
+use crate::store::activation::ActivationStatus;
+
 pub type BucketRange = (i16, i16);
+
+/// A status update for a single activation.
+///
+/// When `max_attempts` or `delay_on_retry` is set (for Retry status), the
+/// activation's `retry_state` is also updated alongside the status column.
+#[derive(Clone, Debug)]
+pub struct StatusUpdate {
+    pub id: String,
+    pub status: ActivationStatus,
+    pub max_attempts: Option<u32>,
+    pub delay_on_retry: Option<u64>,
+}
 
 pub struct FailedTasksForwarder {
     pub to_discard: Vec<(String, Vec<u8>)>,

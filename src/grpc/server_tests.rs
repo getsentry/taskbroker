@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use tonic::{Code, Request};
 
 use crate::config::{Config, DeliveryMode};
-use crate::grpc::server::{StatusUpdate, TaskbrokerServer};
+use crate::grpc::server::{StatusUpdate, TaskbrokerServer, flush_updates};
 use crate::store::activation::ActivationStatus;
 use crate::test_utils::{create_config, create_test_store, make_activations};
 
@@ -457,9 +457,9 @@ async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) 
         "push path returns no next task from the store"
     );
 
-    let (id, status) = update_rx.recv().await.expect("status update on channel");
-    assert_eq!(id, "id_0");
-    assert_eq!(status, ActivationStatus::Complete);
+    let update = update_rx.recv().await.expect("status update on channel");
+    assert_eq!(update.id, "id_0");
+    assert_eq!(update.status, ActivationStatus::Complete);
 
     let row = store.get_by_id("id_0").await.unwrap().expect("row exists");
     assert_eq!(
@@ -632,8 +632,8 @@ async fn test_set_batch_activation_status_retry(#[case] adapter: &str) {
         update_tx: None,
     };
 
-    // max_attempts is set, so this update is applied individually via set_status
-    // rather than being grouped into a batch.
+    // max_attempts / delay_on_retry are set, so set_status_batch also updates the
+    // activation's retry_state in the same transaction as the status flip.
     let request = SetBatchActivationStatusRequest {
         updates: vec![SetTaskStatusRequest {
             id: "id_0".to_string(),
@@ -651,6 +651,10 @@ async fn test_set_batch_activation_status_retry(#[case] adapter: &str) {
 
     let row = store.get_by_id("id_0").await.unwrap().expect("row exists");
     assert_eq!(row.status, ActivationStatus::Retry);
+    let activation = TaskActivation::decode(&row.activation as &[u8]).unwrap();
+    let retry_state = activation.retry_state.expect("retry_state persisted");
+    assert_eq!(retry_state.max_attempts, 5);
+    assert_eq!(retry_state.delay_on_retry, Some(60));
 }
 
 #[tokio::test]
@@ -671,8 +675,9 @@ async fn test_set_batch_activation_status_mixed(#[case] adapter: &str) {
         update_tx: None,
     };
 
-    // Two batched conclusion updates plus one retry update that carries retry
-    // state, exercising both the batch path and the individual set_status path.
+    // Two conclusion updates plus one retry update that carries retry state, all
+    // handled by a single set_status_batch call that groups by status and updates
+    // the retry update's blob.
     let request = SetBatchActivationStatusRequest {
         updates: vec![
             SetTaskStatusRequest {
@@ -710,4 +715,56 @@ async fn test_set_batch_activation_status_mixed(#[case] adapter: &str) {
     assert_eq!(row1.status, ActivationStatus::Complete);
     let row2 = store.get_by_id("id_2").await.unwrap().expect("row exists");
     assert_eq!(row2.status, ActivationStatus::Retry);
+    let activation2 = TaskActivation::decode(&row2.activation as &[u8]).unwrap();
+    let retry_state = activation2.retry_state.expect("retry_state persisted");
+    assert_eq!(retry_state.max_attempts, 3);
+    assert_eq!(retry_state.delay_on_retry, Some(60));
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_flush_updates_mixed_statuses_and_retry(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let activations = make_activations(3);
+    store.store(&activations).await.unwrap();
+
+    // A single flush carrying multiple statuses, including a retry update that also
+    // mutates retry_state. The flusher groups by status and applies the retry blob.
+    let mut buffer = vec![
+        StatusUpdate {
+            id: "id_0".to_string(),
+            status: ActivationStatus::Complete,
+            max_attempts: None,
+            delay_on_retry: None,
+        },
+        StatusUpdate {
+            id: "id_1".to_string(),
+            status: ActivationStatus::Failure,
+            max_attempts: None,
+            delay_on_retry: None,
+        },
+        StatusUpdate {
+            id: "id_2".to_string(),
+            status: ActivationStatus::Retry,
+            max_attempts: Some(7),
+            delay_on_retry: Some(90),
+        },
+    ];
+
+    flush_updates(store.clone(), &mut buffer).await;
+    assert!(buffer.is_empty(), "buffer is drained on a successful flush");
+
+    let row0 = store.get_by_id("id_0").await.unwrap().expect("row exists");
+    assert_eq!(row0.status, ActivationStatus::Complete);
+    let row1 = store.get_by_id("id_1").await.unwrap().expect("row exists");
+    assert_eq!(row1.status, ActivationStatus::Failure);
+    let row2 = store.get_by_id("id_2").await.unwrap().expect("row exists");
+    assert_eq!(row2.status, ActivationStatus::Retry);
+    let activation2 = TaskActivation::decode(&row2.activation as &[u8]).unwrap();
+    let retry_state = activation2.retry_state.expect("retry_state persisted");
+    assert_eq!(retry_state.max_attempts, 7);
+    assert_eq!(retry_state.delay_on_retry, Some(90));
 }

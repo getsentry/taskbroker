@@ -9,7 +9,7 @@ use tonic::async_trait;
 use crate::config::Config;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder};
+use crate::store::types::{BucketRange, FailedTasksForwarder, StatusUpdate};
 use crate::test_utils::make_activations;
 
 use super::*;
@@ -127,11 +127,7 @@ impl ActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn set_status_batch(
-        &self,
-        _ids: &[String],
-        _status: ActivationStatus,
-    ) -> Result<u64, Error> {
+    async fn set_status_batch(&self, _updates: &[StatusUpdate]) -> Result<u64, Error> {
         unimplemented!()
     }
 

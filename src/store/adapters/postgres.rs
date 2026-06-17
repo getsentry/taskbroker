@@ -23,7 +23,7 @@ use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, StatusUpdate};
 
 /// Run migrations.
 pub async fn migrate(config: &StoreConfig) -> Result<()> {
@@ -882,26 +882,107 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn set_status_batch(
-        &self,
-        ids: &[String],
-        status: ActivationStatus,
-    ) -> Result<u64, Error> {
-        if ids.is_empty() {
+    async fn set_status_batch(&self, updates: &[StatusUpdate]) -> Result<u64, Error> {
+        if updates.is_empty() {
             return Ok(0);
         }
 
-        retry_query(&self.config.retry, "set_status_batch", || async {
-            let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
+        // Group ids by status. Updates that carry retry state are tracked separately so we can
+        // update their activation blobs after flipping the status.
+        let mut ids_by_status: HashMap<ActivationStatus, Vec<&str>> = HashMap::new();
+        let mut retry_params: HashMap<&str, (Option<u32>, Option<u64>)> = HashMap::new();
+        for update in updates {
+            ids_by_status
+                .entry(update.status)
+                .or_default()
+                .push(&update.id);
+            if update.max_attempts.is_some() || update.delay_on_retry.is_some() {
+                retry_params.insert(&update.id, (update.max_attempts, update.delay_on_retry));
+            }
+        }
 
-            let result =
-                sqlx::query("UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)")
+        retry_query(&self.config.retry, "set_status_batch", || async {
+            let mut tx = self.begin_write_tx_metric("set_status_batch").await?;
+            let mut affected = 0u64;
+
+            for (status, ids) in &ids_by_status {
+                let group_has_retry = ids.iter().any(|id| retry_params.contains_key(*id));
+
+                if !group_has_retry {
+                    // Hot path: status-only update, no blob read required.
+                    let result = sqlx::query(
+                        "UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2)",
+                    )
                     .bind(status.to_string())
                     .bind(ids)
-                    .execute(&mut *conn)
+                    .execute(&mut *tx)
                     .await?;
+                    affected += result.rows_affected();
+                    continue;
+                }
 
-            Ok(result.rows_affected())
+                // Retry path: flip the status and read back the current blobs so we can update
+                // retry_state for the rows that need it.
+                let rows: Vec<TableRow> = sqlx::query_as(
+                    "UPDATE inflight_taskactivations SET status = $1 WHERE id = ANY($2) RETURNING *, kafka_offset AS offset",
+                )
+                .bind(status.to_string())
+                .bind(ids)
+                .fetch_all(&mut *tx)
+                .await?;
+                affected += rows.len() as u64;
+
+                let mut changed_ids: Vec<String> = Vec::new();
+                let mut changed_blobs: Vec<Vec<u8>> = Vec::new();
+                for row in &rows {
+                    let Some((max_attempts, delay_on_retry)) =
+                        retry_params.get(&*row.id).copied()
+                    else {
+                        continue;
+                    };
+
+                    let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+                    let mut needs_update = false;
+                    let task_retry_state = activation.retry_state.get_or_insert_default();
+
+                    // Only update the blob if a value actually changed. This should rarely happen
+                    // after the first retry, since max_attempts comes from the task's retry
+                    // decorator which stays constant across retries.
+                    if let Some(max_attempts) = max_attempts
+                        && task_retry_state.max_attempts != max_attempts
+                    {
+                        task_retry_state.max_attempts = max_attempts;
+                        needs_update = true;
+                    }
+
+                    if let Some(delay_on_retry) = delay_on_retry
+                        && task_retry_state.delay_on_retry != Some(delay_on_retry)
+                    {
+                        task_retry_state.delay_on_retry = Some(delay_on_retry);
+                        needs_update = true;
+                    }
+
+                    if needs_update {
+                        changed_ids.push(row.id.to_string());
+                        changed_blobs.push(activation.encode_to_vec());
+                    }
+                }
+
+                if !changed_ids.is_empty() {
+                    sqlx::query(
+                        "UPDATE inflight_taskactivations AS t SET activation = d.activation \
+                         FROM UNNEST($1::text[], $2::bytea[]) AS d(id, activation) \
+                         WHERE t.id = d.id",
+                    )
+                    .bind(&changed_ids)
+                    .bind(&changed_blobs)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+
+            tx.commit().await?;
+            Ok(affected)
         })
         .await
     }

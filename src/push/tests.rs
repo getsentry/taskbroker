@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::push::updater::test_eager_updater;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::FailedTasksForwarder;
+use crate::store::types::{FailedTasksForwarder, StatusUpdate};
 use crate::test_utils::make_activations;
 use crate::worker::test_worker_map;
 
@@ -75,7 +75,7 @@ impl ActivationStore for MockStore {
         Ok(None)
     }
 
-    async fn set_status_batch(&self, _ids: &[String], _status: ActivationStatus) -> Result<u64> {
+    async fn set_status_batch(&self, _updates: &[StatusUpdate]) -> Result<u64> {
         Ok(0)
     }
 

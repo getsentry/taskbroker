@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -29,7 +30,7 @@ use crate::config::Config;
 use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder};
+use crate::store::types::{BucketRange, FailedTasksForwarder, StatusUpdate};
 
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
@@ -839,34 +840,98 @@ impl ActivationStore for SqliteStore {
     }
 
     #[instrument(skip_all)]
-    async fn set_status_batch(
-        &self,
-        ids: &[String],
-        status: ActivationStatus,
-    ) -> Result<u64, Error> {
-        if ids.is_empty() {
+    async fn set_status_batch(&self, updates: &[StatusUpdate]) -> Result<u64, Error> {
+        if updates.is_empty() {
             return Ok(0);
         }
 
-        let mut conn = self.acquire_write_conn_metric("set_status_batch").await?;
-
-        let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
-
-        query_builder
-            .push("SET status = ")
-            .push_bind(status)
-            .push(" WHERE id IN (");
-
-        let mut separated = query_builder.separated(", ");
-
-        for id in ids.iter() {
-            separated.push_bind(id);
+        // Group ids by status. Updates carrying retry state are tracked separately so we can
+        // update their activation blobs after flipping the status.
+        let mut ids_by_status: HashMap<ActivationStatus, Vec<&str>> = HashMap::new();
+        let mut retry_params: HashMap<&str, (Option<u32>, Option<u64>)> = HashMap::new();
+        for update in updates {
+            ids_by_status
+                .entry(update.status)
+                .or_default()
+                .push(&update.id);
+            if update.max_attempts.is_some() || update.delay_on_retry.is_some() {
+                retry_params.insert(&update.id, (update.max_attempts, update.delay_on_retry));
+            }
         }
 
-        separated.push_unseparated(")");
+        let mut tx = self.begin_write_tx_metric("set_status_batch").await?;
+        let mut affected = 0u64;
 
-        let result = query_builder.build().execute(&mut *conn).await?;
-        Ok(result.rows_affected())
+        for (status, ids) in &ids_by_status {
+            let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
+            query_builder
+                .push("SET status = ")
+                .push_bind(*status)
+                .push(" WHERE id IN (");
+            let mut separated = query_builder.separated(", ");
+            for id in ids.iter() {
+                separated.push_bind(*id);
+            }
+            separated.push_unseparated(")");
+
+            let result = query_builder.build().execute(&mut *tx).await?;
+            affected += result.rows_affected();
+
+            if !ids.iter().any(|id| retry_params.contains_key(*id)) {
+                continue;
+            }
+
+            // Retry path: update retry_state for the rows that need it.
+            for id in ids.iter() {
+                let Some((max_attempts, delay_on_retry)) = retry_params.get(*id).copied() else {
+                    continue;
+                };
+
+                let row: Option<TableRow> =
+                    sqlx::query_as("SELECT * FROM inflight_taskactivations WHERE id = $1")
+                        .bind(*id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                let Some(row) = row else {
+                    continue;
+                };
+
+                let mut activation = TaskActivation::decode(&row.activation as &[u8])?;
+                let mut needs_update = false;
+                let task_retry_state = activation.retry_state.get_or_insert_default();
+
+                // Only update the blob if a value actually changed. This should rarely happen
+                // after the first retry, since max_attempts comes from the task's retry decorator
+                // which stays constant across retries.
+                if let Some(max_attempts) = max_attempts
+                    && task_retry_state.max_attempts != max_attempts
+                {
+                    task_retry_state.max_attempts = max_attempts;
+                    needs_update = true;
+                }
+
+                if let Some(delay_on_retry) = delay_on_retry
+                    && task_retry_state.delay_on_retry != Some(delay_on_retry)
+                {
+                    task_retry_state.delay_on_retry = Some(delay_on_retry);
+                    needs_update = true;
+                }
+
+                if needs_update {
+                    let updated_activation = activation.encode_to_vec();
+                    sqlx::query(
+                        "UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2",
+                    )
+                    .bind(&updated_activation)
+                    .bind(*id)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+        }
+
+        tx.commit().await?;
+        Ok(affected)
     }
 
     #[instrument(skip_all)]
