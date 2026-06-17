@@ -226,7 +226,8 @@ impl ConsumerService for TaskbrokerServer {
     ) -> Result<Response<SetBatchActivationStatusResponse>, Status> {
         let start_time = Instant::now();
         let updates = request.get_ref().updates.clone();
-
+        metrics::counter!("grpc_server.set_batch_activation_status.total_updates_received")
+            .increment(updates.len() as u64);
         // Updates can be broken into different batches based on the status and the retry state.
         let mut batches: HashMap<ActivationStatus, Vec<String>> = HashMap::new();
         let mut retry_updates: Vec<SetTaskStatusRequest> = Vec::new();
