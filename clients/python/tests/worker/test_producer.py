@@ -36,6 +36,11 @@ class DummyProducer:
         future.set_result(make_broker_value())
         return future
 
+    def close(self) -> Future[None]:
+        f: Future[None] = Future()
+        f.set_result(None)
+        return f
+
 
 def get_dummy_producer(use_simple_futures: bool) -> DummyProducer:
     return DummyProducer(use_simple_futures=use_simple_futures)
