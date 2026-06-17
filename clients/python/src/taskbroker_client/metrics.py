@@ -188,6 +188,8 @@ class DatadogMetrics(MetricsBackend):
                 disable_telemetry=True,
                 # Use a background thread to send metrics
                 disable_background_sender=False,
+                # Allow buffering and background delivery
+                disable_buffering=False,
             )
             # Origin detection is enabled after 0.45 by default.
             # Disable it since it silently fails.
