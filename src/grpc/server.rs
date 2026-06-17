@@ -246,7 +246,9 @@ impl ConsumerService for TaskbrokerServer {
             if status == ActivationStatus::Failure {
                 metrics::counter!("grpc_server.set_status.failure").increment(1);
             }
-            if update.max_attempts.is_some() || update.delay_on_retry.is_some() {
+            if status == ActivationStatus::Retry {
+                // If the status is Retry, other fields besides status need to be updated, and so can't be run in the same
+                // batch as the other statuses.
                 retry_updates.push(update);
             } else {
                 batches.entry(status).or_default().push(id);
