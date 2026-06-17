@@ -1503,7 +1503,7 @@ def test_child_process_tracks_producer_futures(
 
     todo.put(task)
     with mock.patch.object(
-        TaskProducer, "collect_futures", return_value={done_future}
+        TaskProducer, "collect_futures", return_value={"test.producer": {done_future}}
     ) as collect_mock:
         child_process(
             "examples.app:app",
@@ -1549,7 +1549,9 @@ def test_child_process_holds_result_until_futures_done(
     observer = threading.Thread(target=observe_and_resolve, name="future-observer")
     observer.start()
     try:
-        with mock.patch.object(TaskProducer, "collect_futures", return_value={pending_future}):
+        with mock.patch.object(
+            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+        ):
             child_process(
                 "examples.app:app",
                 todo,
@@ -1593,7 +1595,9 @@ def test_child_process_drains_pending_futures_on_sigterm(
     sigterm_thread = threading.Thread(target=deliver_sigterm, name="sigterm-sender")
     sigterm_thread.start()
     try:
-        with mock.patch.object(TaskProducer, "collect_futures", return_value={pending_future}):
+        with mock.patch.object(
+            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+        ):
             child_process(
                 "examples.app:app",
                 todo,
@@ -1639,7 +1643,9 @@ def test_child_process_retries_on_failed_future(
     failed_future.set_exception(RuntimeError("kafka produce failed"))
 
     todo.put(retriable_task)
-    with mock.patch.object(TaskProducer, "collect_futures", return_value={failed_future}):
+    with mock.patch.object(
+        TaskProducer, "collect_futures", return_value={"test.producer": {failed_future}}
+    ):
         child_process(
             "examples.app:app",
             todo,
@@ -1660,7 +1666,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
 ) -> None:
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
-    _pending_futures.append(leftover_future)
+    _pending_futures["test.producer"].append(leftover_future)
     assert len(_pending_futures) == 1
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()

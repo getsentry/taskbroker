@@ -66,7 +66,7 @@ class ActivationWithPendingFutures:
     status: TaskActivationStatus.ValueType
     execution_start_time: float
     futures_start_time: float
-    pending_futures: set[ProducerFuture[BrokerValue[KafkaPayload]]]
+    pending_futures: dict[str, set[ProducerFuture[BrokerValue[KafkaPayload]]]]
     task_func: Task[Any, Any]
 
 
@@ -263,24 +263,27 @@ def child_process(
             and submitted for retry (if the policy allows).
             """
             RESULT_TIMEOUT_SEC = 1
+            error_name: str = "N/A"
             try:
                 # We don't care about the actual result value,
                 # we just care if result() raises or not
-                [f.result(RESULT_TIMEOUT_SEC) for f in task.pending_futures]
+                [f.result(RESULT_TIMEOUT_SEC) for fut in task.pending_futures.values() for f in fut]
                 produce_status = "success"
             # If any pending producer futures failed, retry the task
-            except Exception:
+            except Exception as e:
                 task.status = TASK_ACTIVATION_STATUS_FAILURE
                 if task.task_func.retry:
                     retry_state = task.inflight.activation.retry_state
                     if not task.task_func.retry.max_attempts_reached(retry_state):
                         task.status = TASK_ACTIVATION_STATUS_RETRY
                 produce_status = "failure"
+                error_name = type(e).__name__
             metrics.incr(
                 "taskworker.worker.produce.result",
                 tags={
                     "status": produce_status,
                     "processing_pool": processing_pool_name,
+                    "error_name": error_name,
                 },
             )
             pending_task_futures.remove(task)
@@ -288,9 +291,21 @@ def child_process(
                 inflight=task.inflight,
                 next_state=task.status,
                 execution_start_time=task.execution_start_time,
+                execution_end_time=task.futures_start_time,
                 task_func=task.task_func,
                 futures_start_time=task.futures_start_time,
             )
+
+        def get_oldest_pending_activation() -> ActivationWithPendingFutures | None:
+            oldest: ActivationWithPendingFutures | None = None
+            max_age = 0.0
+            now = time.time()
+            for task in pending_task_futures:
+                age = now - task.futures_start_time
+                if age > max_age:
+                    max_age = age
+                    oldest = task
+            return oldest
 
         def check_task_future_completion() -> None:
             if len(pending_task_futures) > 0:
@@ -304,8 +319,31 @@ def child_process(
                     },
                 )
                 for task in pending_task_futures.copy():
-                    if all([f.done() for f in task.pending_futures]):
+                    future_status = [f.done() for fut in task.pending_futures.values() for f in fut]
+                    if all(future_status):
                         await_task_futures(task)
+                    else:
+                        # How many futures are still pending in this task
+                        metrics.gauge(
+                            "taskworker.task.incomplete_futures",
+                            len([f for f in future_status if not f]),
+                            tags={
+                                "processing_pool": processing_pool_name,
+                                "namespace": task.inflight.activation.namespace,
+                                "taskname": task.inflight.activation.taskname,
+                            },
+                        )
+                # How long has the oldest pending task been sitting in the queue
+                if oldest := get_oldest_pending_activation():
+                    metrics.gauge(
+                        "taskworker.worker.oldest_pending_activation_age",
+                        time.time() - oldest.futures_start_time,
+                        tags={
+                            "processing_pool": processing_pool_name,
+                            "namespace": oldest.inflight.activation.namespace,
+                            "taskname": oldest.inflight.activation.taskname,
+                        },
+                    )
 
         while not shutdown_event.is_set() and not local_shutdown.is_set():
             if max_task_count and processed_task_count >= max_task_count:
@@ -463,16 +501,30 @@ def child_process(
             # If the task function itself failed, we don't need to await any
             # producer futures since it'll be retried anyways
             if next_state != TASK_ACTIVATION_STATUS_COMPLETE:
-                task_produced_futures = set()
+                task_produced_futures = {}
 
             if len(task_produced_futures) == 0:
                 _task_execution_complete(
                     inflight,
                     next_state,
                     execution_start_time,
+                    time.time(),
                     task_func,
                 )
             else:
+                for name, futures in task_produced_futures.items():
+                    # How many futures were produced in the executed task,
+                    # tagged by producer name
+                    metrics.gauge(
+                        "taskworker.task.futures_produced",
+                        len(futures),
+                        tags={
+                            "producer_name": name,
+                            "processing_pool": processing_pool_name,
+                            "namespace": inflight.activation.namespace,
+                            "taskname": inflight.activation.taskname,
+                        },
+                    )
                 pending_task = ActivationWithPendingFutures(
                     inflight=inflight,
                     status=next_state,
@@ -582,9 +634,7 @@ def child_process(
         task_added_time = activation.received_at.ToDatetime().timestamp()
         execution_duration = completion_time - start_time
         execution_latency = completion_time - task_added_time
-        futures_duration = (
-            completion_time - futures_enqueued_time if futures_enqueued_time else None
-        )
+        futures_duration = time.time() - futures_enqueued_time if futures_enqueued_time else 0
 
         logger.debug(
             "taskworker.task_execution",
@@ -625,7 +675,7 @@ def child_process(
                 "taskbroker_host": taskbroker_host,
             },
         )
-        if futures_duration:
+        if futures_duration != 0:
             metrics.distribution(
                 "taskworker.worker.future_completion_duration",
                 futures_duration,
@@ -636,6 +686,18 @@ def child_process(
                     "taskbroker_host": taskbroker_host,
                 },
             )
+        # Latency between task execution start and all producer futures completing
+        # (i.e. how long it took to put the task in the processed_tasks queue)
+        metrics.distribution(
+            "taskworker.worker.e2e_latency",
+            (execution_duration + futures_duration),
+            tags={
+                "namespace": activation.namespace,
+                "taskname": activation.taskname,
+                "processing_pool": processing_pool_name,
+                "taskbroker_host": taskbroker_host,
+            },
+        )
 
         namespace = app.get_namespace(activation.namespace)
         metrics.incr(
@@ -663,11 +725,10 @@ def child_process(
         inflight: InflightTaskActivation,
         next_state: TaskActivationStatus.ValueType,
         execution_start_time: float,
+        execution_end_time: float,
         task_func: Task[Any, Any] | None,
         futures_start_time: float | None = None,
     ) -> None:
-        # Get completion time before pushing to queue, so we can measure queue append time
-        execution_complete_time = time.time()
         with metrics.timer(
             "taskworker.worker.processed_tasks.put.duration",
             tags={
@@ -709,7 +770,7 @@ def child_process(
             inflight.activation,
             next_state,
             execution_start_time,
-            execution_complete_time,
+            execution_end_time,
             processing_pool_name,
             inflight.host,
             futures_start_time,
