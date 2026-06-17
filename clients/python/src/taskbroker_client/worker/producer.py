@@ -1,3 +1,4 @@
+import atexit
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -9,7 +10,7 @@ from arroyo.types import BrokerValue, Partition, Topic
 
 from taskbroker_client.constants import TASK_PRODUCER_MAX_PENDING_FUTURES
 from taskbroker_client.metrics import MetricsBackend, NoOpMetricsBackend
-from taskbroker_client.types import ProducerProtocol
+from taskbroker_client.types import CloseableProducerProtocol
 
 # This is global as TaskWorker needs to be able to call TaskProducer.collect_futures()
 # without a reference to a task's specific instance of TaskProducer.
@@ -39,17 +40,18 @@ class TaskProducer:
     def __init__(
         self,
         name: str,
-        producer_factory: Callable[[], ProducerProtocol],
+        producer_factory: Callable[[], CloseableProducerProtocol],
         metrics_backend: MetricsBackend | None = None,
     ) -> None:
         self.name = name
         self._producer_factory = producer_factory
-        self._inner_producer: ProducerProtocol | None = None
+        self._inner_producer: CloseableProducerProtocol | None = None
         self.metrics = metrics_backend if metrics_backend is not None else NoOpMetricsBackend()
 
-    def _get(self) -> ProducerProtocol:
+    def _get(self) -> CloseableProducerProtocol:
         if self._inner_producer is None:
             self._inner_producer = self._producer_factory()
+            atexit.register(self._shutdown)
         return self._inner_producer
 
     def track_future(self, future: ProducerFuture[BrokerValue[KafkaPayload]]) -> None:
@@ -99,3 +101,7 @@ class TaskProducer:
                         "or instantiate your producer with `use_simple_futures=False`."
                     )
                 )
+
+    def _shutdown(self) -> None:
+        if self._inner_producer is not None:
+            self._inner_producer.close().result()
