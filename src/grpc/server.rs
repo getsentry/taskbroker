@@ -278,6 +278,8 @@ impl ConsumerService for TaskbrokerServer {
                             requested, affected, "Updated fewer rows than IDs requested in batch"
                         );
                     }
+                    metrics::counter!("grpc_server.set_status", "result" => "ok", "status" => status.to_string()).increment(affected);
+                    metrics::counter!("grpc_server.set_status", "result" => "skipped_in_batch", "status" => status.to_string()).increment(requested - affected);
                 }
                 Err(e) => {
                     metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);
