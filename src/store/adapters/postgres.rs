@@ -51,6 +51,21 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
             .await?;
 
     if !row.0 {
+        // `CREATE DATABASE` does not accept bind parameters for the database
+        // name, so it has to be interpolated into the statement. Restrict it to
+        // a safe identifier charset to rule out SQL injection.
+        if !config
+            .pg
+            .database_name
+            .chars()
+            .all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
+        {
+            return Err(anyhow!(
+                "invalid database_name {:?}: only ASCII alphanumerics and underscores are allowed",
+                &config.pg.database_name
+            ));
+        }
+
         println!("Creating database {}", &config.pg.database_name);
         sqlx::query(format!("CREATE DATABASE {}", &config.pg.database_name).as_str())
             .execute(&default_pool)
