@@ -736,37 +736,43 @@ def child_process(
         next_state: TaskActivationStatus.ValueType,
         task_func: Task[Any, Any] | None,
     ) -> None:
-        if task_func and task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY:
-            processed_tasks.put(
-                ProcessingResult(
-                    task_id=inflight.activation.id,
-                    status=next_state,
-                    host=inflight.host,
-                    receive_timestamp=inflight.receive_timestamp,
-                    # Send max_attempts and delay_on_retry if this is a retry.
-                    # Don't send it on every task as this codepath is relatively
-                    # unoptimized on the broker side.
-                    max_attempts=(
-                        task_func.retry._times + 1
-                        if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
-                        else None
-                    ),
-                    delay_on_retry=(
-                        task_func.retry._delay
-                        if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
-                        else None
-                    ),
+        with metrics.timer(
+            "taskworker.worker.processed_tasks.put.duration",
+            tags={
+                "processing_pool": processing_pool_name,
+            },
+        ):
+            if task_func and task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY:
+                processed_tasks.put(
+                    ProcessingResult(
+                        task_id=inflight.activation.id,
+                        status=next_state,
+                        host=inflight.host,
+                        receive_timestamp=inflight.receive_timestamp,
+                        # Send max_attempts and delay_on_retry if this is a retry.
+                        # Don't send it on every task as this codepath is relatively
+                        # unoptimized on the broker side.
+                        max_attempts=(
+                            task_func.retry._times + 1
+                            if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
+                            else None
+                        ),
+                        delay_on_retry=(
+                            task_func.retry._delay
+                            if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
+                            else None
+                        ),
+                    )
                 )
-            )
-        else:
-            processed_tasks.put(
-                ProcessingResult(
-                    task_id=inflight.activation.id,
-                    status=next_state,
-                    host=inflight.host,
-                    receive_timestamp=inflight.receive_timestamp,
+            else:
+                processed_tasks.put(
+                    ProcessingResult(
+                        task_id=inflight.activation.id,
+                        status=next_state,
+                        host=inflight.host,
+                        receive_timestamp=inflight.receive_timestamp,
+                    )
                 )
-            )
 
     def _task_execution_complete(
         inflight: InflightTaskActivation,
@@ -781,18 +787,12 @@ def child_process(
         # while we troubleshoot why futures are never being marked as done.
         passthrough: bool = False,
     ) -> None:
-        with metrics.timer(
-            "taskworker.worker.processed_tasks.put.duration",
-            tags={
-                "processing_pool": processing_pool_name,
-            },
-        ):
-            if not passthrough:
-                _place_processing_result(
-                    inflight,
-                    next_state,
-                    task_func,
-                )
+        if not passthrough:
+            _place_processing_result(
+                inflight,
+                next_state,
+                task_func,
+            )
         record_task_execution(
             inflight.activation,
             next_state,
