@@ -24,6 +24,7 @@ pub mod kafka;
 pub mod push;
 pub mod raw;
 pub mod store;
+pub mod validate;
 
 use deprecated::DeprecatedConfig;
 use kafka::{ClusterConfig, TopicConfig};
