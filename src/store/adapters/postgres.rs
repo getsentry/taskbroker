@@ -52,8 +52,8 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
 
     if !row.0 {
         // `CREATE DATABASE` does not accept bind parameters for the database
-        // name, so it has to be interpolated into the statement. Restrict it to
-        // a safe identifier charset to rule out SQL injection.
+        // name. but this is not a critical SQL injection as the database name is not untrusted
+        // user input. nevertheless, let's validate DB identifiers to prevent the worst.
         if !config
             .pg
             .database_name
