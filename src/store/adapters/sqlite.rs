@@ -27,7 +27,7 @@ use tracing::{debug, instrument, warn};
 
 use crate::config::Config;
 use crate::config::store::StoreConfig;
-use crate::push::compute_claim_lease_ms;
+use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
@@ -185,7 +185,7 @@ pub struct SqliteStore {
     read_pool: SqlitePool,
     write_pool: SqlitePool,
     config: StoreConfig,
-    claim_lease_ms: u64,
+    claim_duration_ms: u64,
 }
 
 impl SqliteStore {
@@ -200,7 +200,7 @@ impl SqliteStore {
             read_pool,
             write_pool,
             config: config.store.clone(),
-            claim_lease_ms: compute_claim_lease_ms(config),
+            claim_duration_ms: compute_claim_duration_ms(config),
         })
     }
 
@@ -587,7 +587,7 @@ impl ActivationStore for SqliteStore {
         } else {
             query_builder.push(format!(
                 "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds'), processing_deadline = NULL, status = ",
-                self.claim_lease_ms as f64 / 1000.0,
+                self.claim_duration_ms as f64 / 1000.0,
             ));
 
             query_builder.push_bind(ActivationStatus::Claimed);

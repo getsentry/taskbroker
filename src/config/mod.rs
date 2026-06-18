@@ -447,39 +447,39 @@ impl Config {
         }
 
         // Map deprecated store configuration options
-        if !user_provided(builder, "store.database_adapter") {
+        if !user_provided(builder, "store.adapter") {
             deprecated::map! {
-                self.deprecated.database_adapter => self.store.database_adapter
+                self.deprecated.database_adapter => self.store.adapter
             };
         }
 
-        if !user_provided(builder, "store.db_write_failure_backoff_ms") {
+        if !user_provided(builder, "store.insert_failure_backoff_ms") {
             deprecated::map! {
-                self.deprecated.db_write_failure_backoff_ms => self.store.db_write_failure_backoff_ms
+                self.deprecated.db_write_failure_backoff_ms => self.store.insert_failure_backoff_ms
             };
         }
 
-        if !user_provided(builder, "store.db_insert_batch_max_len") {
+        if !user_provided(builder, "store.insert_batch_max_length") {
             deprecated::map! {
-                self.deprecated.db_insert_batch_max_len => self.store.db_insert_batch_max_len
+                self.deprecated.db_insert_batch_max_len => self.store.insert_batch_max_length
             };
         }
 
-        if !user_provided(builder, "store.db_insert_batch_max_size") {
+        if !user_provided(builder, "store.insert_batch_max_bytes") {
             deprecated::map! {
-                self.deprecated.db_insert_batch_max_size => self.store.db_insert_batch_max_size
+                self.deprecated.db_insert_batch_max_size => self.store.insert_batch_max_bytes
             };
         }
 
-        if !user_provided(builder, "store.db_insert_batch_max_time_ms") {
+        if !user_provided(builder, "store.insert_batch_max_time_ms") {
             deprecated::map! {
-                self.deprecated.db_insert_batch_max_time_ms => self.store.db_insert_batch_max_time_ms
+                self.deprecated.db_insert_batch_max_time_ms => self.store.insert_batch_max_time_ms
             };
         }
 
-        if !user_provided(builder, "store.db_max_size") {
+        if !user_provided(builder, "store.max_size") {
             deprecated::map! {
-                self.deprecated.db_max_size => some(self.store.db_max_size)
+                self.deprecated.db_max_size => some(self.store.max_size)
             };
         }
 
@@ -762,7 +762,7 @@ impl Config {
         // avoid that contention (e.g. filtering by (topic, partition) or another
         // mechanism entirely). Reject the combination here, before any consumer
         // spawns.
-        if consumable.len() > 1 && self.store.database_adapter == DatabaseAdapter::Postgres {
+        if consumable.len() > 1 && self.store.adapter == DatabaseAdapter::Postgres {
             return Err(anyhow!(
                 "multi-topic consumption ({} consumable topics) is not supported with the \
                  postgres database adapter; use the sqlite adapter or a single consumable topic",
@@ -1190,7 +1190,7 @@ mod tests {
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
-            assert_eq!(config.store.database_adapter, DatabaseAdapter::Postgres);
+            assert_eq!(config.store.adapter, DatabaseAdapter::Postgres);
             assert_eq!(
                 config.store.sqlite.path,
                 "./taskbroker-error.sqlite".to_owned()
@@ -1199,7 +1199,7 @@ mod tests {
             assert_eq!(config.store.max_processing_count, 512);
             assert_eq!(config.store.max_processing_attempts, 5);
             assert_eq!(config.store.sqlite.vacuum_page_count, Some(1000));
-            assert_eq!(config.store.db_max_size, Some(3_000_000_000));
+            assert_eq!(config.store.max_size, Some(3_000_000_000));
             assert!(config.full_vacuum_on_start);
             assert_eq!(
                 config.worker_map,
@@ -1229,7 +1229,7 @@ mod tests {
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.log_filter, "error");
-            assert_eq!(config.store.database_adapter, DatabaseAdapter::Postgres);
+            assert_eq!(config.store.adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.store.max_processing_attempts, 5);
 
             Ok(())
