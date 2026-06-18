@@ -324,7 +324,7 @@ def child_process(
                         await_task_futures(task)
                     else:
                         # How many futures are still pending in this task
-                        metrics.gauge(
+                        metrics.distribution(
                             "taskworker.task.incomplete_futures",
                             len([f for f in future_status if not f]),
                             tags={
@@ -335,7 +335,7 @@ def child_process(
                         )
                 # How long has the oldest pending task been sitting in the queue
                 if oldest := get_oldest_pending_activation():
-                    metrics.gauge(
+                    metrics.distribution(
                         "taskworker.worker.oldest_pending_activation_age",
                         time.time() - oldest.futures_start_time,
                         tags={
