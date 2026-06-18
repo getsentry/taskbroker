@@ -1,4 +1,14 @@
 # Changelog
+## 0.19.2
+
+### New Features ✨
+
+- Add datadog metrics backend by @markstory in [#703](https://github.com/getsentry/taskbroker/pull/703)
+
+### Bug Fixes 🐛
+
+- (TaskProducer) Call close() on shutdown by @bmckerry in [#718](https://github.com/getsentry/taskbroker/pull/718)
+
 ## 0.19.0
 
 ### New Features ✨
