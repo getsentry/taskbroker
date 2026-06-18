@@ -35,9 +35,9 @@ macro_rules! map {
 
     // An optional deprecated value always wins
     ($deprecated:expr => some($current_base:ident $(.$current_field:ident)+) if $provided:ident) => {
-        let key = stringify!($current_base$(.$current_field)+)
+        let key = concat!(stringify!($current_base), $(".", stringify!($current_field)),+)
             .strip_prefix("self.")
-            .unwrap_or(stringify!($current_base$(.$current_field)+));
+            .unwrap();
 
         if !$provided(key) {
             $current_base$(.$current_field)+ = $deprecated.take();
@@ -46,9 +46,9 @@ macro_rules! map {
 
     // A plain deprecated value only wins when it's provided
     ($deprecated:expr => $current_base:ident $(.$current_field:ident)+ if $provided:ident) => {
-        let key = stringify!($current_base$(.$current_field)+)
+        let key = concat!(stringify!($current_base), $(".", stringify!($current_field)),+)
             .strip_prefix("self.")
-            .unwrap_or(stringify!($current_base$(.$current_field)+));
+            .unwrap();
 
         if !$provided(key) {
             if let Some(v) = $deprecated.take() {
