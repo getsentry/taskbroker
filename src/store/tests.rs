@@ -14,7 +14,7 @@ use tokio::task::JoinSet;
 use crate::config::Config;
 use crate::config::store::{SqliteConfig, StoreConfig};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
-use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig, create_sqlite_pool};
+use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
@@ -63,14 +63,10 @@ fn test_activation_status_from() {
 
 #[tokio::test]
 async fn test_sqlite_create_db() {
-    assert!(
-        SqliteStore::new(
-            &generate_temp_filename(),
-            SqliteStoreConfig::from_config(&create_integration_config())
-        )
-        .await
-        .is_ok()
-    )
+    let mut config = create_integration_config();
+    config.store.sqlite.path = generate_temp_filename();
+
+    assert!(SqliteStore::new(&config).await.is_ok())
 }
 
 #[tokio::test]
@@ -1838,6 +1834,7 @@ async fn test_vacuum_db_incremental() {
     let config = Config {
         store: StoreConfig {
             sqlite: SqliteConfig {
+                path: generate_temp_filename(),
                 vacuum_page_count: Some(10),
                 ..SqliteConfig::default()
             },
@@ -1845,12 +1842,10 @@ async fn test_vacuum_db_incremental() {
         },
         ..Config::default()
     };
-    let store = SqliteStore::new(
-        &generate_temp_filename(),
-        SqliteStoreConfig::from_config(&config),
-    )
-    .await
-    .expect("could not create store");
+
+    let store = SqliteStore::new(&config)
+        .await
+        .expect("could not create store");
 
     let batch = make_activations(2);
     assert!(store.store(&batch).await.is_ok());
@@ -2000,18 +1995,21 @@ async fn test_db_status_calls_ok() {
     let url = format!("sqlite:{db_path}");
 
     // Initialize a store to create the database and run migrations
-    SqliteStore::new(
-        &url,
-        SqliteStoreConfig {
+    let config = Config {
+        store: StoreConfig {
             max_processing_attempts: 3,
             processing_deadline_grace_sec: 0,
-            claim_lease_ms: 5000,
-            vacuum_page_count: None,
-            enable_sqlite_status_metrics: false,
+            sqlite: SqliteConfig {
+                path: db_path,
+                vacuum_page_count: None,
+                enable_status_metrics: false,
+            },
+            ..StoreConfig::default()
         },
-    )
-    .await
-    .expect("store init");
+        ..Config::default()
+    };
+
+    SqliteStore::new(&config).await.expect("store init");
 
     // Acquire a fresh read connection from a temporary pool, since store.read_pool is private
     let (read_pool, _write_pool) = create_sqlite_pool(&url).await.expect("pool");

@@ -26,6 +26,7 @@ use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use tracing::{debug, instrument, warn};
 
 use crate::config::Config;
+use crate::config::store::StoreConfig;
 use crate::push::compute_claim_lease_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
@@ -180,35 +181,16 @@ pub async fn create_sqlite_pool(url: &str) -> Result<(Pool<Sqlite>, Pool<Sqlite>
     Ok((read_pool, write_pool))
 }
 
-pub struct SqliteStoreConfig {
-    pub max_processing_attempts: usize,
-    pub processing_deadline_grace_sec: u64,
-    pub claim_lease_ms: u64,
-    pub vacuum_page_count: Option<usize>,
-    pub enable_sqlite_status_metrics: bool,
-}
-
-impl SqliteStoreConfig {
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            max_processing_attempts: config.store.max_processing_attempts,
-            vacuum_page_count: config.store.sqlite.vacuum_page_count,
-            processing_deadline_grace_sec: config.store.processing_deadline_grace_sec,
-            claim_lease_ms: compute_claim_lease_ms(config),
-            enable_sqlite_status_metrics: config.store.sqlite.enable_status_metrics,
-        }
-    }
-}
-
 pub struct SqliteStore {
     read_pool: SqlitePool,
     write_pool: SqlitePool,
-    config: SqliteStoreConfig,
+    config: StoreConfig,
+    claim_lease_ms: u64,
 }
 
 impl SqliteStore {
-    pub async fn new(url: &str, config: SqliteStoreConfig) -> Result<Self, Error> {
-        let (read_pool, write_pool) = create_sqlite_pool(url).await?;
+    pub async fn new(config: &Config) -> Result<Self, Error> {
+        let (read_pool, write_pool) = create_sqlite_pool(&config.store.sqlite.path).await?;
 
         sqlx::migrate!("./migrations/sqlite")
             .run(&write_pool)
@@ -217,7 +199,8 @@ impl SqliteStore {
         Ok(Self {
             read_pool,
             write_pool,
-            config,
+            config: config.store.clone(),
+            claim_lease_ms: compute_claim_lease_ms(config),
         })
     }
 
@@ -244,7 +227,7 @@ impl SqliteStore {
     }
 
     async fn emit_db_status_metrics(&self) {
-        if !self.config.enable_sqlite_status_metrics {
+        if !self.config.sqlite.enable_status_metrics {
             return;
         }
 
@@ -398,7 +381,7 @@ impl ActivationStore for SqliteStore {
     async fn vacuum_db(&self) -> Result<(), Error> {
         let timer = Instant::now();
 
-        if let Some(page_count) = self.config.vacuum_page_count {
+        if let Some(page_count) = self.config.sqlite.vacuum_page_count {
             let mut conn = self.acquire_write_conn_metric("vacuum_db").await?;
             sqlx::query(format!("PRAGMA incremental_vacuum({page_count})").as_str())
                 .execute(&mut *conn)
@@ -604,7 +587,7 @@ impl ActivationStore for SqliteStore {
         } else {
             query_builder.push(format!(
                 "claim_expires_at = unixepoch('now', '+' || {:.3} || ' seconds'), processing_deadline = NULL, status = ",
-                self.config.claim_lease_ms as f64 / 1000.0,
+                self.claim_lease_ms as f64 / 1000.0,
             ));
 
             query_builder.push_bind(ActivationStatus::Claimed);

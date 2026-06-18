@@ -32,7 +32,7 @@ use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::adapters::postgres::{self, PostgresStore};
-use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use taskbroker::store::adapters::sqlite::SqliteStore;
 use taskbroker::store::traits::ActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
@@ -71,13 +71,8 @@ async fn main() -> Result<(), Error> {
     }
 
     let store: Arc<dyn ActivationStore> = match config.store.database_adapter {
-        DatabaseAdapter::Sqlite => Arc::new(
-            SqliteStore::new(
-                &config.store.sqlite.path,
-                SqliteStoreConfig::from_config(&config),
-            )
-            .await?,
-        ),
+        DatabaseAdapter::Sqlite => Arc::new(SqliteStore::new(&config).await?),
+
         DatabaseAdapter::Postgres => {
             if config.store.pg.run_migrations {
                 postgres::migrate(&config.store).await?;
