@@ -1,4 +1,14 @@
 # Changelog
+## 0.19.3
+
+### Internal Changes 🔧
+
+- (worker) Add more observability for producer futures by @bmckerry in [#719](https://github.com/getsentry/taskbroker/pull/719)
+
+### Other
+
+- temp: bypass awaiting futures while still recording metrics by @bmckerry in [#720](https://github.com/getsentry/taskbroker/pull/720)
+
 ## 0.19.2
 
 ### New Features ✨
