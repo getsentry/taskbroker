@@ -1,18 +1,10 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use validator::{Validate, ValidationError};
+use validator::Validate;
 
 use crate::config::batch::BatchConfig;
-
-// (TODO) Create a `validate` module to keep all of our custom validators (there are now at least two).
-fn validate_nonzero_duration(duration: &Duration) -> Result<(), ValidationError> {
-    if duration.is_zero() {
-        Err(ValidationError::new("nonzero_duration"))
-    } else {
-        Ok(())
-    }
-}
+use crate::config::validate;
 
 #[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct PushQueueConfig {
@@ -22,7 +14,7 @@ pub struct PushQueueConfig {
 
     /// Maximum time to wait when submitting an activation to the push pool.
     #[serde(with = "crate::serde::duration")]
-    #[validate(custom(function = "validate_nonzero_duration"))]
+    #[validate(custom(function = "validate::nonzero_duration"))]
     pub timeout: Duration,
 }
 
@@ -66,7 +58,7 @@ pub struct PushConfig {
 
     /// Maximum time for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
     #[serde(with = "crate::serde::duration")]
-    #[validate(custom(function = "validate_nonzero_duration"))]
+    #[validate(custom(function = "validate::nonzero_duration"))]
     pub timeout: Duration,
 
     /// The push queue configuration.
