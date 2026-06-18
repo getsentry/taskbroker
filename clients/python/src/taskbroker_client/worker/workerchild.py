@@ -287,6 +287,8 @@ def child_process(
                 },
             )
             pending_task_futures.remove(task)
+            # FIXME(benm): Use passthrough option to get future-related metrics
+            # without placing a duplicate ProcessingResult
             _task_execution_complete(
                 inflight=task.inflight,
                 next_state=task.status,
@@ -294,6 +296,7 @@ def child_process(
                 execution_end_time=task.futures_start_time,
                 task_func=task.task_func,
                 futures_start_time=task.futures_start_time,
+                passthrough=True,
             )
 
         def get_oldest_pending_activation() -> ActivationWithPendingFutures | None:
@@ -512,6 +515,13 @@ def child_process(
                     task_func,
                 )
             else:
+                # FIXME(benm): Temporarily bypass producer futures needing to be completed
+                # before writing to `processed_tasks` while still recording metrics.
+                _place_processing_result(
+                    inflight,
+                    next_state,
+                    task_func,
+                )
                 for name, futures in task_produced_futures.items():
                     # How many futures were produced in the executed task,
                     # tagged by producer name
@@ -721,13 +731,10 @@ def child_process(
                 status=monitor_status,
             )
 
-    def _task_execution_complete(
+    def _place_processing_result(
         inflight: InflightTaskActivation,
         next_state: TaskActivationStatus.ValueType,
-        execution_start_time: float,
-        execution_end_time: float,
         task_func: Task[Any, Any] | None,
-        futures_start_time: float | None = None,
     ) -> None:
         with metrics.timer(
             "taskworker.worker.processed_tasks.put.duration",
@@ -766,6 +773,26 @@ def child_process(
                         receive_timestamp=inflight.receive_timestamp,
                     )
                 )
+
+    def _task_execution_complete(
+        inflight: InflightTaskActivation,
+        next_state: TaskActivationStatus.ValueType,
+        execution_start_time: float,
+        execution_end_time: float,
+        task_func: Task[Any, Any] | None,
+        futures_start_time: float | None = None,
+        # FIXME(benm): Temp option to skip placing a task in processed_tasks.
+        # This is for tasks with pending producer futures, as we still want to record
+        # metrics as usual but want to have a `ProcessingResult` placed immediately
+        # while we troubleshoot why futures are never being marked as done.
+        passthrough: bool = False,
+    ) -> None:
+        if not passthrough:
+            _place_processing_result(
+                inflight,
+                next_state,
+                task_func,
+            )
         record_task_execution(
             inflight.activation,
             next_state,
