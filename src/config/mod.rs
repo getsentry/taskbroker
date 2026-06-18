@@ -319,75 +319,60 @@ impl Config {
                 .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER)
         };
 
+        // Convert a 'u64' into a duration.
+        fn duration<T: Into<u64>>(v: T) -> Duration {
+            Duration::from_millis(v.into())
+        }
+
+        // Wrap anything inside `Some`.
+        fn optional<T>(v: T) -> Option<T> {
+            Some(v)
+        }
+
         // Map deprecated fetch configuration options
         deprecated::map! {
-            self.deprecated.fetch_threads    => self.fetch.threads if provided,
-            self.deprecated.fetch_batch_size => self.fetch.batch_length if provided
+            self.deprecated.fetch_threads             => self.fetch.threads if provided,
+            self.deprecated.fetch_batch_size          => self.fetch.batch_length if provided,
+            self.deprecated.fetch_wait_ms as duration => self.fetch.backoff if provided
         };
-
-        if !provided("fetch.backoff")
-            && let Some(v) = self.deprecated.fetch_wait_ms
-        {
-            self.fetch.backoff = Duration::from_millis(v);
-        }
 
         // Map deprecated push configuration options
         deprecated::map! {
-            self.deprecated.push_threads           => self.push.threads if provided,
-            self.deprecated.push_queue_size        => self.push.queue.size if provided,
-            self.deprecated.batch_push_updates     => self.push.update.batched if provided,
-            self.deprecated.push_update_batch_size => self.push.update.batch.length if provided
+            self.deprecated.push_threads                        => self.push.threads if provided,
+            self.deprecated.push_queue_size                     => self.push.queue.size if provided,
+            self.deprecated.batch_push_updates                  => self.push.update.batched if provided,
+            self.deprecated.push_update_batch_size              => self.push.update.batch.length if provided,
+            self.deprecated.push_timeout_ms as duration         => self.push.timeout if provided,
+            self.deprecated.push_queue_timeout_ms as duration   => self.push.queue.timeout if provided,
+            self.deprecated.push_update_interval_ms as duration => self.push.update.batch.interval if provided
         };
-
-        if !provided("push.timeout")
-            && let Some(v) = self.deprecated.push_timeout_ms
-        {
-            self.push.timeout = Duration::from_millis(v);
-        }
-
-        if !provided("push.queue.timeout")
-            && let Some(v) = self.deprecated.push_queue_timeout_ms
-        {
-            self.push.queue.timeout = Duration::from_millis(v);
-        }
-
-        if !provided("push.update.batch.interval")
-            && let Some(v) = self.deprecated.push_update_interval_ms
-        {
-            self.push.update.batch.interval = Duration::from_millis(v.into());
-        }
 
         // Map deprecated Postgres configuration options
         deprecated::map! {
-            self.deprecated.run_migrations           => self.store.pg.run_migrations if provided,
-            self.deprecated.pg_host                  => self.store.pg.host if provided,
-            self.deprecated.pg_port                  => self.store.pg.port if provided,
-            self.deprecated.pg_ddl_username          => self.store.pg.ddl_username if provided,
-            self.deprecated.pg_username              => self.store.pg.username if provided,
-            self.deprecated.pg_password              => self.store.pg.password if provided,
-            self.deprecated.pg_ddl_password          => self.store.pg.ddl_password if provided,
-            self.deprecated.pg_database_name         => self.store.pg.database_name if provided,
-            self.deprecated.pg_default_database_name => self.store.pg.default_database_name if provided,
-            self.deprecated.pg_extra_query_params    => some(self.store.pg.query_params) if provided
+            self.deprecated.run_migrations                    => self.store.pg.run_migrations if provided,
+            self.deprecated.pg_host                           => self.store.pg.host if provided,
+            self.deprecated.pg_port                           => self.store.pg.port if provided,
+            self.deprecated.pg_ddl_username                   => self.store.pg.ddl_username if provided,
+            self.deprecated.pg_username                       => self.store.pg.username if provided,
+            self.deprecated.pg_password                       => self.store.pg.password if provided,
+            self.deprecated.pg_ddl_password                   => self.store.pg.ddl_password if provided,
+            self.deprecated.pg_database_name                  => self.store.pg.database_name if provided,
+            self.deprecated.pg_default_database_name          => self.store.pg.default_database_name if provided,
+            self.deprecated.pg_extra_query_params as optional => self.store.pg.query_params if provided
         };
 
         // Map deprecated SQLite configuration options
         deprecated::map! {
-            self.deprecated.db_path                      => self.store.sqlite.path if provided,
-            self.deprecated.vacuum_page_count            => some(self.store.sqlite.vacuum_page_count) if provided,
-            self.deprecated.enable_sqlite_status_metrics => self.store.sqlite.enable_status_metrics if provided
+            self.deprecated.db_path                       => self.store.sqlite.path if provided,
+            self.deprecated.vacuum_page_count as optional => self.store.sqlite.vacuum_page_count if provided,
+            self.deprecated.enable_sqlite_status_metrics  => self.store.sqlite.enable_status_metrics if provided
         };
 
         // Map deprecated retry configuration options
         deprecated::map! {
-            self.deprecated.db_query_max_retries => self.store.retry.max_retries if provided
+            self.deprecated.db_query_max_retries                => self.store.retry.max_retries if provided,
+            self.deprecated.db_query_retry_delay_ms as duration => self.store.retry.delay if provided
         };
-
-        if !provided("store.retry.delay")
-            && let Some(v) = self.deprecated.db_query_retry_delay_ms
-        {
-            self.store.retry.delay = Duration::from_millis(v);
-        }
 
         // Map deprecated store configuration options
         deprecated::map! {
@@ -396,7 +381,7 @@ impl Config {
             self.deprecated.db_insert_batch_max_len       => self.store.insert_batch_max_length if provided,
             self.deprecated.db_insert_batch_max_size      => self.store.insert_batch_max_bytes if provided,
             self.deprecated.db_insert_batch_max_time_ms   => self.store.insert_batch_max_time_ms if provided,
-            self.deprecated.db_max_size                   => some(self.store.max_size) if provided,
+            self.deprecated.db_max_size as optional       => self.store.max_size if provided,
             self.deprecated.max_pending_count             => self.store.max_pending_count if provided,
             self.deprecated.max_delay_count               => self.store.max_delay_count if provided,
             self.deprecated.max_processing_count          => self.store.max_processing_count if provided,
