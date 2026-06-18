@@ -36,6 +36,11 @@ class DummyProducer:
         future.set_result(make_broker_value())
         return future
 
+    def close(self) -> Future[None]:
+        f: Future[None] = Future()
+        f.set_result(None)
+        return f
+
 
 def get_dummy_producer(use_simple_futures: bool) -> DummyProducer:
     return DummyProducer(use_simple_futures=use_simple_futures)
@@ -52,7 +57,8 @@ def test_producer_tracks_futures() -> None:
     producer = TaskProducer("test.producer", partial(get_dummy_producer, use_simple_futures=True))
     producer.produce(Topic("test"), make_kafka_payload())
     assert len(_pending_futures) == 1
-    future = next(iter(TaskProducer.collect_futures()))
+    collected = TaskProducer.collect_futures()
+    future = next(iter(collected["test.producer"]))
     assert future.result() == make_broker_value()
     assert len(_pending_futures) == 0
 
@@ -65,7 +71,8 @@ def test_producer_executes_callbacks() -> None:
         received.append(future)
 
     producer.produce(Topic("test"), make_kafka_payload(), callbacks=[callback])
-    tracked_future = next(iter(TaskProducer.collect_futures()))
+    collected = TaskProducer.collect_futures()
+    tracked_future = next(iter(collected["test.producer"]))
 
     assert len(received) == 1
     assert received[0] is tracked_future
@@ -86,4 +93,4 @@ def test_pending_futures_max_len() -> None:
     producer = TaskProducer("test.producer", partial(get_dummy_producer, use_simple_futures=True))
     for _ in range(10001):
         producer.produce(Topic("test"), make_kafka_payload())
-    assert len(_pending_futures) == 10000
+    assert len(_pending_futures["test.producer"]) == 10000

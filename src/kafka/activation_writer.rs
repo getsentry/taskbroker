@@ -33,12 +33,12 @@ impl ActivationWriterConfig {
     pub fn from_topic(config: &Config, topic: &str) -> Self {
         Self {
             topic: topic.to_owned(),
-            db_max_size: config.store.db_max_size,
-            max_buf_len: config.store.db_insert_batch_max_len,
+            db_max_size: config.store.max_size,
+            max_buf_len: config.store.insert_batch_max_length,
             max_pending_activations: config.store.max_pending_count,
             max_processing_activations: config.store.max_processing_count,
             max_delay_activations: config.store.max_delay_count,
-            write_failure_backoff_ms: config.store.db_write_failure_backoff_ms,
+            write_failure_backoff_ms: config.store.insert_failure_backoff_ms,
         }
     }
 }
@@ -145,15 +145,8 @@ impl Reducer for ActivationWriter {
             return Ok(None);
         }
 
-        // I suspect that 'store' occasionally hangs and want to confirm
-        let insert_id = Utc::now().timestamp_millis();
-        debug!("Preparing insert {:?}", insert_id);
-
         let write_to_store_start = Instant::now();
         let res = self.store.store(batch).await;
-
-        // If every "preparing" has a matching "completed" we are good
-        debug!("Completed insert {:?}", insert_id);
 
         match res {
             Ok(entries) => {

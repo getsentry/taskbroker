@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use figment::providers::{Env, Format, Yaml};
@@ -8,17 +9,22 @@ use figment::{Figment, Metadata, Profile, Provider};
 use rdkafka::ClientConfig;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
-use validator::{Validate, ValidationError};
+use validator::Validate;
 
 use crate::Args;
+use crate::config::fetch::FetchConfig;
+use crate::config::push::PushConfig;
 use crate::config::store::StoreConfig;
-use crate::fetch::MAX_FETCH_THREADS;
 use crate::logging::LogFormat;
 
+pub mod batch;
 pub mod deprecated;
+pub mod fetch;
 pub mod kafka;
+pub mod push;
 pub mod raw;
 pub mod store;
+pub mod validate;
 
 use deprecated::DeprecatedConfig;
 use kafka::{ClusterConfig, TopicConfig};
@@ -172,32 +178,13 @@ pub struct Config {
     /// How to deliver tasks to workers: "push" or "pull".
     pub delivery_mode: DeliveryMode,
 
-    /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
-    #[validate(range(min = 1, max = MAX_FETCH_THREADS), custom(function = "validate_power_of_two"))]
-    pub fetch_threads: usize,
+    /// Fetch pool / thread configuration.
+    #[validate(nested)]
+    pub fetch: FetchConfig,
 
-    /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
-    pub fetch_wait_ms: u64,
-
-    /// The number of activations to claim with a single fetch query.
-    #[validate(range(min = 1))]
-    pub fetch_batch_size: i32,
-
-    /// The number of concurrent push threads to run.
-    #[validate(range(min = 1))]
-    pub push_threads: usize,
-
-    /// The size of the push queue.
-    #[validate(range(min = 1))]
-    pub push_queue_size: usize,
-
-    /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
-    #[validate(range(min = 1))]
-    pub push_queue_timeout_ms: u64,
-
-    /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
-    #[validate(range(min = 1))]
-    pub push_timeout_ms: u64,
+    /// Push pool / thread configuration.
+    #[validate(nested)]
+    pub push: PushConfig,
 
     /// Update statuses from the gRPC server in batches?
     pub batch_status_updates: bool,
@@ -209,17 +196,6 @@ pub struct Config {
     /// Maximum milliseconds to wait before flushing a batch of status updates.
     #[validate(range(min = 1))]
     pub status_update_interval_ms: u64,
-
-    /// Update claimed → processing updates in batches? Only applies in PUSH mode.
-    pub batch_push_updates: bool,
-
-    /// The size of a batch of dispatch updates.
-    #[validate(range(min = 1))]
-    pub push_update_batch_size: usize,
-
-    /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
-    #[validate(range(min = 1))]
-    pub push_update_interval_ms: u32,
 
     /// Maps every application to its worker endpoint, both represented as strings.
     pub worker_map: BTreeMap<String, String>,
@@ -291,19 +267,11 @@ impl Default for Config {
             vacuum_interval_ms: 30000,
             log_async_backtrace: false,
             delivery_mode: DeliveryMode::Pull,
-            fetch_threads: 1,
-            fetch_wait_ms: 100,
-            fetch_batch_size: 1,
-            push_threads: 1,
-            push_queue_size: 1,
-            push_queue_timeout_ms: 5000,
-            push_timeout_ms: 30000,
+            fetch: FetchConfig::default(),
+            push: PushConfig::default(),
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
-            batch_push_updates: false,
-            push_update_batch_size: 1,
-            push_update_interval_ms: 100,
             worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
             raw_namespace: None,
             raw_application: None,
@@ -346,168 +314,81 @@ impl Config {
     /// - If the user does not provide `store.db_max_size`, use the deprecated field `db_max_size` instead
     fn map_deprecated_options(&mut self, builder: &mut Figment) {
         // Nested function definition since it's not used anywhere else
-        fn user_provided(builder: &Figment, key: &str) -> bool {
+        let provided = |key: &str| {
             builder
                 .find_metadata(key)
                 .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER)
+        };
+
+        // Convert a 'u64' into a duration.
+        fn duration<T: Into<u64>>(v: T) -> Duration {
+            Duration::from_millis(v.into())
         }
 
-        // This field was not provided, so use the deprecated version instead
-        if !user_provided(builder, "store.database_adapter") {
-            deprecated::map! {
-                self.deprecated.database_adapter => self.store.database_adapter
-            };
+        // Wrap anything inside `Some`.
+        fn optional<T>(v: T) -> Option<T> {
+            Some(v)
         }
 
-        if !user_provided(builder, "store.run_migrations") {
-            deprecated::map! {
-                self.deprecated.run_migrations => self.store.run_migrations
-            };
-        }
+        // Map deprecated fetch configuration options
+        deprecated::map! {
+            self.deprecated.fetch_threads             => self.fetch.threads if provided,
+            self.deprecated.fetch_batch_size          => self.fetch.batch_length if provided,
+            self.deprecated.fetch_wait_ms as duration => self.fetch.backoff if provided
+        };
 
-        if !user_provided(builder, "store.pg_host") {
-            deprecated::map! {
-                self.deprecated.pg_host => self.store.pg_host
-            };
-        }
+        // Map deprecated push configuration options
+        deprecated::map! {
+            self.deprecated.push_threads                        => self.push.threads if provided,
+            self.deprecated.push_queue_size                     => self.push.queue.size if provided,
+            self.deprecated.batch_push_updates                  => self.push.update.batched if provided,
+            self.deprecated.push_update_batch_size              => self.push.update.batch.length if provided,
+            self.deprecated.push_timeout_ms as duration         => self.push.timeout if provided,
+            self.deprecated.push_queue_timeout_ms as duration   => self.push.queue.timeout if provided,
+            self.deprecated.push_update_interval_ms as duration => self.push.update.batch.interval if provided
+        };
 
-        if !user_provided(builder, "store.pg_port") {
-            deprecated::map! {
-                self.deprecated.pg_port => self.store.pg_port
-            };
-        }
+        // Map deprecated Postgres configuration options
+        deprecated::map! {
+            self.deprecated.run_migrations                    => self.store.pg.run_migrations if provided,
+            self.deprecated.pg_host                           => self.store.pg.host if provided,
+            self.deprecated.pg_port                           => self.store.pg.port if provided,
+            self.deprecated.pg_ddl_username                   => self.store.pg.ddl_username if provided,
+            self.deprecated.pg_username                       => self.store.pg.username if provided,
+            self.deprecated.pg_password                       => self.store.pg.password if provided,
+            self.deprecated.pg_ddl_password                   => self.store.pg.ddl_password if provided,
+            self.deprecated.pg_database_name                  => self.store.pg.database_name if provided,
+            self.deprecated.pg_default_database_name          => self.store.pg.default_database_name if provided,
+            self.deprecated.pg_extra_query_params as optional => self.store.pg.query_params if provided
+        };
 
-        if !user_provided(builder, "store.pg_ddl_username") {
-            deprecated::map! {
-                self.deprecated.pg_ddl_username => self.store.pg_ddl_username
-            };
-        }
+        // Map deprecated SQLite configuration options
+        deprecated::map! {
+            self.deprecated.db_path                       => self.store.sqlite.path if provided,
+            self.deprecated.vacuum_page_count as optional => self.store.sqlite.vacuum_page_count if provided,
+            self.deprecated.enable_sqlite_status_metrics  => self.store.sqlite.enable_status_metrics if provided
+        };
 
-        if !user_provided(builder, "store.pg_username") {
-            deprecated::map! {
-                self.deprecated.pg_username => self.store.pg_username
-            };
-        }
+        // Map deprecated retry configuration options
+        deprecated::map! {
+            self.deprecated.db_query_max_retries                => self.store.retry.max_retries if provided,
+            self.deprecated.db_query_retry_delay_ms as duration => self.store.retry.delay if provided
+        };
 
-        if !user_provided(builder, "store.pg_password") {
-            deprecated::map! {
-                self.deprecated.pg_password => self.store.pg_password
-            };
-        }
-
-        if !user_provided(builder, "store.pg_ddl_password") {
-            deprecated::map! {
-                self.deprecated.pg_ddl_password => self.store.pg_ddl_password
-            };
-        }
-
-        if !user_provided(builder, "store.pg_database_name") {
-            deprecated::map! {
-                self.deprecated.pg_database_name => self.store.pg_database_name
-            };
-        }
-
-        if !user_provided(builder, "store.pg_default_database_name") {
-            deprecated::map! {
-                self.deprecated.pg_default_database_name => self.store.pg_default_database_name
-            };
-        }
-
-        if !user_provided(builder, "store.pg_extra_query_params") {
-            deprecated::map! {
-                self.deprecated.pg_extra_query_params => some(self.store.pg_extra_query_params)
-            };
-        }
-
-        if !user_provided(builder, "store.db_path") {
-            deprecated::map! {
-                self.deprecated.db_path => self.store.db_path
-            };
-        }
-
-        if !user_provided(builder, "store.db_write_failure_backoff_ms") {
-            deprecated::map! {
-                self.deprecated.db_write_failure_backoff_ms => self.store.db_write_failure_backoff_ms
-            };
-        }
-
-        if !user_provided(builder, "store.db_query_max_retries") {
-            deprecated::map! {
-                self.deprecated.db_query_max_retries => some(self.store.db_query_max_retries)
-            };
-        }
-
-        if !user_provided(builder, "store.db_query_retry_delay_ms") {
-            deprecated::map! {
-                self.deprecated.db_query_retry_delay_ms => self.store.db_query_retry_delay_ms
-            };
-        }
-
-        if !user_provided(builder, "store.db_insert_batch_max_len") {
-            deprecated::map! {
-                self.deprecated.db_insert_batch_max_len => self.store.db_insert_batch_max_len
-            };
-        }
-
-        if !user_provided(builder, "store.db_insert_batch_max_size") {
-            deprecated::map! {
-                self.deprecated.db_insert_batch_max_size => self.store.db_insert_batch_max_size
-            };
-        }
-
-        if !user_provided(builder, "store.db_insert_batch_max_time_ms") {
-            deprecated::map! {
-                self.deprecated.db_insert_batch_max_time_ms => self.store.db_insert_batch_max_time_ms
-            };
-        }
-
-        if !user_provided(builder, "store.db_max_size") {
-            deprecated::map! {
-                self.deprecated.db_max_size => some(self.store.db_max_size)
-            };
-        }
-
-        if !user_provided(builder, "store.max_pending_count") {
-            deprecated::map! {
-                self.deprecated.max_pending_count => self.store.max_pending_count
-            };
-        }
-
-        if !user_provided(builder, "store.max_delay_count") {
-            deprecated::map! {
-                self.deprecated.max_delay_count => self.store.max_delay_count
-            };
-        }
-
-        if !user_provided(builder, "store.max_processing_count") {
-            deprecated::map! {
-                self.deprecated.max_processing_count => self.store.max_processing_count
-            };
-        }
-
-        if !user_provided(builder, "store.max_processing_attempts") {
-            deprecated::map! {
-                self.deprecated.max_processing_attempts => self.store.max_processing_attempts
-            };
-        }
-
-        if !user_provided(builder, "store.processing_deadline_grace_sec") {
-            deprecated::map! {
-                self.deprecated.processing_deadline_grace_sec => self.store.processing_deadline_grace_sec
-            };
-        }
-
-        if !user_provided(builder, "store.vacuum_page_count") {
-            deprecated::map! {
-                self.deprecated.vacuum_page_count => some(self.store.vacuum_page_count)
-            };
-        }
-
-        if !user_provided(builder, "store.enable_sqlite_status_metrics") {
-            deprecated::map! {
-                self.deprecated.enable_sqlite_status_metrics => self.store.enable_sqlite_status_metrics
-            };
-        }
+        // Map deprecated store configuration options
+        deprecated::map! {
+            self.deprecated.database_adapter              => self.store.adapter if provided,
+            self.deprecated.db_write_failure_backoff_ms   => self.store.insert_failure_backoff_ms if provided,
+            self.deprecated.db_insert_batch_max_len       => self.store.insert_batch_max_length if provided,
+            self.deprecated.db_insert_batch_max_size      => self.store.insert_batch_max_bytes if provided,
+            self.deprecated.db_insert_batch_max_time_ms   => self.store.insert_batch_max_time_ms if provided,
+            self.deprecated.db_max_size as optional       => self.store.max_size if provided,
+            self.deprecated.max_pending_count             => self.store.max_pending_count if provided,
+            self.deprecated.max_delay_count               => self.store.max_delay_count if provided,
+            self.deprecated.max_processing_count          => self.store.max_processing_count if provided,
+            self.deprecated.max_processing_attempts       => self.store.max_processing_attempts if provided,
+            self.deprecated.processing_deadline_grace_sec => self.store.processing_deadline_grace_sec if provided
+        };
     }
 
     /// Normalize the legacy single-topic config into the new multi-topic
@@ -758,7 +639,7 @@ impl Config {
         // avoid that contention (e.g. filtering by (topic, partition) or another
         // mechanism entirely). Reject the combination here, before any consumer
         // spawns.
-        if consumable.len() > 1 && self.store.database_adapter == DatabaseAdapter::Postgres {
+        if consumable.len() > 1 && self.store.adapter == DatabaseAdapter::Postgres {
             return Err(anyhow!(
                 "multi-topic consumption ({} consumable topics) is not supported with the \
                  postgres database adapter; use the sqlite adapter or a single consumable topic",
@@ -1015,23 +896,16 @@ impl Provider for Config {
     }
 }
 
-/// Ensures that `n` is a power of two, used to validate `fetch_threads`.
-fn validate_power_of_two(n: usize) -> Result<(), ValidationError> {
-    if n.is_power_of_two() {
-        Ok(())
-    } else {
-        Err(ValidationError::new("not_power_of_two"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
     use std::collections::BTreeMap;
+    use std::time::Duration;
 
     use figment::Jail;
     use validator::Validate;
 
+    use crate::config::fetch::FetchConfig;
     use crate::logging::LogFormat;
     use crate::{Args, Run};
 
@@ -1047,10 +921,10 @@ mod tests {
         assert_eq!(config.log_filter, "info,librdkafka=warn,h2=off");
         assert_eq!(config.log_format, LogFormat::Text);
         assert_eq!(config.grpc_port, 50051);
-        assert_eq!(config.store.db_path, "./taskbroker-inflight.sqlite");
+        assert_eq!(config.store.sqlite.path, "./taskbroker-inflight.sqlite");
         assert_eq!(config.store.max_pending_count, 2048);
         assert_eq!(config.store.max_processing_count, 2048);
-        assert_eq!(config.store.vacuum_page_count, None);
+        assert_eq!(config.store.sqlite.vacuum_page_count, None);
         assert_eq!(
             config.worker_map.get("sentry").map(String::as_str),
             Some("http://127.0.0.1:50052")
@@ -1060,63 +934,66 @@ mod tests {
     #[test]
     fn test_validate_rejects_invalid_fields() {
         let mut config = Config {
-            fetch_threads: 0,
-            ..Config::default()
+            fetch: FetchConfig {
+                threads: 0,
+                ..Default::default()
+            },
+            ..Default::default()
         };
 
         // Fetch threads cannot be zero
         assert!(config.validate().is_err());
 
-        config.fetch_threads = 1;
+        config.fetch.threads = 1;
         assert!(config.validate().is_ok());
 
         // Fetch threads must be a power of two
-        config.fetch_threads = 3;
+        config.fetch.threads = 3;
         assert!(config.validate().is_err());
 
-        config.fetch_threads = 4;
+        config.fetch.threads = 4;
         assert!(config.validate().is_ok());
 
         // Fetch threads must be ≤ 256
-        config.fetch_threads = 512;
+        config.fetch.threads = 512;
         assert!(config.validate().is_err());
 
-        config.fetch_threads = 1;
+        config.fetch.threads = 1;
         assert!(config.validate().is_ok());
 
         // Fetch batch size cannot be zero
-        config.fetch_batch_size = 0;
+        config.fetch.batch_length = 0;
         assert!(config.validate().is_err());
 
-        config.fetch_batch_size = 1;
+        config.fetch.batch_length = 1;
         assert!(config.validate().is_ok());
 
         // Push threads cannot be zero
-        config.push_threads = 0;
+        config.push.threads = 0;
         assert!(config.validate().is_err());
 
-        config.push_threads = 1;
+        config.push.threads = 1;
         assert!(config.validate().is_ok());
 
         // Push queue size cannot be zero
-        config.push_queue_size = 0;
+        config.push.queue.size = 0;
         assert!(config.validate().is_err());
 
-        config.push_queue_size = 1;
+        config.push.queue.size = 1;
         assert!(config.validate().is_ok());
 
         // Push queue timeout cannot be zero
-        config.push_queue_timeout_ms = 0;
+        config.push.queue.timeout = Duration::from_millis(0);
         assert!(config.validate().is_err());
 
-        config.push_queue_timeout_ms = 1;
+        config.push.queue.timeout = Duration::from_millis(1);
         assert!(config.validate().is_ok());
 
         // Push timeout cannot be zero
-        config.push_timeout_ms = 0;
+        config.push.timeout = Duration::from_millis(0);
         assert!(config.validate().is_err());
 
-        config.push_timeout_ms = 1;
+        config.push.timeout = Duration::from_millis(1);
         assert!(config.validate().is_ok());
 
         // Status update batch size cannot be zero
@@ -1186,13 +1063,16 @@ mod tests {
             assert_eq!(config.kafka_auto_offset_reset, "earliest".to_owned());
             assert_eq!(config.kafka_session_timeout_ms, 6000.to_owned());
             assert_eq!(config.kafka_deadletter_topic, "error-tasks-dlq".to_owned());
-            assert_eq!(config.store.database_adapter, DatabaseAdapter::Postgres);
-            assert_eq!(config.store.db_path, "./taskbroker-error.sqlite".to_owned());
+            assert_eq!(config.store.adapter, DatabaseAdapter::Postgres);
+            assert_eq!(
+                config.store.sqlite.path,
+                "./taskbroker-error.sqlite".to_owned()
+            );
             assert_eq!(config.store.max_pending_count, 512);
             assert_eq!(config.store.max_processing_count, 512);
             assert_eq!(config.store.max_processing_attempts, 5);
-            assert_eq!(config.store.vacuum_page_count, Some(1000));
-            assert_eq!(config.store.db_max_size, Some(3_000_000_000));
+            assert_eq!(config.store.sqlite.vacuum_page_count, Some(1000));
+            assert_eq!(config.store.max_size, Some(3_000_000_000));
             assert!(config.full_vacuum_on_start);
             assert_eq!(
                 config.worker_map,
@@ -1222,7 +1102,7 @@ mod tests {
             };
             let config = Config::from_args(&args).unwrap();
             assert_eq!(config.log_filter, "error");
-            assert_eq!(config.store.database_adapter, DatabaseAdapter::Postgres);
+            assert_eq!(config.store.adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.store.max_processing_attempts, 5);
 
             Ok(())
@@ -1252,7 +1132,7 @@ mod tests {
             );
             assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
             assert_eq!(
-                config.store.db_path,
+                config.store.sqlite.path,
                 "./taskbroker-inflight.sqlite".to_owned()
             );
             assert_eq!(config.store.max_pending_count, 2048);

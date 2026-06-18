@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 from collections.abc import MutableMapping
+from concurrent.futures import Future
 from typing import Any, Callable, Protocol
 
 from arroyo.backends.abstract import ProducerFuture
@@ -40,6 +41,16 @@ class ProducerProtocol(Protocol):
     def produce(
         self, dest: Topic | Partition, payload: KafkaPayload
     ) -> ProducerFuture[BrokerValue[KafkaPayload]]: ...
+
+
+class CloseableProducerProtocol(Protocol):
+    """Interface used by TaskProducer. Represents a producer that has a shutdown method."""
+
+    def produce(
+        self, dest: Topic | Partition, payload: KafkaPayload
+    ) -> ProducerFuture[BrokerValue[KafkaPayload]]: ...
+
+    def close(self) -> Future[None]: ...
 
 
 ProducerFactory = Callable[[str], ProducerProtocol]

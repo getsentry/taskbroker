@@ -17,10 +17,10 @@ use uuid::Uuid;
 
 use crate::config::Config;
 use crate::config::deprecated::DeprecatedConfig;
-use crate::config::store::StoreConfig;
+use crate::config::store::{PgConfig, StoreConfig};
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
-use crate::store::adapters::postgres::{self, PostgresStore, PostgresStoreConfig};
-use crate::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use crate::store::adapters::postgres::{self, PostgresStore};
+use crate::store::adapters::sqlite::SqliteStore;
 use crate::store::traits::ActivationStore;
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
@@ -276,24 +276,17 @@ pub fn create_config() -> Arc<Config> {
 
 /// Create an ActivationStore instance
 pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
-    match adapter {
-        "sqlite" => Arc::new(
-            SqliteStore::new(
-                &generate_temp_filename(),
-                SqliteStoreConfig::from_config(&create_integration_config()),
-            )
-            .await
-            .unwrap(),
-        ) as Arc<dyn ActivationStore>,
-        "postgres" => {
-            let config = create_integration_config();
-            postgres::migrate(&config).await.unwrap();
+    let mut config = create_integration_config();
+    config.store.sqlite.path = generate_temp_filename();
 
-            let store = Arc::new(
-                PostgresStore::new(PostgresStoreConfig::from_config(&config))
-                    .await
-                    .unwrap(),
-            ) as Arc<dyn ActivationStore>;
+    match adapter {
+        "sqlite" => Arc::new(SqliteStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>,
+
+        "postgres" => {
+            postgres::migrate(&config.store).await.unwrap();
+
+            let store =
+                Arc::new(PostgresStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>;
 
             store.assign_partitions(vec![0]).unwrap();
             store
@@ -316,12 +309,15 @@ pub fn create_integration_config_from_base(base: Config) -> Config {
             ..base.deprecated
         },
         store: StoreConfig {
-            pg_host: get_pg_host(),
-            pg_port: get_pg_port(),
-            pg_username: get_pg_username(),
-            pg_password: get_pg_password(),
-            pg_database_name: get_pg_database_name(),
-            run_migrations: true,
+            pg: PgConfig {
+                host: get_pg_host(),
+                port: get_pg_port(),
+                username: get_pg_username(),
+                password: get_pg_password(),
+                database_name: get_pg_database_name(),
+                run_migrations: true,
+                ..base.store.pg
+            },
             ..base.store
         },
         kafka_auto_offset_reset: "earliest".into(),
@@ -334,31 +330,14 @@ pub fn create_integration_config_from_base(base: Config) -> Config {
 /// Create a Config instance that uses a testing topic
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
-pub fn create_integration_config() -> Arc<Config> {
-    Arc::new(create_integration_config_from_base(Config {
+pub fn create_integration_config() -> Config {
+    create_integration_config_from_base(Config {
         deprecated: DeprecatedConfig {
             kafka_topic: Some("taskbroker-test".into()),
             ..DeprecatedConfig::default()
         },
         ..Config::default()
-    }))
-}
-
-/// Create a Config instance that uses SSL
-/// and earliest auto_offset_reset. This is intended to be combined
-/// with [`reset_topic`]
-pub fn create_integration_config_with_ssl() -> Arc<Config> {
-    Arc::new(create_integration_config_from_base(Config {
-        deprecated: DeprecatedConfig {
-            kafka_topic: Some("taskbroker-test".into()),
-            ..DeprecatedConfig::default()
-        },
-        store: StoreConfig {
-            pg_extra_query_params: Some("sslmode=require".to_string()),
-            ..StoreConfig::default()
-        },
-        ..Config::default()
-    }))
+    })
 }
 
 /// Create a kafka producer for a given config

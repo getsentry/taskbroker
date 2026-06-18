@@ -31,8 +31,8 @@ use taskbroker::metrics;
 use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::adapters::postgres::{self, PostgresStore, PostgresStoreConfig};
-use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use taskbroker::store::adapters::postgres::{self, PostgresStore};
+use taskbroker::store::adapters::sqlite::SqliteStore;
 use taskbroker::store::traits::ActivationStore;
 use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
@@ -67,23 +67,18 @@ async fn main() -> Result<(), Error> {
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
     if args.run == Run::Migrations {
-        return config.store.database_adapter.migrate(&config).await;
+        return config.store.adapter.migrate(&config).await;
     }
 
-    let store: Arc<dyn ActivationStore> = match config.store.database_adapter {
-        DatabaseAdapter::Sqlite => Arc::new(
-            SqliteStore::new(
-                &config.store.db_path,
-                SqliteStoreConfig::from_config(&config),
-            )
-            .await?,
-        ),
+    let store: Arc<dyn ActivationStore> = match config.store.adapter {
+        DatabaseAdapter::Sqlite => Arc::new(SqliteStore::new(&config).await?),
+
         DatabaseAdapter::Postgres => {
-            if config.store.run_migrations {
-                postgres::migrate(&config).await?;
+            if config.store.pg.run_migrations {
+                postgres::migrate(&config.store).await?;
             }
 
-            Arc::new(PostgresStore::new(PostgresStoreConfig::from_config(&config)).await?)
+            Arc::new(PostgresStore::new(&config).await?)
         }
     };
 
@@ -296,7 +291,7 @@ async fn main() -> Result<(), Error> {
     };
 
     // Initialize push queue
-    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
 
     // Initialize push and fetch pools
     let push_pool = PushPool::new(receiver, config.clone());
@@ -307,7 +302,7 @@ async fn main() -> Result<(), Error> {
         let mut workers: Vec<WorkerMap> = vec![];
 
         // For every push thread, create a map from applications to worker connections
-        for _ in 0..config.push_threads {
+        for _ in 0..config.push.threads {
             let mut map = HashMap::new();
 
             for (application, endpoint) in config.worker_map.clone() {
@@ -330,7 +325,7 @@ async fn main() -> Result<(), Error> {
         }
 
         // Create the correct kind of push updater
-        let updater = if config.batch_push_updates {
+        let updater = if config.push.update.batched {
             let lazy = LazyUpdater::new(config.clone(), store.clone());
             Arc::new(lazy) as Arc<dyn Updater>
         } else {

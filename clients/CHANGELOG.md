@@ -1,4 +1,30 @@
 # Changelog
+## 0.19.3
+
+### Internal Changes 🔧
+
+- (worker) Add more observability for producer futures by @bmckerry in [#719](https://github.com/getsentry/taskbroker/pull/719)
+
+### Other
+
+- temp: bypass awaiting futures while still recording metrics by @bmckerry in [#720](https://github.com/getsentry/taskbroker/pull/720)
+
+## 0.19.2
+
+### New Features ✨
+
+- Add datadog metrics backend by @markstory in [#703](https://github.com/getsentry/taskbroker/pull/703)
+
+### Bug Fixes 🐛
+
+- (TaskProducer) Call close() on shutdown by @bmckerry in [#718](https://github.com/getsentry/taskbroker/pull/718)
+
+## 0.19.0
+
+### New Features ✨
+
+- Add a BatchPushTaskWorker for batched updates to the broker by @evanh in [#695](https://github.com/getsentry/taskbroker/pull/695)
+
 ## 0.18.6
 
 ### Internal Changes 🔧

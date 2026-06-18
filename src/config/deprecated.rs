@@ -5,15 +5,57 @@ use crate::config::store::DatabaseAdapter;
 macro_rules! map {
     () => {};
 
-    // An optional deprecated value always wins
-    ($deprecated:expr => some($current:expr)) => {
-        $current = $deprecated.take();
+    // Two or more transformed mappings separated by commas
+    (
+        $deprecated_base:ident $(.$deprecated_field:ident)+ as $mapper:path => $current_base:ident $(.$current_field:ident)+ if $provided:ident,
+        $($rest:tt)+
+    ) => {
+        crate::config::deprecated::map! {
+            $deprecated_base$(.$deprecated_field)+ as $mapper => $current_base$(.$current_field)+ if $provided
+        };
+
+        crate::config::deprecated::map! {
+            $($rest)+
+        };
+    };
+
+    // Two or more mappings separated by commas
+    (
+        $deprecated:expr => $current_base:ident $(.$current_field:ident)+ if $provided:ident,
+        $($rest:tt)+
+    ) => {
+        crate::config::deprecated::map! {
+            $deprecated => $current_base$(.$current_field)+ if $provided
+        };
+
+        crate::config::deprecated::map! {
+            $($rest)+
+        };
+    };
+
+    // A transformed deprecated value only wins when it's provided
+    ($deprecated_base:ident $(.$deprecated_field:ident)+ as $mapper:path => $current_base:ident $(.$current_field:ident)+ if $provided:ident) => {
+        let key = concat!(stringify!($current_base), $(".", stringify!($current_field)),+)
+            .strip_prefix("self.")
+            .unwrap();
+
+        if !$provided(key) {
+            if let Some(v) = $deprecated_base$(.$deprecated_field)+.take() {
+                $current_base$(.$current_field)+ = $mapper(v);
+            }
+        }
     };
 
     // A plain deprecated value only wins when it's provided
-    ($deprecated:expr => $current:expr) => {
-        if let Some(v) = $deprecated.take() {
-            $current = v;
+    ($deprecated:expr => $current_base:ident $(.$current_field:ident)+ if $provided:ident) => {
+        let key = concat!(stringify!($current_base), $(".", stringify!($current_field)),+)
+            .strip_prefix("self.")
+            .unwrap();
+
+        if !$provided(key) {
+            if let Some(v) = $deprecated.take() {
+                $current_base$(.$current_field)+ = v;
+            }
         }
     };
 }
@@ -197,4 +239,34 @@ pub struct DeprecatedConfig {
 
     /// Enable additional metrics for the sqlite.
     pub enable_sqlite_status_metrics: Option<bool>,
+
+    /// The number of concurrent push threads to run.
+    pub push_threads: Option<usize>,
+
+    /// Maximum time in milliseconds for a single push RPC to the worker service. This should be greater than the worker's internal timeout.
+    pub push_timeout_ms: Option<u64>,
+
+    /// The size of the push queue.
+    pub push_queue_size: Option<usize>,
+
+    /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
+    pub push_queue_timeout_ms: Option<u64>,
+
+    /// Update claimed → processing updates in batches? Only applies in PUSH mode.
+    pub batch_push_updates: Option<bool>,
+
+    /// The size of a batch of dispatch updates.
+    pub push_update_batch_size: Option<usize>,
+
+    /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
+    pub push_update_interval_ms: Option<u32>,
+
+    /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
+    pub fetch_threads: Option<usize>,
+
+    /// Time in milliseconds to wait between fetch attempts when no pending activation is found.
+    pub fetch_wait_ms: Option<u64>,
+
+    /// The number of activations to claim with a single fetch query.
+    pub fetch_batch_size: Option<i32>,
 }

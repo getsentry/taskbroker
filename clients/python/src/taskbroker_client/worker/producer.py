@@ -1,4 +1,5 @@
-from collections import deque
+import atexit
+from collections import defaultdict, deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any, Sequence
@@ -9,14 +10,14 @@ from arroyo.types import BrokerValue, Partition, Topic
 
 from taskbroker_client.constants import TASK_PRODUCER_MAX_PENDING_FUTURES
 from taskbroker_client.metrics import MetricsBackend, NoOpMetricsBackend
-from taskbroker_client.types import ProducerProtocol
+from taskbroker_client.types import CloseableProducerProtocol
 
 # This is global as TaskWorker needs to be able to call TaskProducer.collect_futures()
 # without a reference to a task's specific instance of TaskProducer.
-# Has a max_len to prevent unbounded future growth if TaskProducer.collect_futures()
-# is never called.
-_pending_futures: deque[ProducerFuture[BrokerValue[KafkaPayload]]] = deque(
-    maxlen=TASK_PRODUCER_MAX_PENDING_FUTURES
+# Keys are the names of each `TaskProducer` instance in the current process, values are
+# deques with a maxlen to prevent unbounded queue size if `collect_futures()` is never called.
+_pending_futures: defaultdict[str, deque[ProducerFuture[BrokerValue[KafkaPayload]]]] = defaultdict(
+    lambda: deque(maxlen=TASK_PRODUCER_MAX_PENDING_FUTURES)
 )
 
 
@@ -39,32 +40,36 @@ class TaskProducer:
     def __init__(
         self,
         name: str,
-        producer_factory: Callable[[], ProducerProtocol],
+        producer_factory: Callable[[], CloseableProducerProtocol],
         metrics_backend: MetricsBackend | None = None,
     ) -> None:
         self.name = name
         self._producer_factory = producer_factory
-        self._inner_producer: ProducerProtocol | None = None
+        self._inner_producer: CloseableProducerProtocol | None = None
         self.metrics = metrics_backend if metrics_backend is not None else NoOpMetricsBackend()
 
-    def _get(self) -> ProducerProtocol:
+    def _get(self) -> CloseableProducerProtocol:
         if self._inner_producer is None:
             self._inner_producer = self._producer_factory()
+            atexit.register(self._shutdown)
         return self._inner_producer
 
     def track_future(self, future: ProducerFuture[BrokerValue[KafkaPayload]]) -> None:
-        _pending_futures.append(future)
+        _pending_futures[self.name].append(future)
         self.metrics.gauge(
             "task.producer.pending.futures",
-            len(_pending_futures),
+            len(_pending_futures[self.name]),
             tags={"producer_name": self.name},
         )
 
     @staticmethod
-    def collect_futures() -> set[ProducerFuture[BrokerValue[KafkaPayload]]]:
-        futures = _pending_futures.copy()
+    def collect_futures() -> dict[str, set[ProducerFuture[BrokerValue[KafkaPayload]]]]:
+        """
+        Clears the `_pending_futures` dict, and returns a copy with all values converted to sets.
+        """
+        pending_copy = _pending_futures.copy()
         _pending_futures.clear()
-        return set(futures)
+        return {name: set(val) for name, val in pending_copy.items()}
 
     def produce(
         self,
@@ -99,3 +104,7 @@ class TaskProducer:
                         "or instantiate your producer with `use_simple_futures=False`."
                     )
                 )
+
+    def _shutdown(self) -> None:
+        if self._inner_producer is not None:
+            self._inner_producer.close().result()

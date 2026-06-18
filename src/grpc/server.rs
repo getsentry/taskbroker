@@ -226,7 +226,8 @@ impl ConsumerService for TaskbrokerServer {
     ) -> Result<Response<SetBatchActivationStatusResponse>, Status> {
         let start_time = Instant::now();
         let updates = request.get_ref().updates.clone();
-
+        metrics::counter!("grpc_server.set_batch_activation_status.total_updates_received")
+            .increment(updates.len() as u64);
         // Updates can be broken into different batches based on the status and the retry state.
         let mut batches: HashMap<ActivationStatus, Vec<String>> = HashMap::new();
         let mut retry_updates: Vec<SetTaskStatusRequest> = Vec::new();
@@ -246,7 +247,9 @@ impl ConsumerService for TaskbrokerServer {
             if status == ActivationStatus::Failure {
                 metrics::counter!("grpc_server.set_status.failure").increment(1);
             }
-            if update.max_attempts.is_some() || update.delay_on_retry.is_some() {
+            if status == ActivationStatus::Retry {
+                // If the status is Retry, other fields besides status need to be updated, and so can't be run in the same
+                // batch as the other statuses.
                 retry_updates.push(update);
             } else {
                 batches.entry(status).or_default().push(id);
@@ -275,6 +278,8 @@ impl ConsumerService for TaskbrokerServer {
                             requested, affected, "Updated fewer rows than IDs requested in batch"
                         );
                     }
+                    metrics::counter!("grpc_server.set_status", "result" => "ok", "status" => status.to_string()).increment(affected);
+                    metrics::counter!("grpc_server.set_status", "result" => "skipped_in_batch", "status" => status.to_string()).increment(requested - affected);
                 }
                 Err(e) => {
                     metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);

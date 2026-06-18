@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 
 use crate::config::Config;
+use crate::config::push::{PushConfig, PushQueueConfig};
 use crate::push::updater::test_eager_updater;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
@@ -172,14 +173,22 @@ impl ActivationStore for MockStore {
 #[tokio::test]
 async fn push_pool_start_marks_activation_processing_on_first_attempt() {
     let notify = Arc::new(Notify::new());
+
     let config = Arc::new(Config {
         worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
+        push: PushConfig {
+            threads: 1,
+            queue: PushQueueConfig {
+                size: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
     });
+
     let store = Arc::new(MockStore::default());
-    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
     let pool = Arc::new(PushPool::new(receiver, config));
 
     let workers = vec![test_worker_map(false, notify.clone())];
@@ -218,14 +227,22 @@ async fn push_pool_start_marks_activation_processing_on_first_attempt() {
 #[tokio::test]
 async fn push_pool_start_marks_activation_processing_on_retry() {
     let notify = Arc::new(Notify::new());
+
     let config = Arc::new(Config {
         worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
+        push: PushConfig {
+            threads: 1,
+            queue: PushQueueConfig {
+                size: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
     });
+
     let store = Arc::new(MockStore::default());
-    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
     let pool = Arc::new(PushPool::new(receiver, config));
 
     let workers = vec![test_worker_map(false, notify.clone())];
@@ -261,14 +278,22 @@ async fn push_pool_start_marks_activation_processing_on_retry() {
 #[tokio::test]
 async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
     let notify = Arc::new(Notify::new());
+
     let config = Arc::new(Config {
         worker_map: [("sentry".into(), "unused".into())].into(),
-        push_threads: 1,
-        push_queue_size: 10,
-        ..Config::default()
+        push: PushConfig {
+            threads: 1,
+            queue: PushQueueConfig {
+                size: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
     });
+
     let store = Arc::new(MockStore::default());
-    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
     let pool = Arc::new(PushPool::new(receiver, config));
 
     let workers = vec![test_worker_map(true, notify.clone())];

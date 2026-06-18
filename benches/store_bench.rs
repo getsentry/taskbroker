@@ -3,17 +3,19 @@ use std::sync::Arc;
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
+use taskbroker::config::Config;
+use taskbroker::config::store::{SqliteConfig, StoreConfig};
 use tokio::task::JoinSet;
 
 use taskbroker::store::activation::ActivationStatus;
-use taskbroker::store::adapters::sqlite::{SqliteStore, SqliteStoreConfig};
+use taskbroker::store::adapters::sqlite::SqliteStore;
 use taskbroker::store::traits::ActivationStore;
 use taskbroker::test_utils::{
     generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
 };
 
 async fn get_pending_activations(num_activations: u32, num_workers: u32) {
-    let url = if cfg!(feature = "bench-with-mnt-disk") {
+    let path = if cfg!(feature = "bench-with-mnt-disk") {
         let mut rng = rand::thread_rng();
         format!(
             "/mnt/disks/sqlite/{}-{}.sqlite",
@@ -23,20 +25,22 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     } else {
         generate_temp_filename()
     };
-    let store = Arc::new(
-        SqliteStore::new(
-            &url,
-            SqliteStoreConfig {
-                max_processing_attempts: 1,
+
+    let config = Config {
+        store: StoreConfig {
+            sqlite: SqliteConfig {
+                path,
                 vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                claim_lease_ms: 5000,
-                enable_sqlite_status_metrics: false,
+                enable_status_metrics: false,
             },
-        )
-        .await
-        .unwrap(),
-    );
+            max_processing_attempts: 1,
+            processing_deadline_grace_sec: 3,
+            ..StoreConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let store = Arc::new(SqliteStore::new(&config).await.unwrap());
 
     let namespace = generate_unique_namespace();
 
@@ -77,7 +81,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
 async fn set_status(num_activations: u32, num_workers: u32) {
     assert!(num_activations.is_multiple_of(num_workers));
 
-    let url = if cfg!(feature = "bench-with-mnt-disk") {
+    let path = if cfg!(feature = "bench-with-mnt-disk") {
         let mut rng = rand::thread_rng();
         format!(
             "/mnt/disks/sqlite/{}-{}.sqlite",
@@ -88,20 +92,21 @@ async fn set_status(num_activations: u32, num_workers: u32) {
         generate_temp_filename()
     };
 
-    let store = Arc::new(
-        SqliteStore::new(
-            &url,
-            SqliteStoreConfig {
-                max_processing_attempts: 1,
+    let config = Config {
+        store: StoreConfig {
+            sqlite: SqliteConfig {
+                path,
                 vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                claim_lease_ms: 5000,
-                enable_sqlite_status_metrics: false,
+                enable_status_metrics: false,
             },
-        )
-        .await
-        .unwrap(),
-    );
+            max_processing_attempts: 1,
+            processing_deadline_grace_sec: 3,
+            ..StoreConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let store = Arc::new(SqliteStore::new(&config).await.unwrap());
 
     let namespace = generate_unique_namespace();
 

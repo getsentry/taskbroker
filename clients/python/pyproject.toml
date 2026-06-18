@@ -1,12 +1,12 @@
 [project]
 name = "taskbroker-client"
-version = "0.18.6"
+version = "0.19.3"
 description = "Taskbroker python client and worker runtime"
 readme = "README.md"
 dependencies = [
     "sentry-arroyo>=2.38.7",
     "sentry-sdk[http2]>=2.43.0",
-    "sentry-protos>=0.15.0",
+    "sentry-protos>=0.26.1",
     "confluent_kafka>=2.3.0",
     "cronsim>=2.6",
     "grpcio>=1.67.1",
@@ -32,11 +32,15 @@ dev = [
     "mypy>=1.17.1",
     "time-machine>=2.16.0",
     "types-protobuf>=5.27.0.20240626,<6.0.0",
+    "datadog>=0.49",
 ]
 [project.optional-dependencies]
 examples = [
     "click>=8.3",
     "setuptools>=80.0",
+]
+datadog = [
+    "datadog>=0.49",
 ]
 
 [build-system]

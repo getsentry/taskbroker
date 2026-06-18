@@ -65,12 +65,11 @@ impl Worker {
             .max_decoding_message_size(config.grpc_max_message_size);
 
         let secrets = config.grpc_shared_secret.clone();
-        let timeout = Duration::from_millis(config.push_timeout_ms);
 
         Ok(Self {
             client,
             secrets,
-            timeout,
+            timeout: config.push.timeout,
         })
     }
 }
