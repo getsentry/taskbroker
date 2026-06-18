@@ -313,232 +313,96 @@ impl Config {
     /// - If the user does not provide `store.db_max_size`, use the deprecated field `db_max_size` instead
     fn map_deprecated_options(&mut self, builder: &mut Figment) {
         // Nested function definition since it's not used anywhere else
-        fn user_provided(builder: &Figment, key: &str) -> bool {
+        let provided = |key: &str| {
             builder
                 .find_metadata(key)
                 .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER)
-        }
+        };
 
-        // Map deprecated push mode configuration options
-        if !user_provided(builder, "fetch.threads") {
-            deprecated::map! {
-                self.deprecated.fetch_threads => self.fetch.threads
-            };
-        }
+        // Map deprecated fetch configuration options
+        deprecated::map! {
+            self.deprecated.fetch_threads    => self.fetch.threads if provided,
+            self.deprecated.fetch_batch_size => self.fetch.batch_length if provided
+        };
 
-        if !user_provided(builder, "fetch.backoff")
+        if !provided("fetch.backoff")
             && let Some(v) = self.deprecated.fetch_wait_ms
         {
             self.fetch.backoff = Duration::from_millis(v);
         }
 
-        if !user_provided(builder, "fetch.batch_length") {
-            deprecated::map! {
-                self.deprecated.fetch_batch_size => self.fetch.batch_length
-            };
-        }
+        // Map deprecated push configuration options
+        deprecated::map! {
+            self.deprecated.push_threads           => self.push.threads if provided,
+            self.deprecated.push_queue_size        => self.push.queue.size if provided,
+            self.deprecated.batch_push_updates     => self.push.update.batched if provided,
+            self.deprecated.push_update_batch_size => self.push.update.batch.length if provided
+        };
 
-        if !user_provided(builder, "push.threads") {
-            deprecated::map! {
-                self.deprecated.push_threads => self.push.threads
-            };
-        }
-
-        if !user_provided(builder, "push.timeout")
+        if !provided("push.timeout")
             && let Some(v) = self.deprecated.push_timeout_ms
         {
             self.push.timeout = Duration::from_millis(v);
         }
 
-        if !user_provided(builder, "push.queue.size") {
-            deprecated::map! {
-                self.deprecated.push_queue_size => self.push.queue.size
-            };
-        }
-
-        if !user_provided(builder, "push.queue.timeout")
+        if !provided("push.queue.timeout")
             && let Some(v) = self.deprecated.push_queue_timeout_ms
         {
             self.push.queue.timeout = Duration::from_millis(v);
         }
 
-        if !user_provided(builder, "push.update.batched") {
-            deprecated::map! {
-                self.deprecated.batch_push_updates => self.push.update.batched
-            };
-        }
-
-        if !user_provided(builder, "push.update.batch.length") {
-            deprecated::map! {
-                self.deprecated.push_update_batch_size => self.push.update.batch.length
-            };
-        }
-
-        if !user_provided(builder, "push.update.batch.interval")
+        if !provided("push.update.batch.interval")
             && let Some(v) = self.deprecated.push_update_interval_ms
         {
             self.push.update.batch.interval = Duration::from_millis(v.into());
         }
 
         // Map deprecated Postgres configuration options
-        if !user_provided(builder, "store.pg.run_migrations") {
-            deprecated::map! {
-                self.deprecated.run_migrations => self.store.pg.run_migrations
-            };
-        }
-
-        if !user_provided(builder, "store.pg.host") {
-            deprecated::map! {
-                self.deprecated.pg_host => self.store.pg.host
-            };
-        }
-
-        if !user_provided(builder, "store.pg.port") {
-            deprecated::map! {
-                self.deprecated.pg_port => self.store.pg.port
-            };
-        }
-
-        if !user_provided(builder, "store.pg.ddl_username") {
-            deprecated::map! {
-                self.deprecated.pg_ddl_username => self.store.pg.ddl_username
-            };
-        }
-
-        if !user_provided(builder, "store.pg.username") {
-            deprecated::map! {
-                self.deprecated.pg_username => self.store.pg.username
-            };
-        }
-
-        if !user_provided(builder, "store.pg.password") {
-            deprecated::map! {
-                self.deprecated.pg_password => self.store.pg.password
-            };
-        }
-
-        if !user_provided(builder, "store.pg.ddl_password") {
-            deprecated::map! {
-                self.deprecated.pg_ddl_password => self.store.pg.ddl_password
-            };
-        }
-
-        if !user_provided(builder, "store.pg.database_name") {
-            deprecated::map! {
-                self.deprecated.pg_database_name => self.store.pg.database_name
-            };
-        }
-
-        if !user_provided(builder, "store.pg.default_database_name") {
-            deprecated::map! {
-                self.deprecated.pg_default_database_name => self.store.pg.default_database_name
-            };
-        }
-
-        if !user_provided(builder, "store.pg.query_params") {
-            deprecated::map! {
-                self.deprecated.pg_extra_query_params => some(self.store.pg.query_params)
-            };
-        }
+        deprecated::map! {
+            self.deprecated.run_migrations           => self.store.pg.run_migrations if provided,
+            self.deprecated.pg_host                  => self.store.pg.host if provided,
+            self.deprecated.pg_port                  => self.store.pg.port if provided,
+            self.deprecated.pg_ddl_username          => self.store.pg.ddl_username if provided,
+            self.deprecated.pg_username              => self.store.pg.username if provided,
+            self.deprecated.pg_password              => self.store.pg.password if provided,
+            self.deprecated.pg_ddl_password          => self.store.pg.ddl_password if provided,
+            self.deprecated.pg_database_name         => self.store.pg.database_name if provided,
+            self.deprecated.pg_default_database_name => self.store.pg.default_database_name if provided,
+            self.deprecated.pg_extra_query_params    => some(self.store.pg.query_params) if provided
+        };
 
         // Map deprecated SQLite configuration options
-        if !user_provided(builder, "store.sqlite.path") {
-            deprecated::map! {
-                self.deprecated.db_path => self.store.sqlite.path
-            };
-        }
-
-        if !user_provided(builder, "store.sqlite.vacuum_page_count") {
-            deprecated::map! {
-                self.deprecated.vacuum_page_count => some(self.store.sqlite.vacuum_page_count)
-            };
-        }
-
-        if !user_provided(builder, "store.sqlite.enable_status_metrics") {
-            deprecated::map! {
-                self.deprecated.enable_sqlite_status_metrics => self.store.sqlite.enable_status_metrics
-            };
-        }
+        deprecated::map! {
+            self.deprecated.db_path                      => self.store.sqlite.path if provided,
+            self.deprecated.vacuum_page_count            => some(self.store.sqlite.vacuum_page_count) if provided,
+            self.deprecated.enable_sqlite_status_metrics => self.store.sqlite.enable_status_metrics if provided
+        };
 
         // Map deprecated retry configuration options
-        if !user_provided(builder, "store.retry.max_retries") {
-            deprecated::map! {
-                self.deprecated.db_query_max_retries => self.store.retry.max_retries
-            };
-        }
+        deprecated::map! {
+            self.deprecated.db_query_max_retries => self.store.retry.max_retries if provided
+        };
 
-        if !user_provided(builder, "store.retry.delay")
+        if !provided("store.retry.delay")
             && let Some(v) = self.deprecated.db_query_retry_delay_ms
         {
             self.store.retry.delay = Duration::from_millis(v);
         }
 
         // Map deprecated store configuration options
-        if !user_provided(builder, "store.adapter") {
-            deprecated::map! {
-                self.deprecated.database_adapter => self.store.adapter
-            };
-        }
-
-        if !user_provided(builder, "store.insert_failure_backoff_ms") {
-            deprecated::map! {
-                self.deprecated.db_write_failure_backoff_ms => self.store.insert_failure_backoff_ms
-            };
-        }
-
-        if !user_provided(builder, "store.insert_batch_max_length") {
-            deprecated::map! {
-                self.deprecated.db_insert_batch_max_len => self.store.insert_batch_max_length
-            };
-        }
-
-        if !user_provided(builder, "store.insert_batch_max_bytes") {
-            deprecated::map! {
-                self.deprecated.db_insert_batch_max_size => self.store.insert_batch_max_bytes
-            };
-        }
-
-        if !user_provided(builder, "store.insert_batch_max_time_ms") {
-            deprecated::map! {
-                self.deprecated.db_insert_batch_max_time_ms => self.store.insert_batch_max_time_ms
-            };
-        }
-
-        if !user_provided(builder, "store.max_size") {
-            deprecated::map! {
-                self.deprecated.db_max_size => some(self.store.max_size)
-            };
-        }
-
-        if !user_provided(builder, "store.max_pending_count") {
-            deprecated::map! {
-                self.deprecated.max_pending_count => self.store.max_pending_count
-            };
-        }
-
-        if !user_provided(builder, "store.max_delay_count") {
-            deprecated::map! {
-                self.deprecated.max_delay_count => self.store.max_delay_count
-            };
-        }
-
-        if !user_provided(builder, "store.max_processing_count") {
-            deprecated::map! {
-                self.deprecated.max_processing_count => self.store.max_processing_count
-            };
-        }
-
-        if !user_provided(builder, "store.max_processing_attempts") {
-            deprecated::map! {
-                self.deprecated.max_processing_attempts => self.store.max_processing_attempts
-            };
-        }
-
-        if !user_provided(builder, "store.processing_deadline_grace_sec") {
-            deprecated::map! {
-                self.deprecated.processing_deadline_grace_sec => self.store.processing_deadline_grace_sec
-            };
-        }
+        deprecated::map! {
+            self.deprecated.database_adapter              => self.store.adapter if provided,
+            self.deprecated.db_write_failure_backoff_ms   => self.store.insert_failure_backoff_ms if provided,
+            self.deprecated.db_insert_batch_max_len       => self.store.insert_batch_max_length if provided,
+            self.deprecated.db_insert_batch_max_size      => self.store.insert_batch_max_bytes if provided,
+            self.deprecated.db_insert_batch_max_time_ms   => self.store.insert_batch_max_time_ms if provided,
+            self.deprecated.db_max_size                   => some(self.store.max_size) if provided,
+            self.deprecated.max_pending_count             => self.store.max_pending_count if provided,
+            self.deprecated.max_delay_count               => self.store.max_delay_count if provided,
+            self.deprecated.max_processing_count          => self.store.max_processing_count if provided,
+            self.deprecated.max_processing_attempts       => self.store.max_processing_attempts if provided,
+            self.deprecated.processing_deadline_grace_sec => self.store.processing_deadline_grace_sec if provided
+        };
     }
 
     /// Normalize the legacy single-topic config into the new multi-topic

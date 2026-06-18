@@ -5,15 +5,55 @@ use crate::config::store::DatabaseAdapter;
 macro_rules! map {
     () => {};
 
+    // Two or more optional mappings separated by commans
+    (
+        $deprecated:expr => some($current_base:ident $(.$current_field:ident)+) if $provided:ident,
+        $($rest:tt)+
+    ) => {
+        crate::config::deprecated::map! {
+            $deprecated => some($current_base$(.$current_field)+) if $provided
+        };
+
+        crate::config::deprecated::map! {
+            $($rest)+
+        };
+    };
+
+    // Two or more mappings separated by commans
+    (
+        $deprecated:expr => $current_base:ident $(.$current_field:ident)+ if $provided:ident,
+        $($rest:tt)+
+    ) => {
+        crate::config::deprecated::map! {
+            $deprecated => $current_base$(.$current_field)+ if $provided
+        };
+
+        crate::config::deprecated::map! {
+            $($rest)+
+        };
+    };
+
     // An optional deprecated value always wins
-    ($deprecated:expr => some($current:expr)) => {
-        $current = $deprecated.take();
+    ($deprecated:expr => some($current_base:ident $(.$current_field:ident)+) if $provided:ident) => {
+        let key = stringify!($current_base$(.$current_field)+)
+            .strip_prefix("self.")
+            .unwrap_or(stringify!($current_base$(.$current_field)+));
+
+        if !$provided(key) {
+            $current_base$(.$current_field)+ = $deprecated.take();
+        }
     };
 
     // A plain deprecated value only wins when it's provided
-    ($deprecated:expr => $current:expr) => {
-        if let Some(v) = $deprecated.take() {
-            $current = v;
+    ($deprecated:expr => $current_base:ident $(.$current_field:ident)+ if $provided:ident) => {
+        let key = stringify!($current_base$(.$current_field)+)
+            .strip_prefix("self.")
+            .unwrap_or(stringify!($current_base$(.$current_field)+));
+
+        if !$provided(key) {
+            if let Some(v) = $deprecated.take() {
+                $current_base$(.$current_field)+ = v;
+            }
         }
     };
 }
