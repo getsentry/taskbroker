@@ -7,6 +7,7 @@ use tokio::time::{Duration, sleep};
 use tonic::async_trait;
 
 use crate::config::Config;
+use crate::config::fetch::FetchConfig;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder};
@@ -194,9 +195,12 @@ impl ActivationStore for MockStore {
 
 fn test_config() -> Arc<Config> {
     Arc::new(Config {
-        fetch_threads: 1,
-        fetch_wait_ms: 5,
-        ..Config::default()
+        fetch: FetchConfig {
+            threads: 1,
+            backoff: Duration::from_millis(5),
+            ..Default::default()
+        },
+        ..Default::default()
     })
 }
 

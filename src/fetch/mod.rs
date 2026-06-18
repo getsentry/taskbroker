@@ -1,6 +1,6 @@
 use std::cmp;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
 use async_backtrace::framed;
@@ -62,15 +62,15 @@ impl FetchPool {
     /// Spawns one task per effective fetch thread ([`normalize_fetch_threads`]), each claiming pending work only in its bucket subrange.
     #[framed]
     pub async fn start(&self) -> Result<()> {
-        let fetch_wait_ms = self.config.fetch_wait_ms;
-        let fetch_threads = self.config.fetch_threads;
+        let fetch_backoff = self.config.fetch.backoff;
+        let fetch_threads = self.config.fetch.threads;
 
         let mut fetch_pool = crate::tokio::spawn_pool(fetch_threads, |thread_index| {
             let store = self.store.clone();
             let sender = self.sender.clone();
             let config = self.config.clone();
 
-            let limit = Some(config.fetch_batch_size);
+            let limit = Some(config.fetch.batch_length);
             let bucket = Some(bucket_range_for_fetch_thread(thread_index, fetch_threads));
 
             let guard = get_shutdown_guard().shutdown_on_drop();
@@ -179,7 +179,7 @@ impl FetchPool {
                                 .record(start.elapsed());
 
                             if backoff {
-                                sleep(Duration::from_millis(fetch_wait_ms)).await;
+                                sleep(fetch_backoff).await;
                             }
                         } => {}
                     }
