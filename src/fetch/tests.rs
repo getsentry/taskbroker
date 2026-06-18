@@ -206,7 +206,7 @@ async fn fetch_pool_fetch_and_enqueue() {
     let store: Arc<dyn ActivationStore> = Arc::new(MockStore::one(activation.clone()));
 
     let config = test_config();
-    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
 
     let pool = FetchPool::new(sender, store, config);
     let handle = tokio::spawn(async move { pool.start().await });
@@ -222,7 +222,7 @@ async fn fetch_pool_store_error() {
     let store: Arc<dyn ActivationStore> = Arc::new(MockStore::error());
 
     let config = test_config();
-    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
 
     let pool = FetchPool::new(sender.clone(), store, config);
     let handle = tokio::spawn(async move { pool.start().await });
@@ -238,7 +238,7 @@ async fn fetch_pool_no_pending() {
     let store: Arc<dyn ActivationStore> = Arc::new(MockStore::empty());
 
     let config = test_config();
-    let (sender, receiver) = flume::bounded(config.push_queue_size);
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
 
     let pool = FetchPool::new(sender, store, config);
     let handle = tokio::spawn(async move { pool.start().await });

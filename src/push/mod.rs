@@ -37,11 +37,11 @@ const QUERY_MS: u64 = 1000;
 pub fn compute_claim_duration_ms(config: &Config) -> u64 {
     // Imagine we are computing the lease for some task in a batch of N tasks
     let fetch_batch_size = config.fetch_batch_size.max(1) as u64;
-    let push_threads = config.push_threads.max(1) as u64;
-    let push_queue_size = config.push_queue_size.max(1) as u64;
+    let push_threads = config.push.threads.max(1) as u64;
+    let push_queue_size = config.push.queue.size.max(1) as u64;
 
     // In the worst case, this task is the last in a batch where every queue push times out
-    let queue_ms = fetch_batch_size * config.push_queue_timeout_ms;
+    let queue_ms = fetch_batch_size * config.push.queue.timeout.as_millis() as u64;
 
     // The push queue drains in "rounds" since there are multiple push threads
     // If there are 5 push threads and the queue has 10 slots, it will only take ⌈10 / 5⌉ = 2 rounds to drain it
@@ -49,7 +49,7 @@ pub fn compute_claim_duration_ms(config: &Config) -> u64 {
     let rounds = push_queue_size.div_ceil(push_threads) + 1;
 
     // In the worst case, every task in the push queue will time out when pushing
-    let drain_ms = rounds * config.push_timeout_ms;
+    let drain_ms = rounds * config.push.timeout.as_millis() as u64;
 
     // In the worst case, the tasks in the push queue will take `QUERY_MS` time to update from claimed to processing
     // Since query timeouts aren't actually enforced right now, this is merely an approximation
@@ -75,7 +75,7 @@ pub enum QueueError {
     Closed,
 }
 
-/// Wrapper around `config.push_threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
+/// Wrapper around `config.push.threads` asynchronous tasks, each of which receives an activation from the channel, sends it to the worker service, and repeats.
 pub struct PushPool {
     /// The receiving end of a channel that accepts task activations.
     receiver: Receiver<PushItem>,
@@ -90,7 +90,7 @@ impl PushPool {
         Self { receiver, config }
     }
 
-    /// Spawn `config.push_threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
+    /// Spawn `config.push.threads` asynchronous tasks, each of which repeatedly moves pending activations from the channel to the worker service until the shutdown signal is received.
     #[framed]
     pub async fn start(
         &self,
@@ -106,7 +106,7 @@ impl PushPool {
             async move { updater.start().await }
         });
 
-        let mut threads: JoinSet<Result<()>> = spawn_pool(self.config.push_threads, |_| {
+        let mut threads: JoinSet<Result<()>> = spawn_pool(self.config.push.threads, |_| {
             let mut thread = PushThread {
                 workers: workers.next().unwrap(),
                 receiver: self.receiver.clone(),
