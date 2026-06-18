@@ -56,8 +56,8 @@ pub fn compute_claim_duration_ms(config: &Config) -> u64 {
     let update_query_ms = rounds * QUERY_MS;
 
     // Batched push updates can wait in the updater buffer until either the batch fills or the periodic flush runs
-    let batch_delay_ms = if config.batch_push_updates {
-        config.push_update_interval_ms as u64
+    let batch_delay_ms = if config.push.update.batched {
+        config.push.update.batch.interval.as_millis() as u64
     } else {
         0
     };

@@ -3,6 +3,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError};
 
+use crate::config::batch::BatchConfig;
+
 // (TODO) Create a `validate` module to keep all of our custom validators (there are now at least two).
 fn validate_nonzero_duration(duration: &Duration) -> Result<(), ValidationError> {
     if duration.is_zero() {
@@ -34,6 +36,29 @@ impl Default for PushQueueConfig {
 }
 
 #[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
+pub struct PushUpdateConfig {
+    // Update claimed → processing updates in batches?
+    pub batched: bool,
+
+    /// Describes update batching behavior if enabled by `batched`.
+    #[validate(nested)]
+    pub batch: BatchConfig,
+}
+
+impl Default for PushUpdateConfig {
+    fn default() -> Self {
+        Self {
+            batched: false,
+            batch: BatchConfig {
+                length: 1,
+                interval: Duration::from_millis(100),
+                size: 1, // We don't use size here
+            },
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct PushConfig {
     /// The number of concurrent push threads to run.
     #[validate(range(min = 1))]
@@ -47,6 +72,10 @@ pub struct PushConfig {
     /// The push queue configuration.
     #[validate(nested)]
     pub queue: PushQueueConfig,
+
+    // Configure how claimed → processing updates are performed.
+    #[validate(nested)]
+    pub update: PushUpdateConfig,
 }
 
 impl Default for PushConfig {
@@ -55,6 +84,7 @@ impl Default for PushConfig {
             threads: 1,
             timeout: Duration::from_millis(30000),
             queue: PushQueueConfig::default(),
+            update: PushUpdateConfig::default(),
         }
     }
 }

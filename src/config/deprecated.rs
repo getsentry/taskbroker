@@ -210,6 +210,15 @@ pub struct DeprecatedConfig {
     /// Maximum time in milliseconds to wait when submitting an activation to the push pool.
     pub push_queue_timeout_ms: Option<u64>,
 
+    /// Update claimed → processing updates in batches? Only applies in PUSH mode.
+    pub batch_push_updates: Option<bool>,
+
+    /// The size of a batch of dispatch updates.
+    pub push_update_batch_size: Option<usize>,
+
+    /// Maximum milliseconds to wait before flushing a batch of dispatch updates.
+    pub push_update_interval_ms: Option<u32>,
+
     /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
     pub fetch_threads: Option<usize>,
 
