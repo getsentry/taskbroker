@@ -703,6 +703,7 @@ class TaskWorkerProcessingPool:
         update_in_batches: bool = False,
     ) -> None:
         self._concurrency = concurrency
+        self._result_queue_maxsize = result_queue_maxsize
         self._processing_pool_name = processing_pool_name or "unknown"
         self._pod_name = pod_name or "unknown"
         self._update_in_batches = update_in_batches
@@ -797,7 +798,7 @@ class TaskWorkerProcessingPool:
                                 break
                             else:
                                 results.append(result)
-                                if len(results) >= self._concurrency:
+                                if len(results) >= self._result_queue_maxsize:
                                     executor.submit(self.send_results, results, False)
                                     results = []
                         except queue.Empty:
