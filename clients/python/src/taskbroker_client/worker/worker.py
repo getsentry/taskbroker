@@ -181,6 +181,7 @@ class PushTaskWorker:
             ),
             rpc_secret=app.config["rpc_secret"],
             grpc_config=app.config["grpc_config"],
+            processing_pool_name=processing_pool_name,
         )
         self._metrics = app.metrics
         self._concurrency = concurrency
@@ -207,6 +208,7 @@ class PushTaskWorker:
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
+        processing_pool_name: str | None = None,
     ) -> PushTaskbrokerClient:
         return PushTaskbrokerClient(
             service=service,
@@ -215,6 +217,7 @@ class PushTaskWorker:
             health_check_settings=health_check_settings,
             rpc_secret=rpc_secret,
             grpc_config=grpc_config,
+            processing_pool_name=processing_pool_name,
         )
 
     def _send_results(
@@ -408,6 +411,7 @@ class BatchPushTaskWorker(PushTaskWorker):
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
+        processing_pool_name: str | None = None,
     ) -> PushTaskbrokerClient:
         return BatchPushTaskbrokerClient(
             service=service,
@@ -416,6 +420,7 @@ class BatchPushTaskWorker(PushTaskWorker):
             health_check_settings=health_check_settings,
             rpc_secret=rpc_secret,
             grpc_config=grpc_config,
+            processing_pool_name=processing_pool_name,
         )
 
     def _send_results(
@@ -536,6 +541,7 @@ class TaskWorker:
             ),
             rpc_secret=app.config["rpc_secret"],
             grpc_config=app.config["grpc_config"],
+            processing_pool_name=processing_pool_name,
         )
         self._metrics = app.metrics
 

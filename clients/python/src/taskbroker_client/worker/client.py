@@ -271,12 +271,14 @@ class TaskbrokerClient:
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
+        processing_pool_name: str | None = None,
     ) -> None:
         assert len(hosts) > 0, "You must provide at least one RPC host to connect to"
         self._application = application
         self._hosts = hosts
         self._rpc_secret = rpc_secret
         self._metrics = metrics
+        self._processing_pool_name = processing_pool_name or "unknown"
 
         self._grpc_options: list[tuple[str, Any]] = [
             ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)
@@ -322,6 +324,7 @@ class TaskbrokerClient:
             self._health_check_settings.file_path.touch()
             self._metrics.incr(
                 "taskworker.client.health_check.touched",
+                tags={"processing_pool": self._processing_pool_name},
             )
             self._timestamp_since_touch = cur_time
 
@@ -374,7 +377,10 @@ class TaskbrokerClient:
             self._num_consecutive_unavailable_errors = 0
             self._metrics.incr(
                 "taskworker.client.loadbalancer.rebalance",
-                tags={"reason": "unavailable_count_reached"},
+                tags={
+                    "reason": "unavailable_count_reached",
+                    "processing_pool": self._processing_pool_name,
+                },
             )
         elif self._num_tasks_before_rebalance == 0:
             self._cur_host = random.choice(available_hosts)
@@ -382,7 +388,7 @@ class TaskbrokerClient:
             self._num_consecutive_unavailable_errors = 0
             self._metrics.incr(
                 "taskworker.client.loadbalancer.rebalance",
-                tags={"reason": "max_tasks_reached"},
+                tags={"reason": "max_tasks_reached", "processing_pool": self._processing_pool_name},
             )
 
         stub = self._get_stub(self._cur_host)
@@ -402,11 +408,19 @@ class TaskbrokerClient:
         request = GetTaskRequest(application=self._application, namespace=namespace)
         try:
             host, stub = self._get_cur_stub()
-            with self._metrics.timer("taskworker.get_task.rpc", tags={"host": host}):
+            with self._metrics.timer(
+                "taskworker.get_task.rpc",
+                tags={"host": host, "processing_pool": self._processing_pool_name},
+            ):
                 response = stub.GetTask(request)
         except grpc.RpcError as err:
             self._metrics.incr(
-                "taskworker.client.rpc_error", tags={"method": "GetTask", "status": err.code().name}
+                "taskworker.client.rpc_error",
+                tags={
+                    "method": "GetTask",
+                    "status": err.code().name,
+                    "processing_pool": self._processing_pool_name,
+                },
             )
             if err.code() == grpc.StatusCode.NOT_FOUND:
                 # Because our current broker doesn't have any tasks, try rebalancing.
@@ -421,7 +435,10 @@ class TaskbrokerClient:
         if response.HasField("task"):
             self._metrics.incr(
                 "taskworker.client.get_task",
-                tags={"namespace": response.task.namespace},
+                tags={
+                    "namespace": response.task.namespace,
+                    "processing_pool": self._processing_pool_name,
+                },
             )
             return InflightTaskActivation(
                 activation=response.task, host=host, receive_timestamp=time.monotonic()
@@ -443,7 +460,11 @@ class TaskbrokerClient:
             fetch_next_task.application = self._application
 
         self._metrics.incr(
-            "taskworker.client.fetch_next", tags={"next": fetch_next_task is not None}
+            "taskworker.client.fetch_next",
+            tags={
+                "next": fetch_next_task is not None,
+                "processing_pool": self._processing_pool_name,
+            },
         )
         self._clear_temporary_unavailable_hosts()
         request = SetTaskStatusRequest(
@@ -458,7 +479,10 @@ class TaskbrokerClient:
             if processing_result.host in self._temporary_unavailable_hosts:
                 self._metrics.incr(
                     "taskworker.client.skipping_set_task_due_to_unavailable_host",
-                    tags={"broker_host": processing_result.host},
+                    tags={
+                        "broker_host": processing_result.host,
+                        "processing_pool": self._processing_pool_name,
+                    },
                 )
                 raise HostTemporarilyUnavailable(
                     f"Host: {processing_result.host} is temporarily unavailable"
@@ -466,13 +490,21 @@ class TaskbrokerClient:
 
             stub = self._get_stub(processing_result.host)
             with self._metrics.timer(
-                "taskworker.update_task.rpc", tags={"host": processing_result.host}
+                "taskworker.update_task.rpc",
+                tags={
+                    "host": processing_result.host,
+                    "processing_pool": self._processing_pool_name,
+                },
             ):
                 response = stub.SetTaskStatus(request)
         except grpc.RpcError as err:
             self._metrics.incr(
                 "taskworker.client.rpc_error",
-                tags={"method": "SetTaskStatus", "status": err.code().name},
+                tags={
+                    "method": "SetTaskStatus",
+                    "status": err.code().name,
+                    "processing_pool": self._processing_pool_name,
+                },
             )
             if err.code() == grpc.StatusCode.NOT_FOUND:
                 # The current broker is empty, switch.
