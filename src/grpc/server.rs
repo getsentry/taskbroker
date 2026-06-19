@@ -265,10 +265,15 @@ impl ConsumerService for TaskbrokerServer {
             let status = ActivationStatus::Complete;
             metrics::histogram!("grpc_server.set_batch_activation_status.batch_size", "status" => status.to_string()).record(requested as f64);
             let result = self.store.delete_activation_batch(&completed_ids).await;
-            let err_msg = handle_batch_update(result, requested, status, start_time);
+            let (affected, err_msg) = handle_batch_update(result, requested, status);
             if !err_msg.is_empty() {
                 error!("Failed to delete completed activations: {:?}", err_msg);
+                metrics::histogram!("grpc_server.set_batch_activation_status.duration")
+                    .record(start_time.elapsed());
                 return Err(Status::internal("Failed to set batch activation status"));
+            } else {
+                metrics::counter!("upkeep.task.state_transition", "state" => "completed")
+                    .increment(affected);
             }
         }
 
@@ -280,9 +285,11 @@ impl ConsumerService for TaskbrokerServer {
             let requested = ids.len() as u64;
             metrics::histogram!("grpc_server.set_batch_activation_status.batch_size", "status" => status.to_string()).record(requested as f64);
             let result = self.store.set_status_batch(&ids, status).await;
-            let err_msg = handle_batch_update(result, requested, status, start_time);
+            let (_, err_msg) = handle_batch_update(result, requested, status);
             if !err_msg.is_empty() {
                 error!("Failed to set batch activation status: {:?}", err_msg);
+                metrics::histogram!("grpc_server.set_batch_activation_status.duration")
+                    .record(start_time.elapsed());
                 return Err(Status::internal("Failed to set batch activation status"));
             }
         }
@@ -402,11 +409,9 @@ fn handle_batch_update(
     result: Result<u64, Error>,
     requested: u64,
     status: ActivationStatus,
-    start_time: Instant,
-) -> String {
+) -> (u64, String) {
     match result {
         Ok(affected) => {
-            metrics::histogram!("upkeep.remove_completed").record(affected as f64);
             metrics::histogram!("grpc_server.set_batch_activation_status.affected_diff", "status" => status.to_string())
                 .record((requested - affected) as f64);
             if affected < requested {
@@ -422,13 +427,11 @@ fn handle_batch_update(
             }
             metrics::counter!("grpc_server.set_status", "result" => "ok", "status" => status.to_string()).increment(affected);
             metrics::counter!("grpc_server.set_status", "result" => "skipped_in_batch", "status" => status.to_string()).increment(requested - affected);
-            String::new() // No error message
+            (affected, String::new()) // No error message
         }
         Err(e) => {
             metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);
-            metrics::histogram!("grpc_server.set_batch_activation_status.duration")
-                .record(start_time.elapsed());
-            e.to_string()
+            (requested, e.to_string())
         }
     }
 }
