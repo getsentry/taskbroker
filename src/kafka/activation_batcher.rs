@@ -413,7 +413,7 @@ demoted_topic: taskworker-demoted"#;
         let cluster_address = config
             .cluster(&topic_config.cluster)
             .unwrap()
-            .address
+            .bootstrap_servers
             .clone();
         assert_eq!(batcher.producer_cluster, cluster_address);
 

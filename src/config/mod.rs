@@ -61,7 +61,7 @@ pub struct Config {
     pub traces_sample_rate: Option<f32>,
 
     /// The log filter to apply application logging to.
-    /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
+    /// Consult the [documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives) for details.
     pub log_filter: String,
 
     /// The log format to use
@@ -73,10 +73,10 @@ pub struct Config {
     /// Default tags to add to all metrics.
     pub default_metrics_tags: BTreeMap<String, String>,
 
-    /// The hostname and port of the gRPC server.
+    /// The hostname of the gRPC server.
     pub grpc_addr: String,
 
-    /// The port to bind the grpc service to
+    /// The port of the gRPC server.
     pub grpc_port: u32,
 
     /// A list of shared secrets that clients use to authenticate.
@@ -99,12 +99,11 @@ pub struct Config {
     /// Required for raw_mode where the main topic has other consumers.
     pub kafka_retry_topic: Option<String>,
 
-    /// The default number of partitions for a topic
+    /// The default number of partitions for a topic.
     pub default_topic_partitions: i32,
 
-    /// The kafka session timeout in ms.
-    /// Used as the default for topics that don't set their own
-    /// `session_timeout_ms`.
+    /// The kafka session timeout in milliseconds.
+    /// Used as the default for topics that don't set their own `session_timeout_ms`.
     pub kafka_session_timeout_ms: usize,
 
     /// The amount of ms that the consumer will commit at.
@@ -496,7 +495,7 @@ impl Config {
             let prev = self.kafka_clusters.insert(
                 DEFAULT_CLUSTER.to_owned(),
                 ClusterConfig {
-                    address: address.clone(),
+                    bootstrap_servers: address.clone(),
                     security_protocol: self.deprecated.kafka_security_protocol.clone(),
                     sasl_mechanism: self.deprecated.kafka_sasl_mechanism.clone(),
                     sasl_username: self.deprecated.kafka_sasl_username.clone(),
@@ -521,7 +520,7 @@ impl Config {
             let prev = self.kafka_clusters.insert(
                 DEADLETTER_CLUSTER.to_owned(),
                 ClusterConfig {
-                    address: self
+                    bootstrap_servers: self
                         .deprecated
                         .kafka_deadletter_cluster
                         .clone()
@@ -703,10 +702,10 @@ impl Config {
                 "kafka_retry_topic '{retry_target}' is not defined in kafka_topics"
             )))
         })?;
-        let retry_address = &self.cluster(&retry_topic_config.cluster)?.address;
+        let retry_address = &self.cluster(&retry_topic_config.cluster)?.bootstrap_servers;
         let deadletter_address = &self
             .cluster(&self.kafka_topics[&self.kafka_deadletter_topic].cluster)?
-            .address;
+            .bootstrap_servers;
         if retry_address != deadletter_address {
             return Err(anyhow!(
                 "retry target topic '{}' is on cluster '{}', but deadletter topic '{}' is on \
@@ -1127,7 +1126,10 @@ mod tests {
             let (topic_name, topic_config) = config.consumable_topics().unwrap()[0];
             assert_eq!(topic_name, "taskworker");
             assert_eq!(
-                config.cluster(&topic_config.cluster).unwrap().address,
+                config
+                    .cluster(&topic_config.cluster)
+                    .unwrap()
+                    .bootstrap_servers,
                 "127.0.0.1:9092"
             );
             assert_eq!(config.kafka_deadletter_topic, "taskworker-dlq".to_owned());
@@ -1469,7 +1471,7 @@ kafka_clusters:
             assert_eq!(
                 clusters.get("profiles-cluster"),
                 Some(&ClusterConfig {
-                    address: "10.0.0.1:9092".to_owned(),
+                    bootstrap_servers: "10.0.0.1:9092".to_owned(),
                     security_protocol: None,
                     sasl_mechanism: None,
                     sasl_username: None,
@@ -1487,7 +1489,7 @@ kafka_clusters:
             assert_eq!(topic_config.cluster, "profiles-cluster");
 
             let cluster = config.cluster("profiles-cluster").unwrap();
-            assert_eq!(cluster.address, "10.0.0.1:9092");
+            assert_eq!(cluster.bootstrap_servers, "10.0.0.1:9092");
 
             Ok(())
         });
@@ -1594,7 +1596,10 @@ kafka_clusters:
 
             let clusters = &config.kafka_clusters;
             assert_eq!(clusters.len(), 1);
-            assert_eq!(clusters.get("my_cluster").unwrap().address, "10.0.0.2:9092");
+            assert_eq!(
+                clusters.get("my_cluster").unwrap().bootstrap_servers,
+                "10.0.0.2:9092"
+            );
             assert!(!clusters.contains_key("default"));
 
             // Test consumable_topic() helper
@@ -2140,11 +2145,17 @@ kafka_clusters:
                 .expect("retry topic registered");
             assert!(retry_topic.produce_only);
             assert_eq!(
-                config.cluster(&retry_topic.cluster).unwrap().address,
+                config
+                    .cluster(&retry_topic.cluster)
+                    .unwrap()
+                    .bootstrap_servers,
                 "kafka-small:9092"
             );
             // And it matches the producer's cluster.
-            assert_eq!(config.kafka_producer_cluster().address, "kafka-small:9092");
+            assert_eq!(
+                config.kafka_producer_cluster().bootstrap_servers,
+                "kafka-small:9092"
+            );
 
             Ok(())
         });

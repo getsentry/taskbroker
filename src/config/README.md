@@ -98,3 +98,14 @@ Note that there are only two versions of the configuration at any given moment -
 ## Removing Options
 
 Deleting configuration fields is very simple. Just make sure it isn't controlling anything important and remove!
+
+## Adding Nested Configuration
+
+As the codebase evolves, it may become necessary to introduce more nesting and new configuration structures.
+
+First, **determine what module should contain the new structure**. The modules in this directory (configuration modules) should roughly mirror the application modules.
+
+- If the struct configures an existing feature, it should go in the module for that feature. For example, configuration used in `src/push.rs` should go in `config/push.rs`.
+- If the struct configures a new feature, create a new configuration module for that feature. For example, if you created `src/foo.rs`, there should be a corresponding `config/foo.rs` and a `FooConfig`.
+
+Please implement `Default` for the new struct **explicitly** with an `impl Default for FooConfig` block. This makes it obvious what the defaults are and causes compiler errors when the configuration is changed in a way that doesn't align with the defaults (which could silently break existing deployments otherwise.)

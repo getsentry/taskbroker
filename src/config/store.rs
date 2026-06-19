@@ -84,14 +84,14 @@ impl Default for PgConfig {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct SqliteConfig {
-    /// The path to the sqlite database
+    /// The path to the SQLite database
     pub path: String,
 
-    /// Enable additional metrics for the sqlite.
+    /// Enable additional SQLite metrics.
     pub enable_status_metrics: bool,
 
     /// The number of pages to vacuum from SQLite when vacuum is run.
-    /// If None, all pages will be vacuumed.
+    /// If `None`, all pages will be vacuumed.
     pub vacuum_page_count: Option<usize>,
 }
 

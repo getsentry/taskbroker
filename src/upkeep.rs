@@ -326,7 +326,7 @@ pub async fn do_upkeep(
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or_else(|| config.kafka_producer_cluster().address.clone());
+        .unwrap_or_else(|| config.kafka_producer_cluster().bootstrap_servers.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
@@ -338,7 +338,7 @@ pub async fn do_upkeep(
         *name == forward_topic
             && config
                 .cluster(&topic_config.cluster)
-                .map(|c| c.address == forward_cluster)
+                .map(|c| c.bootstrap_servers == forward_cluster)
                 .unwrap_or(false)
     });
     if !(demoted_namespaces.is_empty() || forwards_to_consumed) {
@@ -350,11 +350,11 @@ pub async fn do_upkeep(
         // fail. We keep the legacy behavior (reuse + override) for compatibility
         // but warn so the misconfiguration is visible.
         let dlq_cluster = config.kafka_producer_cluster();
-        if forward_cluster != dlq_cluster.address && dlq_cluster.has_auth() {
+        if forward_cluster != dlq_cluster.bootstrap_servers && dlq_cluster.has_auth() {
             warn!(
                 "forwarding demoted-namespace tasks to cluster '{}', but the producer reuses the \
                  deadletter cluster '{}' credentials; publishing may fail if their auth differs",
-                forward_cluster, dlq_cluster.address
+                forward_cluster, dlq_cluster.bootstrap_servers
             );
         }
         let mut forward_producer_config = config.kafka_producer_config();
