@@ -107,6 +107,10 @@ impl ActivationStore for MockStore {
         Ok(())
     }
 
+    async fn delete_activation_batch(&self, _ids: &[String]) -> Result<u64> {
+        Ok(0)
+    }
+
     async fn vacuum_db(&self) -> Result<()> {
         Ok(())
     }

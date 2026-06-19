@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
@@ -256,6 +256,22 @@ impl ConsumerService for TaskbrokerServer {
             }
         }
 
+        // Completed tasks are immediately deleted from the store, instead of being updated. All the relevant upkeep metrics are also updated.
+        let completed_ids = batches
+            .remove(&ActivationStatus::Complete)
+            .unwrap_or_default();
+        if !completed_ids.is_empty() {
+            let requested = completed_ids.len() as u64;
+            let status = ActivationStatus::Complete;
+            metrics::histogram!("grpc_server.set_batch_activation_status.batch_size", "status" => status.to_string()).record(requested as f64);
+            let result = self.store.delete_activation_batch(&completed_ids).await;
+            let err_msg = handle_batch_update(result, requested, status, start_time);
+            if !err_msg.is_empty() {
+                error!("Failed to delete completed activations: {:?}", err_msg);
+                return Err(Status::internal("Failed to set batch activation status"));
+            }
+        }
+
         // For each status and batch of IDs, update the status for those IDs. In the case of a failure, return an error to the worker.
         // Track and log a warning if the number of rows updated is less than the number of IDs requested.
         metrics::histogram!("grpc_server.set_batch_activation_status.num_batches")
@@ -263,31 +279,11 @@ impl ConsumerService for TaskbrokerServer {
         for (status, ids) in batches {
             let requested = ids.len() as u64;
             metrics::histogram!("grpc_server.set_batch_activation_status.batch_size", "status" => status.to_string()).record(requested as f64);
-            match self.store.set_status_batch(&ids, status).await {
-                Ok(affected) => {
-                    metrics::histogram!("grpc_server.set_batch_activation_status.affected_diff", "status" => status.to_string())
-                        .record((requested - affected) as f64);
-                    if affected < requested {
-                        metrics::histogram!(
-                            "grpc_server.set_batch_activation_status.partial",
-                            "status" => status.to_string()
-                        )
-                        .record((requested - affected) as f64);
-                        warn!(
-                            ?status,
-                            requested, affected, "Updated fewer rows than IDs requested in batch"
-                        );
-                    }
-                    metrics::counter!("grpc_server.set_status", "result" => "ok", "status" => status.to_string()).increment(affected);
-                    metrics::counter!("grpc_server.set_status", "result" => "skipped_in_batch", "status" => status.to_string()).increment(requested - affected);
-                }
-                Err(e) => {
-                    metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);
-                    metrics::histogram!("grpc_server.set_batch_activation_status.duration")
-                        .record(start_time.elapsed());
-                    error!("Failed to set batch activation status: {:?}", e);
-                    return Err(Status::internal("Failed to set batch activation status"));
-                }
+            let result = self.store.set_status_batch(&ids, status).await;
+            let err_msg = handle_batch_update(result, requested, status, start_time);
+            if !err_msg.is_empty() {
+                error!("Failed to set batch activation status: {:?}", err_msg);
+                return Err(Status::internal("Failed to set batch activation status"));
             }
         }
 
@@ -398,6 +394,41 @@ pub async fn flush_updates(store: Arc<dyn ActivationStore>, buffer: &mut Vec<Sta
                     buffer.push((id, status));
                 }
             }
+        }
+    }
+}
+
+fn handle_batch_update(
+    result: Result<u64, Error>,
+    requested: u64,
+    status: ActivationStatus,
+    start_time: Instant,
+) -> String {
+    match result {
+        Ok(affected) => {
+            metrics::histogram!("upkeep.remove_completed").record(affected as f64);
+            metrics::histogram!("grpc_server.set_batch_activation_status.affected_diff", "status" => status.to_string())
+                .record((requested - affected) as f64);
+            if affected < requested {
+                metrics::histogram!(
+                    "grpc_server.set_batch_activation_status.partial",
+                    "status" => status.to_string()
+                )
+                .record((requested - affected) as f64);
+                warn!(
+                    ?status,
+                    requested, affected, "Updated fewer rows than IDs requested in batch"
+                );
+            }
+            metrics::counter!("grpc_server.set_status", "result" => "ok", "status" => status.to_string()).increment(affected);
+            metrics::counter!("grpc_server.set_status", "result" => "skipped_in_batch", "status" => status.to_string()).increment(requested - affected);
+            String::new() // No error message
+        }
+        Err(e) => {
+            metrics::counter!("grpc_server.set_status", "result" => "error", "status" => status.to_string()).increment(requested);
+            metrics::histogram!("grpc_server.set_batch_activation_status.duration")
+                .record(start_time.elapsed());
+            e.to_string()
         }
     }
 }

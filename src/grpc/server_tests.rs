@@ -470,8 +470,12 @@ async fn test_set_task_status_forwards_to_update_channel(#[case] adapter: &str) 
 }
 
 #[tokio::test]
-async fn test_set_task_status_update_channel_closed_returns_internal() {
-    let store = create_test_store("sqlite").await;
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+#[allow(deprecated)]
+async fn test_set_task_status_update_channel_closed_returns_internal(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let config = create_config();
 
     let (update_tx, update_rx) = mpsc::channel::<StatusUpdate>(8);
@@ -553,10 +557,10 @@ async fn test_set_batch_activation_status_success(#[case] adapter: &str) {
         .await;
     assert!(response.is_ok());
 
-    let row0 = store.get_by_id("id_0").await.unwrap().expect("row exists");
-    assert_eq!(row0.status, ActivationStatus::Complete);
-    let row1 = store.get_by_id("id_1").await.unwrap().expect("row exists");
-    assert_eq!(row1.status, ActivationStatus::Complete);
+    let row0 = store.get_by_id("id_0").await.unwrap();
+    assert!(row0.is_none(), "row should be deleted");
+    let row1 = store.get_by_id("id_1").await.unwrap();
+    assert!(row1.is_none(), "row should be deleted");
     let row2 = store.get_by_id("id_2").await.unwrap().expect("row exists");
     assert_eq!(row2.status, ActivationStatus::Failure);
 }
@@ -584,9 +588,12 @@ async fn test_set_batch_activation_status_empty(#[case] adapter: &str) {
 }
 
 #[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 #[allow(deprecated)]
-async fn test_set_batch_activation_status_invalid_status() {
-    let store = create_test_store("sqlite").await;
+async fn test_set_batch_activation_status_invalid_status(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
     let config = create_config();
 
     let service = TaskbrokerServer {
@@ -704,10 +711,10 @@ async fn test_set_batch_activation_status_mixed(#[case] adapter: &str) {
         .await;
     assert!(response.is_ok());
 
-    let row0 = store.get_by_id("id_0").await.unwrap().expect("row exists");
-    assert_eq!(row0.status, ActivationStatus::Complete);
-    let row1 = store.get_by_id("id_1").await.unwrap().expect("row exists");
-    assert_eq!(row1.status, ActivationStatus::Complete);
+    let row0 = store.get_by_id("id_0").await.unwrap();
+    assert!(row0.is_none(), "row should be deleted");
+    let row1 = store.get_by_id("id_1").await.unwrap();
+    assert!(row1.is_none(), "row should be deleted");
     let row2 = store.get_by_id("id_2").await.unwrap().expect("row exists");
     assert_eq!(row2.status, ActivationStatus::Retry);
 }

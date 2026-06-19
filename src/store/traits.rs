@@ -148,6 +148,9 @@ pub trait ActivationStore: Send + Sync {
     /// Delete an activation by id
     async fn delete_activation(&self, id: &str) -> Result<(), Error>;
 
+    /// Delete a batch of activations by id
+    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error>;
+
     /// DATABASE OPERATIONS
     /// Trigger incremental vacuum to reclaim free pages in the database
     async fn vacuum_db(&self) -> Result<(), Error>;

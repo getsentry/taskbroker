@@ -945,6 +945,22 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
+    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        retry_query(&self.config.retry, "delete_activation_batch", || async {
+            let mut conn = self
+                .acquire_write_conn_metric("delete_activation_batch")
+                .await?;
+            let result = sqlx::query("DELETE FROM inflight_taskactivations WHERE id = ANY($1)")
+                .bind(ids)
+                .execute(&mut *conn)
+                .await?;
+            Ok(result.rows_affected())
+        })
+        .await
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
     async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error> {
         retry_query(&self.config.retry, "get_retry_activations", || async {
             let mut query_builder = QueryBuilder::new(
