@@ -880,6 +880,27 @@ impl ActivationStore for SqliteStore {
     }
 
     #[instrument(skip_all)]
+    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("delete_activation_batch")
+            .await?;
+
+        let mut query_builder = QueryBuilder::new("DELETE FROM inflight_taskactivations ");
+        query_builder.push(" WHERE id IN (");
+
+        let mut separated = query_builder.separated(", ");
+
+        for id in ids.iter() {
+            separated.push_bind(id);
+        }
+
+        separated.push_unseparated(")");
+
+        let result = query_builder.build().execute(&mut *conn).await?;
+        Ok(result.rows_affected())
+    }
+
+    #[instrument(skip_all)]
     async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error> {
         Ok(sqlx::query_as(
             "

@@ -148,6 +148,10 @@ impl ActivationStore for MockStore {
         unimplemented!()
     }
 
+    async fn delete_activation_batch(&self, _ids: &[String]) -> Result<u64, Error> {
+        unimplemented!()
+    }
+
     async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error> {
         unimplemented!()
     }
