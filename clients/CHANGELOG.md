@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.0
+
+### Internal Changes 🔧
+
+- (params) Remove JSON parameter encoding by @untitaker in [#723](https://github.com/getsentry/taskbroker/pull/723)
+
 ## 0.19.3
 
 ### Internal Changes 🔧
