@@ -743,10 +743,8 @@ mod tests {
             activation.received_at.unwrap().nanos as u32,
         )
         .expect("");
-        {
-            #![allow(deprecated)]
-            activation.parameters = r#"{"a":"b"}"#.into();
-        }
+        // msgpack-encoded `{"a": "b"}`
+        activation.parameters_bytes = vec![0x81, 0xa1, b'a', 0xa1, b'b'];
         activation.delay = Some(30);
         records[0].status = ActivationStatus::Retry;
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
@@ -785,10 +783,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.taskname, activation_to_check.taskname);
         assert_eq!(activation.namespace, activation_to_check.namespace);
-        {
-            #![allow(deprecated)]
-            assert_eq!(activation.parameters, activation_to_check.parameters);
-        }
+        assert_eq!(
+            activation.parameters_bytes,
+            activation_to_check.parameters_bytes
+        );
         // received_at should be set be later than the original activation
         assert!(
             activation.received_at.unwrap().seconds
@@ -1121,10 +1119,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.id, activation_to_check.id);
         // DLQ should retain parameters of original task
-        {
-            #![allow(deprecated)]
-            assert_eq!(activation.parameters, activation_to_check.parameters);
-        }
+        assert_eq!(
+            activation.parameters_bytes,
+            activation_to_check.parameters_bytes
+        );
     }
 
     #[tokio::test]

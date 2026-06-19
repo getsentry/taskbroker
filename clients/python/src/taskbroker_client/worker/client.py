@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import logging
 import random
 import threading
@@ -10,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Sequence, Tuple, Union
 
 import grpc
-import orjson
 from google.protobuf.message import Message
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     FetchNextTask,
@@ -130,7 +130,7 @@ def parse_rpc_secret_list(rpc_secret: str | None) -> list[str] | None:
         return None
 
     # Try to parse the provided secret
-    parsed = orjson.loads(rpc_secret)
+    parsed = json.loads(rpc_secret)
 
     if not isinstance(parsed, list) or len(parsed) == 0:
         # If the secret string is not a list with at least one element, it is invalid

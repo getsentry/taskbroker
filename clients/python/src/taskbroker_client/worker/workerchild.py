@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import contextlib
 import logging
 import queue
@@ -15,7 +14,6 @@ from typing import Any
 
 # XXX: Don't import any modules that will import django here, do those within child_process
 import msgpack
-import orjson
 import sentry_sdk
 import zstandard as zstd
 from arroyo.backends.abstract import ProducerFuture
@@ -94,24 +92,10 @@ def load_parameters(activation: TaskActivation) -> dict[str, Any]:
     headers = dict(activation.headers)
     compression_type = headers.get("compression-type", None)
 
-    # Prefer new msgpack field
-    if activation.parameters_bytes:
-        data = activation.parameters_bytes
-        if compression_type == CompressionType.ZSTD.value:
-            data = zstd.decompress(data)
-        return msgpack.unpackb(data, raw=False)
-
-    # Legacy JSON fallback
-    data_str = activation.parameters
-    if not compression_type or compression_type == CompressionType.PLAINTEXT.value:
-        return orjson.loads(data_str)
-    elif compression_type == CompressionType.ZSTD.value:
-        return orjson.loads(zstd.decompress(base64.b64decode(data_str)))
-    else:
-        logger.error(
-            "Unsupported compression type: %s. Continuing with plaintext.", compression_type
-        )
-        return orjson.loads(data_str)
+    data = activation.parameters_bytes
+    if compression_type == CompressionType.ZSTD.value:
+        data = zstd.decompress(data)
+    return msgpack.unpackb(data, raw=False)
 
 
 def status_name(status: TaskActivationStatus.ValueType) -> str:

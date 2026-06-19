@@ -1,9 +1,7 @@
-import base64
 from concurrent.futures import Future
 from unittest.mock import Mock
 
 import msgpack
-import orjson
 import pytest
 import zstandard as zstd
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -179,9 +177,7 @@ def test_namespace_send_task_with_compression() -> None:
     actual_params = msgpack.unpackb(decompressed_data, raw=False)
 
     assert actual_params == expected_params
-
-    legacy_decompressed = zstd.decompress(base64.b64decode(activation.parameters.encode("utf-8")))
-    assert orjson.loads(legacy_decompressed) == expected_params
+    assert activation.parameters == ""
 
 
 def test_namespace_send_task_with_auto_compression() -> None:
@@ -211,9 +207,7 @@ def test_namespace_send_task_with_auto_compression() -> None:
     actual_params = msgpack.unpackb(decompressed_data, raw=False)
 
     assert actual_params == expected_params
-
-    legacy_decompressed = zstd.decompress(base64.b64decode(activation.parameters.encode("utf-8")))
-    assert orjson.loads(legacy_decompressed) == expected_params
+    assert activation.parameters == ""
 
 
 def test_namespace_send_task_with_retry() -> None:

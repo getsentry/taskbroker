@@ -5,7 +5,6 @@ from typing import Any
 from unittest.mock import patch
 
 import msgpack
-import orjson
 import pytest
 import sentry_sdk
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -81,7 +80,7 @@ def test_apply_async_expires(task_namespace: TaskNamespace) -> None:
     assert activation.expires == 10
     expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
     assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
-    assert orjson.loads(activation.parameters) == expected_params
+    assert activation.parameters == ""
 
 
 def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
@@ -102,7 +101,7 @@ def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
     assert activation.delay == 600
     expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
     assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
-    assert orjson.loads(activation.parameters) == expected_params
+    assert activation.parameters == ""
 
 
 def test_delay_immediate_mode(task_namespace: TaskNamespace) -> None:
@@ -274,8 +273,7 @@ def test_create_activation_parameters(task_namespace: TaskNamespace) -> None:
     assert params["args"] == ["one", 22]
     assert params["kwargs"] == {"org_id": 99}
 
-    json_params = orjson.loads(activation.parameters)
-    assert json_params == params
+    assert activation.parameters == ""
 
 
 def test_create_activation_tracing(task_namespace: TaskNamespace) -> None:
