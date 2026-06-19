@@ -1,4 +1,3 @@
-import base64
 import contextlib
 import os
 import queue
@@ -15,7 +14,6 @@ from unittest import TestCase, mock
 
 import grpc
 import msgpack
-import orjson
 import pytest
 import zstandard as zstd
 from arroyo.backends.kafka import KafkaPayload
@@ -159,44 +157,6 @@ COMPRESSED_TASK = InflightTaskActivation(
                 use_bin_type=True,
             )
         ),
-        headers={
-            "compression-type": CompressionType.ZSTD.value,
-        },
-        processing_deadline_duration=2,
-    ),
-)
-
-# Legacy fixture using the old JSON parameters field for backward compat testing
-LEGACY_JSON_TASK = InflightTaskActivation(
-    host="localhost:50051",
-    receive_timestamp=0,
-    activation=TaskActivation(
-        id="legacy_json_123",
-        taskname="examples.simple_task",
-        namespace="examples",
-        parameters='{"args": ["legacy_arg"], "kwargs": {}}',
-        processing_deadline_duration=2,
-    ),
-)
-
-# Legacy compressed fixture using base64+zstd in the old parameters field
-LEGACY_COMPRESSED_TASK = InflightTaskActivation(
-    host="localhost:50051",
-    receive_timestamp=0,
-    activation=TaskActivation(
-        id="legacy_compressed_123",
-        taskname="examples.simple_task",
-        namespace="examples",
-        parameters=base64.b64encode(
-            zstd.compress(
-                orjson.dumps(
-                    {
-                        "args": ["test_arg1", "test_arg2"],
-                        "kwargs": {"test_key": "test_value", "number": 42},
-                    }
-                )
-            )
-        ).decode("utf8"),
         headers={
             "compression-type": CompressionType.ZSTD.value,
         },
@@ -825,7 +785,9 @@ def test_child_process_remove_start_time_kwargs() -> None:
             id="6789",
             taskname="examples.will_retry",
             namespace="examples",
-            parameters='{"args": ["stuff"], "kwargs": {"__start_time": 123}}',
+            parameters_bytes=msgpack.packb(
+                {"args": ["stuff"], "kwargs": {"__start_time": 123}}, use_bin_type=True
+            ),
             processing_deadline_duration=100000,
         ),
     )
@@ -886,7 +848,7 @@ def test_child_process_retry_task_max_attempts(
             id="6789",
             taskname="examples.will_retry",
             namespace="examples",
-            parameters='{"args": ["raise"], "kwargs": {}}',
+            parameters_bytes=msgpack.packb({"args": ["raise"], "kwargs": {}}, use_bin_type=True),
             processing_deadline_duration=100000,
             retry_state=RetryState(
                 attempts=2,
@@ -1104,7 +1066,7 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
             id="111",
             taskname="examples.timed",
             namespace="examples",
-            parameters='{"args": [3], "kwargs": {}}',
+            parameters_bytes=msgpack.packb({"args": [3], "kwargs": {}}, use_bin_type=True),
             processing_deadline_duration=1,
         ),
     )
@@ -1161,54 +1123,6 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
     assert mock_capture_checkin.call_count == 0
 
 
-@mock.patch("sentry_sdk.crons.api.capture_checkin")
-def test_child_process_legacy_json_parameters(mock_capture_checkin: mock.MagicMock) -> None:
-    """Test backward compat: worker can handle legacy JSON parameters field."""
-    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-    processed: queue.Queue[ProcessingResult] = queue.Queue()
-    shutdown = Event()
-
-    todo.put(LEGACY_JSON_TASK)
-    child_process(
-        "examples.app:app",
-        todo,
-        processed,
-        shutdown,
-        max_task_count=1,
-        processing_pool_name="test",
-        process_type="fork",
-    )
-
-    assert todo.empty()
-    result = processed.get()
-    assert result.task_id == LEGACY_JSON_TASK.activation.id
-    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
-
-
-@mock.patch("sentry_sdk.crons.api.capture_checkin")
-def test_child_process_legacy_compressed_parameters(mock_capture_checkin: mock.MagicMock) -> None:
-    """Test backward compat: worker can handle legacy base64+zstd compressed JSON parameters."""
-    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-    processed: queue.Queue[ProcessingResult] = queue.Queue()
-    shutdown = Event()
-
-    todo.put(LEGACY_COMPRESSED_TASK)
-    child_process(
-        "examples.app:app",
-        todo,
-        processed,
-        shutdown,
-        max_task_count=1,
-        processing_pool_name="test",
-        process_type="fork",
-    )
-
-    assert todo.empty()
-    result = processed.get()
-    assert result.task_id == LEGACY_COMPRESSED_TASK.activation.id
-    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
-
-
 def test_child_process_context_hooks() -> None:
     """Context hooks' on_execute is called with activation headers during task execution."""
     executed_headers: list[dict[str, str]] = []
@@ -1234,7 +1148,7 @@ def test_child_process_context_hooks() -> None:
                 id="hook-test",
                 taskname="examples.simple_task",
                 namespace="examples",
-                parameters='{"args": [], "kwargs": {}}',
+                parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
                 headers={"x-viewer-org": "42", "x-viewer-user": "7"},
                 processing_deadline_duration=5,
             ),
@@ -1628,7 +1542,7 @@ def test_child_process_drains_pending_futures_on_sigterm(
 #             id="failed-future-retry",
 #             taskname="examples.will_retry",
 #             namespace="examples",
-#             parameters=orjson.dumps({"args": ["noop"], "kwargs": {}}).decode("utf8"),
+#             parameters_bytes=msgpack.packb({"args": ["noop"], "kwargs": {}}, use_bin_type=True),
 #             processing_deadline_duration=2,
 #             retry_state=RetryState(
 #                 attempts=0,

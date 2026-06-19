@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import base64
 import datetime
 import inspect
-import os
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
@@ -11,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, get_origin
 from uuid import uuid4
 
 import msgpack
-import orjson
 import sentry_sdk
 import zstandard as zstd
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -25,21 +22,8 @@ from taskbroker_client.constants import (
     DEFAULT_PROCESSING_DEADLINE,
     MAX_PARAMETER_BYTES_BEFORE_COMPRESSION,
     CompressionType,
-    ParametersFormat,
 )
 from taskbroker_client.retry import Retry
-
-
-def _get_parameters_format() -> ParametersFormat:
-    raw = os.environ.get("TASKBROKER_CLIENT_PARAMETERS_FORMAT", ParametersFormat.BOTH.value)
-    try:
-        return ParametersFormat(raw.lower())
-    except ValueError:
-        raise ValueError(
-            f"Invalid TASKBROKER_CLIENT_PARAMETERS_FORMAT={raw!r}. "
-            f"Expected one of: {', '.join(f.value for f in ParametersFormat)}"
-        )
-
 
 if TYPE_CHECKING:
     from taskbroker_client.registry import TaskNamespace
@@ -270,38 +254,18 @@ class Task(Generic[P, R]):
                     f"The `{key}` header value is of type {type(value)}"
                 )
 
-        parameters_format = _get_parameters_format()
         data = {"args": args, "kwargs": kwargs}
-
-        msgpack_bytes = (
-            msgpack.packb(data, use_bin_type=True)
-            if parameters_format in (ParametersFormat.BOTH, ParametersFormat.MSGPACK)
-            else b""
-        )
-        # JSON can't encode some values msgpack can (e.g. raw bytes). In
-        # JSON-only mode we surface the TypeError; in BOTH mode we silently
-        # skip the legacy field so msgpack-aware workers can still run.
-        json_bytes: bytes | None = None
-        if parameters_format in (ParametersFormat.BOTH, ParametersFormat.JSON):
-            try:
-                json_bytes = orjson.dumps(data)
-            except TypeError:
-                if parameters_format == ParametersFormat.JSON:
-                    raise
+        msgpack_bytes = msgpack.packb(data, use_bin_type=True)
 
         should_compress = (
             self.compression_type == CompressionType.ZSTD
-            or (len(msgpack_bytes) + len(json_bytes or b""))
-            > MAX_PARAMETER_BYTES_BEFORE_COMPRESSION
+            or len(msgpack_bytes) > MAX_PARAMETER_BYTES_BEFORE_COMPRESSION
         )
 
         if should_compress:
             headers["compression-type"] = CompressionType.ZSTD.value
             start_time = time.perf_counter()
-            parameters_bytes_val = zstd.compress(msgpack_bytes) if msgpack_bytes else b""
-            parameters_str = (
-                base64.b64encode(zstd.compress(json_bytes)).decode("utf8") if json_bytes else ""
-            )
+            parameters_bytes_val = zstd.compress(msgpack_bytes)
             elapsed = time.perf_counter() - start_time
 
             metric_tags = {
@@ -311,7 +275,7 @@ class Task(Generic[P, R]):
             }
             self.namespace.metrics.distribution(
                 "taskworker.producer.compressed_parameters_size",
-                len(parameters_bytes_val) or len(parameters_str),
+                len(parameters_bytes_val),
                 tags=metric_tags,
             )
             self.namespace.metrics.distribution(
@@ -321,7 +285,6 @@ class Task(Generic[P, R]):
             )
         else:
             parameters_bytes_val = msgpack_bytes
-            parameters_str = json_bytes.decode("utf8") if json_bytes else ""
 
         return TaskActivation(
             id=uuid4().hex,
@@ -329,7 +292,6 @@ class Task(Generic[P, R]):
             namespace=self._namespace.name,
             taskname=self.name,
             headers=headers,
-            parameters=parameters_str,
             parameters_bytes=parameters_bytes_val,
             retry_state=self._create_retry_state(),
             received_at=received_at,

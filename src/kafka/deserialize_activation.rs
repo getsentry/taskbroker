@@ -118,7 +118,6 @@ pub fn new(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -126,10 +125,9 @@ mod tests {
     use prost::Message as _;
     use rdkafka::Timestamp;
     use rdkafka::message::OwnedMessage;
-    use sentry_protos::taskbroker::v1::TaskActivation;
 
     use crate::store::activation::ActivationStatus;
-    use crate::test_utils::generate_unique_namespace;
+    use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
 
     use super::{Config, DeserializeActivationConfig, new};
 
@@ -140,25 +138,18 @@ mod tests {
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            parameters_bytes: vec![],
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // not used when the activation doesn't have expires.
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: the_past.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: None,
-        };
+            })
+            .processing_deadline_duration(10)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -185,25 +176,19 @@ mod tests {
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            parameters_bytes: vec![],
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // used because the activation has expires
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: the_past.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: Some(100),
-            delay: None,
-        };
+            })
+            .processing_deadline_duration(10)
+            .expires(100)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -231,25 +216,19 @@ mod tests {
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            parameters_bytes: vec![],
-            headers: HashMap::new(),
-            // used because the activation has expires
-            received_at: Some(prost_types::Timestamp {
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
+            // used because the activation has delay
+            .received_at(prost_types::Timestamp {
                 seconds: the_past.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: Some(100),
-        };
+            })
+            .processing_deadline_duration(10)
+            .delay(100)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -277,25 +256,19 @@ mod tests {
         let deserializer = new(DeserializeActivationConfig::from_config(&config));
         let now = Utc::now();
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            parameters_bytes: vec![],
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // used because the activation has delay
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: now.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: Some(100),
-        };
+            })
+            .processing_deadline_duration(10)
+            .delay(100)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -324,25 +297,19 @@ mod tests {
         let now = Utc::now();
         let delay_sec = config.max_delayed_task_allowed_sec * 2;
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            parameters_bytes: vec![],
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // used because the activation has delay
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: now.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: Some(delay_sec),
-        };
+            })
+            .processing_deadline_duration(10)
+            .delay(delay_sec)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
