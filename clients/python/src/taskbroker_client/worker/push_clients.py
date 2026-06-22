@@ -43,11 +43,13 @@ class PushTaskbrokerClient:
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
+        processing_pool_name: str | None = None,
     ) -> None:
         self._application = application
         self._service = service
         self._rpc_secret = rpc_secret
         self._metrics = metrics
+        self._processing_pool_name = processing_pool_name or "unknown"
 
         self._grpc_options: list[tuple[str, Any]] = [
             ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)
@@ -81,6 +83,7 @@ class PushTaskbrokerClient:
             self._health_check_settings.file_path.touch()
             self._metrics.incr(
                 "taskworker.client.health_check.touched",
+                tags={"processing_pool": self._processing_pool_name},
             )
             self._timestamp_since_touch = cur_time
 
@@ -121,7 +124,11 @@ class PushTaskbrokerClient:
         while retries < 3:
             try:
                 with self._metrics.timer(
-                    "taskworker.update_task.rpc", tags={"service": self._service}
+                    "taskworker.update_task.rpc",
+                    tags={
+                        "service": self._service,
+                        "processing_pool": self._processing_pool_name,
+                    },
                 ):
                     self._stub.SetTaskStatus(request)
                 exception = None
@@ -130,7 +137,11 @@ class PushTaskbrokerClient:
                 exception = err
                 self._metrics.incr(
                     "taskworker.client.rpc_error",
-                    tags={"method": "SetTaskStatus", "status": err.code().name},
+                    tags={
+                        "method": "SetTaskStatus",
+                        "status": err.code().name,
+                        "processing_pool": self._processing_pool_name,
+                    },
                 )
             finally:
                 retries += 1
@@ -174,7 +185,11 @@ class BatchPushTaskbrokerClient(PushTaskbrokerClient):
         while retries < 3:
             try:
                 with self._metrics.timer(
-                    "taskworker.update_task_batch.rpc", tags={"service": self._service}
+                    "taskworker.update_task_batch.rpc",
+                    tags={
+                        "service": self._service,
+                        "processing_pool": self._processing_pool_name,
+                    },
                 ):
                     self._stub.SetBatchActivationStatus(request)
                 exception = None
@@ -183,7 +198,11 @@ class BatchPushTaskbrokerClient(PushTaskbrokerClient):
                 exception = err
                 self._metrics.incr(
                     "taskworker.client.rpc_error",
-                    tags={"method": "SetBatchActivationStatus", "status": err.code().name},
+                    tags={
+                        "method": "SetBatchActivationStatus",
+                        "status": err.code().name,
+                        "processing_pool": self._processing_pool_name,
+                    },
                 )
             finally:
                 retries += 1
