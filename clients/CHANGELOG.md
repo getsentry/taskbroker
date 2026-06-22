@@ -1,4 +1,8 @@
 # Changelog
+## 0.19.4
+
+- fix(worker) Add processing_pool tag to client metrics by @markstory in [#725](https://github.com/getsentry/taskbroker/pull/725)
+
 ## 0.20.0
 
 ### Internal Changes 🔧
