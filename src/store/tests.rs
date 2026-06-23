@@ -160,13 +160,11 @@ async fn test_count_depths_per_partition_postgres() {
 
     // Assign three partitions; partition 2 will have no activations and must
     // appear in the result with zero counts (zero-fill behavior).
-    store
-        .assign_partitions(
-            &mut [0, 1, 2]
-                .into_iter()
-                .map(|p| TopicPartition::new(DEFAULT_TOPIC, p)),
-        )
-        .unwrap();
+    store.assign_partitions(
+        &mut [0, 1, 2]
+            .into_iter()
+            .map(|p| TopicPartition::new(DEFAULT_TOPIC, p)),
+    );
 
     let namespace = generate_unique_namespace();
     let now = Utc::now();
@@ -241,12 +239,8 @@ async fn test_multi_topic_partition_scoping_postgres() {
     let store = create_test_store("postgres").await;
 
     // Replace the default assignment from `create_test_store` with topic-a only.
-    store
-        .revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)))
-        .unwrap();
-    store
-        .assign_partitions(&mut std::iter::once(TopicPartition::new("topic-a", 0)))
-        .unwrap();
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("topic-a", 0)));
 
     let namespace = generate_unique_namespace();
     let now = Utc::now();
@@ -278,9 +272,7 @@ async fn test_multi_topic_partition_scoping_postgres() {
     assert_eq!(claimed[0].id, "a0");
 
     // After also owning topic-b, "b0" becomes claimable.
-    store
-        .assign_partitions(&mut std::iter::once(TopicPartition::new("topic-b", 0)))
-        .unwrap();
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("topic-b", 0)));
     let claimed = store
         .claim_activations_for_push(Some(10), None)
         .await
@@ -298,12 +290,8 @@ async fn test_multi_topic_partition_scoping_postgres() {
 async fn test_age_based_drain_claims_orphan_postgres() {
     let store = create_test_store("postgres").await;
     // Owns an unrelated topic/partition, so neither row matches by ownership.
-    store
-        .revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)))
-        .unwrap();
-    store
-        .assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)))
-        .unwrap();
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)));
 
     let namespace = generate_unique_namespace();
     let now = Utc::now();
@@ -344,12 +332,8 @@ async fn test_age_based_drain_claims_orphan_postgres() {
 #[tokio::test]
 async fn test_age_based_drain_upkeep_postgres() {
     let store = create_test_store("postgres").await;
-    store
-        .revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)))
-        .unwrap();
-    store
-        .assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)))
-        .unwrap();
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)));
 
     let namespace = generate_unique_namespace();
     let now = Utc::now();

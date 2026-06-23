@@ -49,19 +49,9 @@ impl MockStore {
 
 #[async_trait]
 impl ActivationStore for MockStore {
-    fn assign_partitions(
-        &self,
-        _partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
+    fn assign_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
 
-    fn revoke_partitions(
-        &self,
-        _partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<(), Error> {
-        Ok(())
-    }
+    fn revoke_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
 
     async fn vacuum_db(&self) -> Result<(), Error> {
         unimplemented!()

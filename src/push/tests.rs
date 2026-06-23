@@ -36,19 +36,9 @@ impl ActivationStore for MockStore {
         Ok(0)
     }
 
-    fn assign_partitions(
-        &self,
-        _partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<()> {
-        Ok(())
-    }
+    fn assign_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
 
-    fn revoke_partitions(
-        &self,
-        _partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<()> {
-        Ok(())
-    }
+    fn revoke_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
 
     async fn claim_activations(
         &self,

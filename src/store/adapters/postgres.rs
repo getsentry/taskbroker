@@ -427,24 +427,15 @@ impl ActivationStore for PostgresStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(
-        &self,
-        partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<(), Error> {
-        let mut write_guard = self.partitions.write().unwrap();
-        write_guard.extend(partitions);
-        Ok(())
+    fn assign_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
+        self.partitions.write().unwrap().extend(partitions);
     }
 
-    fn revoke_partitions(
-        &self,
-        partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<(), Error> {
+    fn revoke_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
         let mut write_guard = self.partitions.write().unwrap();
         for tp in partitions {
             write_guard.remove(&tp);
         }
-        Ok(())
     }
 
     #[instrument(skip_all)]

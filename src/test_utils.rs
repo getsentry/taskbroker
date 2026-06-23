@@ -287,9 +287,7 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
             let store =
                 Arc::new(PostgresStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>;
 
-            store
-                .assign_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)))
-                .unwrap();
+            store.assign_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
             store
         }
         _ => panic!("Invalid adapter: {}", adapter),

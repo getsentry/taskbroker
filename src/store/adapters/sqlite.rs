@@ -465,23 +465,15 @@ impl ActivationStore for SqliteStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(
-        &self,
-        partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<(), Error> {
+    fn assign_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
         // sqlite owns its whole DB regardless of partition assignment, so this
         // is a no-op. Fires once per consumer, hence debug rather than warn.
         debug!("assign_partitions: {:?}", partitions.collect::<Vec<_>>());
-        Ok(())
     }
 
-    fn revoke_partitions(
-        &self,
-        partitions: &mut dyn Iterator<Item = TopicPartition>,
-    ) -> Result<(), Error> {
+    fn revoke_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
         // No-op for the same reason as `assign_partitions`.
         debug!("revoke_partitions: {:?}", partitions.collect::<Vec<_>>());
-        Ok(())
     }
 
     #[instrument(skip_all)]

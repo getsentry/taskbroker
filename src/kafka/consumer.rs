@@ -382,9 +382,7 @@ pub async fn handle_events(
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
                         metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone())
                             .set(tpl.len() as f64);
-                        activation_store
-                            .assign_partitions(&mut tpl.iter().map(TopicPartition::from))
-                            .unwrap();
+                        activation_store.assign_partitions(&mut tpl.iter().map(TopicPartition::from));
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
@@ -399,17 +397,13 @@ pub async fn handle_events(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
-                        activation_store
-                            .revoke_partitions(&mut revoked.iter().map(TopicPartition::from))
-                            .unwrap();
+                        activation_store.revoke_partitions(&mut revoked.iter().map(TopicPartition::from));
                         handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, tpl), Event::Shutdown) => {
-                        activation_store
-                            .revoke_partitions(&mut tpl.iter().map(TopicPartition::from))
-                            .unwrap();
+                        activation_store.revoke_partitions(&mut tpl.iter().map(TopicPartition::from));
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
