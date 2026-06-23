@@ -307,11 +307,11 @@ impl PostgresStore {
         })
     }
 
-    /// Restrict a query to the (topic, partition) pairs this broker owns, OR-ing
-    /// in an age-based escape: rows older than `contention_drain_age_sec` bypass
-    /// the filter so any broker can drain orphaned activations (left by rebalances
-    /// or topic/partition moves). This only affects contention, not correctness —
-    /// claims use `FOR UPDATE SKIP LOCKED`.
+    /// Restrict a query to the (topic, partition) pairs this broker owns.
+    ///
+    /// rows older than `contention_drain_age_sec` bypass the filter so any broker can drain
+    /// orphaned activations (left by rebalances or topic/partition moves). This only affects
+    /// contention, not correctness.
     ///
     /// With no partitions assigned (e.g. before the first rebalance) the query is
     /// left unfiltered.
