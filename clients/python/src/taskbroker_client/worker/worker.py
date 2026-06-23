@@ -732,6 +732,7 @@ class TaskWorkerProcessingPool:
         self._children: list[BaseProcess] = []
         self._shutdown_event = self._mp_context.Event()
         self._result_thread: threading.Thread | None = None
+        self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
@@ -754,6 +755,43 @@ class TaskWorkerProcessingPool:
                 for result in results:
                     self.put_result(result)
 
+    def start_metrics_thread(self) -> None:
+        """
+        Start a thread that emits metrics on an interval.
+        """
+
+        def metrics_thread() -> None:
+            tags = {
+                "processing_pool": self._processing_pool_name,
+                "pod_name": self._pod_name,
+            }
+
+            while True:
+                try:
+                    # 'qsize' is not implemented on all platforms, such as macOS
+                    self._metrics.gauge(
+                        "taskworker.child_tasks.size",
+                        float(self._child_tasks.qsize()),
+                        tags=tags,
+                    )
+
+                    self._metrics.gauge(
+                        "taskworker.processed_tasks.size",
+                        float(self._processed_tasks.qsize()),
+                        tags=tags,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "taskworker.worker.queue_gauges.error",
+                        extra={"error": e, "processing_pool": self._processing_pool_name},
+                    )
+
+                time.sleep(1)
+
+        self._metrics_thread = threading.Thread(name="metrics", target=metrics_thread, daemon=True)
+
+        self._metrics_thread.start()
+
     def start_result_thread(self) -> None:
         """
         Start a thread that delivers results and fetches new tasks.
@@ -770,30 +808,6 @@ class TaskWorkerProcessingPool:
             iopool = ThreadPoolExecutor(max_workers=self._concurrency)
             with iopool as executor:
                 while not self._shutdown_event.is_set():
-                    tags = {
-                        "processing_pool": self._processing_pool_name,
-                        "pod_name": self._pod_name,
-                    }
-
-                    try:
-                        # 'qsize' is not implemented on all platforms, such as macOS
-                        self._metrics.gauge(
-                            "taskworker.child_tasks.size",
-                            float(self._child_tasks.qsize()),
-                            tags=tags,
-                        )
-
-                        self._metrics.gauge(
-                            "taskworker.processed_tasks.size",
-                            float(self._processed_tasks.qsize()),
-                            tags=tags,
-                        )
-                    except Exception as e:
-                        logger.debug(
-                            "taskworker.worker.queue_gauges.error",
-                            extra={"error": e, "processing_pool": self._processing_pool_name},
-                        )
-
                     results = []
                     while True:
                         try:
