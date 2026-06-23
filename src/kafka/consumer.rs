@@ -29,6 +29,7 @@ use futures::{Stream, StreamExt, future, pin_mut};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
 
 pub async fn start_consumer(
     topics: &[&str],
@@ -381,7 +382,9 @@ pub async fn handle_events(
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
                         metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone())
                             .set(tpl.len() as f64);
-                        assign_from_tpl(activation_store.as_ref(), &tpl);
+                        activation_store
+                            .assign_partitions(&mut tpl.iter().map(TopicPartition::from))
+                            .unwrap();
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
@@ -396,13 +399,17 @@ pub async fn handle_events(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
-                        release_from_tpl(activation_store.as_ref(), &revoked);
+                        activation_store
+                            .revoke_partitions(&mut revoked.iter().map(TopicPartition::from))
+                            .unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, tpl), Event::Shutdown) => {
-                        release_from_tpl(activation_store.as_ref(), &tpl);
+                        activation_store
+                            .revoke_partitions(&mut tpl.iter().map(TopicPartition::from))
+                            .unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
@@ -418,26 +425,6 @@ pub async fn handle_events(
     }
     debug!("Shutdown complete");
     Ok(())
-}
-
-/// Push a partition assignment into the store, grouped by topic. Each topic in
-/// `tpl` replaces that topic's owned partitions; topics absent from `tpl` are
-/// left untouched (so sibling consumers sharing the store aren't disturbed).
-fn assign_from_tpl(store: &dyn ActivationStore, tpl: &BTreeSet<(String, i32)>) {
-    let mut by_topic: HashMap<&str, Vec<i32>> = HashMap::new();
-    for (topic, partition) in tpl {
-        by_topic.entry(topic.as_str()).or_default().push(*partition);
-    }
-    for (topic, partitions) in by_topic {
-        store.assign_partitions(topic, partitions).unwrap();
-    }
-}
-
-/// Release every topic present in `tpl` from the store (assign no partitions).
-fn release_from_tpl(store: &dyn ActivationStore, tpl: &BTreeSet<(String, i32)>) {
-    for topic in tpl.iter().map(|(t, _)| t.as_str()).collect::<BTreeSet<_>>() {
-        store.assign_partitions(topic, vec![]).unwrap();
-    }
 }
 
 pub trait KafkaMessage {

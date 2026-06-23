@@ -30,7 +30,7 @@ use crate::config::store::StoreConfig;
 use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder};
+use crate::store::types::{BucketRange, FailedTasksForwarder, TopicPartition};
 
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
@@ -465,10 +465,22 @@ impl ActivationStore for SqliteStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(
+        &self,
+        partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error> {
         // sqlite owns its whole DB regardless of partition assignment, so this
         // is a no-op. Fires once per consumer, hence debug rather than warn.
-        debug!("assign_partitions: {topic} {partitions:?}");
+        debug!("assign_partitions: {:?}", partitions.collect::<Vec<_>>());
+        Ok(())
+    }
+
+    fn revoke_partitions(
+        &self,
+        partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error> {
+        // No-op for the same reason as `assign_partitions`.
+        debug!("revoke_partitions: {:?}", partitions.collect::<Vec<_>>());
         Ok(())
     }
 

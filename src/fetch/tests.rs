@@ -10,7 +10,7 @@ use crate::config::Config;
 use crate::config::fetch::FetchConfig;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder};
+use crate::store::types::{BucketRange, FailedTasksForwarder, TopicPartition};
 use crate::test_utils::make_activations;
 
 use super::*;
@@ -49,7 +49,17 @@ impl MockStore {
 
 #[async_trait]
 impl ActivationStore for MockStore {
-    fn assign_partitions(&self, _topic: &str, _partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(
+        &self,
+        _partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn revoke_partitions(
+        &self,
+        _partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error> {
         Ok(())
     }
 

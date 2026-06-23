@@ -24,6 +24,12 @@ impl std::fmt::Display for TopicPartition {
     }
 }
 
+impl From<&(String, i32)> for TopicPartition {
+    fn from((topic, partition): &(String, i32)) -> Self {
+        Self::new(topic.clone(), *partition)
+    }
+}
+
 pub struct FailedTasksForwarder {
     pub to_discard: Vec<(String, Vec<u8>)>,
     pub to_deadletter: Vec<(String, Vec<u8>)>,

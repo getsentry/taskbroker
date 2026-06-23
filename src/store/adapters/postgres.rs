@@ -427,13 +427,22 @@ impl ActivationStore for PostgresStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(
+        &self,
+        partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error> {
         let mut write_guard = self.partitions.write().unwrap();
-        // Replace only this topic's pairs, leaving other topics intact. An empty
-        // `partitions` thus just clears the topic.
-        write_guard.retain(|tp| tp.topic != topic);
-        for partition in partitions {
-            write_guard.insert(TopicPartition::new(topic, partition));
+        write_guard.extend(partitions);
+        Ok(())
+    }
+
+    fn revoke_partitions(
+        &self,
+        partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error> {
+        let mut write_guard = self.partitions.write().unwrap();
+        for tp in partitions {
+            write_guard.remove(&tp);
         }
         Ok(())
     }

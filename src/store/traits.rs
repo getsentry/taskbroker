@@ -15,8 +15,18 @@ pub trait ActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: &[Activation]) -> Result<u64, Error>;
 
-    /// Replace the set of partitions this broker owns for `topic`.
-    fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error>;
+    /// Add the given (topic, partition) pairs to the set this broker owns. Pairs
+    /// accumulate across topics and consumers sharing the store.
+    fn assign_partitions(
+        &self,
+        partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error>;
+
+    /// Remove the given (topic, partition) pairs from the set this broker owns.
+    fn revoke_partitions(
+        &self,
+        partitions: &mut dyn Iterator<Item = TopicPartition>,
+    ) -> Result<(), Error>;
 
     /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
     /// If `mark_activation_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.

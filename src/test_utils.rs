@@ -22,6 +22,7 @@ use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::{self, PostgresStore};
 use crate::store::adapters::sqlite::SqliteStore;
 use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
 
 /// msgpack encoding of an empty map (`{}`), used as default task parameters in tests.
 pub const EMPTY_MSGPACK_MAP: &[u8] = &[0x80];
@@ -286,7 +287,9 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
             let store =
                 Arc::new(PostgresStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>;
 
-            store.assign_partitions(DEFAULT_TOPIC, vec![0]).unwrap();
+            store
+                .assign_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)))
+                .unwrap();
             store
         }
         _ => panic!("Invalid adapter: {}", adapter),
