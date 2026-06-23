@@ -312,6 +312,7 @@ class PushTaskWorker:
         """
         This starts the worker gRPC server.
         """
+        self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
@@ -556,6 +557,7 @@ class TaskWorker:
         """
         This starts a loop that runs until the worker completes its `max_task_count` or it is killed.
         """
+        self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
