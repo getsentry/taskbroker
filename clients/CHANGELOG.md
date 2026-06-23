@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.2
+
+### Internal Changes 🔧
+
+- (workerchild) Move checking future completion into bg thread by @bmckerry in [#727](https://github.com/getsentry/taskbroker/pull/727)
+
 ## 0.20.1
 
 - No documented changes.
