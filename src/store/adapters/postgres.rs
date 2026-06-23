@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -23,7 +23,7 @@ use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
 
 /// Run migrations.
 pub async fn migrate(config: &StoreConfig) -> Result<()> {
@@ -248,9 +248,9 @@ pub struct PostgresStore {
     read_pool: PgPool,
     write_pool: PgPool,
     config: StoreConfig,
-    /// Partitions assigned to this broker, keyed by topic. Contention queries
-    /// filter by the (topic, partition) pairs across all assigned topics.
-    partitions: RwLock<BTreeMap<String, Vec<i32>>>,
+    /// (topic, partition) pairs assigned to this broker. Contention queries
+    /// filter by these pairs across all assigned topics.
+    partitions: RwLock<BTreeSet<TopicPartition>>,
     claim_duration_ms: u64,
 }
 
@@ -302,7 +302,7 @@ impl PostgresStore {
             read_pool,
             write_pool,
             config: config.store.clone(),
-            partitions: RwLock::new(BTreeMap::new()),
+            partitions: RwLock::new(BTreeSet::new()),
             claim_duration_ms: compute_claim_duration_ms(config),
         })
     }
@@ -335,18 +335,16 @@ impl PostgresStore {
         query_builder.push(condition);
         query_builder.push(" ((topic, partition) IN (");
         let mut first = true;
-        for (topic, topic_partitions) in partitions.iter() {
-            for partition in topic_partitions.iter() {
-                if !first {
-                    query_builder.push(", ");
-                }
-                first = false;
-                query_builder.push("(");
-                query_builder.push_bind(topic.clone());
+        for tp in partitions.iter() {
+            if !first {
                 query_builder.push(", ");
-                query_builder.push_bind(*partition);
-                query_builder.push(")");
             }
+            first = false;
+            query_builder.push("(");
+            query_builder.push_bind(tp.topic.clone());
+            query_builder.push(", ");
+            query_builder.push_bind(tp.partition);
+            query_builder.push(")");
         }
         query_builder.push(") OR added_at < ");
         let drain_cutoff =
@@ -436,12 +434,13 @@ impl ActivationStore for PostgresStore {
 
     fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error> {
         let mut write_guard = self.partitions.write().unwrap();
-        // Keep the map free of empty entries so `add_partition_condition` never
-        // emits an empty `IN ()`. An empty assignment clears the topic.
-        if partitions.is_empty() {
-            write_guard.remove(topic);
-        } else {
-            write_guard.insert(topic.to_owned(), partitions);
+        // Replace only this topic's pairs (see trait contract): drop the topic's
+        // existing entries, leaving other topics intact, then insert the new set.
+        // An empty `partitions` thus just clears the topic, keeping the set free
+        // of stale entries so `add_partition_condition` never emits `IN ()`.
+        write_guard.retain(|tp| tp.topic != topic);
+        for partition in partitions {
+            write_guard.insert(TopicPartition::new(topic, partition));
         }
         Ok(())
     }
@@ -819,19 +818,14 @@ impl ActivationStore for PostgresStore {
     #[framed]
     async fn count_depths_per_partition(
         &self,
-    ) -> Result<HashMap<(String, i32), DepthCounts>, Error> {
+    ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
         // Per-owned-(topic, partition) gauge: intentionally scoped to owned
         // (topic, partition) pairs (no age-based drain escape), since reporting
         // depths for partitions this broker doesn't own would be meaningless.
         // Grouping by (topic, partition) keeps partitions with the same index
         // across different topics distinct in multi-topic mode.
-        let assigned: Vec<(String, i32)> = {
-            let partitions = self.partitions.read().unwrap();
-            partitions
-                .iter()
-                .flat_map(|(topic, parts)| parts.iter().map(|p| (topic.clone(), *p)))
-                .collect()
-        };
+        let assigned: Vec<TopicPartition> =
+            self.partitions.read().unwrap().iter().cloned().collect();
         if assigned.is_empty() {
             return Ok(HashMap::new());
         }
@@ -845,15 +839,15 @@ impl ActivationStore for PostgresStore {
              FROM inflight_taskactivations WHERE (topic, partition) IN (",
         );
         let mut first = true;
-        for (topic, partition) in &assigned {
+        for tp in &assigned {
             if !first {
                 query_builder.push(", ");
             }
             first = false;
             query_builder.push("(");
-            query_builder.push_bind(topic.clone());
+            query_builder.push_bind(tp.topic.clone());
             query_builder.push(", ");
-            query_builder.push_bind(*partition);
+            query_builder.push_bind(tp.partition);
             query_builder.push(")");
         }
         query_builder.push(") GROUP BY topic, partition");
@@ -863,11 +857,11 @@ impl ActivationStore for PostgresStore {
             .fetch_all(&self.read_pool)
             .await?;
 
-        let mut counts: HashMap<(String, i32), DepthCounts> = rows
+        let mut counts: HashMap<TopicPartition, DepthCounts> = rows
             .into_iter()
             .map(|(topic, partition, pending, delay, claimed, processing)| {
                 (
-                    (topic, partition),
+                    TopicPartition::new(topic, partition),
                     DepthCounts {
                         pending: pending as usize,
                         delay: delay as usize,

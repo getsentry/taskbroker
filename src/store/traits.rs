@@ -7,7 +7,7 @@ use tokio::join;
 use tracing::warn;
 
 use crate::store::activation::{Activation, ActivationStatus};
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
 
 #[async_trait]
 pub trait ActivationStore: Send + Sync {
@@ -15,9 +15,7 @@ pub trait ActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: &[Activation]) -> Result<u64, Error>;
 
-    /// Record the partitions currently assigned to this broker for `topic`.
-    /// Contention queries filter by the (topic, partition) pairs across all
-    /// assigned topics. Passing an empty `partitions` clears the topic.
+    /// Replace the set of partitions this broker owns for `topic`.
     fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error>;
 
     /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
@@ -138,10 +136,10 @@ pub trait ActivationStore: Send + Sync {
     /// partition -1 for stores that aren't partition-aware.
     async fn count_depths_per_partition(
         &self,
-    ) -> Result<HashMap<(String, i32), DepthCounts>, Error> {
+    ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
         let total = self.count_depths().await?;
         Ok(HashMap::from([(
-            (crate::config::DEFAULT_TOPIC.to_owned(), -1),
+            TopicPartition::new(crate::config::DEFAULT_TOPIC, -1),
             total,
         )]))
     }

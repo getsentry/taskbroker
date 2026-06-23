@@ -16,6 +16,7 @@ use crate::config::{Config, DEFAULT_TOPIC};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
 use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
     create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
@@ -200,7 +201,7 @@ async fn test_count_depths_per_partition_postgres() {
     let depths = store.count_depths_per_partition().await.unwrap();
 
     let p0 = depths
-        .get(&(DEFAULT_TOPIC.to_owned(), 0))
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 0))
         .expect("partition 0 missing");
     assert_eq!(p0.pending, 2, "partition 0 pending");
     assert_eq!(p0.processing, 1, "partition 0 processing");
@@ -208,7 +209,7 @@ async fn test_count_depths_per_partition_postgres() {
     assert_eq!(p0.claimed, 0, "partition 0 claimed");
 
     let p1 = depths
-        .get(&(DEFAULT_TOPIC.to_owned(), 1))
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 1))
         .expect("partition 1 missing");
     assert_eq!(p1.pending, 0, "partition 1 pending");
     assert_eq!(p1.delay, 1, "partition 1 delay");
@@ -217,7 +218,7 @@ async fn test_count_depths_per_partition_postgres() {
 
     // Zero-fill: partition 2 is assigned but has no rows.
     let p2 = depths
-        .get(&(DEFAULT_TOPIC.to_owned(), 2))
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 2))
         .expect("partition 2 missing (zero-fill failed)");
     assert_eq!(p2.pending, 0, "partition 2 pending");
     assert_eq!(p2.delay, 0, "partition 2 delay");
