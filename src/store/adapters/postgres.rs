@@ -307,19 +307,14 @@ impl PostgresStore {
         })
     }
 
-    /// Add the contention condition to the query builder in a thread-safe manner.
+    /// Restrict a query to the (topic, partition) pairs this broker owns, OR-ing
+    /// in an age-based escape: rows older than `contention_drain_age_sec` bypass
+    /// the filter so any broker can drain orphaned activations (left by rebalances
+    /// or topic/partition moves). This only affects contention, not correctness —
+    /// claims use `FOR UPDATE SKIP LOCKED`.
     ///
-    /// Limits a query to the rows this broker is responsible for, by the
-    /// (topic, partition) pairs assigned to it. An age-based escape hatch is
-    /// OR-ed in: rows older than `contention_drain_age_sec` bypass the filter so
-    /// that orphaned activations (left behind by rebalances or topic/partition
-    /// moves between pools) drain automatically — any broker can claim and
-    /// maintain them. `topic`/`partition` aren't required for correctness (the
-    /// status update is atomic and claims use `FOR UPDATE SKIP LOCKED`), so the
-    /// escape only ever causes brief, bounded extra contention, never data loss.
-    ///
-    /// When no partitions are assigned (e.g. before the first rebalance) no
-    /// condition is added and the query sees the whole table, as before.
+    /// With no partitions assigned (e.g. before the first rebalance) the query is
+    /// left unfiltered.
     fn add_partition_condition(
         &self,
         query_builder: &mut QueryBuilder<Postgres>,
@@ -434,10 +429,8 @@ impl ActivationStore for PostgresStore {
 
     fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error> {
         let mut write_guard = self.partitions.write().unwrap();
-        // Replace only this topic's pairs (see trait contract): drop the topic's
-        // existing entries, leaving other topics intact, then insert the new set.
-        // An empty `partitions` thus just clears the topic, keeping the set free
-        // of stale entries so `add_partition_condition` never emits `IN ()`.
+        // Replace only this topic's pairs, leaving other topics intact. An empty
+        // `partitions` thus just clears the topic.
         write_guard.retain(|tp| tp.topic != topic);
         for partition in partitions {
             write_guard.insert(TopicPartition::new(topic, partition));
@@ -819,11 +812,10 @@ impl ActivationStore for PostgresStore {
     async fn count_depths_per_partition(
         &self,
     ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
-        // Per-owned-(topic, partition) gauge: intentionally scoped to owned
-        // (topic, partition) pairs (no age-based drain escape), since reporting
-        // depths for partitions this broker doesn't own would be meaningless.
-        // Grouping by (topic, partition) keeps partitions with the same index
-        // across different topics distinct in multi-topic mode.
+        // Per-owned-(topic, partition) gauge: scoped to owned pairs only (no drain
+        // escape) — depths for partitions this broker doesn't own would be
+        // meaningless. Grouping by (topic, partition) keeps same-index partitions
+        // from different topics distinct.
         let assigned: Vec<TopicPartition> =
             self.partitions.read().unwrap().iter().cloned().collect();
         if assigned.is_empty() {

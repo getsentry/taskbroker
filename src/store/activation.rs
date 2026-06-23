@@ -104,10 +104,9 @@ pub struct Activation {
     #[builder(default = ActivationStatus::Pending)]
     pub status: ActivationStatus,
 
-    /// The Kafka topic the activation was received from. Used together with
-    /// `partition` to scope contention filtering, since partition indices
-    /// overlap across topics. Defaults to [`crate::config::DEFAULT_TOPIC`] when
-    /// not built from a Kafka message (e.g. in tests).
+    /// The Kafka topic the activation was received from. Paired with `partition`
+    /// to scope contention filtering, since partition indices overlap across
+    /// topics. Defaults to [`crate::config::DEFAULT_TOPIC`] in tests.
     #[builder(setter(into), default = crate::config::DEFAULT_TOPIC.to_owned())]
     pub topic: String,
 

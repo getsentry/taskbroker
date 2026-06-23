@@ -183,10 +183,9 @@ pub struct StoreConfig {
     pub processing_deadline_grace_sec: u64,
 
     /// Age-based contention drain threshold in seconds (postgres only).
-    /// Activations older than this are considered potentially orphaned and
-    /// bypass the (topic, partition) contention filter, so any broker can
-    /// claim and maintain them regardless of partition ownership. This drains
-    /// rows left behind by rebalances and topic/partition moves between pools.
+    /// Activations older than this bypass the (topic, partition) contention
+    /// filter so any broker can drain orphaned rows left by rebalances or
+    /// topic/partition moves.
     pub contention_drain_age_sec: u64,
 }
 
