@@ -817,48 +817,57 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
-        // Per-owned-partition gauge: intentionally partition-only (no age-based
-        // drain escape), since reporting depths for partitions this broker
-        // doesn't own would be meaningless.
-        // TODO(multi-topic): this groups by raw partition number, so partitions
-        // with the same index across different topics are merged in the gauge.
-        let assigned: Vec<i32> = self
-            .partitions
-            .read()
-            .unwrap()
-            .values()
-            .flatten()
-            .copied()
-            .collect();
+    async fn count_depths_per_partition(
+        &self,
+    ) -> Result<HashMap<(String, i32), DepthCounts>, Error> {
+        // Per-owned-(topic, partition) gauge: intentionally scoped to owned
+        // (topic, partition) pairs (no age-based drain escape), since reporting
+        // depths for partitions this broker doesn't own would be meaningless.
+        // Grouping by (topic, partition) keeps partitions with the same index
+        // across different topics distinct in multi-topic mode.
+        let assigned: Vec<(String, i32)> = {
+            let partitions = self.partitions.read().unwrap();
+            partitions
+                .iter()
+                .flat_map(|(topic, parts)| parts.iter().map(|p| (topic.clone(), *p)))
+                .collect()
+        };
         if assigned.is_empty() {
             return Ok(HashMap::new());
         }
 
         let mut query_builder = QueryBuilder::new(
-            "SELECT partition,
+            "SELECT topic, partition,
                     COUNT(*) FILTER (WHERE status = 'Pending'),
                     COUNT(*) FILTER (WHERE status = 'Delay'),
                     COUNT(*) FILTER (WHERE status = 'Claimed'),
                     COUNT(*) FILTER (WHERE status = 'Processing')
-             FROM inflight_taskactivations WHERE partition IN (",
+             FROM inflight_taskactivations WHERE (topic, partition) IN (",
         );
-        let mut separated = query_builder.separated(", ");
-        for partition in &assigned {
-            separated.push_bind(*partition);
+        let mut first = true;
+        for (topic, partition) in &assigned {
+            if !first {
+                query_builder.push(", ");
+            }
+            first = false;
+            query_builder.push("(");
+            query_builder.push_bind(topic.clone());
+            query_builder.push(", ");
+            query_builder.push_bind(*partition);
+            query_builder.push(")");
         }
-        query_builder.push(") GROUP BY partition");
+        query_builder.push(") GROUP BY topic, partition");
 
-        let rows: Vec<(i32, i64, i64, i64, i64)> = query_builder
+        let rows: Vec<(String, i32, i64, i64, i64, i64)> = query_builder
             .build_query_as()
             .fetch_all(&self.read_pool)
             .await?;
 
-        let mut counts: HashMap<i32, DepthCounts> = rows
+        let mut counts: HashMap<(String, i32), DepthCounts> = rows
             .into_iter()
-            .map(|(partition, pending, delay, claimed, processing)| {
+            .map(|(topic, partition, pending, delay, claimed, processing)| {
                 (
-                    partition,
+                    (topic, partition),
                     DepthCounts {
                         pending: pending as usize,
                         delay: delay as usize,
@@ -869,8 +878,8 @@ impl ActivationStore for PostgresStore {
             })
             .collect();
 
-        for partition in &assigned {
-            counts.entry(*partition).or_insert(DepthCounts {
+        for key in &assigned {
+            counts.entry(key.clone()).or_insert(DepthCounts {
                 pending: 0,
                 delay: 0,
                 claimed: 0,

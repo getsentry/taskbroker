@@ -133,12 +133,17 @@ pub trait ActivationStore: Send + Sync {
         })
     }
 
-    /// Queue depths grouped by partition for upkeep gauges. The default
-    /// implementation returns the flat total under sentinel partition -1 for
-    /// stores that aren't partition-aware.
-    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
+    /// Queue depths grouped by (topic, partition) for upkeep gauges. The default
+    /// implementation returns the flat total under the default topic and sentinel
+    /// partition -1 for stores that aren't partition-aware.
+    async fn count_depths_per_partition(
+        &self,
+    ) -> Result<HashMap<(String, i32), DepthCounts>, Error> {
         let total = self.count_depths().await?;
-        Ok(HashMap::from([(-1, total)]))
+        Ok(HashMap::from([(
+            (crate::config::DEFAULT_TOPIC.to_owned(), -1),
+            total,
+        )]))
     }
 
     /// Set the processing deadline for a specific activation

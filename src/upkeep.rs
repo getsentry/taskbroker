@@ -46,7 +46,7 @@ pub async fn upkeep(
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
-    let mut emitted_partitions: HashSet<i32> = HashSet::new();
+    let mut emitted_partitions: HashSet<(String, i32)> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
@@ -129,7 +129,7 @@ pub async fn do_upkeep(
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
-    emitted_partitions: &mut HashSet<i32>,
+    emitted_partitions: &mut HashSet<(String, i32)>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -499,28 +499,30 @@ pub async fn do_upkeep(
     // without a partition filter still see the global total via tag sum.
     // Zero out gauges for partitions we emitted last cycle but no longer own.
     if let Ok(depths) = depth_counts {
-        let current: HashSet<i32> = depths.keys().copied().collect();
+        let current: HashSet<(String, i32)> = depths.keys().cloned().collect();
 
-        for partition in emitted_partitions.difference(&current) {
+        for (topic, partition) in emitted_partitions.difference(&current) {
+            let topic = topic.clone();
             let partition = partition.to_string();
-            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition).set(0.0);
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition).set(0.0);
         }
 
-        for (partition, counts) in &depths {
+        for ((topic, partition), counts) in &depths {
+            let topic = topic.clone();
             let partition = partition.to_string();
-            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(counts.pending as f64);
-            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(counts.claimed as f64);
-            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(counts.processing as f64);
-            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition)
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition)
                 .set(counts.delay as f64);
         }
 

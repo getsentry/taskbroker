@@ -96,8 +96,13 @@ impl From<TableRow<'_>> for Activation {
             id: value.id.into_owned(),
             activation: value.activation.into_owned(),
             status: ActivationStatus::from_str(&value.status).unwrap(),
-            // sqlite owns its whole DB and never filters by topic, so the column
-            // isn't stored; report the default topic on read-back.
+            // The `topic` column only exists on postgres, where it scopes
+            // contention filtering across topics that share partition indices.
+            // sqlite owns its whole DB and never filters by topic, so it has no
+            // contention problem to solve and the column buys us nothing. This is
+            // a deliberate choice to leave the sqlite schema untouched for now
+            // rather than a limitation: we default to DEFAULT_TOPIC on read-back
+            // so the shared `Activation` struct is satisfied without a migration.
             topic: crate::config::DEFAULT_TOPIC.to_owned(),
             partition: value.partition,
             offset: value.offset,

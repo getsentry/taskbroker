@@ -199,13 +199,17 @@ async fn test_count_depths_per_partition_postgres() {
 
     let depths = store.count_depths_per_partition().await.unwrap();
 
-    let p0 = depths.get(&0).expect("partition 0 missing");
+    let p0 = depths
+        .get(&(DEFAULT_TOPIC.to_owned(), 0))
+        .expect("partition 0 missing");
     assert_eq!(p0.pending, 2, "partition 0 pending");
     assert_eq!(p0.processing, 1, "partition 0 processing");
     assert_eq!(p0.delay, 0, "partition 0 delay");
     assert_eq!(p0.claimed, 0, "partition 0 claimed");
 
-    let p1 = depths.get(&1).expect("partition 1 missing");
+    let p1 = depths
+        .get(&(DEFAULT_TOPIC.to_owned(), 1))
+        .expect("partition 1 missing");
     assert_eq!(p1.pending, 0, "partition 1 pending");
     assert_eq!(p1.delay, 1, "partition 1 delay");
     assert_eq!(p1.processing, 0, "partition 1 processing");
@@ -213,7 +217,7 @@ async fn test_count_depths_per_partition_postgres() {
 
     // Zero-fill: partition 2 is assigned but has no rows.
     let p2 = depths
-        .get(&2)
+        .get(&(DEFAULT_TOPIC.to_owned(), 2))
         .expect("partition 2 missing (zero-fill failed)");
     assert_eq!(p2.pending, 0, "partition 2 pending");
     assert_eq!(p2.delay, 0, "partition 2 delay");
