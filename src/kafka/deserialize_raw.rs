@@ -192,6 +192,7 @@ pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Er
             id,
             activation: activation_bytes,
             status: ActivationStatus::Pending,
+            topic: msg.topic().to_owned(),
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: now,

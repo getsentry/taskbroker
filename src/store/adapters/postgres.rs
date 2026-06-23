@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -100,6 +100,7 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
 struct TableRow<'a> {
     pub id: Cow<'a, str>,
     pub activation: Cow<'a, [u8]>,
+    pub topic: Cow<'a, str>,
     pub partition: i32,
     pub offset: i64,
     pub added_at: DateTime<Utc>,
@@ -124,6 +125,7 @@ impl<'a> From<&'a Activation> for TableRow<'a> {
         Self {
             id: Cow::Borrowed(&value.id),
             activation: Cow::Borrowed(&value.activation),
+            topic: Cow::Borrowed(&value.topic),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -153,6 +155,7 @@ impl From<TableRow<'_>> for Activation {
             id: value.id.into_owned(),
             activation: value.activation.into_owned(),
             status: ActivationStatus::from_str(&value.status).unwrap(),
+            topic: value.topic.into_owned(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -181,6 +184,7 @@ impl FromRow<'_, PgRow> for TableRow<'static> {
         Ok(Self {
             id: Cow::Owned(row.try_get::<String, _>("id")?),
             activation: Cow::Owned(row.try_get::<Vec<u8>, _>("activation")?),
+            topic: Cow::Owned(row.try_get::<String, _>("topic")?),
             partition: row.try_get("partition")?,
             offset: row.try_get("offset")?,
             added_at: row.try_get("added_at")?,
@@ -244,7 +248,9 @@ pub struct PostgresStore {
     read_pool: PgPool,
     write_pool: PgPool,
     config: StoreConfig,
-    partitions: RwLock<Vec<i32>>,
+    /// Partitions assigned to this broker, keyed by topic. Contention queries
+    /// filter by the (topic, partition) pairs across all assigned topics.
+    partitions: RwLock<BTreeMap<String, Vec<i32>>>,
     claim_duration_ms: u64,
 }
 
@@ -296,29 +302,57 @@ impl PostgresStore {
             read_pool,
             write_pool,
             config: config.store.clone(),
-            partitions: RwLock::new(vec![]),
+            partitions: RwLock::new(BTreeMap::new()),
             claim_duration_ms: compute_claim_duration_ms(config),
         })
     }
 
-    /// Add the partition condition to the query builder in a thread-safe manner
+    /// Add the contention condition to the query builder in a thread-safe manner.
+    ///
+    /// Limits a query to the rows this broker is responsible for, by the
+    /// (topic, partition) pairs assigned to it. An age-based escape hatch is
+    /// OR-ed in: rows older than `contention_drain_age_sec` bypass the filter so
+    /// that orphaned activations (left behind by rebalances or topic/partition
+    /// moves between pools) drain automatically — any broker can claim and
+    /// maintain them. `topic`/`partition` aren't required for correctness (the
+    /// status update is atomic and claims use `FOR UPDATE SKIP LOCKED`), so the
+    /// escape only ever causes brief, bounded extra contention, never data loss.
+    ///
+    /// When no partitions are assigned (e.g. before the first rebalance) no
+    /// condition is added and the query sees the whole table, as before.
     fn add_partition_condition(
         &self,
         query_builder: &mut QueryBuilder<Postgres>,
         first_condition: bool,
     ) {
         let partitions = self.partitions.read().unwrap();
-        let condition = if first_condition { "WHERE" } else { "AND" };
-        if !partitions.is_empty() {
-            query_builder.push(" ");
-            query_builder.push(condition);
-            query_builder.push(" partition IN (");
-            let mut separated = query_builder.separated(", ");
-            for partition in partitions.iter() {
-                separated.push_bind(*partition);
-            }
-            query_builder.push(")");
+        if partitions.is_empty() {
+            return;
         }
+
+        let condition = if first_condition { "WHERE" } else { "AND" };
+        query_builder.push(" ");
+        query_builder.push(condition);
+        query_builder.push(" ((topic, partition) IN (");
+        let mut first = true;
+        for (topic, topic_partitions) in partitions.iter() {
+            for partition in topic_partitions.iter() {
+                if !first {
+                    query_builder.push(", ");
+                }
+                first = false;
+                query_builder.push("(");
+                query_builder.push_bind(topic.clone());
+                query_builder.push(", ");
+                query_builder.push_bind(*partition);
+                query_builder.push(")");
+            }
+        }
+        query_builder.push(") OR added_at < ");
+        let drain_cutoff =
+            Utc::now() - chrono::Duration::seconds(self.config.contention_drain_age_sec as i64);
+        query_builder.push_bind(drain_cutoff);
+        query_builder.push(")");
     }
 }
 
@@ -365,6 +399,7 @@ impl ActivationStore for PostgresStore {
                 "
                     SELECT id,
                         activation,
+                        topic,
                         partition,
                         kafka_offset AS offset,
                         added_at,
@@ -399,10 +434,15 @@ impl ActivationStore for PostgresStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error> {
         let mut write_guard = self.partitions.write().unwrap();
-        write_guard.clear();
-        write_guard.extend(partitions);
+        // Keep the map free of empty entries so `add_partition_condition` never
+        // emits an empty `IN ()`. An empty assignment clears the topic.
+        if partitions.is_empty() {
+            write_guard.remove(topic);
+        } else {
+            write_guard.insert(topic.to_owned(), partitions);
+        }
         Ok(())
     }
 
@@ -420,6 +460,7 @@ impl ActivationStore for PostgresStore {
                     (
                         id,
                         activation,
+                        topic,
                         partition,
                         kafka_offset,
                         added_at,
@@ -448,6 +489,7 @@ impl ActivationStore for PostgresStore {
                         Cow::Borrowed(bytes) => b.push_bind(bytes),
                         Cow::Owned(bytes) => b.push_bind(bytes),
                     };
+                    b.push_bind(row.topic);
                     b.push_bind(row.partition);
                     b.push_bind(row.offset);
                     b.push_bind(row.added_at);
@@ -776,7 +818,19 @@ impl ActivationStore for PostgresStore {
     #[instrument(skip_all)]
     #[framed]
     async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
-        let assigned: Vec<i32> = self.partitions.read().unwrap().clone();
+        // Per-owned-partition gauge: intentionally partition-only (no age-based
+        // drain escape), since reporting depths for partitions this broker
+        // doesn't own would be meaningless.
+        // TODO(multi-topic): this groups by raw partition number, so partitions
+        // with the same index across different topics are merged in the gauge.
+        let assigned: Vec<i32> = self
+            .partitions
+            .read()
+            .unwrap()
+            .values()
+            .flatten()
+            .copied()
+            .collect();
         if assigned.is_empty() {
             return Ok(HashMap::new());
         }
@@ -981,6 +1035,7 @@ impl ActivationStore for PostgresStore {
             let mut query_builder = QueryBuilder::new(
                 "SELECT id,
                         activation,
+                        topic,
                         partition,
                         kafka_offset AS offset,
                         added_at,

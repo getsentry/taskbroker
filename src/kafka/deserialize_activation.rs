@@ -96,6 +96,7 @@ pub fn new(
             id: activation.id.clone(),
             activation: payload.to_vec(),
             status,
+            topic: msg.topic().to_owned(),
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: Utc::now(),

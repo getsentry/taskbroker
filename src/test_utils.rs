@@ -15,9 +15,9 @@ use prost_types::Timestamp;
 use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskActivation};
 use uuid::Uuid;
 
-use crate::config::Config;
 use crate::config::deprecated::DeprecatedConfig;
 use crate::config::store::{PgConfig, StoreConfig};
+use crate::config::{Config, DEFAULT_TOPIC};
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::{self, PostgresStore};
 use crate::store::adapters::sqlite::SqliteStore;
@@ -286,7 +286,7 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
             let store =
                 Arc::new(PostgresStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>;
 
-            store.assign_partitions(vec![0]).unwrap();
+            store.assign_partitions(DEFAULT_TOPIC, vec![0]).unwrap();
             store
         }
         _ => panic!("Invalid adapter: {}", adapter),

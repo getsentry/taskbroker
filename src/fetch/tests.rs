@@ -49,7 +49,7 @@ impl MockStore {
 
 #[async_trait]
 impl ActivationStore for MockStore {
-    fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(&self, _topic: &str, _partitions: Vec<i32>) -> Result<(), Error> {
         Ok(())
     }
 

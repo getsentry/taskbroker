@@ -36,7 +36,7 @@ impl ActivationStore for MockStore {
         Ok(0)
     }
 
-    fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<()> {
+    fn assign_partitions(&self, _topic: &str, _partitions: Vec<i32>) -> Result<()> {
         Ok(())
     }
 

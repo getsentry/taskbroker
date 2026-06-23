@@ -386,7 +386,7 @@ pub async fn handle_events(
                         for (_, partition) in tpl.iter() {
                             partitions.push(*partition);
                         }
-                        activation_store.assign_partitions(partitions).unwrap();
+                        activation_store.assign_partitions(&topic, partitions).unwrap();
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
@@ -401,13 +401,13 @@ pub async fn handle_events(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
-                        activation_store.assign_partitions(vec![]).unwrap();
+                        activation_store.assign_partitions(&topic, vec![]).unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone()).set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
-                        activation_store.assign_partitions(vec![]).unwrap();
+                        activation_store.assign_partitions(&topic, vec![]).unwrap();
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();

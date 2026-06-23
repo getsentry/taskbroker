@@ -96,6 +96,9 @@ impl From<TableRow<'_>> for Activation {
             id: value.id.into_owned(),
             activation: value.activation.into_owned(),
             status: ActivationStatus::from_str(&value.status).unwrap(),
+            // sqlite owns its whole DB and never filters by topic, so the column
+            // isn't stored; report the default topic on read-back.
+            topic: crate::config::DEFAULT_TOPIC.to_owned(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -460,10 +463,10 @@ impl ActivationStore for SqliteStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(&self, topic: &str, partitions: Vec<i32>) -> Result<(), Error> {
         // sqlite owns its whole DB regardless of partition assignment, so this
         // is a no-op. Fires once per consumer, hence debug rather than warn.
-        debug!("assign_partitions: {:?}", partitions);
+        debug!("assign_partitions: {topic} {partitions:?}");
         Ok(())
     }
 
