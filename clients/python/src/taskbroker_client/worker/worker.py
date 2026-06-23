@@ -119,7 +119,11 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
         else:
             logger.debug(
                 "taskworker.activation.enqueued",
-                extra={"id": request.task.id, "event": TraceEvent.QUEUED.value},
+                extra={
+                    "for": "trace-activations",
+                    "id": request.task.id,
+                    "event": TraceEvent.QUEUED.value,
+                },
             )
 
             self.worker_pool._metrics.incr(
