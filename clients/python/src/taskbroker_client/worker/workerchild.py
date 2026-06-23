@@ -38,6 +38,7 @@ from taskbroker_client.state import clear_current_task, current_task, set_curren
 from taskbroker_client.task import Task
 from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.producer import TaskProducer
+from taskbroker_client.worker.worker import ActivationEvent
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,13 @@ def child_process(
             try:
                 check_task_future_completion()
                 inflight = child_tasks.get(timeout=1.0)
+                logger.debug(
+                    "Activation popped from queue",
+                    extra={
+                        "id": inflight.activation.id,
+                        "event": ActivationEvent.PICKED_UP,
+                    },
+                )
             except queue.Empty:
                 metrics.incr(
                     "taskworker.worker.child_task_queue_empty",

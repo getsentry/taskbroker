@@ -8,6 +8,7 @@ import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -54,6 +55,13 @@ logger = logging.getLogger(__name__)
 WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
 
 
+class ActivationEvent(Enum):
+    RECEIVED = "RECEIVED"
+    TIMED_OUT = "TIMED_OUT"
+    QUEUED = "QUEUED"
+    PICKED_UP = "PICKED_UP"
+
+
 class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
     """
     gRPC servicer that receives task activations pushed from the broker
@@ -68,6 +76,10 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
         request: PushTaskRequest,
         context: grpc.ServicerContext,
     ) -> PushTaskResponse:
+        logger.debug(
+            "Activation received", extra={"id": request.task.id, "event": ActivationEvent.RECEIVED}
+        )
+
         """Handle incoming task activation."""
         start_time = time.monotonic()
         self.worker_pool._metrics.incr(
@@ -84,6 +96,11 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
 
         # Push the task to the worker queue (wait at most N seconds)
         if not self.worker_pool.push_task(inflight, timeout=self.push_task_timeout):
+            logger.debug(
+                "Activation enqueue timed out",
+                extra={"id": request.task.id, "event": ActivationEvent.TIMED_OUT},
+            )
+
             self.worker_pool._metrics.incr(
                 "taskworker.worker.push_rpc",
                 tags={"result": "busy", "processing_pool": self.worker_pool._processing_pool_name},
@@ -97,6 +114,11 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
 
             context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy")
         else:
+            logger.debug(
+                "Activation enqueued",
+                extra={"id": request.task.id, "event": ActivationEvent.QUEUED},
+            )
+
             self.worker_pool._metrics.incr(
                 "taskworker.worker.push_rpc",
                 tags={
