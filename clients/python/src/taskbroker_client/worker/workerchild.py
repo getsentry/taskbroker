@@ -37,8 +37,8 @@ from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
 from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.events import ActivationEvent
 from taskbroker_client.worker.producer import TaskProducer
-from taskbroker_client.worker.worker import ActivationEvent
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,6 @@ import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from enum import Enum
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -41,6 +40,7 @@ from taskbroker_client.worker.client import (
     TaskbrokerClient,
     parse_rpc_secret_list,
 )
+from taskbroker_client.worker.events import ActivationEvent
 from taskbroker_client.worker.push_clients import BatchPushTaskbrokerClient, PushTaskbrokerClient
 from taskbroker_client.worker.workerchild import child_process
 
@@ -53,13 +53,6 @@ else:
 logger = logging.getLogger(__name__)
 
 WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
-
-
-class ActivationEvent(Enum):
-    RECEIVED = "RECEIVED"
-    TIMED_OUT = "TIMED_OUT"
-    QUEUED = "QUEUED"
-    PICKED_UP = "PICKED_UP"
 
 
 class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
