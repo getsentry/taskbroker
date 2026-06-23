@@ -35,9 +35,10 @@ from taskbroker_client.app import import_app
 from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
+from taskbroker_client.structured_logging import configure_taskbroker_structured_logging
 from taskbroker_client.task import Task
 from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
-from taskbroker_client.worker.events import ActivationEvent
+from taskbroker_client.worker.events import TraceEvent
 from taskbroker_client.worker.producer import TaskProducer
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,8 @@ def child_process(
     and not the module root. If modules that include django are imported at
     the module level the wrong django settings will be used.
     """
+    configure_taskbroker_structured_logging()
+
     app = import_app(app_module)
     app.load_modules()
     metrics = app.metrics
@@ -364,10 +367,11 @@ def child_process(
                 check_task_future_completion()
                 inflight = child_tasks.get(timeout=1.0)
                 logger.debug(
-                    "Activation popped from queue",
+                    "taskworker.activation.picked_up",
                     extra={
+                        "for": "trace-activations",
                         "id": inflight.activation.id,
-                        "event": ActivationEvent.PICKED_UP,
+                        "event": TraceEvent.PICKED_UP.value,
                     },
                 )
             except queue.Empty:

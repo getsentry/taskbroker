@@ -32,6 +32,7 @@ from taskbroker_client.constants import (
     WORKER_CHILD_JOIN_TIMEOUT_SEC,
 )
 from taskbroker_client.metrics import MetricsBackend
+from taskbroker_client.structured_logging import configure_taskbroker_structured_logging
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.client import (
     HealthCheckSettings,
@@ -40,7 +41,7 @@ from taskbroker_client.worker.client import (
     TaskbrokerClient,
     parse_rpc_secret_list,
 )
-from taskbroker_client.worker.events import ActivationEvent
+from taskbroker_client.worker.events import TraceEvent
 from taskbroker_client.worker.push_clients import BatchPushTaskbrokerClient, PushTaskbrokerClient
 from taskbroker_client.worker.workerchild import child_process
 
@@ -70,7 +71,12 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
         context: grpc.ServicerContext,
     ) -> PushTaskResponse:
         logger.debug(
-            "Activation received", extra={"id": request.task.id, "event": ActivationEvent.RECEIVED}
+            "taskworker.activation.received",
+            extra={
+                "for": "trace-activations",
+                "id": request.task.id,
+                "event": TraceEvent.RECEIVED.value,
+            },
         )
 
         """Handle incoming task activation."""
@@ -90,8 +96,12 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
         # Push the task to the worker queue (wait at most N seconds)
         if not self.worker_pool.push_task(inflight, timeout=self.push_task_timeout):
             logger.debug(
-                "Activation enqueue timed out",
-                extra={"id": request.task.id, "event": ActivationEvent.TIMED_OUT},
+                "taskworker.activation.enqueue_timed_out",
+                extra={
+                    "for": "trace-activations",
+                    "id": request.task.id,
+                    "event": TraceEvent.TIMED_OUT.value,
+                },
             )
 
             self.worker_pool._metrics.incr(
@@ -108,8 +118,8 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
             context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy")
         else:
             logger.debug(
-                "Activation enqueued",
-                extra={"id": request.task.id, "event": ActivationEvent.QUEUED},
+                "taskworker.activation.enqueued",
+                extra={"id": request.task.id, "event": TraceEvent.QUEUED.value},
             )
 
             self.worker_pool._metrics.incr(
@@ -158,6 +168,8 @@ class PushTaskWorker:
         push_task_timeout: float = 5,
         update_in_batches: bool = False,
     ) -> None:
+        configure_taskbroker_structured_logging()
+
         app = import_app(app_module)
 
         if process_type == "fork":
@@ -377,6 +389,14 @@ class PushTaskWorker:
             health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
 
+            logger.debug(
+                "taskworker.started",
+                extra={
+                    "for": "trace-activations",
+                    "event": TraceEvent.WORKER_STARTED,
+                },
+            )
+
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
             self._start_health_check_thread()
 
@@ -390,6 +410,14 @@ class PushTaskWorker:
             if health_servicer is not None:
                 health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
                 health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
+
+            logger.debug(
+                "taskworker.stopped",
+                extra={
+                    "for": "trace-activations",
+                    "event": TraceEvent.WORKER_STOPPED,
+                },
+            )
 
             if server is not None:
                 server.stop(grace=5)
@@ -514,6 +542,8 @@ class TaskWorker:
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     ) -> None:
         self._namespace = namespace
+        configure_taskbroker_structured_logging()
+
         app = import_app(app_module)
 
         if process_type == "fork":
