@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.3
+
+### Bug Fixes 🐛
+
+- (taskworker) Fix Worker Queue Metrics by @george-sentry in [#728](https://github.com/getsentry/taskbroker/pull/728)
+
 ## 0.20.2
 
 ### Internal Changes 🔧
