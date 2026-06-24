@@ -768,6 +768,7 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -804,6 +805,7 @@ def test_child_process_remove_start_time_kwargs() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -826,6 +828,7 @@ def test_child_process_retry_task() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -869,6 +872,7 @@ def test_child_process_retry_task_max_attempts(
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -910,6 +914,7 @@ def test_child_process_failure_task() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -933,6 +938,7 @@ def test_child_process_shutdown() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     # When shutdown has been set, the child should not process more tasks.
@@ -955,6 +961,7 @@ def test_child_process_unknown_task() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     result = processed.get()
@@ -982,6 +989,7 @@ def test_child_process_at_most_once() -> None:
         max_task_count=2,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1009,6 +1017,7 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1040,6 +1049,7 @@ def test_child_process_pass_headers() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1080,6 +1090,7 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1114,6 +1125,7 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1167,6 +1179,7 @@ def test_child_process_context_hooks() -> None:
             max_task_count=1,
             processing_pool_name="test",
             process_type="fork",
+            skip_awaiting_futures=False,
         )
 
         result = processed.get()
@@ -1193,6 +1206,7 @@ def test_child_process_silenced_timeout(mock_logger: mock.Mock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1222,6 +1236,7 @@ def test_child_process_silenced_exception_with_retries(mock_capture: mock.Mock) 
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1249,6 +1264,7 @@ def test_child_process_expected_ignored_exception_max_attempts(mock_capture: moc
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     # No reporting, but exception type is retriable
@@ -1276,6 +1292,7 @@ def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> Non
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     assert todo.empty()
@@ -1308,6 +1325,7 @@ def test_child_process_general_exception_logs_task_failed(mock_logger: mock.Mock
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     result = processed.get()
@@ -1343,6 +1361,7 @@ def test_child_process_silenced_exception_does_not_log_task_failed(
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     result = processed.get()
@@ -1427,6 +1446,7 @@ def test_child_process_tracks_producer_futures(
             max_task_count=1,
             processing_pool_name="test",
             process_type="fork",
+            skip_awaiting_futures=False,
         )
 
     # collect_futures is called once per executed task
@@ -1437,55 +1457,113 @@ def test_child_process_tracks_producer_futures(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-# FIXME(benm): Skip this test while we're bypassing awaiting future completion
-# def test_child_process_holds_result_until_futures_done(
-#     clear_pending_futures: None, restore_signal_handlers: None
-# ) -> None:
-#     task = _producing_task()
-#     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-#     processed: queue.Queue[ProcessingResult] = queue.Queue()
-#     shutdown = Event()
+def test_child_process_holds_result_until_futures_done(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
 
-#     pending_future: Future[BrokerValue[KafkaPayload]] = Future()
-#     todo.put(task)
+    pending_future: Future[BrokerValue[KafkaPayload]] = Future()
+    todo.put(task)
 
-#     # `child_process` calls `signal.signal`, which must run on the main thread.
-#     # Use a helper thread to observe the queue while the future is still
-#     # pending, then resolve the future so the drain can complete.
-#     observed_empty_while_pending = threading.Event()
+    # `child_process` calls `signal.signal`, which must run on the main thread.
+    # Use a helper thread to observe the queue while the future is still
+    # pending, then resolve the future so the drain can complete.
+    observed_empty_while_pending = threading.Event()
 
-#     def observe_and_resolve() -> None:
-#         # Wait for child_process to process the task and enter the drain loop.
-#         time.sleep(0.5)
-#         if processed.qsize() == 0:
-#             observed_empty_while_pending.set()
-#         pending_future.set_result(_make_broker_value())
+    def observe_and_resolve() -> None:
+        # Wait for child_process to process the task and enter the drain loop.
+        time.sleep(0.5)
+        if processed.qsize() == 0:
+            observed_empty_while_pending.set()
+        pending_future.set_result(_make_broker_value())
 
-#     observer = threading.Thread(target=observe_and_resolve, name="future-observer")
-#     observer.start()
-#     try:
-#         with mock.patch.object(
-#             TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
-#         ):
-#             child_process(
-#                 "examples.app:app",
-#                 todo,
-#                 processed,
-#                 shutdown,
-#                 max_task_count=1,
-#                 processing_pool_name="test",
-#                 process_type="fork",
-#             )
-#     finally:
-#         observer.join(timeout=5)
-#         shutdown.set()
+    observer = threading.Thread(target=observe_and_resolve, name="future-observer")
+    observer.start()
+    try:
+        with mock.patch.object(
+            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+        ):
+            child_process(
+                "examples.app:app",
+                todo,
+                processed,
+                shutdown,
+                max_task_count=1,
+                processing_pool_name="test",
+                process_type="fork",
+                skip_awaiting_futures=False,
+            )
+    finally:
+        observer.join(timeout=5)
+        shutdown.set()
 
-#     assert (
-#         observed_empty_while_pending.is_set()
-#     ), "result was pushed before the producer future was resolved"
-#     result = processed.get(timeout=5)
-#     assert result.task_id == task.activation.id
-#     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+    assert (
+        observed_empty_while_pending.is_set()
+    ), "result was pushed before the producer future was resolved"
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+def test_child_process_skip_awaiting_futures_places_result_immediately(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    pending_future: Future[BrokerValue[KafkaPayload]] = Future()
+    todo.put(task)
+
+    # With skip_awaiting_futures=True the ProcessingResult is placed as soon as
+    # the task function finishes executing, without waiting for the producer
+    # future to resolve. Observe the queue while the future is still pending to
+    # prove the result is available immediately, then resolve the future so the
+    # drain loop can complete.
+    observed_result_while_pending = threading.Event()
+
+    def observe_and_resolve() -> None:
+        start = time.time()
+        while time.time() - start < 2:
+            if processed.qsize() > 0:
+                observed_result_while_pending.set()
+                break
+            time.sleep(0.01)
+        pending_future.set_result(_make_broker_value())
+
+    observer = threading.Thread(target=observe_and_resolve, name="future-observer")
+    observer.start()
+    try:
+        with mock.patch.object(
+            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+        ):
+            child_process(
+                "examples.app:app",
+                todo,
+                processed,
+                shutdown,
+                max_task_count=1,
+                processing_pool_name="test",
+                process_type="fork",
+                skip_awaiting_futures=True,
+            )
+    finally:
+        observer.join(timeout=5)
+        shutdown.set()
+
+    assert (
+        observed_result_while_pending.is_set()
+    ), "result was not placed immediately after the task function executed"
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+    # Awaiting the futures afterwards must not enqueue a second ProcessingResult
+    # (the immediate placement is the only result).
+    assert processed.empty()
 
 
 def test_child_process_drains_pending_futures_on_sigterm(
@@ -1521,6 +1599,7 @@ def test_child_process_drains_pending_futures_on_sigterm(
                 max_task_count=None,
                 processing_pool_name="test",
                 process_type="fork",
+                skip_awaiting_futures=False,
             )
     finally:
         sigterm_thread.join(timeout=5)
@@ -1531,50 +1610,50 @@ def test_child_process_drains_pending_futures_on_sigterm(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-# FIXME(benm): Skip this test while we're bypassing awaiting future completion
-# def test_child_process_retries_on_failed_future(
-#     clear_pending_futures: None, restore_signal_handlers: None
-# ) -> None:
-#     retriable_task = InflightTaskActivation(
-#         host="localhost:50051",
-#         receive_timestamp=0,
-#         activation=TaskActivation(
-#             id="failed-future-retry",
-#             taskname="examples.will_retry",
-#             namespace="examples",
-#             parameters_bytes=msgpack.packb({"args": ["noop"], "kwargs": {}}, use_bin_type=True),
-#             processing_deadline_duration=2,
-#             retry_state=RetryState(
-#                 attempts=0,
-#                 max_attempts=3,
-#                 on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
-#             ),
-#         ),
-#     )
-#     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-#     processed: queue.Queue[ProcessingResult] = queue.Queue()
-#     shutdown = Event()
+def test_child_process_retries_on_failed_future(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    retriable_task = InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id="failed-future-retry",
+            taskname="examples.will_retry",
+            namespace="examples",
+            parameters_bytes=msgpack.packb({"args": ["noop"], "kwargs": {}}, use_bin_type=True),
+            processing_deadline_duration=2,
+            retry_state=RetryState(
+                attempts=0,
+                max_attempts=3,
+                on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+            ),
+        ),
+    )
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
 
-#     failed_future: Future[BrokerValue[KafkaPayload]] = Future()
-#     failed_future.set_exception(RuntimeError("kafka produce failed"))
+    failed_future: Future[BrokerValue[KafkaPayload]] = Future()
+    failed_future.set_exception(RuntimeError("kafka produce failed"))
 
-#     todo.put(retriable_task)
-#     with mock.patch.object(
-#         TaskProducer, "collect_futures", return_value={"test.producer": {failed_future}}
-#     ):
-#         child_process(
-#             "examples.app:app",
-#             todo,
-#             processed,
-#             shutdown,
-#             max_task_count=1,
-#             processing_pool_name="test",
-#             process_type="fork",
-#         )
+    todo.put(retriable_task)
+    with mock.patch.object(
+        TaskProducer, "collect_futures", return_value={"test.producer": {failed_future}}
+    ):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+        )
 
-#     result = processed.get(timeout=5)
-#     assert result.task_id == retriable_task.activation.id
-#     assert result.status == TASK_ACTIVATION_STATUS_RETRY
+    result = processed.get(timeout=5)
+    assert result.task_id == retriable_task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
 def test_child_process_clears_pending_futures_when_task_fails(
@@ -1598,6 +1677,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
     )
 
     result = processed.get(timeout=5)
