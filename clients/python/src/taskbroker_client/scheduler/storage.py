@@ -111,9 +111,7 @@ class RunStorage(RunStorageProtocol):
     Redis backed scheduler storage
     """
 
-    def __init__(
-        self, metrics: MetricsBackend, redis: RedisCluster | StrictRedis
-    ) -> None:
+    def __init__(self, metrics: MetricsBackend, redis: RedisCluster | StrictRedis) -> None:
         self._redis = redis
         self._metrics = metrics
 
@@ -132,9 +130,7 @@ class RunStorage(RunStorageProtocol):
         # next_runtime & now could be the same second, and redis gets sad if ex=0
         duration = max(int((next_runtime - now).total_seconds()), 1)
 
-        result = self._redis.set(
-            self._make_key(key), now.isoformat(), ex=duration, nx=True
-        )
+        result = self._redis.set(self._make_key(key), now.isoformat(), ex=duration, nx=True)
         return bool(result)
 
     def read(self, key: str) -> datetime | None:
@@ -146,9 +142,7 @@ class RunStorage(RunStorageProtocol):
         if result:
             return datetime.fromisoformat(result)
 
-        self._metrics.incr(
-            "taskworker.scheduler.run_storage.read.miss", tags={"taskname": key}
-        )
+        self._metrics.incr("taskworker.scheduler.run_storage.read.miss", tags={"taskname": key})
         return None
 
     def read_many(
