@@ -7,11 +7,6 @@ from typing import TYPE_CHECKING, Protocol
 from redis.client import StrictRedis
 
 if TYPE_CHECKING:
-    # Type-checking only: RedisCluster is used solely in annotations (this module
-    # never constructs it), and `from __future__ import annotations` keeps them
-    # unevaluated at runtime. Guarding the import here avoids breaking default
-    # (non-`cluster`-extra) installs where neither redis.RedisCluster (redis<4.1)
-    # nor the rediscluster fallback is importable.
     try:
         # redis>=4.1 ships cluster support natively
         from redis import RedisCluster
