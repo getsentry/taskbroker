@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.5
+
+### Internal Changes 🔧
+
+- (deps) Drop hard redis-py-cluster dependency to allow redis>=4 by @cmanallen in [#730](https://github.com/getsentry/taskbroker/pull/730)
+
 ## 0.20.4
 
 ### Internal Changes 🔧

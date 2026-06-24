@@ -767,7 +767,7 @@ dev = [
 
 [[package]]
 name = "taskbroker-client"
-version = "0.20.4"
+version = "0.20.5"
 source = { editable = "clients/python" }
 dependencies = [
     { name = "confluent-kafka", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -777,7 +777,6 @@ dependencies = [
     { name = "msgpack", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "redis", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "redis-py-cluster", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-arroyo", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-protos", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-sdk", extra = ["http2"], marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -785,6 +784,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+cluster = [
+    { name = "redis-py-cluster", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+]
 datadog = [
     { name = "datadog", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
@@ -820,14 +822,14 @@ requires-dist = [
     { name = "msgpack", specifier = ">=1.0.0" },
     { name = "protobuf", specifier = ">=5.28.3" },
     { name = "redis", specifier = ">=3.4.1" },
-    { name = "redis-py-cluster", specifier = ">=2.1.0" },
+    { name = "redis-py-cluster", marker = "extra == 'cluster'", specifier = ">=2.1.0" },
     { name = "sentry-arroyo", specifier = ">=2.38.7" },
     { name = "sentry-protos", specifier = ">=0.26.1" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
     { name = "zstandard", specifier = ">=0.18.0" },
 ]
-provides-extras = ["examples", "datadog"]
+provides-extras = ["cluster", "examples", "datadog"]
 
 [package.metadata.requires-dev]
 dev = [
