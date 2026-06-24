@@ -2,15 +2,21 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from redis.client import StrictRedis
 
-try:
-    # redis>=4.1 ships cluster support natively
-    from redis import RedisCluster
-except ImportError:  # pragma: no cover - redis<4 fallback via the `cluster` extra
-    from rediscluster import RedisCluster
+if TYPE_CHECKING:
+    # Type-checking only: RedisCluster is used solely in annotations (this module
+    # never constructs it), and `from __future__ import annotations` keeps them
+    # unevaluated at runtime. Guarding the import here avoids breaking default
+    # (non-`cluster`-extra) installs where neither redis.RedisCluster (redis<4.1)
+    # nor the rediscluster fallback is importable.
+    try:
+        # redis>=4.1 ships cluster support natively
+        from redis import RedisCluster
+    except ImportError:  # pragma: no cover - redis<4 fallback via the `cluster` extra
+        from rediscluster import RedisCluster
 
 from taskbroker_client.metrics import MetricsBackend
 
@@ -131,7 +137,9 @@ class RunStorage(RunStorageProtocol):
         # next_runtime & now could be the same second, and redis gets sad if ex=0
         duration = max(int((next_runtime - now).total_seconds()), 1)
 
-        result = self._redis.set(self._make_key(key), now.isoformat(), ex=duration, nx=True)
+        result = self._redis.set(
+            self._make_key(key), now.isoformat(), ex=duration, nx=True
+        )
         return bool(result)
 
     def read(self, key: str) -> datetime | None:
@@ -143,7 +151,9 @@ class RunStorage(RunStorageProtocol):
         if result:
             return datetime.fromisoformat(result)
 
-        self._metrics.incr("taskworker.scheduler.run_storage.read.miss", tags={"taskname": key})
+        self._metrics.incr(
+            "taskworker.scheduler.run_storage.read.miss", tags={"taskname": key}
+        )
         return None
 
     def read_many(
