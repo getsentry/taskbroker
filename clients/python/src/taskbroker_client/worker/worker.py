@@ -142,6 +142,7 @@ class PushTaskWorker:
         grpc_port: int = 50052,
         push_task_timeout: float = 5,
         update_in_batches: bool = False,
+        skip_awaiting_futures: bool = True,
     ) -> None:
         app = import_app(app_module)
 
@@ -166,6 +167,7 @@ class PushTaskWorker:
             pod_name=pod_name,
             process_type=process_type,
             update_in_batches=update_in_batches,
+            skip_awaiting_futures=skip_awaiting_futures,
         )
 
         logger.info("Running in PUSH mode")
@@ -503,6 +505,7 @@ class TaskWorker:
         process_type: str = "spawn",
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
+        skip_awaiting_futures: bool = True,
     ) -> None:
         self._namespace = namespace
         app = import_app(app_module)
@@ -526,6 +529,7 @@ class TaskWorker:
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
             process_type=process_type,
+            skip_awaiting_futures=skip_awaiting_futures,
         )
 
         logger.info("Running in PULL mode")
@@ -709,6 +713,7 @@ class TaskWorkerProcessingPool:
         pod_name: str | None = None,
         process_type: str = "spawn",
         update_in_batches: bool = False,
+        skip_awaiting_futures: bool = True,
     ) -> None:
         self._concurrency = concurrency
         self._processing_pool_name = processing_pool_name or "unknown"
@@ -721,6 +726,7 @@ class TaskWorkerProcessingPool:
         self._app_module = app_module
         app = import_app(app_module)
         self._metrics = app.metrics
+        self._skip_awaiting_futures = skip_awaiting_futures
 
         self._mp_context = mp_context
         self._process_type = process_type
@@ -859,6 +865,7 @@ class TaskWorkerProcessingPool:
                             self._max_child_task_count,
                             self._processing_pool_name,
                             self._process_type,
+                            self._skip_awaiting_futures,
                         ),
                     )
                     process.start()

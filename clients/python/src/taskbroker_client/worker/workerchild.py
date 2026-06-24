@@ -171,6 +171,7 @@ def child_process(
     max_task_count: int | None,
     processing_pool_name: str,
     process_type: str,
+    skip_awaiting_futures: bool,
 ) -> None:
     """
     The entrypoint for spawned worker children.
@@ -220,6 +221,7 @@ def child_process(
         max_task_count: int | None,
         processing_pool_name: str,
         process_type: str,
+        skip_awaiting_futures: bool,
     ) -> None:
         processed_task_count = 0
         pending_task_futures: list[ActivationWithPendingFutures] = []
@@ -279,6 +281,7 @@ def child_process(
                 execution_end_time=task.futures_start_time,
                 task_func=task.task_func,
                 futures_start_time=task.futures_start_time,
+                passthrough=skip_awaiting_futures,
             )
 
         def get_oldest_pending_activation() -> ActivationWithPendingFutures | None:
@@ -512,6 +515,13 @@ def child_process(
                     task_func,
                 )
             else:
+                # Place ProcessingResult immediately if we're skipping awaiting futures
+                if skip_awaiting_futures:
+                    _place_processing_result(
+                        inflight,
+                        next_state,
+                        task_func,
+                    )
                 for name, futures in task_produced_futures.items():
                     # How many futures were produced in the executed task,
                     # tagged by producer name
@@ -772,12 +782,16 @@ def child_process(
         execution_end_time: float,
         task_func: Task[Any, Any] | None,
         futures_start_time: float | None = None,
+        passthrough: bool = False,
     ) -> None:
-        _place_processing_result(
-            inflight,
-            next_state,
-            task_func,
-        )
+        # If passthrough is enabled, we already placed a ProcessingResult
+        # as soon as the task function finished execution
+        if not passthrough:
+            _place_processing_result(
+                inflight,
+                next_state,
+                task_func,
+            )
         record_task_execution(
             inflight.activation,
             next_state,
@@ -796,4 +810,5 @@ def child_process(
         max_task_count,
         processing_pool_name,
         process_type,
+        skip_awaiting_futures,
     )
