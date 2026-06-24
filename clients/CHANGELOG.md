@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.4
+
+### Internal Changes 🔧
+
+- (workerchild) Allow user to specify if futures should be awaited by @bmckerry in [#729](https://github.com/getsentry/taskbroker/pull/729)
+
 ## 0.20.3
 
 ### Bug Fixes 🐛
