@@ -15,7 +15,6 @@ dependencies = [
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
     "redis>=3.4.1",
-    "redis-py-cluster>=2.1.0",
     "zstandard>=0.18.0",
 ]
 
@@ -34,6 +33,11 @@ dev = [
     "types-protobuf>=5.27.0.20240626,<6.0.0",
 ]
 [project.optional-dependencies]
+# redis<4 does not bundle cluster support; pull in redis-py-cluster (EOL) for it.
+# Not needed on redis>=4.1, which provides redis.RedisCluster natively.
+cluster = [
+    "redis-py-cluster>=2.1.0",
+]
 examples = [
     "click>=8.3",
     "setuptools>=80.0",

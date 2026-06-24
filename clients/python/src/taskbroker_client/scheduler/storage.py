@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from redis.client import StrictRedis
-from rediscluster import RedisCluster
+
+try:
+    # redis>=4.1 ships cluster support natively
+    from redis import RedisCluster
+except ImportError:  # pragma: no cover - redis<4 fallback via the `cluster` extra
+    from rediscluster import RedisCluster
 
 from taskbroker_client.metrics import MetricsBackend
 
@@ -106,7 +111,7 @@ class RunStorage(RunStorageProtocol):
     """
 
     def __init__(
-        self, metrics: MetricsBackend, redis: RedisCluster[str] | StrictRedis[str]
+        self, metrics: MetricsBackend, redis: RedisCluster | StrictRedis
     ) -> None:
         self._redis = redis
         self._metrics = metrics
