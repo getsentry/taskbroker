@@ -653,6 +653,117 @@ def test_batch_push_worker_health_check_touches_while_idle(tmp_path: Path) -> No
     assert taskworker._health_check_thread is None
 
 
+def _make_push_worker(**kwargs: Any) -> PushTaskWorker:
+    return PushTaskWorker(
+        app_module="examples.app:app",
+        broker_service="127.0.0.1:50051",
+        max_child_task_count=100,
+        process_type="fork",
+        **kwargs,
+    )
+
+
+def test_min_ready_defaults_to_concurrency() -> None:
+    taskworker = _make_push_worker(concurrency=8)
+    assert taskworker._min_ready == 8
+
+
+def test_await_children_warm_returns_when_ready() -> None:
+    taskworker = _make_push_worker(concurrency=4, min_ready=4, warmup_timeout=5)
+    taskworker.worker_pool._ready_counter.value = 4
+
+    with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+        start = time.time()
+        taskworker._await_children_warm()
+        elapsed = time.time() - start
+
+    assert elapsed < 1
+    # Records warmup duration, but no timeout.
+    timeout_calls = [
+        c
+        for c in mock_metrics.incr.call_args_list
+        if c.args[0] == "taskworker.worker.warmup_timeout"
+    ]
+    assert timeout_calls == []
+    mock_metrics.distribution.assert_any_call(
+        "taskworker.worker.warmup_duration", mock.ANY, tags=mock.ANY
+    )
+
+
+def test_await_children_warm_times_out() -> None:
+    taskworker = _make_push_worker(concurrency=4, min_ready=4, warmup_timeout=0.1)
+    # Never becomes ready.
+    taskworker.worker_pool._ready_counter.value = 0
+
+    with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+        start = time.time()
+        taskworker._await_children_warm()
+        elapsed = time.time() - start
+
+    assert elapsed >= 0.1
+    mock_metrics.incr.assert_any_call(
+        "taskworker.worker.warmup_timeout", tags={"processing_pool": "unknown"}
+    )
+
+
+def test_await_children_warm_clamps_min_ready_to_concurrency() -> None:
+    # min_ready exceeds concurrency; without clamping this would always time out.
+    taskworker = _make_push_worker(concurrency=4, min_ready=1000, warmup_timeout=0.1)
+    taskworker.worker_pool._ready_counter.value = 4
+
+    with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+        start = time.time()
+        taskworker._await_children_warm()
+        elapsed = time.time() - start
+
+    assert elapsed < 1
+    timeout_calls = [
+        c
+        for c in mock_metrics.incr.call_args_list
+        if c.args[0] == "taskworker.worker.warmup_timeout"
+    ]
+    assert timeout_calls == []
+
+
+def test_await_children_warm_disabled_when_min_ready_zero() -> None:
+    taskworker = _make_push_worker(concurrency=4, min_ready=0, warmup_timeout=10)
+    # Counter stays at 0; gate is disabled so this must return immediately.
+    taskworker.worker_pool._ready_counter.value = 0
+
+    start = time.time()
+    taskworker._await_children_warm()
+    elapsed = time.time() - start
+
+    assert elapsed < 1
+
+
+def test_await_children_warm_unblocks_when_children_warm() -> None:
+    taskworker = _make_push_worker(concurrency=2, min_ready=2, warmup_timeout=5)
+    taskworker.worker_pool._ready_counter.value = 0
+
+    def warm_up() -> None:
+        time.sleep(0.2)
+        taskworker.worker_pool._ready_counter.value = 2
+
+    warmer = threading.Thread(target=warm_up)
+    warmer.start()
+    try:
+        with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+            start = time.time()
+            taskworker._await_children_warm()
+            elapsed = time.time() - start
+    finally:
+        warmer.join()
+
+    assert 0.2 <= elapsed < 5
+    timeout_calls = [
+        c
+        for c in mock_metrics.incr.call_args_list
+        if c.args[0] == "taskworker.worker.warmup_timeout"
+    ]
+    assert timeout_calls == []
+
+
 class TestWorkerServicer(TestCase):
     def test_push_task_success(self) -> None:
         taskworker = PushTaskWorker(
@@ -776,6 +887,30 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     assert result.task_id == SIMPLE_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     assert mock_capture_checkin.call_count == 0
+
+
+def test_child_process_increments_ready_counter() -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+    ctx = get_context("fork")
+    ready_counter = ctx.Value("i", 0)
+
+    todo.put(SIMPLE_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        ready_counter=ready_counter,
+    )
+
+    # The child increments the counter once warmup is done, before consuming.
+    assert ready_counter.value == 1
 
 
 def test_child_process_remove_start_time_kwargs() -> None:
