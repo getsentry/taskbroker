@@ -209,12 +209,14 @@ class Task(Generic[P, R]):
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
         sizes: Collection[int] | None = None,
+        processing_deadline_duration: int | datetime.timedelta | None = None,
         **options: Any,
     ) -> None:
         """
         Task dispatch for testing tools like the 'taskbroker-send-tasks' command in Sentry.
 
         Argument `sizes` contains minimum activation sizes in bytes, parsed from repeated `--activation-size` values.
+        Argument `processing_deadline_duration` overrides the task's configured execution deadline.
         Normal `delay` and `apply_async` calls do not use this path.
         """
         if args is None:
@@ -231,6 +233,7 @@ class Task(Generic[P, R]):
             expires=expires,
             countdown=countdown,
             activation_sizes=sizes,
+            processing_deadline_duration=processing_deadline_duration,
         )
         if ALWAYS_EAGER:
             self._call_func(*args, **kwargs)
@@ -386,6 +389,7 @@ class Task(Generic[P, R]):
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
         activation_sizes: Collection[int] | None = None,
+        processing_deadline_duration: int | datetime.timedelta | None = None,
     ) -> TaskActivation:
         """
         Build a `TaskActivation` with optional size padding for testing purposes.
@@ -393,10 +397,17 @@ class Task(Generic[P, R]):
         With one activation size, every activation is padded to at least that size.
         With multiple sizes, one target size is randomly selected per activation.
         If the activation size is already ≥ the target, it will be unchanged.
+
+        If provided, `processing_deadline_duration` overrides the task's configured execution deadline.
         """
         activation = self.create_activation(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
+        if processing_deadline_duration is not None:
+            if isinstance(processing_deadline_duration, datetime.timedelta):
+                processing_deadline_duration = int(processing_deadline_duration.total_seconds())
+            activation.processing_deadline_duration = processing_deadline_duration
+
         if not activation_sizes:
             return activation
 
