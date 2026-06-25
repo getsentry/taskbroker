@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from functools import partial
 from multiprocessing.synchronize import Event
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
 
 # XXX: Don't import any modules that will import django here, do those within child_process
 import msgpack
@@ -172,6 +175,7 @@ def child_process(
     processing_pool_name: str,
     process_type: str,
     skip_awaiting_futures: bool,
+    ready_counter: "Synchronized[int] | None" = None,
 ) -> None:
     """
     The entrypoint for spawned worker children.
@@ -801,6 +805,12 @@ def child_process(
             inflight.host,
             futures_start_time,
         )
+
+    # Signal that this child has finished warmup and ready to consume tasks. The parent uses this
+    # to gate the gRPC SERVING health signal. Monotonic by design
+    if ready_counter is not None:
+        with ready_counter.get_lock():
+            ready_counter.value += 1
 
     # Run the worker loop
     run_worker(

@@ -28,6 +28,7 @@ from taskbroker_client.constants import (
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
+    DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
     MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE,
     WORKER_CHILD_JOIN_TIMEOUT_SEC,
 )
@@ -143,6 +144,7 @@ class PushTaskWorker:
         push_task_timeout: float = 5,
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
+        warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
     ) -> None:
         app = import_app(app_module)
 
@@ -201,6 +203,8 @@ class PushTaskWorker:
         self._grpc_port = grpc_port
         self._grpc_secrets = parse_rpc_secret_list(app.config["rpc_secret"])
         self._push_task_timeout = push_task_timeout
+
+        self._warmup_timeout = warmup_timeout
 
     def _create_client(
         self,
@@ -310,6 +314,56 @@ class PushTaskWorker:
             self._health_check_thread.join(timeout=5)
             self._health_check_thread = None
 
+    def _await_children_warm(self) -> None:
+        """
+        Block until all children have warmed up or warmup_timeout elapses.
+
+        On timeout we fall through and serve anyway, a degraded-but-routable pod
+        beats one that never becomes ready.
+        """
+        required = self._concurrency
+        if required <= 0:
+            return
+
+        warmup_start = time.monotonic()
+        deadline = warmup_start + self._warmup_timeout
+        timed_out = False
+        while self.worker_pool.ready_count < required:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                self._metrics.incr(
+                    "taskworker.worker.warmup_timeout",
+                    tags={"processing_pool": self._processing_pool_name},
+                )
+                logger.warning(
+                    "taskworker.worker.warmup_timeout",
+                    extra={
+                        "processing_pool": self._processing_pool_name,
+                        "ready_count": self.worker_pool.ready_count,
+                        "required": required,
+                        "warmup_timeout": self._warmup_timeout,
+                    },
+                )
+                break
+            # Sleep and break early if shutdown was requested via shutdown().
+            if self._grpc_sync_event.wait(0.25):
+                break
+
+        self._metrics.distribution(
+            "taskworker.worker.warmup_duration",
+            time.monotonic() - warmup_start,
+            tags={"processing_pool": self._processing_pool_name},
+        )
+        logger.info(
+            "taskworker.worker.warmup_complete",
+            extra={
+                "processing_pool": self._processing_pool_name,
+                "ready_count": self.worker_pool.ready_count,
+                "required": required,
+                "timed_out": timed_out,
+            },
+        )
+
     def start(self) -> int:
         """
         This starts the worker gRPC server.
@@ -363,6 +417,15 @@ class PushTaskWorker:
 
             server.add_insecure_port(f"[::]:{self._grpc_port}")
             server.start()
+
+            # Hold NOT_SERVING until children are warm so the pod stays out of
+            # the NEG/readiness set while its child processes are still loading.
+            self._await_children_warm()
+
+            # If shutdown was requested during warmup, don't advertise SERVING.
+            # Bail to the finally below, which sets NOT_SERVING and tears everything down.
+            if self._grpc_sync_event.is_set():
+                return 0
 
             # Indicate that the server is ready
             health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
@@ -739,9 +802,15 @@ class TaskWorkerProcessingPool:
         )
         self._children: list[BaseProcess] = []
         self._shutdown_event = self._mp_context.Event()
+        self._ready_counter = self._mp_context.Value("i", 0)
         self._result_thread: threading.Thread | None = None
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
+
+    @property
+    def ready_count(self) -> int:
+        """Number of children that have finished warming up and are consuming."""
+        return self._ready_counter.value
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
@@ -866,6 +935,7 @@ class TaskWorkerProcessingPool:
                             self._processing_pool_name,
                             self._process_type,
                             self._skip_awaiting_futures,
+                            self._ready_counter,
                         ),
                     )
                     process.start()
