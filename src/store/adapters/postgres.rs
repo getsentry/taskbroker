@@ -438,6 +438,10 @@ impl ActivationStore for PostgresStore {
         }
     }
 
+    fn owns_partition(&self, partition: &TopicPartition) -> bool {
+        self.partitions.read().unwrap().contains(partition)
+    }
+
     #[instrument(skip_all)]
     #[framed]
     async fn store(&self, batch: &[Activation]) -> Result<u64, Error> {

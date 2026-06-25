@@ -476,6 +476,11 @@ impl ActivationStore for SqliteStore {
         debug!("revoke_partitions: {:?}", partitions.collect::<Vec<_>>());
     }
 
+    fn owns_partition(&self, _partition: &TopicPartition) -> bool {
+        // sqlite owns its whole DB regardless of partition assignment.
+        true
+    }
+
     #[instrument(skip_all)]
     async fn store(&self, batch: &[Activation]) -> Result<u64, Error> {
         if batch.is_empty() {

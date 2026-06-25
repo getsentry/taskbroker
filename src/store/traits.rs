@@ -22,6 +22,11 @@ pub trait ActivationStore: Send + Sync {
     /// Remove the given (topic, partition) pairs from the set this broker owns.
     fn revoke_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>);
 
+    /// Whether this broker currently owns `partition`. Age-based drain can claim
+    /// activations from partitions the broker doesn't own, so callers use this to
+    /// distinguish those (e.g. tagging latency metrics).
+    fn owns_partition(&self, partition: &TopicPartition) -> bool;
+
     /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
     /// If `mark_activation_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
     /// If no limit is provided, all matching activations will be returned.

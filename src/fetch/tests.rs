@@ -53,6 +53,10 @@ impl ActivationStore for MockStore {
 
     fn revoke_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
 
+    fn owns_partition(&self, _partition: &TopicPartition) -> bool {
+        true
+    }
+
     async fn vacuum_db(&self) -> Result<(), Error> {
         unimplemented!()
     }

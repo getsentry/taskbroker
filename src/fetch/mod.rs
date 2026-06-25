@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::push::QueueError;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
-use crate::store::types::BucketRange;
+use crate::store::types::{BucketRange, TopicPartition};
 use crate::timed;
 
 /// This value should be a power of two. If it decreases, some ranges will no longer be queried.
@@ -120,10 +120,17 @@ impl FetchPool {
                                         if activation.processing_attempts < 1 {
                                             let latency = cmp::max(0, activation.received_latency(Utc::now()));
 
+                                            // Age-based drain can claim activations from partitions
+                                            // this broker doesn't own; tag so those orphans are visible.
+                                            let owned_partition = store.owns_partition(
+                                                &TopicPartition::new(activation.topic.clone(), activation.partition),
+                                            );
+
                                             metrics::histogram!(
                                                 "push.received_to_claimed.latency",
                                                 "namespace" => activation.namespace.clone(),
                                                 "taskname" => activation.taskname.clone(),
+                                                "owned_partition" => owned_partition.to_string(),
                                             )
                                             .record(latency as f64);
                                         } else {

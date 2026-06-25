@@ -40,6 +40,10 @@ impl ActivationStore for MockStore {
 
     fn revoke_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
 
+    fn owns_partition(&self, _partition: &TopicPartition) -> bool {
+        true
+    }
+
     async fn claim_activations(
         &self,
         _application: Option<&str>,
