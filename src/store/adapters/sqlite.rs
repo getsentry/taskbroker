@@ -30,7 +30,7 @@ use crate::config::store::StoreConfig;
 use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder};
+use crate::store::types::{BucketRange, FailedTasksForwarder, TopicPartition};
 
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
@@ -96,6 +96,11 @@ impl From<TableRow<'_>> for Activation {
             id: value.id.into_owned(),
             activation: value.activation.into_owned(),
             status: ActivationStatus::from_str(&value.status).unwrap(),
+            // sqlite owns its whole DB and never filters by topic, so it has no
+            // contention problem and stores no `topic` column. We deliberately
+            // leave the sqlite schema untouched and default to DEFAULT_TOPIC on
+            // read-back.
+            topic: crate::config::DEFAULT_TOPIC.to_owned(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -460,11 +465,20 @@ impl ActivationStore for SqliteStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
         // sqlite owns its whole DB regardless of partition assignment, so this
         // is a no-op. Fires once per consumer, hence debug rather than warn.
-        debug!("assign_partitions: {:?}", partitions);
-        Ok(())
+        debug!("assign_partitions: {:?}", partitions.collect::<Vec<_>>());
+    }
+
+    fn revoke_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
+        // No-op for the same reason as `assign_partitions`.
+        debug!("revoke_partitions: {:?}", partitions.collect::<Vec<_>>());
+    }
+
+    fn owns_partition(&self, _partition: &TopicPartition) -> bool {
+        // sqlite owns its whole DB regardless of partition assignment.
+        true
     }
 
     #[instrument(skip_all)]

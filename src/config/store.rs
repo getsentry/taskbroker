@@ -181,6 +181,12 @@ pub struct StoreConfig {
     /// are extended by. This helps reduce broker deadline resets when
     /// brokers are under load, or there are small networking delays.
     pub processing_deadline_grace_sec: u64,
+
+    /// Age-based contention drain threshold in seconds (postgres only).
+    /// Activations older than this bypass the (topic, partition) contention
+    /// filter so any broker can drain orphaned rows left by rebalances or
+    /// topic/partition moves.
+    pub contention_drain_age_sec: u64,
 }
 
 impl Default for StoreConfig {
@@ -200,6 +206,7 @@ impl Default for StoreConfig {
             max_processing_count: 2048,
             max_processing_attempts: 5,
             processing_deadline_grace_sec: 3,
+            contention_drain_age_sec: 60,
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::config::push::{PushConfig, PushQueueConfig};
 use crate::push::updater::test_eager_updater;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::FailedTasksForwarder;
+use crate::store::types::{FailedTasksForwarder, TopicPartition};
 use crate::test_utils::make_activations;
 use crate::worker::test_worker_map;
 
@@ -36,8 +36,12 @@ impl ActivationStore for MockStore {
         Ok(0)
     }
 
-    fn assign_partitions(&self, _partitions: Vec<i32>) -> Result<()> {
-        Ok(())
+    fn assign_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
+
+    fn revoke_partitions(&self, _partitions: &mut dyn Iterator<Item = TopicPartition>) {}
+
+    fn owns_partition(&self, _partition: &TopicPartition) -> bool {
+        true
     }
 
     async fn claim_activations(
