@@ -425,6 +425,11 @@ class PushTaskWorker:
             # the NEG/readiness set while its child processes are still loading.
             self._await_children_warm()
 
+            # If shutdown was requested during warmup, don't advertise SERVING.
+            # Bail to the finally below, which sets NOT_SERVING and tears everything down.
+            if self._grpc_sync_event.is_set():
+                return 0
+
             # Indicate that the server is ready
             health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
