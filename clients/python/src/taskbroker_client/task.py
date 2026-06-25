@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
+from math import ceil
 from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, get_origin
 from uuid import uuid4
 
@@ -208,7 +209,7 @@ class Task(Generic[P, R]):
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
         bytes: int | None = None,
-        seconds: int | None = None,
+        seconds: float | None = None,
         **options: Any,
     ) -> None:
         """
@@ -391,7 +392,7 @@ class Task(Generic[P, R]):
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
         bytes: int | None = None,
-        seconds: int | None = None,
+        seconds: float | None = None,
     ) -> TaskActivation:
         """
         Build a `TaskActivation` with optional size padding for testing purposes.
@@ -408,7 +409,7 @@ class Task(Generic[P, R]):
         )
 
         if seconds:
-            activation.processing_deadline_duration = seconds
+            activation.processing_deadline_duration = DEFAULT_PROCESSING_DEADLINE + ceil(seconds)
 
         if bytes:
             padding_key = "taskbroker-testing-activation-padding"
