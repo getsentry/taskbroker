@@ -4,7 +4,6 @@ import base64
 import datetime
 import inspect
 import os
-import random
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
@@ -208,8 +207,8 @@ class Task(Generic[P, R]):
         headers: MutableMapping[str, Any] | None = None,
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
-        sizes: Collection[int] | None = None,
-        durations: Collection[int | datetime.timedelta] | None = None,
+        bytes: int | None = None,
+        seconds: int | None = None,
         **options: Any,
     ) -> None:
         """
@@ -235,8 +234,8 @@ class Task(Generic[P, R]):
             headers=headers,
             expires=expires,
             countdown=countdown,
-            sizes=sizes,
-            durations=durations,
+            bytes=bytes,
+            seconds=seconds,
         )
         if ALWAYS_EAGER:
             self._call_func(*args, **kwargs)
@@ -391,8 +390,8 @@ class Task(Generic[P, R]):
         headers: MutableMapping[str, Any] | None = None,
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
-        sizes: Collection[int] | None = None,
-        durations: Collection[int | datetime.timedelta] | None = None,
+        bytes: int | None = None,
+        seconds: int | None = None,
     ) -> TaskActivation:
         """
         Build a `TaskActivation` with optional size padding for testing purposes.
@@ -407,31 +406,19 @@ class Task(Generic[P, R]):
         activation = self.create_activation(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
-        if durations:
-            durations = list(durations)
 
-            selected_duration = durations[0] if len(durations) == 1 else random.choice(durations)
+        if seconds:
+            activation.processing_deadline_duration = seconds
 
-            if isinstance(selected_duration, datetime.timedelta):
-                selected_duration = int(selected_duration.total_seconds())
+        if bytes:
+            padding_key = "taskbroker-testing-activation-padding"
 
-            activation.processing_deadline_duration = selected_duration
+            while activation.ByteSize() < bytes:
+                missing_bytes = bytes - activation.ByteSize()
 
-        if not sizes:
-            return activation
-
-        sizes = list(sizes)
-        selected_size = sizes[0] if len(sizes) == 1 else random.choice(sizes)
-        target_bytes = selected_size
-        if activation.ByteSize() >= target_bytes:
-            return activation
-
-        padding_key = "taskbroker-testing-activation-padding"
-        while activation.ByteSize() < target_bytes:
-            missing_bytes = target_bytes - activation.ByteSize()
-            activation.headers[padding_key] = (
-                activation.headers.get(padding_key, "") + "x" * missing_bytes
-            )
+                activation.headers[padding_key] = (
+                    activation.headers.get(padding_key, "") + "x" * missing_bytes
+                )
 
         return activation
 
