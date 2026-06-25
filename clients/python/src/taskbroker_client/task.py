@@ -209,14 +209,17 @@ class Task(Generic[P, R]):
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
         sizes: Collection[int] | None = None,
-        processing_deadline_duration: int | datetime.timedelta | None = None,
+        durations: Collection[int | datetime.timedelta] | None = None,
         **options: Any,
     ) -> None:
         """
         Task dispatch for testing tools like the 'taskbroker-send-tasks' command in Sentry.
 
         Argument `sizes` contains minimum activation sizes in bytes, parsed from repeated `--activation-size` values.
-        Argument `processing_deadline_duration` overrides the task's configured execution deadline.
+
+        Argument `durations` contains execution deadlines in seconds.
+        If multiple durations are provided, one is randomly selected per activation.
+
         Normal `delay` and `apply_async` calls do not use this path.
         """
         if args is None:
@@ -232,8 +235,8 @@ class Task(Generic[P, R]):
             headers=headers,
             expires=expires,
             countdown=countdown,
-            activation_sizes=sizes,
-            processing_deadline_duration=processing_deadline_duration,
+            sizes=sizes,
+            durations=durations,
         )
         if ALWAYS_EAGER:
             self._call_func(*args, **kwargs)
@@ -388,8 +391,8 @@ class Task(Generic[P, R]):
         headers: MutableMapping[str, Any] | None = None,
         expires: int | datetime.timedelta | None = None,
         countdown: int | datetime.timedelta | None = None,
-        activation_sizes: Collection[int] | None = None,
-        processing_deadline_duration: int | datetime.timedelta | None = None,
+        sizes: Collection[int] | None = None,
+        durations: Collection[int | datetime.timedelta] | None = None,
     ) -> TaskActivation:
         """
         Build a `TaskActivation` with optional size padding for testing purposes.
@@ -398,23 +401,27 @@ class Task(Generic[P, R]):
         With multiple sizes, one target size is randomly selected per activation.
         If the activation size is already ≥ the target, it will be unchanged.
 
-        If provided, `processing_deadline_duration` overrides the task's configured execution deadline.
+        With one duration, every activation uses that processing deadline.
+        With multiple durations, one processing deadline is randomly selected per activation.
         """
         activation = self.create_activation(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
-        if processing_deadline_duration is not None:
-            if isinstance(processing_deadline_duration, datetime.timedelta):
-                processing_deadline_duration = int(processing_deadline_duration.total_seconds())
-            activation.processing_deadline_duration = processing_deadline_duration
+        if durations:
+            durations = list(durations)
 
-        if not activation_sizes:
+            selected_duration = durations[0] if len(durations) == 1 else random.choice(durations)
+
+            if isinstance(selected_duration, datetime.timedelta):
+                selected_duration = int(selected_duration.total_seconds())
+
+            activation.processing_deadline_duration = selected_duration
+
+        if not sizes:
             return activation
 
-        activation_sizes = list(activation_sizes)
-        selected_size = (
-            activation_sizes[0] if len(activation_sizes) == 1 else random.choice(activation_sizes)
-        )
+        sizes = list(sizes)
+        selected_size = sizes[0] if len(sizes) == 1 else random.choice(sizes)
         target_bytes = selected_size
         if activation.ByteSize() >= target_bytes:
             return activation
