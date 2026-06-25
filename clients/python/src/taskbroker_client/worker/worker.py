@@ -144,7 +144,6 @@ class PushTaskWorker:
         push_task_timeout: float = 5,
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
-        min_ready: int | None = None,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
     ) -> None:
         app = import_app(app_module)
@@ -205,7 +204,6 @@ class PushTaskWorker:
         self._grpc_secrets = parse_rpc_secret_list(app.config["rpc_secret"])
         self._push_task_timeout = push_task_timeout
 
-        self._min_ready = concurrency if min_ready is None else min_ready
         self._warmup_timeout = warmup_timeout
 
     def _create_client(
@@ -318,20 +316,19 @@ class PushTaskWorker:
 
     def _await_children_warm(self) -> None:
         """
-        Block until at least min_ready children have warmed up or warmup_timeout elapses.
+        Block until all children have warmed up or warmup_timeout elapses.
 
         On timeout we fall through and serve anyway, a degraded-but-routable pod
-        beats one that never becomes ready. The min_ready is clamped to concurrency and a value
-        <= 0 disables the gate entirely.
+        beats one that never becomes ready.
         """
-        min_ready = min(self._min_ready, self._concurrency)
-        if min_ready <= 0:
+        required = self._concurrency
+        if required <= 0:
             return
 
         warmup_start = time.monotonic()
         deadline = warmup_start + self._warmup_timeout
         timed_out = False
-        while self.worker_pool.ready_count < min_ready:
+        while self.worker_pool.ready_count < required:
             if time.monotonic() >= deadline:
                 timed_out = True
                 self._metrics.incr(
@@ -343,7 +340,7 @@ class PushTaskWorker:
                     extra={
                         "processing_pool": self._processing_pool_name,
                         "ready_count": self.worker_pool.ready_count,
-                        "min_ready": min_ready,
+                        "required": required,
                         "warmup_timeout": self._warmup_timeout,
                     },
                 )
@@ -362,7 +359,7 @@ class PushTaskWorker:
             extra={
                 "processing_pool": self._processing_pool_name,
                 "ready_count": self.worker_pool.ready_count,
-                "min_ready": min_ready,
+                "required": required,
                 "timed_out": timed_out,
             },
         )

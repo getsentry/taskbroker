@@ -663,13 +663,8 @@ def _make_push_worker(**kwargs: Any) -> PushTaskWorker:
     )
 
 
-def test_min_ready_defaults_to_concurrency() -> None:
-    taskworker = _make_push_worker(concurrency=8)
-    assert taskworker._min_ready == 8
-
-
 def test_await_children_warm_returns_when_ready() -> None:
-    taskworker = _make_push_worker(concurrency=4, min_ready=4, warmup_timeout=5)
+    taskworker = _make_push_worker(concurrency=4, warmup_timeout=5)
     taskworker.worker_pool._ready_counter.value = 4
 
     with mock.patch.object(taskworker, "_metrics") as mock_metrics:
@@ -691,7 +686,7 @@ def test_await_children_warm_returns_when_ready() -> None:
 
 
 def test_await_children_warm_times_out() -> None:
-    taskworker = _make_push_worker(concurrency=4, min_ready=4, warmup_timeout=0.1)
+    taskworker = _make_push_worker(concurrency=4, warmup_timeout=0.1)
     # Never becomes ready.
     taskworker.worker_pool._ready_counter.value = 0
 
@@ -706,39 +701,8 @@ def test_await_children_warm_times_out() -> None:
     )
 
 
-def test_await_children_warm_clamps_min_ready_to_concurrency() -> None:
-    # min_ready exceeds concurrency; without clamping this would always time out.
-    taskworker = _make_push_worker(concurrency=4, min_ready=1000, warmup_timeout=0.1)
-    taskworker.worker_pool._ready_counter.value = 4
-
-    with mock.patch.object(taskworker, "_metrics") as mock_metrics:
-        start = time.time()
-        taskworker._await_children_warm()
-        elapsed = time.time() - start
-
-    assert elapsed < 1
-    timeout_calls = [
-        c
-        for c in mock_metrics.incr.call_args_list
-        if c.args[0] == "taskworker.worker.warmup_timeout"
-    ]
-    assert timeout_calls == []
-
-
-def test_await_children_warm_disabled_when_min_ready_zero() -> None:
-    taskworker = _make_push_worker(concurrency=4, min_ready=0, warmup_timeout=10)
-    # Counter stays at 0; gate is disabled so this must return immediately.
-    taskworker.worker_pool._ready_counter.value = 0
-
-    start = time.time()
-    taskworker._await_children_warm()
-    elapsed = time.time() - start
-
-    assert elapsed < 1
-
-
 def test_await_children_warm_unblocks_when_children_warm() -> None:
-    taskworker = _make_push_worker(concurrency=2, min_ready=2, warmup_timeout=5)
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
     taskworker.worker_pool._ready_counter.value = 0
 
     def warm_up() -> None:
@@ -762,6 +726,46 @@ def test_await_children_warm_unblocks_when_children_warm() -> None:
         if c.args[0] == "taskworker.worker.warmup_timeout"
     ]
     assert timeout_calls == []
+
+
+def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
+    from grpc_health.v1 import health_pb2
+
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
+    # Children never warm, and shutdown is requested before start() runs.
+    taskworker.worker_pool._ready_counter.value = 0
+    taskworker._grpc_sync_event.set()
+
+    fake_health = mock.MagicMock()
+    fake_server = mock.MagicMock()
+
+    with (
+        mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_result_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
+        mock.patch.object(taskworker.worker_pool, "shutdown"),
+        mock.patch("taskbroker_client.worker.worker.grpc.server", return_value=fake_server),
+        mock.patch(
+            "taskbroker_client.worker.worker.health.HealthServicer", return_value=fake_health
+        ),
+        mock.patch("taskbroker_client.worker.worker.health_pb2_grpc.add_HealthServicer_to_server"),
+        mock.patch(
+            "taskbroker_client.worker.worker.taskbroker_pb2_grpc"
+            ".add_WorkerServiceServicer_to_server"
+        ),
+    ):
+        exitcode = taskworker.start()
+
+    assert exitcode == 0
+    # Health must never have been flipped to SERVING.
+    serving_calls = [
+        c
+        for c in fake_health.set.call_args_list
+        if c.args[1] == health_pb2.HealthCheckResponse.SERVING
+    ]
+    assert serving_calls == []
+    # We never reached server.wait_for_termination() (returned before it).
+    fake_server.wait_for_termination.assert_not_called()
 
 
 class TestWorkerServicer(TestCase):

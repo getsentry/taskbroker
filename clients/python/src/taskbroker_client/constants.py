@@ -59,8 +59,8 @@ The number of gRPC requests before touching the health check file
 
 DEFAULT_WORKER_WARMUP_TIMEOUT_SEC = 90.0
 """
-Max seconds PushTaskWorker waits for >= min_ready children to warm up
-before flipping gRPC health to SERVING anyway.
+Max seconds PushTaskWorker waits for all children to warm up before
+flipping gRPC health to SERVING anyway.
 """
 
 
