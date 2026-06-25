@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.6
+
+### New Features ✨
+
+- (worker) Defer SERVING until child processes are warm by @enochtangg in [#731](https://github.com/getsentry/taskbroker/pull/731)
+
 ## 0.20.5
 
 ### Internal Changes 🔧
