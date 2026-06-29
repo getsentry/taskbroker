@@ -22,12 +22,18 @@ def main() -> None:
     help="The number of tasks to generate",
     default=1,
 )
-def spawn(count: int = 1) -> None:
+@click.option(
+    "--sleep-seconds",
+    help="How long each task sleeps. Use a larger value to make occupancy observable.",
+    default=0.1,
+    type=float,
+)
+def spawn(count: int = 1, sleep_seconds: float = 0.1) -> None:
     from examples.tasks import timed_task
 
     click.echo(f"Spawning {count} tasks")
     for _ in range(0, count):
-        timed_task.delay(sleep_seconds=0.1)
+        timed_task.delay(sleep_seconds=sleep_seconds)
     click.echo("Complete")
 
 
@@ -85,8 +91,19 @@ def scheduler() -> None:
     default=50052,
     type=int,
 )
+@click.option(
+    "--prometheus-port",
+    help="Expose occupancy on this port for Prometheus scraping. Unset = disabled.",
+    default=None,
+    type=int,
+)
 def worker(
-    rpc_host: str, concurrency: int, push_mode: bool, batch_push_mode: bool, grpc_port: int
+    rpc_host: str,
+    concurrency: int,
+    push_mode: bool,
+    batch_push_mode: bool,
+    grpc_port: int,
+    prometheus_port: int | None,
 ) -> None:
     from taskbroker_client.worker import BatchPushTaskWorker, PushTaskWorker, TaskWorker
 
@@ -104,6 +121,7 @@ def worker(
             process_type="forkserver",
             grpc_port=grpc_port,
             update_in_batches=True,
+            prometheus_port=prometheus_port,
         )
     elif push_mode:
         worker = PushTaskWorker(
@@ -118,6 +136,7 @@ def worker(
             process_type="forkserver",
             grpc_port=grpc_port,
             push_task_timeout=5,
+            prometheus_port=prometheus_port,
         )
     else:
         worker = TaskWorker(

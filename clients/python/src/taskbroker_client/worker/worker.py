@@ -875,6 +875,18 @@ class TaskWorkerProcessingPool:
 
             while True:
                 try:
+                    busy = max(0, min(self._busy_counter.value, self._concurrency))
+                    occupancy = busy / self._concurrency if self._concurrency else 0.0
+                    self._metrics.gauge(
+                        "taskworker.worker.occupancy",
+                        occupancy,
+                        tags=tags,
+                    )
+                    if self._prom is not None:
+                        self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
+                            occupancy
+                        )
+
                     # 'qsize' is not implemented on all platforms, such as macOS
                     self._metrics.gauge(
                         "taskworker.child_tasks.size",
@@ -887,18 +899,6 @@ class TaskWorkerProcessingPool:
                         float(self._processed_tasks.qsize()),
                         tags=tags,
                     )
-
-                    busy = max(0, min(self._busy_counter.value, self._concurrency))
-                    occupancy = busy / self._concurrency if self._concurrency else 0.0
-                    self._metrics.gauge(
-                        "taskworker.worker.occupancy",
-                        occupancy,
-                        tags=tags,
-                    )
-                    if self._prom is not None:
-                        self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
-                            occupancy
-                        )
                 except Exception as e:
                     logger.debug(
                         "taskworker.worker.queue_gauges.error",
