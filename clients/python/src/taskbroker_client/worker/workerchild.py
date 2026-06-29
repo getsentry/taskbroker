@@ -4,6 +4,7 @@ import contextlib
 import logging
 import multiprocessing
 import queue
+import random
 import signal
 import threading
 import time
@@ -375,7 +376,7 @@ def child_process(
                         "taskworker.max_task_count_reached", extra={"count": processed_task_count}
                     )
 
-                    # Tell the parent this warmed child can be replaced.
+                    # Tell the parent this child can be replaced.
                     messages.put_nowait(ChildMessage(child_id, "exiting"))
                     waiting_for_parent_release = True
 
@@ -824,6 +825,9 @@ def child_process(
             inflight.host,
             futures_start_time,
         )
+
+    seconds = random.randint(30, 50)
+    time.sleep(seconds)
 
     # Signal that this child has warmed up and is ready to consume tasks
     # The parent uses this to gate the gRPC SERVING health signal. Monotonic by design
