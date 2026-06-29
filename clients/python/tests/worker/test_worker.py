@@ -397,6 +397,7 @@ def _make_fake_context_pool(
     fake_context: _FakeContext,
     *,
     concurrency: int = 1,
+    min_concurrency: int = 0,
 ) -> TaskWorkerProcessingPool:
     return TaskWorkerProcessingPool(
         app_module="examples.app:app",
@@ -404,6 +405,7 @@ def _make_fake_context_pool(
         mp_context=fake_context,  # type: ignore[arg-type]
         max_child_task_count=1,
         concurrency=concurrency,
+        min_concurrency=min_concurrency,
         processing_pool_name="test",
         process_type="fork",
     )
@@ -904,30 +906,55 @@ def test_spawn_children_counts_pending_children_toward_concurrency() -> None:
         pool.shutdown()
 
 
-def test_spawn_children_releases_draining_child_after_replacement_ready() -> None:
+def test_spawn_children_releases_draining_child_above_min_concurrency() -> None:
     fake_context = _FakeContext()
-    pool = _make_fake_context_pool(fake_context, concurrency=1)
+    pool = _make_fake_context_pool(fake_context, concurrency=2, min_concurrency=1)
 
     pool.start_spawn_children_thread()
     try:
-        _wait_for(lambda: len(fake_context.processes) == 1)
+        _wait_for(lambda: len(fake_context.processes) == 2)
         messages = fake_context.queues[-1]
         first_process = fake_context.processes[0]
         first_child_id = first_process.args[0]
         first_release = first_process.args[-1]
 
         messages.put(ChildMessage(first_child_id, "running"))
-        _wait_for(lambda: pool.ready_count == 1)
-
-        messages.put(ChildMessage(first_child_id, "exiting"))
-        _wait_for(lambda: len(fake_context.processes) == 2)
-
-        assert not first_release.is_set()
-
         second_process = fake_context.processes[1]
         second_child_id = second_process.args[0]
         messages.put(ChildMessage(second_child_id, "running"))
+        _wait_for(lambda: pool.ready_count == 2)
 
+        messages.put(ChildMessage(first_child_id, "exiting"))
+        _wait_for(first_release.is_set)
+
+        _wait_for(lambda: len(fake_context.processes) == 3)
+    finally:
+        pool.shutdown()
+
+
+def test_spawn_children_defers_draining_child_at_min_concurrency() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=2, min_concurrency=1)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 2)
+        messages = fake_context.queues[-1]
+        first_process = fake_context.processes[0]
+        first_child_id = first_process.args[0]
+        first_release = first_process.args[-1]
+
+        second_process = fake_context.processes[1]
+        second_child_id = second_process.args[0]
+
+        messages.put(ChildMessage(first_child_id, "running"))
+        _wait_for(lambda: pool.ready_count == 1)
+
+        messages.put(ChildMessage(first_child_id, "exiting"))
+        time.sleep(0.25)
+        assert not first_release.is_set()
+
+        messages.put(ChildMessage(second_child_id, "running"))
         _wait_for(first_release.is_set)
     finally:
         pool.shutdown()
