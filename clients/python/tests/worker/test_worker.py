@@ -1091,7 +1091,7 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     assert mock_capture_checkin.call_count == 0
 
 
-def test_child_process_emits_ready_message() -> None:
+def test_child_process_emits_running_message() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1117,7 +1117,7 @@ def test_child_process_emits_ready_message() -> None:
         parent_release=parent_release,
     )
 
-    # The child signals readiness once warmup is done, before consuming.
+    # The child signals readiness once warmup is done, before consuming
     message = messages.get(timeout=1)
     assert message == ChildMessage(child_id, "running")
 
@@ -1147,16 +1147,17 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
             "test",
             "fork",
             False,
+            0.1,
             messages,
             parent_release,
         ),
     )
     process.start()
     try:
-        ready_message = messages.get(timeout=5)
+        running_message = messages.get(timeout=5)
         exiting_message = messages.get(timeout=5)
 
-        assert ready_message == ChildMessage(child_id, "running")
+        assert running_message == ChildMessage(child_id, "running")
         assert exiting_message == ChildMessage(child_id, "exiting")
         assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
 
