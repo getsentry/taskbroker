@@ -1018,7 +1018,7 @@ class TaskWorkerProcessingPool:
                     active = ready + exiting
 
                     if active > desired:
-                        # We have too many active children
+                        # We have too many exiting children, we can release some of them
                         releasable = active - desired
                         released = 0
 
