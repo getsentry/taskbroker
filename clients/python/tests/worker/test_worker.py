@@ -884,6 +884,7 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -910,6 +911,7 @@ def test_child_process_increments_ready_counter() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
         ready_counter=ready_counter,
     )
 
@@ -945,6 +947,7 @@ def test_child_process_remove_start_time_kwargs() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -968,6 +971,7 @@ def test_child_process_retry_task() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1012,6 +1016,7 @@ def test_child_process_retry_task_max_attempts(
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1054,6 +1059,7 @@ def test_child_process_failure_task() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1078,6 +1084,7 @@ def test_child_process_shutdown() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     # When shutdown has been set, the child should not process more tasks.
@@ -1101,6 +1108,7 @@ def test_child_process_unknown_task() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get()
@@ -1129,6 +1137,7 @@ def test_child_process_at_most_once() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1157,6 +1166,7 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1189,6 +1199,7 @@ def test_child_process_pass_headers() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1230,6 +1241,7 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1265,6 +1277,7 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1319,6 +1332,7 @@ def test_child_process_context_hooks() -> None:
             processing_pool_name="test",
             process_type="fork",
             skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
         )
 
         result = processed.get()
@@ -1346,6 +1360,7 @@ def test_child_process_silenced_timeout(mock_logger: mock.Mock) -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1376,6 +1391,7 @@ def test_child_process_silenced_exception_with_retries(mock_capture: mock.Mock) 
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1404,6 +1420,7 @@ def test_child_process_expected_ignored_exception_max_attempts(mock_capture: moc
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     # No reporting, but exception type is retriable
@@ -1432,6 +1449,7 @@ def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> Non
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1465,6 +1483,7 @@ def test_child_process_general_exception_logs_task_failed(mock_logger: mock.Mock
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get()
@@ -1501,6 +1520,7 @@ def test_child_process_silenced_exception_does_not_log_task_failed(
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get()
@@ -1586,6 +1606,7 @@ def test_child_process_tracks_producer_futures(
             processing_pool_name="test",
             process_type="fork",
             skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
         )
 
     # collect_futures is called once per executed task
@@ -1634,6 +1655,7 @@ def test_child_process_holds_result_until_futures_done(
                 processing_pool_name="test",
                 process_type="fork",
                 skip_awaiting_futures=False,
+                future_checking_frequency=0.1,
             )
     finally:
         observer.join(timeout=5)
@@ -1689,6 +1711,7 @@ def test_child_process_skip_awaiting_futures_places_result_immediately(
                 processing_pool_name="test",
                 process_type="fork",
                 skip_awaiting_futures=True,
+                future_checking_frequency=0.1,
             )
     finally:
         observer.join(timeout=5)
@@ -1739,6 +1762,7 @@ def test_child_process_drains_pending_futures_on_sigterm(
                 processing_pool_name="test",
                 process_type="fork",
                 skip_awaiting_futures=False,
+                future_checking_frequency=0.1,
             )
     finally:
         sigterm_thread.join(timeout=5)
@@ -1788,6 +1812,7 @@ def test_child_process_retries_on_failed_future(
             processing_pool_name="test",
             process_type="fork",
             skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
         )
 
     result = processed.get(timeout=5)
@@ -1817,6 +1842,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get(timeout=5)
@@ -1827,3 +1853,59 @@ def test_child_process_clears_pending_futures_when_task_fails(
     # broker level if applicable) but the global registry is cleared so it
     # cannot bleed into the next task this child processes.
     assert len(_pending_futures) == 0
+
+
+def test_child_process_uses_configured_future_checking_frequency(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    """The idle future-checking loop polls on the configured interval."""
+    # A task that runs long enough for the idle future-checking loop to poll a
+    # few times before max_task_count triggers shutdown.
+    slow_task = InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id="freq-task",
+            taskname="examples.timed",
+            namespace="examples",
+            parameters_bytes=msgpack.packb({"args": [0.5], "kwargs": {}}, use_bin_type=True),
+            processing_deadline_duration=5,
+        ),
+    )
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+    todo.put(slow_task)
+
+    configured_frequency = 0.05
+    idle_sleeps: list[float] = []
+    real_sleep = time.sleep
+
+    def recording_sleep(seconds: float) -> None:
+        idle_sleeps.append(seconds)
+        real_sleep(seconds)
+
+    # time.sleep is only used by the idle branch of check_task_future_completion
+    # inside workerchild, so every recorded call comes from that loop. The task's
+    # own sleep uses a separate `from time import sleep` import in examples.tasks.
+    with mock.patch("taskbroker_client.worker.workerchild.time.sleep", side_effect=recording_sleep):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=configured_frequency,
+        )
+
+    result = processed.get(timeout=5)
+    assert result.task_id == slow_task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+    # The idle future-checking loop ran and polled using the configured
+    # frequency for every iteration.
+    assert idle_sleeps, "future-checking thread never slept while idle"
+    assert all(seconds == configured_frequency for seconds in idle_sleeps)
