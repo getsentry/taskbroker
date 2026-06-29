@@ -1009,17 +1009,29 @@ class TaskWorkerProcessingPool:
                             child.state = "exiting"
 
                     ready = sum(1 for c in self._children.values() if c.state == "ready")
+                    exiting = sum(1 for c in self._children.values() if c.state == "exiting")
 
-                    if ready >= self._concurrency:
+                    desired = self._concurrency
+
+                    if ready + exiting > desired:
+                        # We have too many active children
+                        releasable = ready + exiting - desired
+                        released = 0
+
                         for child in self._children.values():
+                            if released == releasable:
+                                break
+
                             if child.state == "exiting":
                                 child.release.set()
+                                released += 1
 
-                    not_exiting = sum(1 for c in self._children.values() if c.state != "exiting")
-                    children_to_spawn = max(self._concurrency - not_exiting, 0)
+                        needed = 0
+                    else:
+                        # We may not have enough active children
+                        needed = desired - ready + exiting
 
-                # If there aren't enough pending or ready processes, spawn more
-                for _ in range(children_to_spawn):
+                for _ in range(needed):
                     child_id = uuid4()
                     release = self._mp_context.Event()
 
