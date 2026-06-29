@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import queue
+import random
 import signal
 import threading
 import time
@@ -805,6 +806,9 @@ def child_process(
             inflight.host,
             futures_start_time,
         )
+
+    seconds = random.randint(30, 50)
+    time.sleep(seconds)
 
     # Signal that this child has finished warmup and ready to consume tasks. The parent uses this
     # to gate the gRPC SERVING health signal. Monotonic by design
