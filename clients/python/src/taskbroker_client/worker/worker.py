@@ -1005,8 +1005,9 @@ class TaskWorkerProcessingPool:
                         self._children[child_id].state = "exiting"
                         self._children[child_id].release.set()
 
+                    spawned = sum([1 for c in self._children.values() if c.state != "exiting"])
+
                 # How many children do we need to spawn?
-                spawned = sum([1 for c in self._children.values() if c.state != "exiting"])
                 needed = max(self._concurrency - spawned, 0)
 
                 for _ in range(needed):
