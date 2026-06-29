@@ -166,6 +166,20 @@ def _log_task_retry_exhausted(
     )
 
 
+def _adjust_busy(counter: "Synchronized[int] | None", delta: int) -> None:
+    """
+    Adjust the shared count of children currently executing a task.
+
+    The parent worker pool divides this by concurrency to emit occupancy, the
+    autoscaling signal. A child that is hard-killed (e.g. OOM) mid-task leaks
+    its increment; the parent clamps occupancy to [0, 1] to bound the drift.
+    """
+    if counter is None:
+        return
+    with counter.get_lock():
+        counter.value += delta
+
+
 def child_process(
     app_module: str,
     child_tasks: queue.Queue[InflightTaskActivation],
@@ -176,6 +190,7 @@ def child_process(
     process_type: str,
     skip_awaiting_futures: bool,
     ready_counter: "Synchronized[int] | None" = None,
+    busy_counter: "Synchronized[int] | None" = None,
 ) -> None:
     """
     The entrypoint for spawned worker children.
@@ -429,6 +444,7 @@ def child_process(
             next_state = TASK_ACTIVATION_STATUS_FAILURE
             # Use time.time() so we can measure against activation.received_at
             execution_start_time = time.time()
+            _adjust_busy(busy_counter, 1)
             try:
                 with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
                     _execute_activation(task_func, inflight.activation, app.context_hooks)
@@ -500,6 +516,8 @@ def child_process(
                     and next_state != TASK_ACTIVATION_STATUS_RETRY
                 ):
                     _log_task_failed(inflight.activation, err, processing_pool_name)
+            finally:
+                _adjust_busy(busy_counter, -1)
 
             clear_current_task()
             processed_task_count += 1

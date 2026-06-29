@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, List
 
 import grpc
+import prometheus_client
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from sentry_protos.taskbroker.v1 import taskbroker_pb2_grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -53,6 +54,27 @@ else:
 logger = logging.getLogger(__name__)
 
 WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
+
+
+class WorkerPrometheusMetrics:
+    """
+    Owns the Prometheus registry, server, and metrics we expose for scraping.
+    """
+
+    def __init__(
+        self, port: int, registry: prometheus_client.CollectorRegistry | None = None
+    ) -> None:
+        self.registry = registry or prometheus_client.CollectorRegistry()
+
+        self.occupancy = prometheus_client.Gauge(
+            "taskworker_worker_occupancy",
+            "Fraction of worker child slots currently executing a task (busy / concurrency).",
+            ["processing_pool"],
+            registry=self.registry,
+        )
+
+        prometheus_client.start_http_server(port, registry=self.registry)
+        logger.info("taskworker.worker.prometheus_server_started", extra={"port": port})
 
 
 class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
@@ -145,6 +167,7 @@ class PushTaskWorker:
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
+        prometheus_port: int | None = None,
     ) -> None:
         app = import_app(app_module)
 
@@ -170,6 +193,7 @@ class PushTaskWorker:
             process_type=process_type,
             update_in_batches=update_in_batches,
             skip_awaiting_futures=skip_awaiting_futures,
+            prometheus_port=prometheus_port,
         )
 
         logger.info("Running in PUSH mode")
@@ -777,6 +801,7 @@ class TaskWorkerProcessingPool:
         process_type: str = "spawn",
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
+        prometheus_port: int | None = None,
     ) -> None:
         self._concurrency = concurrency
         self._processing_pool_name = processing_pool_name or "unknown"
@@ -803,6 +828,9 @@ class TaskWorkerProcessingPool:
         self._children: list[BaseProcess] = []
         self._shutdown_event = self._mp_context.Event()
         self._ready_counter = self._mp_context.Value("i", 0)
+        self._busy_counter = self._mp_context.Value("i", 0)
+        self._prometheus_port = prometheus_port
+        self._prom: WorkerPrometheusMetrics | None = None
         self._result_thread: threading.Thread | None = None
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
@@ -836,6 +864,8 @@ class TaskWorkerProcessingPool:
         """
         Start a thread that emits metrics on an interval.
         """
+        if self._prometheus_port is not None and self._prom is None:
+            self._prom = WorkerPrometheusMetrics(self._prometheus_port)
 
         def metrics_thread() -> None:
             tags = {
@@ -857,6 +887,18 @@ class TaskWorkerProcessingPool:
                         float(self._processed_tasks.qsize()),
                         tags=tags,
                     )
+
+                    busy = max(0, min(self._busy_counter.value, self._concurrency))
+                    occupancy = busy / self._concurrency if self._concurrency else 0.0
+                    self._metrics.gauge(
+                        "taskworker.worker.occupancy",
+                        occupancy,
+                        tags=tags,
+                    )
+                    if self._prom is not None:
+                        self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
+                            occupancy
+                        )
                 except Exception as e:
                     logger.debug(
                         "taskworker.worker.queue_gauges.error",
@@ -936,6 +978,7 @@ class TaskWorkerProcessingPool:
                             self._process_type,
                             self._skip_awaiting_futures,
                             self._ready_counter,
+                            self._busy_counter,
                         ),
                     )
                     process.start()

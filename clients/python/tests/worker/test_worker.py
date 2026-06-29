@@ -917,6 +917,31 @@ def test_child_process_increments_ready_counter() -> None:
     assert ready_counter.value == 1
 
 
+def test_child_process_busy_counter_returns_to_zero() -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+    ctx = get_context("fork")
+    busy_counter = ctx.Value("i", 0)
+
+    todo.put(SIMPLE_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        busy_counter=busy_counter,
+    )
+
+    # Incremented while executing, decremented in the finally afterwards, so the
+    # slot is released back to idle once the task is done.
+    assert busy_counter.value == 0
+
+
 def test_child_process_remove_start_time_kwargs() -> None:
     activation = InflightTaskActivation(
         host="localhost:50051",
