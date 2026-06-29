@@ -60,8 +60,14 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
     gRPC servicer that receives task activations pushed from the broker
     """
 
-    def __init__(self, worker: TaskWorkerProcessingPool, push_task_timeout: float = 5) -> None:
+    def __init__(
+        self,
+        worker: TaskWorkerProcessingPool,
+        draining: threading.Event,
+        push_task_timeout: float = 5,
+    ) -> None:
         self.worker_pool = worker
+        self.draining = draining
         self.push_task_timeout = push_task_timeout
 
     def PushTask(
@@ -75,6 +81,16 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
             "taskworker.worker.push_rpc",
             tags={"result": "attempt", "processing_pool": self.worker_pool._processing_pool_name},
         )
+
+        if self.draining.is_set():
+            self.worker_pool._metrics.incr(
+                "taskworker.worker.push_rpc",
+                tags={
+                    "result": "draining",
+                    "processing_pool": self.worker_pool._processing_pool_name,
+                },
+            )
+            context.abort(grpc.StatusCode.UNAVAILABLE, "worker draining")
 
         # Create `InflightTaskActivation` from the pushed task
         inflight = InflightTaskActivation(
@@ -145,6 +161,7 @@ class PushTaskWorker:
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
+        shutdown_drain_sec: float = 0.0,
     ) -> None:
         app = import_app(app_module)
 
@@ -205,6 +222,9 @@ class PushTaskWorker:
         self._push_task_timeout = push_task_timeout
 
         self._warmup_timeout = warmup_timeout
+
+        self._shutdown_drain_sec = shutdown_drain_sec
+        self._draining = threading.Event()
 
     def _create_client(
         self,
@@ -377,10 +397,10 @@ class PushTaskWorker:
 
         server: grpc.Server | None = None
         health_servicer: health.HealthServicer | None = None
+        served = False
 
         def signal_handler(*args: Any) -> None:
-            if server:
-                server.stop(grace=5)
+            self._draining.set()
             raise KeyboardInterrupt()
 
         signal.signal(signal.SIGINT, signal_handler)
@@ -406,7 +426,7 @@ class PushTaskWorker:
             )
 
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
-                WorkerServicer(self.worker_pool, self._push_task_timeout), server
+                WorkerServicer(self.worker_pool, self._draining, self._push_task_timeout), server
             )
 
             # The health service is used by the K8s readiness check
@@ -430,6 +450,7 @@ class PushTaskWorker:
             # Indicate that the server is ready
             health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
+            served = True
 
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
             self._start_health_check_thread()
@@ -445,6 +466,16 @@ class PushTaskWorker:
                 health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
                 health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
 
+            if served and self._shutdown_drain_sec > 0:
+                logger.info(
+                    "taskworker.worker.shutdown.draining",
+                    extra={
+                        "drain_sec": self._shutdown_drain_sec,
+                        "processing_pool": self._processing_pool_name,
+                    },
+                )
+                self._grpc_sync_event.wait(self._shutdown_drain_sec)
+
             if server is not None:
                 server.stop(grace=5)
 
@@ -457,6 +488,7 @@ class PushTaskWorker:
         """
         Shutdown the worker.
         """
+        self._draining.set()
         self._stop_health_check_thread()
         self._grpc_sync_event.set()
         self.worker_pool.shutdown()

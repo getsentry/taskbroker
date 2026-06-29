@@ -784,7 +784,7 @@ class TestWorkerServicer(TestCase):
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker.worker_pool)
+            servicer = WorkerServicer(taskworker.worker_pool, taskworker._draining)
 
             response = servicer.PushTask(request, mock_context)
 
@@ -794,6 +794,33 @@ class TestWorkerServicer(TestCase):
         (inflight,) = mock_push_task.call_args[0]
         self.assertEqual(inflight.activation.id, SIMPLE_TASK.activation.id)
         self.assertEqual(inflight.host, "broker-host:50051")
+
+    def test_push_task_draining_rejected(self) -> None:
+        taskworker = PushTaskWorker(
+            app_module="examples.app:app",
+            broker_service="127.0.0.1:50051",
+            max_child_task_count=100,
+            process_type="fork",
+        )
+        taskworker._draining.set()
+        with mock.patch.object(
+            taskworker.worker_pool, "push_task", return_value=True
+        ) as mock_push_task:
+            request = PushTaskRequest(
+                task=SIMPLE_TASK.activation,
+                callback_url="broker-host:50051",
+            )
+            mock_context = mock.MagicMock()
+            # Real gRPC abort() raises to stop the handler; mirror that here.
+            mock_context.abort.side_effect = RuntimeError("aborted")
+            servicer = WorkerServicer(taskworker.worker_pool, taskworker._draining)
+
+            with self.assertRaises(RuntimeError):
+                servicer.PushTask(request, mock_context)
+
+        # New work is rejected with UNAVAILABLE and never reaches the queue.
+        mock_context.abort.assert_called_once_with(grpc.StatusCode.UNAVAILABLE, "worker draining")
+        mock_push_task.assert_not_called()
 
     def test_batch_push_task_success(self) -> None:
         taskworker = BatchPushTaskWorker(
@@ -811,7 +838,7 @@ class TestWorkerServicer(TestCase):
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker.worker_pool)
+            servicer = WorkerServicer(taskworker.worker_pool, taskworker._draining)
 
             response = servicer.PushTask(request, mock_context)
 
@@ -836,7 +863,7 @@ class TestWorkerServicer(TestCase):
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker.worker_pool)
+            servicer = WorkerServicer(taskworker.worker_pool, taskworker._draining)
 
             servicer.PushTask(request, mock_context)
 
@@ -859,7 +886,7 @@ class TestWorkerServicer(TestCase):
                 callback_url="broker-host:50051",
             )
             mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker.worker_pool)
+            servicer = WorkerServicer(taskworker.worker_pool, taskworker._draining)
 
             servicer.PushTask(request, mock_context)
 
