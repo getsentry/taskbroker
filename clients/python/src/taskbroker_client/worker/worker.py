@@ -987,7 +987,17 @@ class TaskWorkerProcessingPool:
                         child = self._children.get(message.child_id)
 
                         # If we received a message from a child, we MUST be tracking that child
-                        assert child is not None
+                        if child is None:
+                            logger.warning(
+                                "taskworker.child_message.unknown_child",
+                                extra={
+                                    "cid": str(message.child_id),
+                                    "event": message.event,
+                                    "processing_pool": self._processing_pool_name,
+                                },
+                            )
+
+                            continue
 
                         # This child is now running
                         if message.event == "running":
