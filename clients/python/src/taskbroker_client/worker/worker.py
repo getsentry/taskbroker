@@ -826,6 +826,39 @@ class TaskWorkerProcessingPool:
         with self._children_lock:
             return sum(1 for c in self._children.values() if c.state == "ready")
 
+    def _plan_child_pool_changes(self) -> tuple[int, list[TrackedChild]]:
+        """
+        Determine how to move the child pool toward the desired concurrency.
+
+        The caller must hold `_children_lock`.
+
+        Exiting children are still consuming tasks until released, so they count
+        as serving capacity. Pending children are not serving yet, but they count
+        as replacement capacity that has already been requested.
+        """
+        pending_children = [c for c in self._children.values() if c.state == "pending"]
+        ready_children = [c for c in self._children.values() if c.state == "ready"]
+        exiting_children = [c for c in self._children.values() if c.state == "exiting"]
+
+        desired_serving_capacity = self._concurrency
+        current_serving_capacity = len(ready_children) + len(exiting_children)
+
+        excess_serving_capacity = max(current_serving_capacity - desired_serving_capacity, 0)
+        children_to_release = exiting_children[:excess_serving_capacity]
+
+        kept_exiting_count = len(exiting_children) - len(children_to_release)
+
+        # Keep enough pending children to both reach desired concurrency and replace
+        # exiting children that are still serving during their grace period
+        target_pending_count = max(
+            desired_serving_capacity - len(ready_children),
+            kept_exiting_count,
+        )
+
+        children_to_spawn = max(target_pending_count - len(pending_children), 0)
+
+        return children_to_spawn, children_to_release
+
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
         Call the passed in function. If is_draining is True, the function should not fetch a new task.
@@ -1008,39 +1041,12 @@ class TaskWorkerProcessingPool:
 
                             child.state = "exiting"
 
-                    pending = sum(1 for c in self._children.values() if c.state == "pending")
-                    ready = sum(1 for c in self._children.values() if c.state == "ready")
-                    exiting = sum(1 for c in self._children.values() if c.state == "exiting")
+                    children_to_spawn, children_to_release = self._plan_child_pool_changes()
 
-                    # We initially assume all exiting children are new and require replacement
-                    needed = exiting
+                    for child in children_to_release:
+                        child.release.set()
 
-                    desired = self._concurrency
-                    active = ready + exiting
-
-                    if active > desired:
-                        # We have too many exiting children, we can release some of them
-                        releasable = active - desired
-                        released = 0
-
-                        for child in self._children.values():
-                            if released == releasable:
-                                break
-
-                            if child.state == "exiting":
-                                child.release.set()
-                                released += 1
-
-                                # No replacement needed
-                                needed -= 1
-                    else:
-                        # We may not have enough active children
-                        needed += desired - active
-
-                    # If N are needed and M are already pending, we only need to spawn N - M new children
-                    needed = max(needed - pending, 0)
-
-                for _ in range(needed):
+                for _ in range(children_to_spawn):
                     child_id = uuid4()
                     release = self._mp_context.Event()
 
