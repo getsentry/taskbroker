@@ -937,7 +937,7 @@ class TaskWorkerProcessingPool:
 
             while not self._shutdown_event.is_set():
                 # Read any events that may have come in since the last loop iteration
-                received: list[ChildMessage] = []
+                received: List[ChildMessage] = []
 
                 while True:
                     try:
@@ -947,84 +947,81 @@ class TaskWorkerProcessingPool:
                         break
 
                 with self._children_lock:
-                    for child_id, tracked_child in list(self._children.items()):
-                        if tracked_child.process.is_alive():
+                    children = list(self._children.items())
+
+                    for cid, c in children:
+                        if c.process.is_alive():
                             continue
 
-                        tracked_child.process.join(timeout=0)
-                        del self._children[child_id]
+                        c.process.join(timeout=0)
+                        self._children.pop(cid)
+
                         logger.info(
-                            "taskworker.child_exited",
+                            "taskworker.child.exited",
                             extra={
-                                "pid": tracked_child.process.pid,
-                                "child_id": str(child_id),
-                                "exitcode": tracked_child.process.exitcode,
-                                "state": tracked_child.state,
+                                "pid": c.process.pid,
+                                "cid": str(cid),
+                                "exitcode": c.process.exitcode,
+                                "state": c.state,
                                 "processing_pool": self._processing_pool_name,
                             },
                         )
 
                     for message in received:
-                        message_child = self._children.get(message.child_id)
-                        if message_child is None:
-                            logger.debug(
+                        child = self._children.get(message.child_id)
+
+                        if child is None:
+                            logger.warning(
                                 "taskworker.child_message.unknown_child",
                                 extra={
-                                    "child_id": str(message.child_id),
+                                    "cid": str(message.child_id),
                                     "event": message.event,
                                     "processing_pool": self._processing_pool_name,
                                 },
                             )
+
                             continue
 
                         if message.event == "ready":
-                            if message_child.state == "pending":
-                                message_child.state = "ready"
-
-                            else:
-                                logger.debug(
-                                    "taskworker.child_message.duplicate_ready",
+                            if child.state != "pending":
+                                logger.warning(
+                                    "taskworker.child.ready_not_pending",
                                     extra={
-                                        "child_id": str(message.child_id),
-                                        "state": message_child.state,
+                                        "cid": str(message.child_id),
+                                        "state": child.state,
                                         "processing_pool": self._processing_pool_name,
                                     },
                                 )
+
+                            child.state = "ready"
 
                         elif message.event == "exiting":
-                            if message_child.state == "ready":
-                                message_child.state = "exiting"
-                            elif message_child.state != "exiting":
-                                logger.debug(
-                                    "taskworker.child_message.exiting_before_ready",
+                            if child.state != "ready":
+                                logger.warning(
+                                    "taskworker.child.exiting_not_ready",
                                     extra={
-                                        "child_id": str(message.child_id),
-                                        "state": message_child.state,
+                                        "cid": str(message.child_id),
+                                        "state": child.state,
                                         "processing_pool": self._processing_pool_name,
                                     },
                                 )
 
-                    ready_count = sum(
-                        1
-                        for tracked_child in self._children.values()
-                        if tracked_child.state == "ready"
-                    )
-                    if ready_count >= self._concurrency:
-                        for tracked_child in self._children.values():
-                            if tracked_child.state == "exiting":
-                                tracked_child.release.set()
+                            child.state = "exiting"
 
-                    non_draining_count = sum(
-                        1
-                        for tracked_child in self._children.values()
-                        if tracked_child.state in {"pending", "ready"}
-                    )
-                    children_to_spawn = max(self._concurrency - non_draining_count, 0)
+                    ready = sum(1 for c in self._children.values() if c.state == "ready")
 
-                # If there aren't enough pending or ready processes, spawn more.
+                    if ready >= self._concurrency:
+                        for child in self._children.values():
+                            if child.state == "exiting":
+                                child.release.set()
+
+                    not_exiting = sum(1 for c in self._children.values() if c.state != "exiting")
+                    children_to_spawn = max(self._concurrency - not_exiting, 0)
+
+                # If there aren't enough pending or ready processes, spawn more
                 for _ in range(children_to_spawn):
                     child_id = uuid4()
-                    release_event = self._mp_context.Event()
+                    release = self._mp_context.Event()
 
                     process = self._mp_context.Process(
                         name=f"taskworker-child-{child_id}",
@@ -1040,7 +1037,7 @@ class TaskWorkerProcessingPool:
                             self._process_type,
                             self._skip_awaiting_futures,
                             messages,
-                            release_event,
+                            release,
                         ),
                     )
 
@@ -1048,16 +1045,16 @@ class TaskWorkerProcessingPool:
                         process.start()
                     except Exception as e:
                         logger.exception(
-                            "taskworker.spawn_child.failed",
+                            "taskworker.child.spawn.failed",
                             extra={
-                                "child_id": str(child_id),
+                                "cid": str(child_id),
                                 "error": e,
                                 "processing_pool": self._processing_pool_name,
                             },
                         )
 
                         self._metrics.incr(
-                            "taskworker.worker.spawn_child",
+                            "taskworker.worker.child.spawn",
                             tags={
                                 "processing_pool": self._processing_pool_name,
                                 "result": "failure",
@@ -1070,20 +1067,20 @@ class TaskWorkerProcessingPool:
                         self._children[child_id] = TrackedChild(
                             process=process,
                             state="pending",
-                            release=release_event,
+                            release=release,
                         )
 
                     logger.info(
-                        "taskworker.spawn_child",
+                        "taskworker.child.spawn",
                         extra={
                             "pid": process.pid,
-                            "child_id": str(child_id),
+                            "cid": str(child_id),
                             "processing_pool": self._processing_pool_name,
                         },
                     )
 
                     self._metrics.incr(
-                        "taskworker.worker.spawn_child",
+                        "taskworker.worker.child.spawn",
                         tags={
                             "processing_pool": self._processing_pool_name,
                             "result": "success",
@@ -1095,6 +1092,7 @@ class TaskWorkerProcessingPool:
         self._spawn_children_thread = threading.Thread(
             name="spawn-children", target=spawn_children_thread, daemon=True
         )
+
         self._spawn_children_thread.start()
 
     def push_task(self, inflight: InflightTaskActivation, timeout: float | None = None) -> bool:
