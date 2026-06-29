@@ -803,7 +803,12 @@ class TaskWorkerProcessingPool:
         future_checking_frequency: float = 0.1,
     ) -> None:
         self._concurrency = concurrency
-        self._min_concurrency = min_concurrency
+
+        if min_concurrency < concurrency:
+            self._min_concurrency = min_concurrency
+        else:
+            raise ValueError("Minimum concurrency must be strictly below concurrency")
+
         self._processing_pool_name = processing_pool_name or "unknown"
         self._pod_name = pod_name or "unknown"
         self._update_in_batches = update_in_batches
@@ -1012,7 +1017,7 @@ class TaskWorkerProcessingPool:
                         running = sum(1 for c in self._children.values() if c.state == "running")
 
                         if running <= self._min_concurrency:
-                            # We cannot shut down any more children without falling below minimum concurrency
+                            # Cannot shut down any more children without falling below minimum concurrency (guaranteed < concurrency)
                             break
 
                         if not exiting:
