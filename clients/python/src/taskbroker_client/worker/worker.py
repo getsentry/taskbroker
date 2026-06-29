@@ -1008,14 +1008,16 @@ class TaskWorkerProcessingPool:
 
                             child.state = "exiting"
 
+                    pending = sum(1 for c in self._children.values() if c.state == "pending")
                     ready = sum(1 for c in self._children.values() if c.state == "ready")
                     exiting = sum(1 for c in self._children.values() if c.state == "exiting")
 
                     desired = self._concurrency
+                    active = ready + exiting
 
-                    if ready + exiting > desired:
+                    if active > desired:
                         # We have too many active children
-                        releasable = ready + exiting - desired
+                        releasable = active - desired
                         released = 0
 
                         for child in self._children.values():
@@ -1029,7 +1031,10 @@ class TaskWorkerProcessingPool:
                         needed = 0
                     else:
                         # We may not have enough active children
-                        needed = desired - ready + exiting
+                        missing = desired - active
+
+                        # If we have N pending children and M needed, then we must spawn another M - N
+                        needed = max(missing - pending, 0)
 
                 for _ in range(needed):
                     child_id = uuid4()
