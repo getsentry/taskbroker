@@ -181,6 +181,7 @@ def child_process(
     processing_pool_name: str,
     process_type: str,
     skip_awaiting_futures: bool,
+    future_checking_frequency: float,
     messages: multiprocessing.Queue[ChildMessage],
     parent_release: Event,
 ) -> None:
@@ -233,6 +234,7 @@ def child_process(
         processing_pool_name: str,
         process_type: str,
         skip_awaiting_futures: bool,
+        future_checking_frequency: float,
     ) -> None:
         processed_task_count = 0
         pending_task_futures: list[ActivationWithPendingFutures] = []
@@ -307,7 +309,9 @@ def child_process(
             return oldest
 
         def check_task_future_completion(
-            shutdown_event: Event, local_shutdown: threading.Event
+            shutdown_event: Event,
+            local_shutdown: threading.Event,
+            sleep_between_iterations: float,
         ) -> None:
             while not shutdown_event.is_set() and not local_shutdown.is_set():
                 if len(pending_task_futures) > 0:
@@ -348,12 +352,17 @@ def child_process(
                                 "taskname": oldest.inflight.activation.taskname,
                             },
                         )
-                else:
-                    time.sleep(0.1)
+                # Sleep for configured time to free up the GIL
+                time.sleep(sleep_between_iterations)
 
         _future_completion_thread = threading.Thread(
             name="check-future-completion",
-            target=partial(check_task_future_completion, shutdown_event, local_shutdown),
+            target=partial(
+                check_task_future_completion,
+                shutdown_event,
+                local_shutdown,
+                future_checking_frequency,
+            ),
             daemon=True,
         )
         _future_completion_thread.start()
@@ -837,4 +846,5 @@ def child_process(
         processing_pool_name,
         process_type,
         skip_awaiting_futures,
+        future_checking_frequency,
     )

@@ -160,6 +160,7 @@ class PushTaskWorker:
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
+        future_checking_frequency: float = 0.1,
     ) -> None:
         app = import_app(app_module)
 
@@ -186,6 +187,7 @@ class PushTaskWorker:
             process_type=process_type,
             update_in_batches=update_in_batches,
             skip_awaiting_futures=skip_awaiting_futures,
+            future_checking_frequency=future_checking_frequency,
         )
 
         logger.info("Running in PUSH mode")
@@ -586,6 +588,7 @@ class TaskWorker:
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
         skip_awaiting_futures: bool = True,
+        future_checking_frequency: float = 0.1,
     ) -> None:
         self._namespace = namespace
         app = import_app(app_module)
@@ -611,6 +614,7 @@ class TaskWorker:
             processing_pool_name=processing_pool_name,
             process_type=process_type,
             skip_awaiting_futures=skip_awaiting_futures,
+            future_checking_frequency=future_checking_frequency,
         )
 
         logger.info("Running in PULL mode")
@@ -796,6 +800,7 @@ class TaskWorkerProcessingPool:
         process_type: str = "spawn",
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
+        future_checking_frequency: float = 0.1,
     ) -> None:
         self._concurrency = concurrency
         self._min_concurrency = min_concurrency
@@ -810,6 +815,7 @@ class TaskWorkerProcessingPool:
         app = import_app(app_module)
         self._metrics = app.metrics
         self._skip_awaiting_futures = skip_awaiting_futures
+        self._future_checking_frequency = future_checking_frequency
 
         self._mp_context = mp_context
         self._process_type = process_type
@@ -1027,6 +1033,7 @@ class TaskWorkerProcessingPool:
                             self._processing_pool_name,
                             self._process_type,
                             self._skip_awaiting_futures,
+                            self._future_checking_frequency,
                             messages,
                             release,
                         ),
