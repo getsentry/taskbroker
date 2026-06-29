@@ -8,10 +8,13 @@ import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
+from multiprocessing.synchronize import Event
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List
+from typing import TYPE_CHECKING, Any, Callable, List, Literal
+from uuid import UUID, uuid4
 
 import grpc
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
@@ -42,7 +45,7 @@ from taskbroker_client.worker.client import (
     parse_rpc_secret_list,
 )
 from taskbroker_client.worker.push_clients import BatchPushTaskbrokerClient, PushTaskbrokerClient
-from taskbroker_client.worker.workerchild import child_process
+from taskbroker_client.worker.workerchild import ChildMessage, child_process
 
 if TYPE_CHECKING:
     ServerInterceptor = grpc.ServerInterceptor[Any, Any]
@@ -120,6 +123,16 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
 
 class RequeueException(Exception):
     pass
+
+
+ChildLifecycleState = Literal["pending", "ready", "exiting"]
+
+
+@dataclass
+class TrackedChild:
+    process: BaseProcess
+    state: ChildLifecycleState
+    release_event: Event
 
 
 class PushTaskWorker:
@@ -800,9 +813,9 @@ class TaskWorkerProcessingPool:
         self._processed_tasks: multiprocessing.Queue[ProcessingResult] = self._mp_context.Queue(
             maxsize=result_queue_maxsize
         )
-        self._children: list[BaseProcess] = []
+        self._children: dict[UUID, TrackedChild] = {}
+        self._children_lock = threading.Lock()
         self._shutdown_event = self._mp_context.Event()
-        self._ready_counter = self._mp_context.Value("i", 0)
         self._result_thread: threading.Thread | None = None
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
@@ -810,7 +823,10 @@ class TaskWorkerProcessingPool:
     @property
     def ready_count(self) -> int:
         """Number of children that have finished warming up and are consuming."""
-        return self._ready_counter.value
+        with self._children_lock:
+            return sum(
+                1 for tracked_child in self._children.values() if tracked_child.state == "ready"
+            )
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
@@ -917,16 +933,106 @@ class TaskWorkerProcessingPool:
     def start_spawn_children_thread(self) -> None:
         def spawn_children_thread() -> None:
             logger.debug("taskworker.worker.spawn_children_thread.started")
+
+            # Queue of incoming message from children
+            messages: multiprocessing.Queue[ChildMessage] = self._mp_context.Queue()
+
             while not self._shutdown_event.is_set():
-                self._children = [child for child in self._children if child.is_alive()]
-                if len(self._children) >= self._concurrency:
-                    time.sleep(0.1)
-                    continue
-                for i in range(self._concurrency - len(self._children)):
+                # Read any events that may have come in since the last loop iteration
+                received: list[ChildMessage] = []
+
+                while True:
+                    try:
+                        message = messages.get(block=False)
+                        received.append(message)
+                    except queue.Empty:
+                        break
+
+                with self._children_lock:
+                    for child_id, tracked_child in list(self._children.items()):
+                        if tracked_child.process.is_alive():
+                            continue
+
+                        tracked_child.process.join(timeout=0)
+                        del self._children[child_id]
+                        logger.info(
+                            "taskworker.child_exited",
+                            extra={
+                                "pid": tracked_child.process.pid,
+                                "child_id": str(child_id),
+                                "exitcode": tracked_child.process.exitcode,
+                                "state": tracked_child.state,
+                                "processing_pool": self._processing_pool_name,
+                            },
+                        )
+
+                    for message in received:
+                        message_child = self._children.get(message.child_id)
+                        if message_child is None:
+                            logger.debug(
+                                "taskworker.child_message.unknown_child",
+                                extra={
+                                    "child_id": str(message.child_id),
+                                    "event": message.event,
+                                    "processing_pool": self._processing_pool_name,
+                                },
+                            )
+                            continue
+
+                        if message.event == "ready":
+                            if message_child.state == "pending":
+                                message_child.state = "ready"
+
+                            else:
+                                logger.debug(
+                                    "taskworker.child_message.duplicate_ready",
+                                    extra={
+                                        "child_id": str(message.child_id),
+                                        "state": message_child.state,
+                                        "processing_pool": self._processing_pool_name,
+                                    },
+                                )
+
+                        elif message.event == "exiting":
+                            if message_child.state == "ready":
+                                message_child.state = "exiting"
+                            elif message_child.state != "exiting":
+                                logger.debug(
+                                    "taskworker.child_message.exiting_before_ready",
+                                    extra={
+                                        "child_id": str(message.child_id),
+                                        "state": message_child.state,
+                                        "processing_pool": self._processing_pool_name,
+                                    },
+                                )
+
+                    ready_count = sum(
+                        1
+                        for tracked_child in self._children.values()
+                        if tracked_child.state == "ready"
+                    )
+                    if ready_count >= self._concurrency:
+                        for tracked_child in self._children.values():
+                            if tracked_child.state == "exiting":
+                                tracked_child.release_event.set()
+
+                    non_draining_count = sum(
+                        1
+                        for tracked_child in self._children.values()
+                        if tracked_child.state in {"pending", "ready"}
+                    )
+                    children_to_spawn = max(self._concurrency - non_draining_count, 0)
+
+                # If there aren't enough pending or ready processes, spawn more.
+                for _ in range(children_to_spawn):
+                    child_id = uuid4()
+                    release_event = self._mp_context.Event()
+
                     process = self._mp_context.Process(
-                        name=f"taskworker-child-{i}",
+                        name=f"taskworker-child-{child_id}",
                         target=child_process,
                         args=(
+                            child_id,
                             self._app_module,
                             self._child_tasks,
                             self._processed_tasks,
@@ -935,19 +1041,35 @@ class TaskWorkerProcessingPool:
                             self._processing_pool_name,
                             self._process_type,
                             self._skip_awaiting_futures,
-                            self._ready_counter,
+                            messages,
+                            release_event,
                         ),
                     )
+
                     process.start()
-                    self._children.append(process)
+
+                    with self._children_lock:
+                        self._children[child_id] = TrackedChild(
+                            process=process,
+                            state="pending",
+                            release_event=release_event,
+                        )
+
                     logger.info(
                         "taskworker.spawn_child",
-                        extra={"pid": process.pid, "processing_pool": self._processing_pool_name},
+                        extra={
+                            "pid": process.pid,
+                            "child_id": str(child_id),
+                            "processing_pool": self._processing_pool_name,
+                        },
                     )
+
                     self._metrics.incr(
                         "taskworker.worker.spawn_child",
                         tags={"processing_pool": self._processing_pool_name},
                     )
+
+                time.sleep(0.1)
 
         self._spawn_children_thread = threading.Thread(
             name="spawn-children", target=spawn_children_thread, daemon=True
@@ -1005,9 +1127,12 @@ class TaskWorkerProcessingPool:
             self._spawn_children_thread.join()
 
         logger.info("taskworker.worker.shutdown.children")
-        for child in self._children:
+        with self._children_lock:
+            children = [tracked_child.process for tracked_child in self._children.values()]
+
+        for child in children:
             child.terminate()
-        for child in self._children:
+        for child in children:
             child.join(WORKER_CHILD_JOIN_TIMEOUT_SEC)
             if child.is_alive():
                 child.kill()

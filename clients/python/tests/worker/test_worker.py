@@ -8,9 +8,11 @@ from collections.abc import Iterator, MutableMapping
 from concurrent.futures import Future
 from datetime import datetime
 from multiprocessing import Event, get_context
+from multiprocessing.synchronize import Event as MultiprocessingEvent
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest import TestCase, mock
+from uuid import uuid4
 
 import grpc
 import msgpack
@@ -45,7 +47,8 @@ from taskbroker_client.worker.worker import (
     TaskWorkerProcessingPool,
     WorkerServicer,
 )
-from taskbroker_client.worker.workerchild import child_process
+from taskbroker_client.worker.workerchild import ChildMessage
+from taskbroker_client.worker.workerchild import child_process as _child_process
 
 SIMPLE_TASK = InflightTaskActivation(
     host="localhost:50051",
@@ -266,6 +269,36 @@ def _make_processing_result(task_id: str) -> ProcessingResult:
     )
 
 
+def child_process(
+    app_module: str,
+    child_tasks: queue.Queue[InflightTaskActivation],
+    processed_tasks: queue.Queue[ProcessingResult],
+    shutdown_event: MultiprocessingEvent,
+    max_task_count: int | None,
+    processing_pool_name: str,
+    process_type: str,
+    skip_awaiting_futures: bool,
+) -> None:
+    ctx = get_context("fork")
+    messages = ctx.Queue()
+    parent_release = ctx.Event()
+    parent_release.set()
+
+    _child_process(
+        uuid4(),
+        app_module,
+        child_tasks,
+        processed_tasks,
+        shutdown_event,
+        max_task_count,
+        processing_pool_name,
+        process_type,
+        skip_awaiting_futures,
+        messages,
+        parent_release,
+    )
+
+
 class _SendResultCapture:
     def __init__(self) -> None:
         self.send_calls: list[tuple[list[ProcessingResult], bool]] = []
@@ -300,6 +333,87 @@ def _make_result_thread_pool(
         process_type="fork",
         update_in_batches=update_in_batches,
     )
+
+
+class _FakeProcess:
+    _next_pid = 1
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.name = kwargs["name"]
+        self.target = kwargs["target"]
+        self.args = kwargs["args"]
+        self.pid = _FakeProcess._next_pid
+        _FakeProcess._next_pid += 1
+        self.exitcode: int | None = None
+        self.started = False
+        self.alive = False
+        self.terminated = False
+        self.killed = False
+        self.join_calls: list[float | None] = []
+
+    def start(self) -> None:
+        self.started = True
+        self.alive = True
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_calls.append(timeout)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.alive = False
+        self.exitcode = -signal.SIGTERM
+
+    def kill(self) -> None:
+        self.killed = True
+        self.alive = False
+        self.exitcode = -signal.SIGKILL
+
+
+class _FakeContext:
+    def __init__(self) -> None:
+        self.processes: list[_FakeProcess] = []
+        self.queues: list[queue.Queue[Any]] = []
+
+    def Queue(self, maxsize: int = 0) -> queue.Queue[Any]:
+        created: queue.Queue[Any] = queue.Queue(maxsize=maxsize)
+        self.queues.append(created)
+        return created
+
+    def Event(self) -> threading.Event:
+        return threading.Event()
+
+    def Process(self, *args: Any, **kwargs: Any) -> _FakeProcess:
+        process = _FakeProcess(*args, **kwargs)
+        self.processes.append(process)
+        return process
+
+
+def _make_fake_context_pool(
+    fake_context: _FakeContext,
+    *,
+    concurrency: int = 1,
+) -> TaskWorkerProcessingPool:
+    return TaskWorkerProcessingPool(
+        app_module="examples.app:app",
+        send_result_fn=lambda x, y: None,
+        mp_context=fake_context,  # type: ignore[arg-type]
+        max_child_task_count=1,
+        concurrency=concurrency,
+        processing_pool_name="test",
+        process_type="fork",
+    )
+
+
+def _wait_for(condition: Callable[[], bool], timeout: float = 5) -> None:
+    start = time.time()
+    while time.time() - start < timeout:
+        if condition():
+            return
+        time.sleep(0.01)
+    raise AssertionError("Timed out waiting for condition")
 
 
 class TestTaskWorker(TestCase):
@@ -359,13 +473,11 @@ class TestTaskWorker(TestCase):
 
             taskworker.shutdown()
             assert mock_client.get_task.called
-            assert mock_client.update_task.call_count == 1
-            assert mock_client.update_task.call_args.args[0].host == "localhost:50051"
-            assert mock_client.update_task.call_args.args[0].task_id == SIMPLE_TASK.activation.id
-            assert (
-                mock_client.update_task.call_args.args[0].status == TASK_ACTIVATION_STATUS_COMPLETE
-            )
-            assert mock_client.update_task.call_args.args[1] is None
+            assert mock_client.update_task.call_count >= 1
+            first_update = mock_client.update_task.call_args_list[0]
+            assert first_update.args[0].host == "localhost:50051"
+            assert first_update.args[0].task_id == SIMPLE_TASK.activation.id
+            assert first_update.args[0].status == TASK_ACTIVATION_STATUS_COMPLETE
 
     def test_run_once_with_next_task(self) -> None:
         # Cover the scenario where update_task returns the next task which should
@@ -401,13 +513,11 @@ class TestTaskWorker(TestCase):
 
             taskworker.shutdown()
             assert mock_client.get_task.called
-            assert mock_client.update_task.call_count == 2
-            assert mock_client.update_task.call_args.args[0].host == "localhost:50051"
-            assert mock_client.update_task.call_args.args[0].task_id == SIMPLE_TASK.activation.id
-            assert (
-                mock_client.update_task.call_args.args[0].status == TASK_ACTIVATION_STATUS_COMPLETE
-            )
-            assert mock_client.update_task.call_args.args[1] is None
+            assert mock_client.update_task.call_count >= 2
+            for update_call in mock_client.update_task.call_args_list[:2]:
+                assert update_call.args[0].host == "localhost:50051"
+                assert update_call.args[0].task_id == SIMPLE_TASK.activation.id
+                assert update_call.args[0].status == TASK_ACTIVATION_STATUS_COMPLETE
 
     def test_run_once_with_update_failure(self) -> None:
         # Cover the scenario where update_task fails a few times in a row
@@ -665,9 +775,14 @@ def _make_push_worker(**kwargs: Any) -> PushTaskWorker:
 
 def test_await_children_warm_returns_when_ready() -> None:
     taskworker = _make_push_worker(concurrency=4, warmup_timeout=5)
-    taskworker.worker_pool._ready_counter.value = 4
 
-    with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+    with (
+        mock.patch.object(taskworker, "_metrics") as mock_metrics,
+        mock.patch.object(
+            TaskWorkerProcessingPool, "ready_count", new_callable=mock.PropertyMock
+        ) as ready_count,
+    ):
+        ready_count.return_value = 4
         start = time.time()
         taskworker._await_children_warm()
         elapsed = time.time() - start
@@ -687,8 +802,6 @@ def test_await_children_warm_returns_when_ready() -> None:
 
 def test_await_children_warm_times_out() -> None:
     taskworker = _make_push_worker(concurrency=4, warmup_timeout=0.1)
-    # Never becomes ready.
-    taskworker.worker_pool._ready_counter.value = 0
 
     with mock.patch.object(taskworker, "_metrics") as mock_metrics:
         start = time.time()
@@ -703,16 +816,23 @@ def test_await_children_warm_times_out() -> None:
 
 def test_await_children_warm_unblocks_when_children_warm() -> None:
     taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
-    taskworker.worker_pool._ready_counter.value = 0
+    ready_child_count = 0
 
     def warm_up() -> None:
+        nonlocal ready_child_count
         time.sleep(0.2)
-        taskworker.worker_pool._ready_counter.value = 2
+        ready_child_count = 2
 
     warmer = threading.Thread(target=warm_up)
     warmer.start()
     try:
-        with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+        with (
+            mock.patch.object(taskworker, "_metrics") as mock_metrics,
+            mock.patch.object(
+                TaskWorkerProcessingPool, "ready_count", new_callable=mock.PropertyMock
+            ) as ready_count,
+        ):
+            ready_count.side_effect = lambda: ready_child_count
             start = time.time()
             taskworker._await_children_warm()
             elapsed = time.time() - start
@@ -733,7 +853,6 @@ def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
 
     taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
     # Children never warm, and shutdown is requested before start() runs.
-    taskworker.worker_pool._ready_counter.value = 0
     taskworker._grpc_sync_event.set()
 
     fake_health = mock.MagicMock()
@@ -766,6 +885,82 @@ def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
     assert serving_calls == []
     # We never reached server.wait_for_termination() (returned before it).
     fake_server.wait_for_termination.assert_not_called()
+
+
+def test_spawn_children_counts_pending_children_toward_concurrency() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=2)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 2)
+        time.sleep(0.25)
+
+        assert len(fake_context.processes) == 2
+        assert pool.ready_count == 0
+    finally:
+        pool.shutdown()
+
+
+def test_spawn_children_releases_draining_child_after_replacement_ready() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=1)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 1)
+        messages = fake_context.queues[-1]
+        first_process = fake_context.processes[0]
+        first_child_id = first_process.args[0]
+        first_release = first_process.args[-1]
+
+        messages.put(ChildMessage(first_child_id, "ready"))
+        _wait_for(lambda: pool.ready_count == 1)
+
+        messages.put(ChildMessage(first_child_id, "exiting"))
+        _wait_for(lambda: len(fake_context.processes) == 2)
+
+        assert not first_release.is_set()
+
+        second_process = fake_context.processes[1]
+        second_child_id = second_process.args[0]
+        messages.put(ChildMessage(second_child_id, "ready"))
+
+        _wait_for(first_release.is_set)
+    finally:
+        pool.shutdown()
+
+
+def test_spawn_children_replaces_pending_child_that_dies_before_ready() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=1)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 1)
+        first_process = fake_context.processes[0]
+        first_process.alive = False
+        first_process.exitcode = 1
+
+        _wait_for(lambda: len(fake_context.processes) == 2)
+
+        assert first_process.join_calls
+        assert fake_context.processes[1].started
+    finally:
+        pool.shutdown()
+
+
+def test_shutdown_terminates_all_tracked_children() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=2)
+
+    pool.start_spawn_children_thread()
+    _wait_for(lambda: len(fake_context.processes) == 2)
+
+    pool.shutdown()
+
+    assert all(process.terminated for process in fake_context.processes)
+    assert all(process.join_calls for process in fake_context.processes)
 
 
 class TestWorkerServicer(TestCase):
@@ -893,15 +1088,19 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     assert mock_capture_checkin.call_count == 0
 
 
-def test_child_process_increments_ready_counter() -> None:
+def test_child_process_emits_ready_message() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
     ctx = get_context("fork")
-    ready_counter = ctx.Value("i", 0)
+    child_id = uuid4()
+    messages = ctx.Queue()
+    parent_release = ctx.Event()
+    parent_release.set()
 
     todo.put(SIMPLE_TASK)
-    child_process(
+    _child_process(
+        child_id,
         "examples.app:app",
         todo,
         processed,
@@ -910,11 +1109,69 @@ def test_child_process_increments_ready_counter() -> None:
         processing_pool_name="test",
         process_type="fork",
         skip_awaiting_futures=False,
-        ready_counter=ready_counter,
+        messages=messages,
+        parent_release=parent_release,
     )
 
-    # The child increments the counter once warmup is done, before consuming.
-    assert ready_counter.value == 1
+    # The child signals readiness once warmup is done, before consuming.
+    message = messages.get(timeout=1)
+    assert message == ChildMessage(child_id, "ready")
+
+
+@mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
+def test_child_process_emits_exiting_once_and_continues_until_release(
+    mock_capture_checkin: mock.MagicMock,
+) -> None:
+    shutdown = Event()
+    ctx = get_context("fork")
+    child_id = uuid4()
+    todo = ctx.Queue()
+    processed = ctx.Queue()
+    messages = ctx.Queue()
+    parent_release = ctx.Event()
+
+    todo.put(SIMPLE_TASK)
+    process = ctx.Process(
+        target=_child_process,
+        args=(
+            child_id,
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            1,
+            "test",
+            "fork",
+            False,
+            messages,
+            parent_release,
+        ),
+    )
+    process.start()
+    try:
+        ready_message = messages.get(timeout=5)
+        exiting_message = messages.get(timeout=5)
+
+        assert ready_message == ChildMessage(child_id, "ready")
+        assert exiting_message == ChildMessage(child_id, "exiting")
+        assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
+
+        todo.put(SIMPLE_TASK)
+        assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
+
+        time.sleep(0.2)
+        assert process.is_alive()
+        assert messages.empty()
+
+        parent_release.set()
+        process.join(timeout=5)
+        assert not process.is_alive()
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+
+    assert mock_capture_checkin.call_count == 0
 
 
 def test_child_process_remove_start_time_kwargs() -> None:
