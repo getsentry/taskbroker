@@ -938,7 +938,6 @@ class TaskWorkerProcessingPool:
             while not self._shutdown_event.is_set():
                 # Read any events that may have come in since the last loop iteration
                 received: List[ChildMessage] = []
-                needed = 0
 
                 while True:
                     try:
@@ -1008,11 +1007,13 @@ class TaskWorkerProcessingPool:
                                 )
 
                             child.state = "exiting"
-                            needed += 1
 
                     pending = sum(1 for c in self._children.values() if c.state == "pending")
                     ready = sum(1 for c in self._children.values() if c.state == "ready")
                     exiting = sum(1 for c in self._children.values() if c.state == "exiting")
+
+                    # We initially assume all exiting children are new and require replacement
+                    needed = exiting
 
                     desired = self._concurrency
                     active = ready + exiting
@@ -1029,12 +1030,15 @@ class TaskWorkerProcessingPool:
                             if child.state == "exiting":
                                 child.release.set()
                                 released += 1
+
+                                # No replacement needed
+                                needed -= 1
                     else:
                         # We may not have enough active children
-                        missing = desired - active
+                        needed += desired - active
 
-                        # If we have N pending children and M needed, then we must spawn another M - N
-                        needed += max(missing - pending, 0)
+                    # If N are needed and M are already pending, we only need to spawn N - M new children
+                    needed = max(needed - pending, 0)
 
                 for _ in range(needed):
                     child_id = uuid4()
