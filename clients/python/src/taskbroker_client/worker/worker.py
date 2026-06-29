@@ -1046,7 +1046,27 @@ class TaskWorkerProcessingPool:
                         ),
                     )
 
-                    process.start()
+                    try:
+                        process.start()
+                    except Exception as e:
+                        logger.exception(
+                            "taskworker.spawn_child.failed",
+                            extra={
+                                "child_id": str(child_id),
+                                "error": e,
+                                "processing_pool": self._processing_pool_name,
+                            },
+                        )
+
+                        self._metrics.incr(
+                            "taskworker.worker.spawn_child",
+                            tags={
+                                "processing_pool": self._processing_pool_name,
+                                "result": "failure",
+                            },
+                        )
+
+                        continue
 
                     with self._children_lock:
                         self._children[child_id] = TrackedChild(
@@ -1066,7 +1086,10 @@ class TaskWorkerProcessingPool:
 
                     self._metrics.incr(
                         "taskworker.worker.spawn_child",
-                        tags={"processing_pool": self._processing_pool_name},
+                        tags={
+                            "processing_pool": self._processing_pool_name,
+                            "result": "success",
+                        },
                     )
 
                 time.sleep(0.1)
