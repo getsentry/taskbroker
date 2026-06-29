@@ -1098,7 +1098,7 @@ class TaskWorkerProcessingPool:
                         )
 
                     logger.info(
-                        "taskworker.child.spawn",
+                        "taskworker.spawn_child",
                         extra={
                             "pid": process.pid,
                             "cid": str(child_id),
@@ -1107,7 +1107,7 @@ class TaskWorkerProcessingPool:
                     )
 
                     self._metrics.incr(
-                        "taskworker.worker.child.spawn",
+                        "taskworker.worker.spawn_child",
                         tags={
                             "processing_pool": self._processing_pool_name,
                             "result": "success",
@@ -1119,7 +1119,6 @@ class TaskWorkerProcessingPool:
         self._spawn_children_thread = threading.Thread(
             name="spawn-children", target=spawn_children_thread, daemon=True
         )
-
         self._spawn_children_thread.start()
 
     def push_task(self, inflight: InflightTaskActivation, timeout: float | None = None) -> bool:

@@ -825,8 +825,7 @@ def child_process(
             futures_start_time,
         )
 
-    # Signal that this child has warmed up and is ready to consume tasks
-    # The parent uses this to gate the gRPC SERVING health signal. Monotonic by design
+    # Tell the parent that this child has warmed up and is ready to consume tasks
     messages.put_nowait(ChildMessage(child_id, "ready"))
 
     # Run the worker loop
