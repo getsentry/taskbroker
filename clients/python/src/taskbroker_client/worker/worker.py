@@ -999,19 +999,22 @@ class TaskWorkerProcessingPool:
 
                     while True:
                         # Compute how many children are still running
-                        running = sum([1 for c in self._children.values() if c.state == "running"])
+                        running = sum(1 for c in self._children.values() if c.state == "running")
 
                         if running <= self._min_concurrency:
                             # We cannot shut down any more children without falling below minimum concurrency
                             break
 
-                        # We can shut down another child without falling below minimum concurrency
+                        if not exiting:
+                            # No children are waiting to exit
+                            break
+
                         child_id = exiting.popleft()
 
                         self._children[child_id].state = "exiting"
                         self._children[child_id].release.set()
 
-                    spawned = sum([1 for c in self._children.values() if c.state != "exiting"])
+                    spawned = sum(1 for c in self._children.values() if c.state != "exiting")
 
                 # How many children do we need to spawn?
                 needed = max(self._concurrency - spawned, 0)
