@@ -13,7 +13,7 @@ from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List, Literal
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal
 from uuid import UUID, uuid4
 
 import grpc
@@ -125,14 +125,14 @@ class RequeueException(Exception):
     pass
 
 
-ChildLifecycleState = Literal["pending", "ready", "exiting"]
+ChildState = Literal["pending", "ready", "exiting"]
 
 
 @dataclass
 class TrackedChild:
     process: BaseProcess
-    state: ChildLifecycleState
-    release_event: Event
+    state: ChildState
+    release: Event
 
 
 class PushTaskWorker:
@@ -813,7 +813,7 @@ class TaskWorkerProcessingPool:
         self._processed_tasks: multiprocessing.Queue[ProcessingResult] = self._mp_context.Queue(
             maxsize=result_queue_maxsize
         )
-        self._children: dict[UUID, TrackedChild] = {}
+        self._children: Dict[UUID, TrackedChild] = {}
         self._children_lock = threading.Lock()
         self._shutdown_event = self._mp_context.Event()
         self._result_thread: threading.Thread | None = None
@@ -824,9 +824,7 @@ class TaskWorkerProcessingPool:
     def ready_count(self) -> int:
         """Number of children that have finished warming up and are consuming."""
         with self._children_lock:
-            return sum(
-                1 for tracked_child in self._children.values() if tracked_child.state == "ready"
-            )
+            return sum(1 for c in self._children.values() if c.state == "ready")
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
@@ -1014,7 +1012,7 @@ class TaskWorkerProcessingPool:
                     if ready_count >= self._concurrency:
                         for tracked_child in self._children.values():
                             if tracked_child.state == "exiting":
-                                tracked_child.release_event.set()
+                                tracked_child.release.set()
 
                     non_draining_count = sum(
                         1
@@ -1072,7 +1070,7 @@ class TaskWorkerProcessingPool:
                         self._children[child_id] = TrackedChild(
                             process=process,
                             state="pending",
-                            release_event=release_event,
+                            release=release_event,
                         )
 
                     logger.info(
