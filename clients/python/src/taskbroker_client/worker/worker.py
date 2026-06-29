@@ -7,13 +7,14 @@ import queue
 import signal
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Literal
 from uuid import UUID, uuid4
 
 import grpc
@@ -125,7 +126,7 @@ class RequeueException(Exception):
     pass
 
 
-ChildState = Literal["pending", "ready", "exiting"]
+ChildState = Literal["pending", "running", "exiting"]
 
 
 @dataclass
@@ -145,6 +146,7 @@ class PushTaskWorker:
         max_child_task_count: int | None = None,
         namespace: str | None = None,
         concurrency: int = 1,
+        min_concurrency: int = 1,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         result_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         rebalance_after: int = DEFAULT_REBALANCE_AFTER,
@@ -176,6 +178,7 @@ class PushTaskWorker:
             send_result_fn=self._send_results,
             max_child_task_count=max_child_task_count,
             concurrency=concurrency,
+            min_concurrency=min_concurrency,
             child_tasks_queue_maxsize=child_tasks_queue_maxsize,
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
@@ -574,6 +577,7 @@ class TaskWorker:
         max_child_task_count: int | None = None,
         namespace: str | None = None,
         concurrency: int = 1,
+        min_concurrency: int = 1,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         result_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         rebalance_after: int = DEFAULT_REBALANCE_AFTER,
@@ -601,6 +605,7 @@ class TaskWorker:
             send_result_fn=self._send_results,
             max_child_task_count=max_child_task_count,
             concurrency=concurrency,
+            min_concurrency=min_concurrency,
             child_tasks_queue_maxsize=child_tasks_queue_maxsize,
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
@@ -783,6 +788,7 @@ class TaskWorkerProcessingPool:
         mp_context: ForkContext | SpawnContext | ForkServerContext,
         max_child_task_count: int | None = None,
         concurrency: int = 1,
+        min_concurrency: int = 1,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         result_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         processing_pool_name: str | None = None,
@@ -792,6 +798,7 @@ class TaskWorkerProcessingPool:
         skip_awaiting_futures: bool = True,
     ) -> None:
         self._concurrency = concurrency
+        self._min_concurrency = min_concurrency
         self._processing_pool_name = processing_pool_name or "unknown"
         self._pod_name = pod_name or "unknown"
         self._update_in_batches = update_in_batches
@@ -824,40 +831,7 @@ class TaskWorkerProcessingPool:
     def ready_count(self) -> int:
         """Number of children that have finished warming up and are consuming."""
         with self._children_lock:
-            return sum(1 for c in self._children.values() if c.state == "ready")
-
-    def _plan_child_pool_changes(self) -> tuple[int, list[TrackedChild]]:
-        """
-        Determine how to move the child pool toward the desired concurrency.
-
-        The caller must hold `_children_lock`.
-
-        Exiting children are still consuming tasks until released, so they count
-        as serving capacity. Pending children are not serving yet, but they count
-        as replacement capacity that has already been requested.
-        """
-        pending_children = [c for c in self._children.values() if c.state == "pending"]
-        ready_children = [c for c in self._children.values() if c.state == "ready"]
-        exiting_children = [c for c in self._children.values() if c.state == "exiting"]
-
-        desired_serving_capacity = self._concurrency
-        current_serving_capacity = len(ready_children) + len(exiting_children)
-
-        excess_serving_capacity = max(current_serving_capacity - desired_serving_capacity, 0)
-        children_to_release = exiting_children[:excess_serving_capacity]
-
-        kept_exiting_count = len(exiting_children) - len(children_to_release)
-
-        # Keep enough pending children to both reach desired concurrency and replace
-        # exiting children that are still serving during their grace period
-        target_pending_count = max(
-            desired_serving_capacity - len(ready_children),
-            kept_exiting_count,
-        )
-
-        children_to_spawn = max(target_pending_count - len(pending_children), 0)
-
-        return children_to_spawn, children_to_release
+            return sum(1 for c in self._children.values() if c.state == "running")
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
@@ -968,6 +942,9 @@ class TaskWorkerProcessingPool:
             # Queue of incoming message from children
             messages: multiprocessing.Queue[ChildMessage] = self._mp_context.Queue()
 
+            # Queue of children that want to exit
+            exiting: Deque[UUID] = deque()
+
             while not self._shutdown_event.is_set():
                 # Read any events that may have come in since the last loop iteration
                 received: List[ChildMessage] = []
@@ -1003,50 +980,38 @@ class TaskWorkerProcessingPool:
                     for message in received:
                         child = self._children.get(message.child_id)
 
-                        if child is None:
-                            logger.warning(
-                                "taskworker.child_message.unknown_child",
-                                extra={
-                                    "cid": str(message.child_id),
-                                    "event": message.event,
-                                    "processing_pool": self._processing_pool_name,
-                                },
-                            )
+                        # If we received a message from a child, we MUST be tracking that child
+                        assert child is not None
 
-                            continue
+                        # This child is now running
+                        if message.event == "running":
+                            child.state = "running"
 
-                        if message.event == "ready":
-                            if child.state != "pending":
-                                logger.warning(
-                                    "taskworker.child.ready_not_pending",
-                                    extra={
-                                        "cid": str(message.child_id),
-                                        "state": child.state,
-                                        "processing_pool": self._processing_pool_name,
-                                    },
-                                )
-
-                            child.state = "ready"
-
+                        # This child wants to exit, but we may not have enough running children to shut down right away
                         elif message.event == "exiting":
-                            if child.state != "ready":
-                                logger.warning(
-                                    "taskworker.child.exiting_not_ready",
-                                    extra={
-                                        "cid": str(message.child_id),
-                                        "state": child.state,
-                                        "processing_pool": self._processing_pool_name,
-                                    },
-                                )
+                            exiting.append(message.child_id)
 
-                            child.state = "exiting"
+                    while True:
+                        # Compute how many children are still running
+                        running = sum([1 for c in self._children.values() if c.state == "running"])
 
-                    children_to_spawn, children_to_release = self._plan_child_pool_changes()
+                        if running <= self._min_concurrency:
+                            # We cannot shut down any more children without falling below minimum concurrency
+                            break
 
-                    for child in children_to_release:
-                        child.release.set()
+                        # We can shut down another child without falling below minimum concurrency
+                        child_id = exiting.popleft()
 
-                for _ in range(children_to_spawn):
+                        self._children[child_id].state = "exiting"
+                        self._children[child_id].release.set()
+
+                # How many children do we need to spawn?
+                spawned = sum(
+                    [1 for c in self._children.values() if c.state in ["pending", "running"]]
+                )
+                needed = max(self._concurrency - spawned, 0)
+
+                for _ in range(needed):
                     child_id = uuid4()
                     release = self._mp_context.Event()
 

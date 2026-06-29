@@ -168,7 +168,7 @@ def _log_task_retry_exhausted(
 @dataclass(frozen=True)
 class ChildMessage:
     child_id: UUID
-    event: Literal["ready"] | Literal["exiting"]
+    event: Literal["running"] | Literal["exiting"]
 
 
 def child_process(
@@ -826,7 +826,7 @@ def child_process(
         )
 
     # Tell the parent that this child has warmed up and is ready to consume tasks
-    messages.put_nowait(ChildMessage(child_id, "ready"))
+    messages.put_nowait(ChildMessage(child_id, "running"))
 
     # Run the worker loop
     run_worker(

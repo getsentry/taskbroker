@@ -914,7 +914,7 @@ def test_spawn_children_releases_draining_child_after_replacement_ready() -> Non
         first_child_id = first_process.args[0]
         first_release = first_process.args[-1]
 
-        messages.put(ChildMessage(first_child_id, "ready"))
+        messages.put(ChildMessage(first_child_id, "running"))
         _wait_for(lambda: pool.ready_count == 1)
 
         messages.put(ChildMessage(first_child_id, "exiting"))
@@ -924,7 +924,7 @@ def test_spawn_children_releases_draining_child_after_replacement_ready() -> Non
 
         second_process = fake_context.processes[1]
         second_child_id = second_process.args[0]
-        messages.put(ChildMessage(second_child_id, "ready"))
+        messages.put(ChildMessage(second_child_id, "running"))
 
         _wait_for(first_release.is_set)
     finally:
@@ -1115,7 +1115,7 @@ def test_child_process_emits_ready_message() -> None:
 
     # The child signals readiness once warmup is done, before consuming.
     message = messages.get(timeout=1)
-    assert message == ChildMessage(child_id, "ready")
+    assert message == ChildMessage(child_id, "running")
 
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
@@ -1152,7 +1152,7 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
         ready_message = messages.get(timeout=5)
         exiting_message = messages.get(timeout=5)
 
-        assert ready_message == ChildMessage(child_id, "ready")
+        assert ready_message == ChildMessage(child_id, "running")
         assert exiting_message == ChildMessage(child_id, "exiting")
         assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
 
