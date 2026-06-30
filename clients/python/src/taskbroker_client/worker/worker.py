@@ -1149,6 +1149,15 @@ class TaskWorkerProcessingPool:
 
                     try:
                         process.start()
+
+                        with self._children_lock:
+                            child = TrackedChild(
+                                process=process,
+                                state="pending",
+                                release=release,
+                            )
+
+                            self._children[child_id] = child
                     except Exception as e:
                         logger.exception(
                             "taskworker.child.spawn.failed",
@@ -1168,13 +1177,6 @@ class TaskWorkerProcessingPool:
                         )
 
                         continue
-
-                    with self._children_lock:
-                        self._children[child_id] = TrackedChild(
-                            process=process,
-                            state="pending",
-                            release=release,
-                        )
 
                     logger.info(
                         "taskworker.spawn_child",
