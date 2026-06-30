@@ -1,6 +1,6 @@
 use std::mem::replace;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use futures::future::join_all;
@@ -98,19 +98,32 @@ impl Reducer for ActivationBatcher {
 
         // Drop the task if a killswitch matches. `should_drop` only decodes the activation
         // when a selector targets this task, and fails open on any decode error.
-        if let Some(match_kind) = crate::killswitch::should_drop(
-            &runtime_config.drop_task_killswitch,
-            task_name,
-            &t.activation,
-        ) {
-            metrics::counter!(
-                "filter.drop_task_killswitch",
+        //
+        // Guard on emptiness so the common "no killswitches active" case skips the timing
+        // entirely: when active, the selector path decodes each candidate activation's
+        // msgpack args, so record how long that costs per activation.
+        if !runtime_config.drop_task_killswitch.is_empty() {
+            let should_drop_start = Instant::now();
+            let match_kind = crate::killswitch::should_drop(
+                &runtime_config.drop_task_killswitch,
+                task_name,
+                &t.activation,
+            );
+            metrics::histogram!(
+                "filter.drop_task_killswitch.duration",
                 "topic" => self.config.kafka_topic.clone(),
-                "taskname" => task_name.clone(),
-                "match" => match_kind,
             )
-            .increment(1);
-            return Ok(());
+            .record(should_drop_start.elapsed());
+            if let Some(match_kind) = match_kind {
+                metrics::counter!(
+                    "filter.drop_task_killswitch",
+                    "topic" => self.config.kafka_topic.clone(),
+                    "taskname" => task_name.clone(),
+                    "match" => match_kind,
+                )
+                .increment(1);
+                return Ok(());
+            }
         }
 
         if let Some(expires_at) = t.expires_at
