@@ -29,10 +29,14 @@ pub mod validate;
 use deprecated::DeprecatedConfig;
 use kafka::{ClusterConfig, TopicConfig};
 use raw::RawModeConfig;
-use store::DatabaseAdapter;
 
 /// Used to identify whether a configuration option was provided by a user, or whether it is a default.
 const DEFAULT_CONFIG_PROVIDER: &str = "TaskbrokerConfig";
+
+/// The default Kafka topic used when none is configured (the historical
+/// zero-config `taskworker` default). Also used as the default `topic` for
+/// activations that aren't built from a Kafka message (e.g. in tests).
+pub const DEFAULT_TOPIC: &str = "taskworker";
 
 /// How the taskbroker delivers tasks to workers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
@@ -403,7 +407,6 @@ impl Config {
     pub(crate) fn normalize_and_validate(&mut self) -> Result<()> {
         const DEFAULT_CLUSTER: &str = "default";
         const DEADLETTER_CLUSTER: &str = "deadletter";
-        const DEFAULT_TOPIC: &str = "taskworker";
         const DEFAULT_CLUSTER_ADDRESS: &str = "127.0.0.1:9092";
         const DEFAULT_CONSUMER_GROUP: &str = "taskworker";
 
@@ -629,23 +632,6 @@ impl Config {
 
         // Validate at least one consumable topic.
         let consumable = self.consumable_topics()?;
-
-        // Multi-topic consumption is only supported on the sqlite adapter for
-        // now. The postgres adapter filters claims by a single shared partition
-        // list, but those partition numbers aren't unique across topics, so the
-        // filter would mix partitions from different topics together. Note this
-        // filtering exists only to avoid lock contention between brokers, not for
-        // correctness; supporting multi-topic on postgres means reworking how we
-        // avoid that contention (e.g. filtering by (topic, partition) or another
-        // mechanism entirely). Reject the combination here, before any consumer
-        // spawns.
-        if consumable.len() > 1 && self.store.adapter == DatabaseAdapter::Postgres {
-            return Err(anyhow!(
-                "multi-topic consumption ({} consumable topics) is not supported with the \
-                 postgres database adapter; use the sqlite adapter or a single consumable topic",
-                consumable.len()
-            ));
-        }
 
         // The deadletter topic must be a declared topic so the producer can
         // resolve its cluster. In legacy mode it was added above; in the new
@@ -909,7 +895,8 @@ mod tests {
     use crate::logging::LogFormat;
     use crate::{Args, Run};
 
-    use super::{Config, DatabaseAdapter, DeliveryMode};
+    use super::store::DatabaseAdapter;
+    use super::{Config, DeliveryMode};
 
     #[test]
     fn test_default() {
@@ -1693,57 +1680,6 @@ kafka_clusters:
             let err = Config::from_args(&args).unwrap_err();
             assert!(
                 err.to_string().contains("unknown cluster"),
-                "unexpected error: {}",
-                err
-            );
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_multi_topic_rejected_on_postgres() {
-        Jail::expect_with(|jail| {
-            // Multiple consumable topics are allowed on sqlite but rejected on
-            // postgres, whose claim filtering can't distinguish partitions
-            // across topics.
-            jail.create_file(
-                "config.yaml",
-                r#"
-database_adapter: postgres
-kafka_deadletter_topic: tasks-dlq
-kafka_retry_topic: tasks-retry
-
-kafka_topics:
-  profiles:
-    cluster: my-cluster
-    consumer_group: taskbroker-profiles
-  subscriptions:
-    cluster: my-cluster
-    consumer_group: taskbroker-subscriptions
-  tasks-retry:
-    cluster: my-cluster
-    consumer_group: taskbroker-retry
-    produce_only: true
-  tasks-dlq:
-    cluster: my-cluster
-    consumer_group: taskbroker-dlq
-    produce_only: true
-
-kafka_clusters:
-  my-cluster:
-    address: 10.0.0.1:9092
-"#,
-            )?;
-
-            let args = Args {
-                run: Run::Broker,
-                config: Some("config.yaml".to_owned()),
-            };
-            let err = Config::from_args(&args).unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("not supported with the postgres database adapter"),
                 "unexpected error: {}",
                 err
             );

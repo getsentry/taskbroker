@@ -21,6 +21,7 @@ use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
 
 /// The upkeep task that periodically performs upkeep
 /// on the activation store
@@ -46,7 +47,7 @@ pub async fn upkeep(
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
-    let mut emitted_partitions: HashSet<i32> = HashSet::new();
+    let mut emitted_partitions: HashSet<TopicPartition> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
@@ -129,7 +130,7 @@ pub async fn do_upkeep(
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
-    emitted_partitions: &mut HashSet<i32>,
+    emitted_partitions: &mut HashSet<TopicPartition>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -499,28 +500,30 @@ pub async fn do_upkeep(
     // without a partition filter still see the global total via tag sum.
     // Zero out gauges for partitions we emitted last cycle but no longer own.
     if let Ok(depths) = depth_counts {
-        let current: HashSet<i32> = depths.keys().copied().collect();
+        let current: HashSet<TopicPartition> = depths.keys().cloned().collect();
 
-        for partition in emitted_partitions.difference(&current) {
-            let partition = partition.to_string();
-            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+        for tp in emitted_partitions.difference(&current) {
+            let topic = tp.topic.clone();
+            let partition = tp.partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition).set(0.0);
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition).set(0.0);
         }
 
-        for (partition, counts) in &depths {
-            let partition = partition.to_string();
-            metrics::gauge!("upkeep.current_pending_tasks", "partition" => partition.clone())
+        for (tp, counts) in &depths {
+            let topic = tp.topic.clone();
+            let partition = tp.partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(counts.pending as f64);
-            metrics::gauge!("upkeep.current_claimed_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(counts.claimed as f64);
-            metrics::gauge!("upkeep.current_processing_tasks", "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
                 .set(counts.processing as f64);
-            metrics::gauge!("upkeep.current_delayed_tasks", "partition" => partition)
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition)
                 .set(counts.delay as f64);
         }
 
@@ -743,10 +746,8 @@ mod tests {
             activation.received_at.unwrap().nanos as u32,
         )
         .expect("");
-        {
-            #![allow(deprecated)]
-            activation.parameters = r#"{"a":"b"}"#.into();
-        }
+        // msgpack-encoded `{"a": "b"}`
+        activation.parameters_bytes = vec![0x81, 0xa1, b'a', 0xa1, b'b'];
         activation.delay = Some(30);
         records[0].status = ActivationStatus::Retry;
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
@@ -785,10 +786,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.taskname, activation_to_check.taskname);
         assert_eq!(activation.namespace, activation_to_check.namespace);
-        {
-            #![allow(deprecated)]
-            assert_eq!(activation.parameters, activation_to_check.parameters);
-        }
+        assert_eq!(
+            activation.parameters_bytes,
+            activation_to_check.parameters_bytes
+        );
         // received_at should be set be later than the original activation
         assert!(
             activation.received_at.unwrap().seconds
@@ -1121,10 +1122,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.id, activation_to_check.id);
         // DLQ should retain parameters of original task
-        {
-            #![allow(deprecated)]
-            assert_eq!(activation.parameters, activation_to_check.parameters);
-        }
+        assert_eq!(
+            activation.parameters_bytes,
+            activation_to_check.parameters_bytes
+        );
     }
 
     #[tokio::test]

@@ -1,4 +1,54 @@
 # Changelog
+## 0.20.7
+
+### Internal Changes 🔧
+
+- (TaskProducer) Free up the GIL more by @bmckerry in [#733](https://github.com/getsentry/taskbroker/pull/733)
+
+## 0.20.6
+
+### New Features ✨
+
+- (worker) Defer SERVING until child processes are warm by @enochtangg in [#731](https://github.com/getsentry/taskbroker/pull/731)
+
+## 0.20.5
+
+### Internal Changes 🔧
+
+- (deps) Drop hard redis-py-cluster dependency to allow redis>=4 by @cmanallen in [#730](https://github.com/getsentry/taskbroker/pull/730)
+
+## 0.20.4
+
+### Internal Changes 🔧
+
+- (workerchild) Allow user to specify if futures should be awaited by @bmckerry in [#729](https://github.com/getsentry/taskbroker/pull/729)
+
+## 0.20.3
+
+### Bug Fixes 🐛
+
+- (taskworker) Fix Worker Queue Metrics by @george-sentry in [#728](https://github.com/getsentry/taskbroker/pull/728)
+
+## 0.20.2
+
+### Internal Changes 🔧
+
+- (workerchild) Move checking future completion into bg thread by @bmckerry in [#727](https://github.com/getsentry/taskbroker/pull/727)
+
+## 0.20.1
+
+- No documented changes.
+
+## 0.19.4
+
+- fix(worker) Add processing_pool tag to client metrics by @markstory in [#725](https://github.com/getsentry/taskbroker/pull/725)
+
+## 0.20.0
+
+### Internal Changes 🔧
+
+- (params) Remove JSON parameter encoding by @untitaker in [#723](https://github.com/getsentry/taskbroker/pull/723)
+
 ## 0.19.3
 
 ### Internal Changes 🔧

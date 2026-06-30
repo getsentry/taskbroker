@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import contextlib
 import logging
 import queue
@@ -9,13 +8,16 @@ import threading
 import time
 from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
+from functools import partial
 from multiprocessing.synchronize import Event
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from multiprocessing.sharedctypes import Synchronized
 
 # XXX: Don't import any modules that will import django here, do those within child_process
 import msgpack
-import orjson
 import sentry_sdk
 import zstandard as zstd
 from arroyo.backends.abstract import ProducerFuture
@@ -94,24 +96,10 @@ def load_parameters(activation: TaskActivation) -> dict[str, Any]:
     headers = dict(activation.headers)
     compression_type = headers.get("compression-type", None)
 
-    # Prefer new msgpack field
-    if activation.parameters_bytes:
-        data = activation.parameters_bytes
-        if compression_type == CompressionType.ZSTD.value:
-            data = zstd.decompress(data)
-        return msgpack.unpackb(data, raw=False)
-
-    # Legacy JSON fallback
-    data_str = activation.parameters
-    if not compression_type or compression_type == CompressionType.PLAINTEXT.value:
-        return orjson.loads(data_str)
-    elif compression_type == CompressionType.ZSTD.value:
-        return orjson.loads(zstd.decompress(base64.b64decode(data_str)))
-    else:
-        logger.error(
-            "Unsupported compression type: %s. Continuing with plaintext.", compression_type
-        )
-        return orjson.loads(data_str)
+    data = activation.parameters_bytes
+    if compression_type == CompressionType.ZSTD.value:
+        data = zstd.decompress(data)
+    return msgpack.unpackb(data, raw=False)
 
 
 def status_name(status: TaskActivationStatus.ValueType) -> str:
@@ -186,6 +174,9 @@ def child_process(
     max_task_count: int | None,
     processing_pool_name: str,
     process_type: str,
+    skip_awaiting_futures: bool,
+    future_checking_frequency: float,
+    ready_counter: "Synchronized[int] | None" = None,
 ) -> None:
     """
     The entrypoint for spawned worker children.
@@ -235,6 +226,8 @@ def child_process(
         max_task_count: int | None,
         processing_pool_name: str,
         process_type: str,
+        skip_awaiting_futures: bool,
+        future_checking_frequency: float,
     ) -> None:
         processed_task_count = 0
         pending_task_futures: list[ActivationWithPendingFutures] = []
@@ -287,8 +280,6 @@ def child_process(
                 },
             )
             pending_task_futures.remove(task)
-            # FIXME(benm): Use passthrough option to get future-related metrics
-            # without placing a duplicate ProcessingResult
             _task_execution_complete(
                 inflight=task.inflight,
                 next_state=task.status,
@@ -296,7 +287,7 @@ def child_process(
                 execution_end_time=task.futures_start_time,
                 task_func=task.task_func,
                 futures_start_time=task.futures_start_time,
-                passthrough=True,
+                passthrough=skip_awaiting_futures,
             )
 
         def get_oldest_pending_activation() -> ActivationWithPendingFutures | None:
@@ -310,43 +301,64 @@ def child_process(
                     oldest = task
             return oldest
 
-        def check_task_future_completion() -> None:
-            if len(pending_task_futures) > 0:
-                # Records how many activations with pending producer futures
-                # the worker child has. Only records when there are pending activations.
-                metrics.gauge(
-                    "taskworker.worker.activations_with_pending_futures",
-                    len(pending_task_futures),
-                    tags={
-                        "processing_pool": processing_pool_name,
-                    },
-                )
-                for task in pending_task_futures.copy():
-                    future_status = [f.done() for fut in task.pending_futures.values() for f in fut]
-                    if all(future_status):
-                        await_task_futures(task)
-                    else:
-                        # How many futures are still pending in this task
-                        metrics.distribution(
-                            "taskworker.task.incomplete_futures",
-                            len([f for f in future_status if not f]),
-                            tags={
-                                "processing_pool": processing_pool_name,
-                                "namespace": task.inflight.activation.namespace,
-                                "taskname": task.inflight.activation.taskname,
-                            },
-                        )
-                # How long has the oldest pending task been sitting in the queue
-                if oldest := get_oldest_pending_activation():
-                    metrics.distribution(
-                        "taskworker.worker.oldest_pending_activation_age",
-                        time.time() - oldest.futures_start_time,
+        def check_task_future_completion(
+            shutdown_event: Event,
+            local_shutdown: threading.Event,
+            sleep_between_iterations: float,
+        ) -> None:
+            while not shutdown_event.is_set() and not local_shutdown.is_set():
+                if len(pending_task_futures) > 0:
+                    # Records how many activations with pending producer futures
+                    # the worker child has. Only records when there are pending activations.
+                    metrics.gauge(
+                        "taskworker.worker.activations_with_pending_futures",
+                        len(pending_task_futures),
                         tags={
                             "processing_pool": processing_pool_name,
-                            "namespace": oldest.inflight.activation.namespace,
-                            "taskname": oldest.inflight.activation.taskname,
                         },
                     )
+                    for task in pending_task_futures.copy():
+                        future_status = [
+                            f.done() for fut in task.pending_futures.values() for f in fut
+                        ]
+                        if all(future_status):
+                            await_task_futures(task)
+                        else:
+                            # How many futures are still pending in this task
+                            metrics.distribution(
+                                "taskworker.task.incomplete_futures",
+                                len([f for f in future_status if not f]),
+                                tags={
+                                    "processing_pool": processing_pool_name,
+                                    "namespace": task.inflight.activation.namespace,
+                                    "taskname": task.inflight.activation.taskname,
+                                },
+                            )
+                    # How long has the oldest pending task been sitting in the queue
+                    if oldest := get_oldest_pending_activation():
+                        metrics.distribution(
+                            "taskworker.worker.oldest_pending_activation_age",
+                            time.time() - oldest.futures_start_time,
+                            tags={
+                                "processing_pool": processing_pool_name,
+                                "namespace": oldest.inflight.activation.namespace,
+                                "taskname": oldest.inflight.activation.taskname,
+                            },
+                        )
+                # Sleep for configured time to free up the GIL
+                time.sleep(sleep_between_iterations)
+
+        _future_completion_thread = threading.Thread(
+            name="check-future-completion",
+            target=partial(
+                check_task_future_completion,
+                shutdown_event,
+                local_shutdown,
+                future_checking_frequency,
+            ),
+            daemon=True,
+        )
+        _future_completion_thread.start()
 
         while not shutdown_event.is_set() and not local_shutdown.is_set():
             if max_task_count and processed_task_count >= max_task_count:
@@ -357,10 +369,11 @@ def child_process(
                 logger.info(
                     "taskworker.max_task_count_reached", extra={"count": processed_task_count}
                 )
+                # Still set the shutdown signal to trigger shutdown of the future checker thread
+                local_shutdown.set()
                 break
 
             try:
-                check_task_future_completion()
                 inflight = child_tasks.get(timeout=1.0)
             except queue.Empty:
                 metrics.incr(
@@ -515,13 +528,13 @@ def child_process(
                     task_func,
                 )
             else:
-                # FIXME(benm): Temporarily bypass producer futures needing to be completed
-                # before writing to `processed_tasks` while still recording metrics.
-                _place_processing_result(
-                    inflight,
-                    next_state,
-                    task_func,
-                )
+                # Place ProcessingResult immediately if we're skipping awaiting futures
+                if skip_awaiting_futures:
+                    _place_processing_result(
+                        inflight,
+                        next_state,
+                        task_func,
+                    )
                 for name, futures in task_produced_futures.items():
                     # How many futures were produced in the executed task,
                     # tagged by producer name
@@ -546,6 +559,7 @@ def child_process(
                 pending_task_futures.append(pending_task)
 
         # Once we get the shutdown signal, drain any pending futures
+        _future_completion_thread.join()
         for task in pending_task_futures.copy():
             await_task_futures(task)
 
@@ -781,12 +795,10 @@ def child_process(
         execution_end_time: float,
         task_func: Task[Any, Any] | None,
         futures_start_time: float | None = None,
-        # FIXME(benm): Temp option to skip placing a task in processed_tasks.
-        # This is for tasks with pending producer futures, as we still want to record
-        # metrics as usual but want to have a `ProcessingResult` placed immediately
-        # while we troubleshoot why futures are never being marked as done.
         passthrough: bool = False,
     ) -> None:
+        # If passthrough is enabled, we already placed a ProcessingResult
+        # as soon as the task function finished execution
         if not passthrough:
             _place_processing_result(
                 inflight,
@@ -803,6 +815,12 @@ def child_process(
             futures_start_time,
         )
 
+    # Signal that this child has finished warmup and ready to consume tasks. The parent uses this
+    # to gate the gRPC SERVING health signal. Monotonic by design
+    if ready_counter is not None:
+        with ready_counter.get_lock():
+            ready_counter.value += 1
+
     # Run the worker loop
     run_worker(
         child_tasks,
@@ -811,4 +829,6 @@ def child_process(
         max_task_count,
         processing_pool_name,
         process_type,
+        skip_awaiting_futures,
+        future_checking_frequency,
     )

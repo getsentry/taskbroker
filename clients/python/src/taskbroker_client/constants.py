@@ -57,6 +57,12 @@ DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH = 1.0
 The number of gRPC requests before touching the health check file
 """
 
+DEFAULT_WORKER_WARMUP_TIMEOUT_SEC = 90.0
+"""
+Max seconds PushTaskWorker waits for all children to warm up before
+flipping gRPC health to SERVING anyway.
+"""
+
 
 ALWAYS_EAGER = False
 """
@@ -85,16 +91,3 @@ class CompressionType(Enum):
 
     ZSTD = "zstd"
     PLAINTEXT = "plaintext"
-
-
-class ParametersFormat(Enum):
-    """
-    How the producer populates the legacy `parameters` (JSON) and new
-    `parameters_bytes` (msgpack) fields on TaskActivation.
-
-    Set via env var `TASKBROKER_CLIENT_PARAMETERS_FORMAT`. Default BOTH.
-    """
-
-    BOTH = "both"
-    JSON = "json"
-    MSGPACK = "msgpack"

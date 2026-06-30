@@ -11,11 +11,12 @@ use tempfile::TempDir;
 use tokio::sync::broadcast;
 use tokio::task::JoinSet;
 
-use crate::config::Config;
 use crate::config::store::{SqliteConfig, StoreConfig};
+use crate::config::{Config, DEFAULT_TOPIC};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
 use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
     create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
@@ -159,7 +160,11 @@ async fn test_count_depths_per_partition_postgres() {
 
     // Assign three partitions; partition 2 will have no activations and must
     // appear in the result with zero counts (zero-fill behavior).
-    store.assign_partitions(vec![0, 1, 2]).unwrap();
+    store.assign_partitions(
+        &mut [0, 1, 2]
+            .into_iter()
+            .map(|p| TopicPartition::new(DEFAULT_TOPIC, p)),
+    );
 
     let namespace = generate_unique_namespace();
     let now = Utc::now();
@@ -197,13 +202,17 @@ async fn test_count_depths_per_partition_postgres() {
 
     let depths = store.count_depths_per_partition().await.unwrap();
 
-    let p0 = depths.get(&0).expect("partition 0 missing");
+    let p0 = depths
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 0))
+        .expect("partition 0 missing");
     assert_eq!(p0.pending, 2, "partition 0 pending");
     assert_eq!(p0.processing, 1, "partition 0 processing");
     assert_eq!(p0.delay, 0, "partition 0 delay");
     assert_eq!(p0.claimed, 0, "partition 0 claimed");
 
-    let p1 = depths.get(&1).expect("partition 1 missing");
+    let p1 = depths
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 1))
+        .expect("partition 1 missing");
     assert_eq!(p1.pending, 0, "partition 1 pending");
     assert_eq!(p1.delay, 1, "partition 1 delay");
     assert_eq!(p1.processing, 0, "partition 1 processing");
@@ -211,12 +220,148 @@ async fn test_count_depths_per_partition_postgres() {
 
     // Zero-fill: partition 2 is assigned but has no rows.
     let p2 = depths
-        .get(&2)
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 2))
         .expect("partition 2 missing (zero-fill failed)");
     assert_eq!(p2.pending, 0, "partition 2 pending");
     assert_eq!(p2.delay, 0, "partition 2 delay");
     assert_eq!(p2.processing, 0, "partition 2 processing");
     assert_eq!(p2.claimed, 0, "partition 2 claimed");
+
+    store.remove_db().await.unwrap();
+}
+
+/// Multi-topic: partition indices overlap across topics, so claims must filter
+/// by (topic, partition). A broker assigned only topic-a/partition-0 must not
+/// claim a fresh topic-b/partition-0 row, even though the partition index is the
+/// same.
+#[tokio::test]
+async fn test_multi_topic_partition_scoping_postgres() {
+    let store = create_test_store("postgres").await;
+
+    // Replace the default assignment from `create_test_store` with topic-a only.
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("topic-a", 0)));
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+    let make = |id: &str, topic: &str| {
+        ActivationBuilder::new()
+            .id(id.to_string())
+            .taskname("taskname")
+            .namespace(namespace.clone())
+            .topic(topic.to_string())
+            .partition(0)
+            .added_at(now)
+            .received_at(now)
+            .processing_deadline_duration(10)
+            .build(TaskActivationBuilder::new())
+    };
+    assert!(
+        store
+            .store(&[make("a0", "topic-a"), make("b0", "topic-b")])
+            .await
+            .is_ok()
+    );
+
+    // Only topic-a/partition-0 is owned, so only "a0" is claimable.
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, "a0");
+
+    // After also owning topic-b, "b0" becomes claimable.
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("topic-b", 0)));
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, "b0");
+
+    store.remove_db().await.unwrap();
+}
+
+/// Age-based drain: a row whose (topic, partition) this broker doesn't own is
+/// still claimed once it is older than `contention_drain_age_sec`, so orphaned
+/// activations drain without operator intervention. A fresh unowned row is not.
+#[tokio::test]
+async fn test_age_based_drain_claims_orphan_postgres() {
+    let store = create_test_store("postgres").await;
+    // Owns an unrelated topic/partition, so neither row matches by ownership.
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)));
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+    let make = |id: &str, added_at| {
+        ActivationBuilder::new()
+            .id(id.to_string())
+            .taskname("taskname")
+            .namespace(namespace.clone())
+            .topic("orphan-topic".to_string())
+            .partition(99)
+            .added_at(added_at)
+            .received_at(now)
+            .processing_deadline_duration(10)
+            .build(TaskActivationBuilder::new())
+    };
+    // "old" is past the 60s default threshold; "fresh" is not.
+    let old_added_at = now - chrono::Duration::seconds(120);
+    assert!(
+        store
+            .store(&[make("old", old_added_at), make("fresh", now)])
+            .await
+            .is_ok()
+    );
+
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1, "only the old orphan should drain");
+    assert_eq!(claimed[0].id, "old");
+
+    store.remove_db().await.unwrap();
+}
+
+/// Age-based drain also applies to upkeep: an orphaned Delay row past its
+/// delay_until is released to Pending once older than the threshold, even though
+/// this broker doesn't own its (topic, partition).
+#[tokio::test]
+async fn test_age_based_drain_upkeep_postgres() {
+    let store = create_test_store("postgres").await;
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)));
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+    let delayed = ActivationBuilder::new()
+        .id("orphan_delayed".to_string())
+        .taskname("taskname")
+        .namespace(namespace.clone())
+        .topic("orphan-topic".to_string())
+        .partition(99)
+        .status(ActivationStatus::Delay)
+        .delay_until(now - chrono::Duration::seconds(5))
+        .added_at(now - chrono::Duration::seconds(120))
+        .received_at(now)
+        .processing_deadline_duration(10)
+        .build(TaskActivationBuilder::new());
+    assert!(store.store(&[delayed]).await.is_ok());
+
+    let released = store.handle_delay_until().await.unwrap();
+    assert_eq!(released, 1, "old orphaned delay row should be released");
+    assert_eq!(
+        store
+            .get_by_id("orphan_delayed")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ActivationStatus::Pending
+    );
 
     store.remove_db().await.unwrap();
 }

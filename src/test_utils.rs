@@ -15,13 +15,17 @@ use prost_types::Timestamp;
 use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskActivation};
 use uuid::Uuid;
 
-use crate::config::Config;
 use crate::config::deprecated::DeprecatedConfig;
 use crate::config::store::{PgConfig, StoreConfig};
+use crate::config::{Config, DEFAULT_TOPIC};
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::{self, PostgresStore};
 use crate::store::adapters::sqlite::SqliteStore;
 use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
+
+/// msgpack encoding of an empty map (`{}`), used as default task parameters in tests.
+pub const EMPTY_MSGPACK_MAP: &[u8] = &[0x80];
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {
@@ -29,7 +33,6 @@ pub struct TaskActivationBuilder {
     pub application: Option<String>,
     pub namespace: Option<String>,
     pub taskname: Option<String>,
-    pub parameters: Option<String>,
     pub parameters_bytes: Option<Vec<u8>>,
     pub headers: Option<HashMap<String, String>>,
     pub received_at: Option<Timestamp>,
@@ -46,7 +49,6 @@ impl TaskActivationBuilder {
             application: None,
             namespace: None,
             taskname: None,
-            parameters: None,
             parameters_bytes: None,
             headers: None,
             received_at: None,
@@ -74,12 +76,6 @@ impl TaskActivationBuilder {
 
     pub fn taskname<T: Into<String>>(mut self, taskname: T) -> Self {
         self.taskname = Some(taskname.into());
-        self
-    }
-
-    #[allow(deprecated)]
-    pub fn parameters<T: Into<String>>(mut self, parameters: T) -> Self {
-        self.parameters = Some(parameters.into());
         self
     }
 
@@ -125,8 +121,11 @@ impl TaskActivationBuilder {
             application: Some(self.application.expect("application is required")),
             namespace: self.namespace.expect("namespace is required"),
             taskname: self.taskname.expect("taskname is required"),
-            parameters: self.parameters.unwrap_or_else(|| "{}".to_string()),
-            parameters_bytes: self.parameters_bytes.unwrap_or_default(),
+            parameters: String::new(),
+            // Default to an empty msgpack map (`{}`) when no parameters are provided.
+            parameters_bytes: self
+                .parameters_bytes
+                .unwrap_or_else(|| EMPTY_MSGPACK_MAP.to_vec()),
             headers: self.headers.unwrap_or_default(),
             processing_deadline_duration: self.processing_deadline_duration.unwrap_or(0),
             received_at: self.received_at,
@@ -288,7 +287,7 @@ pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
             let store =
                 Arc::new(PostgresStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>;
 
-            store.assign_partitions(vec![0]).unwrap();
+            store.assign_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
             store
         }
         _ => panic!("Invalid adapter: {}", adapter),

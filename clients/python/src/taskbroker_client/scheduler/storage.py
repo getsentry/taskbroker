@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from redis.client import StrictRedis
-from rediscluster import RedisCluster
+
+if TYPE_CHECKING:
+    try:
+        # redis>=4.1 ships cluster support natively
+        from redis import RedisCluster
+    except ImportError:  # pragma: no cover - redis<4 fallback via the `cluster` extra
+        from rediscluster import RedisCluster
 
 from taskbroker_client.metrics import MetricsBackend
 
@@ -105,9 +111,7 @@ class RunStorage(RunStorageProtocol):
     Redis backed scheduler storage
     """
 
-    def __init__(
-        self, metrics: MetricsBackend, redis: RedisCluster[str] | StrictRedis[str]
-    ) -> None:
+    def __init__(self, metrics: MetricsBackend, redis: RedisCluster | StrictRedis) -> None:
         self._redis = redis
         self._metrics = metrics
 

@@ -29,6 +29,7 @@ use futures::{Stream, StreamExt, future, pin_mut};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
 
 pub async fn start_consumer(
     topics: &[&str],
@@ -41,10 +42,10 @@ pub async fn start_consumer(
 ) -> Result<(), Error> {
     let (client_shutdown_sender, client_shutdown_receiver) = oneshot::channel();
     let (event_sender, event_receiver) = unbounded_channel();
-    // Each consumer subscribes to a single topic; join defensively in case that
-    // ever changes. Used as the `topic` tag on this consumer's metrics.
-    let topic = topics.join(",");
-    let context = KafkaContext::new(event_sender.clone(), topic.clone());
+    // Metrics tag only. Ownership keys come per-topic from the assignment `tpl`,
+    // never from this string — so a multi-topic consumer stays correct.
+    let topics_tag = topics.join(",");
+    let context = KafkaContext::new(event_sender.clone(), topics_tag.clone());
     let consumer: Arc<StreamConsumer<KafkaContext>> = Arc::new(
         kafka_client_config
             .create_with_context(context)
@@ -57,14 +58,14 @@ pub async fn start_consumer(
 
     handle_shutdown_signals(event_sender.clone());
     poll_consumer_client(consumer.clone(), client_shutdown_receiver);
-    metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone()).set(0);
+    metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
     handle_events(
         consumer,
         event_receiver,
         activation_store,
         client_shutdown_sender,
         spawn_actors,
-        topic,
+        topics_tag,
     )
     .await
 }
@@ -114,14 +115,14 @@ pub fn poll_consumer_client(
 pub struct KafkaContext {
     event_sender: UnboundedSender<(Event, SyncSender<()>)>,
     /// The topic(s) this consumer is subscribed to, used as a metric tag.
-    topic: String,
+    topics_tag: String,
 }
 
 impl KafkaContext {
-    pub fn new(event_sender: UnboundedSender<(Event, SyncSender<()>)>, topic: String) -> Self {
+    pub fn new(event_sender: UnboundedSender<(Event, SyncSender<()>)>, topics_tag: String) -> Self {
         Self {
             event_sender,
-            topic,
+            topics_tag,
         }
     }
 }
@@ -151,7 +152,7 @@ impl ConsumerContext for KafkaContext {
                 info!("Rendezvous complete");
                 metrics::counter!(
                     "arroyo.consumer.partitions_assigned.count",
-                    "topic" => self.topic.clone(),
+                    "topic" => self.topics_tag.clone(),
                 )
                 .increment(tpl.count() as u64);
             }
@@ -173,7 +174,7 @@ impl ConsumerContext for KafkaContext {
                 info!("Rendezvous complete");
                 metrics::counter!(
                     "arroyo.consumer.partitions_revoked.count",
-                    "topic" => self.topic.clone(),
+                    "topic" => self.topics_tag.clone(),
                 )
                 .increment(tpl.count() as u64);
             }
@@ -352,7 +353,7 @@ pub async fn handle_events(
         Arc<StreamConsumer<KafkaContext>>,
         &BTreeSet<(String, i32)>,
     ) -> ActorHandles,
-    topic: String,
+    topics_tag: String,
 ) -> Result<(), anyhow::Error> {
     const CALLBACK_DURATION: Duration = Duration::from_secs(4);
 
@@ -379,14 +380,9 @@ pub async fn handle_events(
                 info!("Received event: {:?}", event);
                 state = match (state, event) {
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
-                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone())
+                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone())
                             .set(tpl.len() as f64);
-                        // Note: This assumes we only process one topic per consumer.
-                        let mut partitions = Vec::<i32>::new();
-                        for (_, partition) in tpl.iter() {
-                            partitions.push(*partition);
-                        }
-                        activation_store.assign_partitions(partitions).unwrap();
+                        activation_store.assign_partitions(&mut tpl.iter().map(TopicPartition::from));
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
@@ -401,17 +397,17 @@ pub async fn handle_events(
                             tpl == revoked,
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
-                        activation_store.assign_partitions(vec![]).unwrap();
+                        activation_store.revoke_partitions(&mut revoked.iter().map(TopicPartition::from));
                         handles.shutdown(CALLBACK_DURATION).await;
-                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone()).set(0);
+                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
                         ConsumerState::Ready
                     }
-                    (ConsumerState::Consuming(handles, _), Event::Shutdown) => {
-                        activation_store.assign_partitions(vec![]).unwrap();
+                    (ConsumerState::Consuming(handles, tpl), Event::Shutdown) => {
+                        activation_store.revoke_partitions(&mut tpl.iter().map(TopicPartition::from));
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
-                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topic.clone()).set(0);
+                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
                         ConsumerState::Stopped
                     }
                     (ConsumerState::Stopped, _) => {

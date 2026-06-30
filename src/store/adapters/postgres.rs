@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -23,7 +23,7 @@ use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
 
 /// Run migrations.
 pub async fn migrate(config: &StoreConfig) -> Result<()> {
@@ -51,6 +51,21 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
             .await?;
 
     if !row.0 {
+        // `CREATE DATABASE` does not accept bind parameters for the database
+        // name. but this is not a critical SQL injection as the database name is not untrusted
+        // user input. nevertheless, let's validate DB identifiers to prevent the worst.
+        if !config
+            .pg
+            .database_name
+            .chars()
+            .all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
+        {
+            return Err(anyhow!(
+                "invalid database_name {:?}: only ASCII alphanumerics and underscores are allowed",
+                &config.pg.database_name
+            ));
+        }
+
         println!("Creating database {}", &config.pg.database_name);
         sqlx::query(format!("CREATE DATABASE {}", &config.pg.database_name).as_str())
             .execute(&default_pool)
@@ -85,6 +100,7 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
 struct TableRow<'a> {
     pub id: Cow<'a, str>,
     pub activation: Cow<'a, [u8]>,
+    pub topic: Cow<'a, str>,
     pub partition: i32,
     pub offset: i64,
     pub added_at: DateTime<Utc>,
@@ -109,6 +125,7 @@ impl<'a> From<&'a Activation> for TableRow<'a> {
         Self {
             id: Cow::Borrowed(&value.id),
             activation: Cow::Borrowed(&value.activation),
+            topic: Cow::Borrowed(&value.topic),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -138,6 +155,7 @@ impl From<TableRow<'_>> for Activation {
             id: value.id.into_owned(),
             activation: value.activation.into_owned(),
             status: ActivationStatus::from_str(&value.status).unwrap(),
+            topic: value.topic.into_owned(),
             partition: value.partition,
             offset: value.offset,
             added_at: value.added_at,
@@ -166,6 +184,7 @@ impl FromRow<'_, PgRow> for TableRow<'static> {
         Ok(Self {
             id: Cow::Owned(row.try_get::<String, _>("id")?),
             activation: Cow::Owned(row.try_get::<Vec<u8>, _>("activation")?),
+            topic: Cow::Owned(row.try_get::<String, _>("topic")?),
             partition: row.try_get("partition")?,
             offset: row.try_get("offset")?,
             added_at: row.try_get("added_at")?,
@@ -229,7 +248,9 @@ pub struct PostgresStore {
     read_pool: PgPool,
     write_pool: PgPool,
     config: StoreConfig,
-    partitions: RwLock<Vec<i32>>,
+    /// (topic, partition) pairs assigned to this broker. Contention queries
+    /// filter by these pairs across all assigned topics.
+    partitions: RwLock<BTreeSet<TopicPartition>>,
     claim_duration_ms: u64,
 }
 
@@ -281,29 +302,50 @@ impl PostgresStore {
             read_pool,
             write_pool,
             config: config.store.clone(),
-            partitions: RwLock::new(vec![]),
+            partitions: RwLock::new(BTreeSet::new()),
             claim_duration_ms: compute_claim_duration_ms(config),
         })
     }
 
-    /// Add the partition condition to the query builder in a thread-safe manner
+    /// Restrict a query to the (topic, partition) pairs this broker owns.
+    ///
+    /// rows older than `contention_drain_age_sec` bypass the filter so any broker can drain
+    /// orphaned activations (left by rebalances or topic/partition moves). This only affects
+    /// contention, not correctness.
+    ///
+    /// With no partitions assigned (e.g. before the first rebalance) the query is
+    /// left unfiltered.
     fn add_partition_condition(
         &self,
         query_builder: &mut QueryBuilder<Postgres>,
         first_condition: bool,
     ) {
         let partitions = self.partitions.read().unwrap();
+        if partitions.is_empty() {
+            return;
+        }
+
         let condition = if first_condition { "WHERE" } else { "AND" };
-        if !partitions.is_empty() {
-            query_builder.push(" ");
-            query_builder.push(condition);
-            query_builder.push(" partition IN (");
-            let mut separated = query_builder.separated(", ");
-            for partition in partitions.iter() {
-                separated.push_bind(*partition);
+        query_builder.push(" ");
+        query_builder.push(condition);
+        query_builder.push(" ((topic, partition) IN (");
+        let mut first = true;
+        for tp in partitions.iter() {
+            if !first {
+                query_builder.push(", ");
             }
+            first = false;
+            query_builder.push("(");
+            query_builder.push_bind(tp.topic.clone());
+            query_builder.push(", ");
+            query_builder.push_bind(tp.partition);
             query_builder.push(")");
         }
+        query_builder.push(") OR added_at < ");
+        let drain_cutoff =
+            Utc::now() - chrono::Duration::seconds(self.config.contention_drain_age_sec as i64);
+        query_builder.push_bind(drain_cutoff);
+        query_builder.push(")");
     }
 }
 
@@ -350,6 +392,7 @@ impl ActivationStore for PostgresStore {
                 "
                     SELECT id,
                         activation,
+                        topic,
                         partition,
                         kafka_offset AS offset,
                         added_at,
@@ -384,11 +427,19 @@ impl ActivationStore for PostgresStore {
         Ok(Some(row.into()))
     }
 
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error> {
+    fn assign_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
+        self.partitions.write().unwrap().extend(partitions);
+    }
+
+    fn revoke_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>) {
         let mut write_guard = self.partitions.write().unwrap();
-        write_guard.clear();
-        write_guard.extend(partitions);
-        Ok(())
+        for tp in partitions {
+            write_guard.remove(&tp);
+        }
+    }
+
+    fn owns_partition(&self, partition: &TopicPartition) -> bool {
+        self.partitions.read().unwrap().contains(partition)
     }
 
     #[instrument(skip_all)]
@@ -405,6 +456,7 @@ impl ActivationStore for PostgresStore {
                     (
                         id,
                         activation,
+                        topic,
                         partition,
                         kafka_offset,
                         added_at,
@@ -433,6 +485,7 @@ impl ActivationStore for PostgresStore {
                         Cow::Borrowed(bytes) => b.push_bind(bytes),
                         Cow::Owned(bytes) => b.push_bind(bytes),
                     };
+                    b.push_bind(row.topic);
                     b.push_bind(row.partition);
                     b.push_bind(row.offset);
                     b.push_bind(row.added_at);
@@ -760,36 +813,51 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
-        let assigned: Vec<i32> = self.partitions.read().unwrap().clone();
+    async fn count_depths_per_partition(
+        &self,
+    ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
+        // Per-owned-(topic, partition) gauge: scoped to owned pairs only (no drain
+        // escape) — depths for partitions this broker doesn't own would be
+        // meaningless. Grouping by (topic, partition) keeps same-index partitions
+        // from different topics distinct.
+        let assigned: Vec<TopicPartition> =
+            self.partitions.read().unwrap().iter().cloned().collect();
         if assigned.is_empty() {
             return Ok(HashMap::new());
         }
 
         let mut query_builder = QueryBuilder::new(
-            "SELECT partition,
+            "SELECT topic, partition,
                     COUNT(*) FILTER (WHERE status = 'Pending'),
                     COUNT(*) FILTER (WHERE status = 'Delay'),
                     COUNT(*) FILTER (WHERE status = 'Claimed'),
                     COUNT(*) FILTER (WHERE status = 'Processing')
-             FROM inflight_taskactivations WHERE partition IN (",
+             FROM inflight_taskactivations WHERE (topic, partition) IN (",
         );
-        let mut separated = query_builder.separated(", ");
-        for partition in &assigned {
-            separated.push_bind(*partition);
+        let mut first = true;
+        for tp in &assigned {
+            if !first {
+                query_builder.push(", ");
+            }
+            first = false;
+            query_builder.push("(");
+            query_builder.push_bind(tp.topic.clone());
+            query_builder.push(", ");
+            query_builder.push_bind(tp.partition);
+            query_builder.push(")");
         }
-        query_builder.push(") GROUP BY partition");
+        query_builder.push(") GROUP BY topic, partition");
 
-        let rows: Vec<(i32, i64, i64, i64, i64)> = query_builder
+        let rows: Vec<(String, i32, i64, i64, i64, i64)> = query_builder
             .build_query_as()
             .fetch_all(&self.read_pool)
             .await?;
 
-        let mut counts: HashMap<i32, DepthCounts> = rows
+        let mut counts: HashMap<TopicPartition, DepthCounts> = rows
             .into_iter()
-            .map(|(partition, pending, delay, claimed, processing)| {
+            .map(|(topic, partition, pending, delay, claimed, processing)| {
                 (
-                    partition,
+                    TopicPartition::new(topic, partition),
                     DepthCounts {
                         pending: pending as usize,
                         delay: delay as usize,
@@ -800,8 +868,8 @@ impl ActivationStore for PostgresStore {
             })
             .collect();
 
-        for partition in &assigned {
-            counts.entry(*partition).or_insert(DepthCounts {
+        for key in &assigned {
+            counts.entry(key.clone()).or_insert(DepthCounts {
                 pending: 0,
                 delay: 0,
                 claimed: 0,
@@ -945,11 +1013,28 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
+    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error> {
+        retry_query(&self.config.retry, "delete_activation_batch", || async {
+            let mut conn = self
+                .acquire_write_conn_metric("delete_activation_batch")
+                .await?;
+            let result = sqlx::query("DELETE FROM inflight_taskactivations WHERE id = ANY($1)")
+                .bind(ids)
+                .execute(&mut *conn)
+                .await?;
+            Ok(result.rows_affected())
+        })
+        .await
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
     async fn get_retry_activations(&self) -> Result<Vec<Activation>, Error> {
         retry_query(&self.config.retry, "get_retry_activations", || async {
             let mut query_builder = QueryBuilder::new(
                 "SELECT id,
                         activation,
+                        topic,
                         partition,
                         kafka_offset AS offset,
                         added_at,

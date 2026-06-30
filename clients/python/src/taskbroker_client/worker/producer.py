@@ -56,11 +56,6 @@ class TaskProducer:
 
     def track_future(self, future: ProducerFuture[BrokerValue[KafkaPayload]]) -> None:
         _pending_futures[self.name].append(future)
-        self.metrics.gauge(
-            "task.producer.pending.futures",
-            len(_pending_futures[self.name]),
-            tags={"producer_name": self.name},
-        )
 
     @staticmethod
     def collect_futures() -> dict[str, set[ProducerFuture[BrokerValue[KafkaPayload]]]]:

@@ -1,4 +1,3 @@
-import base64
 import contextlib
 import os
 import queue
@@ -15,7 +14,6 @@ from unittest import TestCase, mock
 
 import grpc
 import msgpack
-import orjson
 import pytest
 import zstandard as zstd
 from arroyo.backends.kafka import KafkaPayload
@@ -172,44 +170,6 @@ COMPRESSED_TASK = InflightTaskActivation(
                 use_bin_type=True,
             )
         ),
-        headers={
-            "compression-type": CompressionType.ZSTD.value,
-        },
-        processing_deadline_duration=2,
-    ),
-)
-
-# Legacy fixture using the old JSON parameters field for backward compat testing
-LEGACY_JSON_TASK = InflightTaskActivation(
-    host="localhost:50051",
-    receive_timestamp=0,
-    activation=TaskActivation(
-        id="legacy_json_123",
-        taskname="examples.simple_task",
-        namespace="examples",
-        parameters='{"args": ["legacy_arg"], "kwargs": {}}',
-        processing_deadline_duration=2,
-    ),
-)
-
-# Legacy compressed fixture using base64+zstd in the old parameters field
-LEGACY_COMPRESSED_TASK = InflightTaskActivation(
-    host="localhost:50051",
-    receive_timestamp=0,
-    activation=TaskActivation(
-        id="legacy_compressed_123",
-        taskname="examples.simple_task",
-        namespace="examples",
-        parameters=base64.b64encode(
-            zstd.compress(
-                orjson.dumps(
-                    {
-                        "args": ["test_arg1", "test_arg2"],
-                        "kwargs": {"test_key": "test_value", "number": 42},
-                    }
-                )
-            )
-        ).decode("utf8"),
         headers={
             "compression-type": CompressionType.ZSTD.value,
         },
@@ -713,6 +673,121 @@ def test_batch_push_worker_health_check_touches_while_idle(tmp_path: Path) -> No
     assert taskworker._health_check_thread is None
 
 
+def _make_push_worker(**kwargs: Any) -> PushTaskWorker:
+    return PushTaskWorker(
+        app_module="examples.app:app",
+        broker_service="127.0.0.1:50051",
+        max_child_task_count=100,
+        process_type="fork",
+        **kwargs,
+    )
+
+
+def test_await_children_warm_returns_when_ready() -> None:
+    taskworker = _make_push_worker(concurrency=4, warmup_timeout=5)
+    taskworker.worker_pool._ready_counter.value = 4
+
+    with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+        start = time.time()
+        taskworker._await_children_warm()
+        elapsed = time.time() - start
+
+    assert elapsed < 1
+    # Records warmup duration, but no timeout.
+    timeout_calls = [
+        c
+        for c in mock_metrics.incr.call_args_list
+        if c.args[0] == "taskworker.worker.warmup_timeout"
+    ]
+    assert timeout_calls == []
+    mock_metrics.distribution.assert_any_call(
+        "taskworker.worker.warmup_duration", mock.ANY, tags=mock.ANY
+    )
+
+
+def test_await_children_warm_times_out() -> None:
+    taskworker = _make_push_worker(concurrency=4, warmup_timeout=0.1)
+    # Never becomes ready.
+    taskworker.worker_pool._ready_counter.value = 0
+
+    with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+        start = time.time()
+        taskworker._await_children_warm()
+        elapsed = time.time() - start
+
+    assert elapsed >= 0.1
+    mock_metrics.incr.assert_any_call(
+        "taskworker.worker.warmup_timeout", tags={"processing_pool": "unknown"}
+    )
+
+
+def test_await_children_warm_unblocks_when_children_warm() -> None:
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
+    taskworker.worker_pool._ready_counter.value = 0
+
+    def warm_up() -> None:
+        time.sleep(0.2)
+        taskworker.worker_pool._ready_counter.value = 2
+
+    warmer = threading.Thread(target=warm_up)
+    warmer.start()
+    try:
+        with mock.patch.object(taskworker, "_metrics") as mock_metrics:
+            start = time.time()
+            taskworker._await_children_warm()
+            elapsed = time.time() - start
+    finally:
+        warmer.join()
+
+    assert 0.2 <= elapsed < 5
+    timeout_calls = [
+        c
+        for c in mock_metrics.incr.call_args_list
+        if c.args[0] == "taskworker.worker.warmup_timeout"
+    ]
+    assert timeout_calls == []
+
+
+def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
+    from grpc_health.v1 import health_pb2
+
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
+    # Children never warm, and shutdown is requested before start() runs.
+    taskworker.worker_pool._ready_counter.value = 0
+    taskworker._grpc_sync_event.set()
+
+    fake_health = mock.MagicMock()
+    fake_server = mock.MagicMock()
+
+    with (
+        mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_result_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
+        mock.patch.object(taskworker.worker_pool, "shutdown"),
+        mock.patch("taskbroker_client.worker.worker.grpc.server", return_value=fake_server),
+        mock.patch(
+            "taskbroker_client.worker.worker.health.HealthServicer", return_value=fake_health
+        ),
+        mock.patch("taskbroker_client.worker.worker.health_pb2_grpc.add_HealthServicer_to_server"),
+        mock.patch(
+            "taskbroker_client.worker.worker.taskbroker_pb2_grpc"
+            ".add_WorkerServiceServicer_to_server"
+        ),
+    ):
+        exitcode = taskworker.start()
+
+    assert exitcode == 0
+    # Health must never have been flipped to SERVING.
+    serving_calls = [
+        c
+        for c in fake_health.set.call_args_list
+        if c.args[1] == health_pb2.HealthCheckResponse.SERVING
+    ]
+    assert serving_calls == []
+    # We never reached server.wait_for_termination() (returned before it).
+    fake_server.wait_for_termination.assert_not_called()
+
+
 class TestWorkerServicer(TestCase):
     def test_push_task_success(self) -> None:
         taskworker = PushTaskWorker(
@@ -828,6 +903,8 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -855,6 +932,8 @@ def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
             max_task_count=1,
             processing_pool_name="test",
             process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
         )
 
     result = processed.get()
@@ -865,6 +944,31 @@ def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out == "Done running canary task!\n"
 
 
+def test_child_process_increments_ready_counter() -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+    ctx = get_context("fork")
+    ready_counter = ctx.Value("i", 0)
+
+    todo.put(SIMPLE_TASK)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
+        ready_counter=ready_counter,
+    )
+
+    # The child increments the counter once warmup is done, before consuming.
+    assert ready_counter.value == 1
+
+
 def test_child_process_remove_start_time_kwargs() -> None:
     activation = InflightTaskActivation(
         host="localhost:50051",
@@ -873,7 +977,9 @@ def test_child_process_remove_start_time_kwargs() -> None:
             id="6789",
             taskname="examples.will_retry",
             namespace="examples",
-            parameters='{"args": ["stuff"], "kwargs": {"__start_time": 123}}',
+            parameters_bytes=msgpack.packb(
+                {"args": ["stuff"], "kwargs": {"__start_time": 123}}, use_bin_type=True
+            ),
             processing_deadline_duration=100000,
         ),
     )
@@ -890,6 +996,8 @@ def test_child_process_remove_start_time_kwargs() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -912,6 +1020,8 @@ def test_child_process_retry_task() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -934,7 +1044,7 @@ def test_child_process_retry_task_max_attempts(
             id="6789",
             taskname="examples.will_retry",
             namespace="examples",
-            parameters='{"args": ["raise"], "kwargs": {}}',
+            parameters_bytes=msgpack.packb({"args": ["raise"], "kwargs": {}}, use_bin_type=True),
             processing_deadline_duration=100000,
             retry_state=RetryState(
                 attempts=2,
@@ -955,6 +1065,8 @@ def test_child_process_retry_task_max_attempts(
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -996,6 +1108,8 @@ def test_child_process_failure_task() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1019,6 +1133,8 @@ def test_child_process_shutdown() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     # When shutdown has been set, the child should not process more tasks.
@@ -1041,6 +1157,8 @@ def test_child_process_unknown_task() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get()
@@ -1068,6 +1186,8 @@ def test_child_process_at_most_once() -> None:
         max_task_count=2,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1095,6 +1215,8 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1126,6 +1248,8 @@ def test_child_process_pass_headers() -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1152,7 +1276,7 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
             id="111",
             taskname="examples.timed",
             namespace="examples",
-            parameters='{"args": [3], "kwargs": {}}',
+            parameters_bytes=msgpack.packb({"args": [3], "kwargs": {}}, use_bin_type=True),
             processing_deadline_duration=1,
         ),
     )
@@ -1166,6 +1290,8 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1200,6 +1326,8 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1207,54 +1335,6 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
     assert result.task_id == COMPRESSED_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     assert mock_capture_checkin.call_count == 0
-
-
-@mock.patch("sentry_sdk.crons.api.capture_checkin")
-def test_child_process_legacy_json_parameters(mock_capture_checkin: mock.MagicMock) -> None:
-    """Test backward compat: worker can handle legacy JSON parameters field."""
-    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-    processed: queue.Queue[ProcessingResult] = queue.Queue()
-    shutdown = Event()
-
-    todo.put(LEGACY_JSON_TASK)
-    child_process(
-        "examples.app:app",
-        todo,
-        processed,
-        shutdown,
-        max_task_count=1,
-        processing_pool_name="test",
-        process_type="fork",
-    )
-
-    assert todo.empty()
-    result = processed.get()
-    assert result.task_id == LEGACY_JSON_TASK.activation.id
-    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
-
-
-@mock.patch("sentry_sdk.crons.api.capture_checkin")
-def test_child_process_legacy_compressed_parameters(mock_capture_checkin: mock.MagicMock) -> None:
-    """Test backward compat: worker can handle legacy base64+zstd compressed JSON parameters."""
-    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-    processed: queue.Queue[ProcessingResult] = queue.Queue()
-    shutdown = Event()
-
-    todo.put(LEGACY_COMPRESSED_TASK)
-    child_process(
-        "examples.app:app",
-        todo,
-        processed,
-        shutdown,
-        max_task_count=1,
-        processing_pool_name="test",
-        process_type="fork",
-    )
-
-    assert todo.empty()
-    result = processed.get()
-    assert result.task_id == LEGACY_COMPRESSED_TASK.activation.id
-    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
 def test_child_process_context_hooks() -> None:
@@ -1282,7 +1362,7 @@ def test_child_process_context_hooks() -> None:
                 id="hook-test",
                 taskname="examples.simple_task",
                 namespace="examples",
-                parameters='{"args": [], "kwargs": {}}',
+                parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
                 headers={"x-viewer-org": "42", "x-viewer-user": "7"},
                 processing_deadline_duration=5,
             ),
@@ -1301,6 +1381,8 @@ def test_child_process_context_hooks() -> None:
             max_task_count=1,
             processing_pool_name="test",
             process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
         )
 
         result = processed.get()
@@ -1327,6 +1409,8 @@ def test_child_process_silenced_timeout(mock_logger: mock.Mock) -> None:
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1356,6 +1440,8 @@ def test_child_process_silenced_exception_with_retries(mock_capture: mock.Mock) 
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1383,6 +1469,8 @@ def test_child_process_expected_ignored_exception_max_attempts(mock_capture: moc
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     # No reporting, but exception type is retriable
@@ -1410,6 +1498,8 @@ def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> Non
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     assert todo.empty()
@@ -1442,6 +1532,8 @@ def test_child_process_general_exception_logs_task_failed(mock_logger: mock.Mock
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get()
@@ -1477,6 +1569,8 @@ def test_child_process_silenced_exception_does_not_log_task_failed(
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get()
@@ -1561,6 +1655,8 @@ def test_child_process_tracks_producer_futures(
             max_task_count=1,
             processing_pool_name="test",
             process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
         )
 
     # collect_futures is called once per executed task
@@ -1571,55 +1667,115 @@ def test_child_process_tracks_producer_futures(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-# FIXME(benm): Skip this test while we're bypassing awaiting future completion
-# def test_child_process_holds_result_until_futures_done(
-#     clear_pending_futures: None, restore_signal_handlers: None
-# ) -> None:
-#     task = _producing_task()
-#     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-#     processed: queue.Queue[ProcessingResult] = queue.Queue()
-#     shutdown = Event()
+def test_child_process_holds_result_until_futures_done(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
 
-#     pending_future: Future[BrokerValue[KafkaPayload]] = Future()
-#     todo.put(task)
+    pending_future: Future[BrokerValue[KafkaPayload]] = Future()
+    todo.put(task)
 
-#     # `child_process` calls `signal.signal`, which must run on the main thread.
-#     # Use a helper thread to observe the queue while the future is still
-#     # pending, then resolve the future so the drain can complete.
-#     observed_empty_while_pending = threading.Event()
+    # `child_process` calls `signal.signal`, which must run on the main thread.
+    # Use a helper thread to observe the queue while the future is still
+    # pending, then resolve the future so the drain can complete.
+    observed_empty_while_pending = threading.Event()
 
-#     def observe_and_resolve() -> None:
-#         # Wait for child_process to process the task and enter the drain loop.
-#         time.sleep(0.5)
-#         if processed.qsize() == 0:
-#             observed_empty_while_pending.set()
-#         pending_future.set_result(_make_broker_value())
+    def observe_and_resolve() -> None:
+        # Wait for child_process to process the task and enter the drain loop.
+        time.sleep(0.5)
+        if processed.qsize() == 0:
+            observed_empty_while_pending.set()
+        pending_future.set_result(_make_broker_value())
 
-#     observer = threading.Thread(target=observe_and_resolve, name="future-observer")
-#     observer.start()
-#     try:
-#         with mock.patch.object(
-#             TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
-#         ):
-#             child_process(
-#                 "examples.app:app",
-#                 todo,
-#                 processed,
-#                 shutdown,
-#                 max_task_count=1,
-#                 processing_pool_name="test",
-#                 process_type="fork",
-#             )
-#     finally:
-#         observer.join(timeout=5)
-#         shutdown.set()
+    observer = threading.Thread(target=observe_and_resolve, name="future-observer")
+    observer.start()
+    try:
+        with mock.patch.object(
+            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+        ):
+            child_process(
+                "examples.app:app",
+                todo,
+                processed,
+                shutdown,
+                max_task_count=1,
+                processing_pool_name="test",
+                process_type="fork",
+                skip_awaiting_futures=False,
+                future_checking_frequency=0.1,
+            )
+    finally:
+        observer.join(timeout=5)
+        shutdown.set()
 
-#     assert (
-#         observed_empty_while_pending.is_set()
-#     ), "result was pushed before the producer future was resolved"
-#     result = processed.get(timeout=5)
-#     assert result.task_id == task.activation.id
-#     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+    assert (
+        observed_empty_while_pending.is_set()
+    ), "result was pushed before the producer future was resolved"
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+def test_child_process_skip_awaiting_futures_places_result_immediately(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    pending_future: Future[BrokerValue[KafkaPayload]] = Future()
+    todo.put(task)
+
+    # With skip_awaiting_futures=True the ProcessingResult is placed as soon as
+    # the task function finishes executing, without waiting for the producer
+    # future to resolve. Observe the queue while the future is still pending to
+    # prove the result is available immediately, then resolve the future so the
+    # drain loop can complete.
+    observed_result_while_pending = threading.Event()
+
+    def observe_and_resolve() -> None:
+        start = time.time()
+        while time.time() - start < 2:
+            if processed.qsize() > 0:
+                observed_result_while_pending.set()
+                break
+            time.sleep(0.01)
+        pending_future.set_result(_make_broker_value())
+
+    observer = threading.Thread(target=observe_and_resolve, name="future-observer")
+    observer.start()
+    try:
+        with mock.patch.object(
+            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+        ):
+            child_process(
+                "examples.app:app",
+                todo,
+                processed,
+                shutdown,
+                max_task_count=1,
+                processing_pool_name="test",
+                process_type="fork",
+                skip_awaiting_futures=True,
+                future_checking_frequency=0.1,
+            )
+    finally:
+        observer.join(timeout=5)
+        shutdown.set()
+
+    assert (
+        observed_result_while_pending.is_set()
+    ), "result was not placed immediately after the task function executed"
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+    # Awaiting the futures afterwards must not enqueue a second ProcessingResult
+    # (the immediate placement is the only result).
+    assert processed.empty()
 
 
 def test_child_process_drains_pending_futures_on_sigterm(
@@ -1655,6 +1811,8 @@ def test_child_process_drains_pending_futures_on_sigterm(
                 max_task_count=None,
                 processing_pool_name="test",
                 process_type="fork",
+                skip_awaiting_futures=False,
+                future_checking_frequency=0.1,
             )
     finally:
         sigterm_thread.join(timeout=5)
@@ -1665,50 +1823,51 @@ def test_child_process_drains_pending_futures_on_sigterm(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-# FIXME(benm): Skip this test while we're bypassing awaiting future completion
-# def test_child_process_retries_on_failed_future(
-#     clear_pending_futures: None, restore_signal_handlers: None
-# ) -> None:
-#     retriable_task = InflightTaskActivation(
-#         host="localhost:50051",
-#         receive_timestamp=0,
-#         activation=TaskActivation(
-#             id="failed-future-retry",
-#             taskname="examples.will_retry",
-#             namespace="examples",
-#             parameters=orjson.dumps({"args": ["noop"], "kwargs": {}}).decode("utf8"),
-#             processing_deadline_duration=2,
-#             retry_state=RetryState(
-#                 attempts=0,
-#                 max_attempts=3,
-#                 on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
-#             ),
-#         ),
-#     )
-#     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
-#     processed: queue.Queue[ProcessingResult] = queue.Queue()
-#     shutdown = Event()
+def test_child_process_retries_on_failed_future(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    retriable_task = InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id="failed-future-retry",
+            taskname="examples.will_retry",
+            namespace="examples",
+            parameters_bytes=msgpack.packb({"args": ["noop"], "kwargs": {}}, use_bin_type=True),
+            processing_deadline_duration=2,
+            retry_state=RetryState(
+                attempts=0,
+                max_attempts=3,
+                on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+            ),
+        ),
+    )
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
 
-#     failed_future: Future[BrokerValue[KafkaPayload]] = Future()
-#     failed_future.set_exception(RuntimeError("kafka produce failed"))
+    failed_future: Future[BrokerValue[KafkaPayload]] = Future()
+    failed_future.set_exception(RuntimeError("kafka produce failed"))
 
-#     todo.put(retriable_task)
-#     with mock.patch.object(
-#         TaskProducer, "collect_futures", return_value={"test.producer": {failed_future}}
-#     ):
-#         child_process(
-#             "examples.app:app",
-#             todo,
-#             processed,
-#             shutdown,
-#             max_task_count=1,
-#             processing_pool_name="test",
-#             process_type="fork",
-#         )
+    todo.put(retriable_task)
+    with mock.patch.object(
+        TaskProducer, "collect_futures", return_value={"test.producer": {failed_future}}
+    ):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
+        )
 
-#     result = processed.get(timeout=5)
-#     assert result.task_id == retriable_task.activation.id
-#     assert result.status == TASK_ACTIVATION_STATUS_RETRY
+    result = processed.get(timeout=5)
+    assert result.task_id == retriable_task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
 def test_child_process_clears_pending_futures_when_task_fails(
@@ -1732,6 +1891,8 @@ def test_child_process_clears_pending_futures_when_task_fails(
         max_task_count=1,
         processing_pool_name="test",
         process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
     )
 
     result = processed.get(timeout=5)
@@ -1742,3 +1903,59 @@ def test_child_process_clears_pending_futures_when_task_fails(
     # broker level if applicable) but the global registry is cleared so it
     # cannot bleed into the next task this child processes.
     assert len(_pending_futures) == 0
+
+
+def test_child_process_uses_configured_future_checking_frequency(
+    clear_pending_futures: None, restore_signal_handlers: None
+) -> None:
+    """The idle future-checking loop polls on the configured interval."""
+    # A task that runs long enough for the idle future-checking loop to poll a
+    # few times before max_task_count triggers shutdown.
+    slow_task = InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id="freq-task",
+            taskname="examples.timed",
+            namespace="examples",
+            parameters_bytes=msgpack.packb({"args": [0.5], "kwargs": {}}, use_bin_type=True),
+            processing_deadline_duration=5,
+        ),
+    )
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+    todo.put(slow_task)
+
+    configured_frequency = 0.05
+    idle_sleeps: list[float] = []
+    real_sleep = time.sleep
+
+    def recording_sleep(seconds: float) -> None:
+        idle_sleeps.append(seconds)
+        real_sleep(seconds)
+
+    # time.sleep is only used by the idle branch of check_task_future_completion
+    # inside workerchild, so every recorded call comes from that loop. The task's
+    # own sleep uses a separate `from time import sleep` import in examples.tasks.
+    with mock.patch("taskbroker_client.worker.workerchild.time.sleep", side_effect=recording_sleep):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=configured_frequency,
+        )
+
+    result = processed.get(timeout=5)
+    assert result.task_id == slow_task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+    # The idle future-checking loop ran and polled using the configured
+    # frequency for every iteration.
+    assert idle_sleeps, "future-checking thread never slept while idle"
+    assert all(seconds == configured_frequency for seconds in idle_sleeps)

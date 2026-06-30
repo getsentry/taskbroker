@@ -7,7 +7,7 @@ use tokio::join;
 use tracing::warn;
 
 use crate::store::activation::{Activation, ActivationStatus};
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder};
+use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
 
 #[async_trait]
 pub trait ActivationStore: Send + Sync {
@@ -15,7 +15,17 @@ pub trait ActivationStore: Send + Sync {
     /// Store a batch of activations
     async fn store(&self, batch: &[Activation]) -> Result<u64, Error>;
 
-    fn assign_partitions(&self, partitions: Vec<i32>) -> Result<(), Error>;
+    /// Add the given (topic, partition) pairs to the set this broker owns. Pairs
+    /// accumulate across topics and consumers sharing the store.
+    fn assign_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>);
+
+    /// Remove the given (topic, partition) pairs from the set this broker owns.
+    fn revoke_partitions(&self, partitions: &mut dyn Iterator<Item = TopicPartition>);
+
+    /// Whether this broker currently owns `partition`. Age-based drain can claim
+    /// activations from partitions the broker doesn't own, so callers use this to
+    /// distinguish those (e.g. tagging latency metrics).
+    fn owns_partition(&self, partition: &TopicPartition) -> bool;
 
     /// Get `limit` pending activations, optionally filtered by namespaces and bucket subrange.
     /// If `mark_activation_processing` is true, sets status to `Processing` and `processing_deadline`; otherwise `Claimed` and `claim_expires_at`.
@@ -130,12 +140,17 @@ pub trait ActivationStore: Send + Sync {
         })
     }
 
-    /// Queue depths grouped by partition for upkeep gauges. The default
-    /// implementation returns the flat total under sentinel partition -1 for
-    /// stores that aren't partition-aware.
-    async fn count_depths_per_partition(&self) -> Result<HashMap<i32, DepthCounts>, Error> {
+    /// Queue depths grouped by (topic, partition) for upkeep gauges. The default
+    /// implementation returns the flat total under the default topic and sentinel
+    /// partition -1 for stores that aren't partition-aware.
+    async fn count_depths_per_partition(
+        &self,
+    ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
         let total = self.count_depths().await?;
-        Ok(HashMap::from([(-1, total)]))
+        Ok(HashMap::from([(
+            TopicPartition::new(crate::config::DEFAULT_TOPIC, -1),
+            total,
+        )]))
     }
 
     /// Set the processing deadline for a specific activation
@@ -147,6 +162,9 @@ pub trait ActivationStore: Send + Sync {
 
     /// Delete an activation by id
     async fn delete_activation(&self, id: &str) -> Result<(), Error>;
+
+    /// Delete a batch of activations by id
+    async fn delete_activation_batch(&self, ids: &[String]) -> Result<u64, Error>;
 
     /// DATABASE OPERATIONS
     /// Trigger incremental vacuum to reclaim free pages in the database

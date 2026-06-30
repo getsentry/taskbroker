@@ -28,6 +28,7 @@ from taskbroker_client.constants import (
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
+    DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
     MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE,
     WORKER_CHILD_JOIN_TIMEOUT_SEC,
 )
@@ -142,6 +143,9 @@ class PushTaskWorker:
         grpc_port: int = 50052,
         push_task_timeout: float = 5,
         update_in_batches: bool = False,
+        skip_awaiting_futures: bool = True,
+        warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
+        future_checking_frequency: float = 0.1,
     ) -> None:
         app = import_app(app_module)
 
@@ -166,6 +170,8 @@ class PushTaskWorker:
             pod_name=pod_name,
             process_type=process_type,
             update_in_batches=update_in_batches,
+            skip_awaiting_futures=skip_awaiting_futures,
+            future_checking_frequency=future_checking_frequency,
         )
 
         logger.info("Running in PUSH mode")
@@ -181,6 +187,7 @@ class PushTaskWorker:
             ),
             rpc_secret=app.config["rpc_secret"],
             grpc_config=app.config["grpc_config"],
+            processing_pool_name=processing_pool_name,
         )
         self._metrics = app.metrics
         self._concurrency = concurrency
@@ -199,6 +206,8 @@ class PushTaskWorker:
         self._grpc_secrets = parse_rpc_secret_list(app.config["rpc_secret"])
         self._push_task_timeout = push_task_timeout
 
+        self._warmup_timeout = warmup_timeout
+
     def _create_client(
         self,
         service: str,
@@ -207,6 +216,7 @@ class PushTaskWorker:
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
+        processing_pool_name: str | None = None,
     ) -> PushTaskbrokerClient:
         return PushTaskbrokerClient(
             service=service,
@@ -215,6 +225,7 @@ class PushTaskWorker:
             health_check_settings=health_check_settings,
             rpc_secret=rpc_secret,
             grpc_config=grpc_config,
+            processing_pool_name=processing_pool_name,
         )
 
     def _send_results(
@@ -305,10 +316,61 @@ class PushTaskWorker:
             self._health_check_thread.join(timeout=5)
             self._health_check_thread = None
 
+    def _await_children_warm(self) -> None:
+        """
+        Block until all children have warmed up or warmup_timeout elapses.
+
+        On timeout we fall through and serve anyway, a degraded-but-routable pod
+        beats one that never becomes ready.
+        """
+        required = self._concurrency
+        if required <= 0:
+            return
+
+        warmup_start = time.monotonic()
+        deadline = warmup_start + self._warmup_timeout
+        timed_out = False
+        while self.worker_pool.ready_count < required:
+            if time.monotonic() >= deadline:
+                timed_out = True
+                self._metrics.incr(
+                    "taskworker.worker.warmup_timeout",
+                    tags={"processing_pool": self._processing_pool_name},
+                )
+                logger.warning(
+                    "taskworker.worker.warmup_timeout",
+                    extra={
+                        "processing_pool": self._processing_pool_name,
+                        "ready_count": self.worker_pool.ready_count,
+                        "required": required,
+                        "warmup_timeout": self._warmup_timeout,
+                    },
+                )
+                break
+            # Sleep and break early if shutdown was requested via shutdown().
+            if self._grpc_sync_event.wait(0.25):
+                break
+
+        self._metrics.distribution(
+            "taskworker.worker.warmup_duration",
+            time.monotonic() - warmup_start,
+            tags={"processing_pool": self._processing_pool_name},
+        )
+        logger.info(
+            "taskworker.worker.warmup_complete",
+            extra={
+                "processing_pool": self._processing_pool_name,
+                "ready_count": self.worker_pool.ready_count,
+                "required": required,
+                "timed_out": timed_out,
+            },
+        )
+
     def start(self) -> int:
         """
         This starts the worker gRPC server.
         """
+        self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
@@ -357,6 +419,15 @@ class PushTaskWorker:
 
             server.add_insecure_port(f"[::]:{self._grpc_port}")
             server.start()
+
+            # Hold NOT_SERVING until children are warm so the pod stays out of
+            # the NEG/readiness set while its child processes are still loading.
+            self._await_children_warm()
+
+            # If shutdown was requested during warmup, don't advertise SERVING.
+            # Bail to the finally below, which sets NOT_SERVING and tears everything down.
+            if self._grpc_sync_event.is_set():
+                return 0
 
             # Indicate that the server is ready
             health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
@@ -408,6 +479,7 @@ class BatchPushTaskWorker(PushTaskWorker):
         health_check_settings: HealthCheckSettings | None = None,
         rpc_secret: str | None = None,
         grpc_config: str | None = None,
+        processing_pool_name: str | None = None,
     ) -> PushTaskbrokerClient:
         return BatchPushTaskbrokerClient(
             service=service,
@@ -416,6 +488,7 @@ class BatchPushTaskWorker(PushTaskWorker):
             health_check_settings=health_check_settings,
             rpc_secret=rpc_secret,
             grpc_config=grpc_config,
+            processing_pool_name=processing_pool_name,
         )
 
     def _send_results(
@@ -497,6 +570,8 @@ class TaskWorker:
         process_type: str = "spawn",
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
+        skip_awaiting_futures: bool = True,
+        future_checking_frequency: float = 0.1,
     ) -> None:
         self._namespace = namespace
         app = import_app(app_module)
@@ -520,6 +595,8 @@ class TaskWorker:
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
             process_type=process_type,
+            skip_awaiting_futures=skip_awaiting_futures,
+            future_checking_frequency=future_checking_frequency,
         )
 
         logger.info("Running in PULL mode")
@@ -536,6 +613,7 @@ class TaskWorker:
             ),
             rpc_secret=app.config["rpc_secret"],
             grpc_config=app.config["grpc_config"],
+            processing_pool_name=processing_pool_name,
         )
         self._metrics = app.metrics
 
@@ -550,6 +628,7 @@ class TaskWorker:
         """
         This starts a loop that runs until the worker completes its `max_task_count` or it is killed.
         """
+        self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
@@ -701,6 +780,8 @@ class TaskWorkerProcessingPool:
         pod_name: str | None = None,
         process_type: str = "spawn",
         update_in_batches: bool = False,
+        skip_awaiting_futures: bool = True,
+        future_checking_frequency: float = 0.1,
     ) -> None:
         self._concurrency = concurrency
         self._result_queue_maxsize = result_queue_maxsize
@@ -714,6 +795,8 @@ class TaskWorkerProcessingPool:
         self._app_module = app_module
         app = import_app(app_module)
         self._metrics = app.metrics
+        self._skip_awaiting_futures = skip_awaiting_futures
+        self._future_checking_frequency = future_checking_frequency
 
         self._mp_context = mp_context
         self._process_type = process_type
@@ -726,8 +809,15 @@ class TaskWorkerProcessingPool:
         )
         self._children: list[BaseProcess] = []
         self._shutdown_event = self._mp_context.Event()
+        self._ready_counter = self._mp_context.Value("i", 0)
         self._result_thread: threading.Thread | None = None
+        self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
+
+    @property
+    def ready_count(self) -> int:
+        """Number of children that have finished warming up and are consuming."""
+        return self._ready_counter.value
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
@@ -749,6 +839,43 @@ class TaskWorkerProcessingPool:
                 for result in results:
                     self.put_result(result)
 
+    def start_metrics_thread(self) -> None:
+        """
+        Start a thread that emits metrics on an interval.
+        """
+
+        def metrics_thread() -> None:
+            tags = {
+                "processing_pool": self._processing_pool_name,
+                "pod_name": self._pod_name,
+            }
+
+            while True:
+                try:
+                    # 'qsize' is not implemented on all platforms, such as macOS
+                    self._metrics.gauge(
+                        "taskworker.child_tasks.size",
+                        float(self._child_tasks.qsize()),
+                        tags=tags,
+                    )
+
+                    self._metrics.gauge(
+                        "taskworker.processed_tasks.size",
+                        float(self._processed_tasks.qsize()),
+                        tags=tags,
+                    )
+                except Exception as e:
+                    logger.debug(
+                        "taskworker.worker.queue_gauges.error",
+                        extra={"error": e, "processing_pool": self._processing_pool_name},
+                    )
+
+                time.sleep(1)
+
+        self._metrics_thread = threading.Thread(name="metrics", target=metrics_thread, daemon=True)
+
+        self._metrics_thread.start()
+
     def start_result_thread(self) -> None:
         """
         Start a thread that delivers results and fetches new tasks.
@@ -765,30 +892,6 @@ class TaskWorkerProcessingPool:
             iopool = ThreadPoolExecutor(max_workers=self._concurrency)
             with iopool as executor:
                 while not self._shutdown_event.is_set():
-                    tags = {
-                        "processing_pool": self._processing_pool_name,
-                        "pod_name": self._pod_name,
-                    }
-
-                    try:
-                        # 'qsize' is not implemented on all platforms, such as macOS
-                        self._metrics.gauge(
-                            "taskworker.child_tasks.size",
-                            float(self._child_tasks.qsize()),
-                            tags=tags,
-                        )
-
-                        self._metrics.gauge(
-                            "taskworker.processed_tasks.size",
-                            float(self._processed_tasks.qsize()),
-                            tags=tags,
-                        )
-                    except Exception as e:
-                        logger.debug(
-                            "taskworker.worker.queue_gauges.error",
-                            extra={"error": e, "processing_pool": self._processing_pool_name},
-                        )
-
                     results = []
                     while True:
                         try:
@@ -838,6 +941,9 @@ class TaskWorkerProcessingPool:
                             self._max_child_task_count,
                             self._processing_pool_name,
                             self._process_type,
+                            self._skip_awaiting_futures,
+                            self._future_checking_frequency,
+                            self._ready_counter,
                         ),
                     )
                     process.start()

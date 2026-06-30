@@ -1,3 +1,4 @@
+import msgpack
 import pytest
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
@@ -42,7 +43,7 @@ def test_should_attempt_at_most_once() -> None:
         id="111",
         taskname="examples.simple_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     )
     at_most = StubAtMostOnce()
