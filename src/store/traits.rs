@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use tokio::join;
 use tracing::warn;
 
+use crate::killswitch::KillswitchSelector;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
 
@@ -206,6 +207,14 @@ pub trait ActivationStore: Send + Sync {
 
     /// Remove killswitched tasks
     async fn remove_killswitched(&self, killswitched_tasks: Vec<String>) -> Result<u64, Error>;
+
+    /// Remove tasks matching argument-based killswitch selectors. Unlike
+    /// [`remove_killswitched`], this must decode each candidate activation's arguments, so
+    /// it scans the rows for each selector's taskname rather than deleting by name alone.
+    async fn remove_killswitched_selectors(
+        &self,
+        selectors: Vec<KillswitchSelector>,
+    ) -> Result<u64, Error>;
 
     /// TEST OPERATIONS
     /// Clear all activations from the store
