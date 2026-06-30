@@ -199,10 +199,8 @@ class Task(Generic[P, R]):
         """
         Task dispatch for testing tools like the 'taskbroker-send-tasks' command in Sentry.
 
-        Argument `sizes` contains minimum activation sizes in bytes, parsed from repeated `--activation-size` values.
-
-        Argument `durations` contains execution deadlines in seconds that are added to the default processing deadline.
-        If multiple durations are provided, one is randomly selected per activation and added to the default processing deadline.
+        If `bytes` is provided, the activation is padded to be at least that size.
+        If `seconds` is provided, it is added to the default processing deadline.
 
         Normal `delay` and `apply_async` calls do not use this path.
         """
@@ -359,21 +357,21 @@ class Task(Generic[P, R]):
         """
         Build a `TaskActivation` with optional size padding for testing purposes.
 
-        With one activation size, every activation is padded to at least that size.
-        With multiple sizes, one target size is randomly selected per activation.
-        If the activation size is already ≥ the target, it will be unchanged.
-
-        With one duration, every activation adds it to the default processing deadline.
-        With multiple durations, one is randomly selected per activation.
+        If `bytes` is provided, the activation is padded to be at least that size.
+        If `seconds` is provided, it is added to the default processing deadline.
         """
         activation = self.create_activation(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
 
-        if seconds:
+        if seconds and seconds > 0:
             activation.processing_deadline_duration = DEFAULT_PROCESSING_DEADLINE + ceil(seconds)
+        else:
+            raise ValueError(
+                f"Test activation seconds is {seconds}, which is NOT greater than zero"
+            )
 
-        if bytes:
+        if bytes and bytes > 0:
             padding_key = "taskbroker-testing-activation-padding"
 
             while activation.ByteSize() < bytes:
@@ -382,6 +380,8 @@ class Task(Generic[P, R]):
                 activation.headers[padding_key] = (
                     activation.headers.get(padding_key, "") + "x" * missing_bytes
                 )
+        else:
+            raise ValueError(f"Test activation bytes is {bytes}, which is NOT greater than zero")
 
         return activation
 
