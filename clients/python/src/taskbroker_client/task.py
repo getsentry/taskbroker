@@ -364,14 +364,20 @@ class Task(Generic[P, R]):
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
 
-        if seconds and seconds > 0:
-            activation.processing_deadline_duration = DEFAULT_PROCESSING_DEADLINE + ceil(seconds)
-        else:
-            raise ValueError(
-                f"Test activation seconds is {seconds}, which is NOT greater than zero"
-            )
+        if seconds:
+            if seconds < 0:
+                raise ValueError(
+                    f"Test activation seconds is {seconds}, which is NOT greater than zero"
+                )
 
-        if bytes and bytes > 0:
+            activation.processing_deadline_duration = DEFAULT_PROCESSING_DEADLINE + ceil(seconds)
+
+        if bytes:
+            if bytes < 0:
+                raise ValueError(
+                    f"Test activation bytes is {bytes}, which is NOT greater than zero"
+                )
+
             padding_key = "taskbroker-testing-activation-padding"
 
             while activation.ByteSize() < bytes:
@@ -380,8 +386,6 @@ class Task(Generic[P, R]):
                 activation.headers[padding_key] = (
                     activation.headers.get(padding_key, "") + "x" * missing_bytes
                 )
-        else:
-            raise ValueError(f"Test activation bytes is {bytes}, which is NOT greater than zero")
 
         return activation
 
