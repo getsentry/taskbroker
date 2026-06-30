@@ -7,10 +7,14 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
+use crate::killswitch::KillswitchRule;
+
 #[derive(Debug, Deserialize, Clone, PartialEq, Default)]
 pub struct RuntimeConfig {
-    /// A list of tasks to drop before inserting into sqlite.
-    pub drop_task_killswitch: Vec<String>,
+    /// A list of rules for dropping tasks before inserting into sqlite. Each rule is
+    /// either a bare task name (drop the whole task) or a selector that matches on the
+    /// task's arguments (see [`KillswitchRule`]).
+    pub drop_task_killswitch: Vec<KillswitchRule>,
     /// A list of namespaces that should be demoted to the "long" namespace.
     /// Tasks from these namespaces will be automatically forwarded to the "long" namespace
     /// to prevent them from blocking other tasks in shared namespaces.
@@ -99,14 +103,14 @@ mod tests {
     use tokio::fs;
 
     use super::RuntimeConfigManager;
+    use crate::killswitch::KillswitchRule;
 
     #[tokio::test]
     async fn test_runtime_config_manager() {
         let test_yaml = r#"
 drop_task_killswitch:
   - test:do_nothing
-demoted_namespaces:
-  -"#;
+demoted_namespaces: []"#;
 
         let mut config_file = NamedTempFile::new().unwrap();
         writeln!(config_file, "{}", test_yaml).unwrap();
@@ -116,7 +120,39 @@ demoted_namespaces:
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
-        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+        assert_eq!(config.drop_task_killswitch[0].taskname(), "test:do_nothing");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_config_selector_rule() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  - test:do_nothing
+  - name: sentry.tasks.unmerge
+    select_arg: {0: 123}
+    select_kwarg: {project_id: 123}
+demoted_namespaces: []"#;
+
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+
+        let runtime_config =
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
+        let config = runtime_config.read().await;
+        assert_eq!(config.drop_task_killswitch.len(), 2);
+        assert!(matches!(
+            &config.drop_task_killswitch[0],
+            KillswitchRule::Name(name) if name == "test:do_nothing"
+        ));
+        match &config.drop_task_killswitch[1] {
+            KillswitchRule::Selector(sel) => {
+                assert_eq!(sel.name, "sentry.tasks.unmerge");
+                assert_eq!(sel.select_arg.len(), 1);
+                assert_eq!(sel.select_kwarg.len(), 1);
+            }
+            other => panic!("expected selector, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -133,8 +169,7 @@ demoted_namespaces:
         let test_yaml = r#"
 droop_task_killswitch:
   - test:do_nothing
-demoted_namespaces:
-  -"#;
+demoted_namespaces: []"#;
 
         let mut config_file = NamedTempFile::new().unwrap();
         writeln!(config_file, "{}", test_yaml).unwrap();
@@ -151,8 +186,7 @@ demoted_namespaces:
         let test_yaml = r#"
 drop_task_killswitch:
   - test:do_nothing
-demoted_namespaces:
-  -"#;
+demoted_namespaces: []"#;
 
         let mut config_file = NamedTempFile::new().unwrap();
         writeln!(config_file, "{}", test_yaml).unwrap();
@@ -162,7 +196,7 @@ demoted_namespaces:
         let runtime_config = RuntimeConfigManager::new(Some(test_path.clone())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
-        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+        assert_eq!(config.drop_task_killswitch[0].taskname(), "test:do_nothing");
 
         let invalid_yaml = r#"
 droop_task_killswitch:
@@ -174,14 +208,13 @@ demoted_namespaces:
         RuntimeConfigManager::reload_config(&Some(test_path), &runtime_config.config).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
-        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+        assert_eq!(config.drop_task_killswitch[0].taskname(), "test:do_nothing");
     }
 
     #[tokio::test]
     async fn test_demoted_namespaces() {
         let test_yaml = r#"
-drop_task_killswitch:
-  -
+drop_task_killswitch: []
 demoted_namespaces:
   - bad_namespace
 demoted_topic_cluster: kafka:9092
@@ -226,7 +259,7 @@ demoted_namespaces:
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
         let config = runtime_config.read().await;
         assert_eq!(config.drop_task_killswitch.len(), 1);
-        assert_eq!(config.drop_task_killswitch[0], "test:do_nothing");
+        assert_eq!(config.drop_task_killswitch[0].taskname(), "test:do_nothing");
         assert_eq!(config.demoted_namespaces.len(), 1);
         assert_eq!(config.demoted_namespaces[0], "bad_namespace");
     }

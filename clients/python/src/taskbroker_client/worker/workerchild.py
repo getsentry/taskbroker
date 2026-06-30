@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import multiprocessing
 import queue
 import signal
 import threading
@@ -11,10 +12,8 @@ from dataclasses import dataclass
 from functools import partial
 from multiprocessing.synchronize import Event
 from types import FrameType
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from multiprocessing.sharedctypes import Synchronized
+from typing import Any, Literal
+from uuid import UUID
 
 # XXX: Don't import any modules that will import django here, do those within child_process
 import msgpack
@@ -166,7 +165,14 @@ def _log_task_retry_exhausted(
     )
 
 
+@dataclass(frozen=True)
+class ChildMessage:
+    child_id: UUID
+    event: Literal["running", "exiting", "busy", "idle"]
+
+
 def child_process(
+    child_id: UUID,
     app_module: str,
     child_tasks: queue.Queue[InflightTaskActivation],
     processed_tasks: queue.Queue[ProcessingResult],
@@ -176,7 +182,8 @@ def child_process(
     process_type: str,
     skip_awaiting_futures: bool,
     future_checking_frequency: float,
-    ready_counter: "Synchronized[int] | None" = None,
+    messages: multiprocessing.Queue[ChildMessage],
+    parent_release: Event,
 ) -> None:
     """
     The entrypoint for spawned worker children.
@@ -360,18 +367,37 @@ def child_process(
         )
         _future_completion_thread.start()
 
+        # Track when exit was initiated for metrics
+        exit_initiated: float | None = None
+
         while not shutdown_event.is_set() and not local_shutdown.is_set():
             if max_task_count and processed_task_count >= max_task_count:
-                metrics.incr(
-                    "taskworker.worker.max_task_count_reached",
-                    tags={"count": processed_task_count, "processing_pool": processing_pool_name},
-                )
-                logger.info(
-                    "taskworker.max_task_count_reached", extra={"count": processed_task_count}
-                )
-                # Still set the shutdown signal to trigger shutdown of the future checker thread
-                local_shutdown.set()
-                break
+                if exit_initiated is None:
+                    metrics.incr(
+                        "taskworker.worker.max_task_count_reached",
+                        tags={
+                            "count": processed_task_count,
+                            "processing_pool": processing_pool_name,
+                        },
+                    )
+
+                    logger.info(
+                        "taskworker.max_task_count_reached", extra={"count": processed_task_count}
+                    )
+
+                    # Tell the parent this child can be replaced.
+                    messages.put_nowait(ChildMessage(child_id, "exiting"))
+                    exit_initiated = time.monotonic()
+
+                if parent_release.is_set():
+                    metrics.distribution(
+                        "taskworker.worker.child.parent_release_wait_duration",
+                        time.monotonic() - exit_initiated,
+                        tags={"processing_pool": processing_pool_name},
+                    )
+
+                    local_shutdown.set()
+                    break
 
             try:
                 inflight = child_tasks.get(timeout=1.0)
@@ -438,6 +464,7 @@ def child_process(
             next_state = TASK_ACTIVATION_STATUS_FAILURE
             # Use time.time() so we can measure against activation.received_at
             execution_start_time = time.time()
+            messages.put_nowait(ChildMessage(child_id, "busy"))
             try:
                 with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
                     _execute_activation(task_func, inflight.activation, app.context_hooks)
@@ -509,6 +536,8 @@ def child_process(
                     and next_state != TASK_ACTIVATION_STATUS_RETRY
                 ):
                     _log_task_failed(inflight.activation, err, processing_pool_name)
+            finally:
+                messages.put_nowait(ChildMessage(child_id, "idle"))
 
             clear_current_task()
             processed_task_count += 1
@@ -815,11 +844,8 @@ def child_process(
             futures_start_time,
         )
 
-    # Signal that this child has finished warmup and ready to consume tasks. The parent uses this
-    # to gate the gRPC SERVING health signal. Monotonic by design
-    if ready_counter is not None:
-        with ready_counter.get_lock():
-            ready_counter.value += 1
+    # Tell the parent that this child has warmed up and is ready to consume tasks
+    messages.put_nowait(ChildMessage(child_id, "running"))
 
     # Run the worker loop
     run_worker(

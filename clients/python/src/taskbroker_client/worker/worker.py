@@ -7,13 +7,18 @@ import queue
 import signal
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
+from multiprocessing.synchronize import Event
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, List
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Literal
+from uuid import UUID, uuid4
 
 import grpc
+import prometheus_client
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from sentry_protos.taskbroker.v1 import taskbroker_pb2_grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -42,7 +47,7 @@ from taskbroker_client.worker.client import (
     parse_rpc_secret_list,
 )
 from taskbroker_client.worker.push_clients import BatchPushTaskbrokerClient, PushTaskbrokerClient
-from taskbroker_client.worker.workerchild import child_process
+from taskbroker_client.worker.workerchild import ChildMessage, child_process
 
 if TYPE_CHECKING:
     ServerInterceptor = grpc.ServerInterceptor[Any, Any]
@@ -53,6 +58,27 @@ else:
 logger = logging.getLogger(__name__)
 
 WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
+
+
+class WorkerPrometheusMetrics:
+    """
+    Owns the Prometheus registry, server, and metrics we expose for scraping.
+    """
+
+    def __init__(
+        self, port: int, registry: prometheus_client.CollectorRegistry | None = None
+    ) -> None:
+        self.registry = registry or prometheus_client.CollectorRegistry()
+
+        self.occupancy = prometheus_client.Gauge(
+            "taskworker_worker_occupancy",
+            "Fraction of worker child slots currently executing a task (busy / concurrency).",
+            ["processing_pool"],
+            registry=self.registry,
+        )
+
+        prometheus_client.start_http_server(port, registry=self.registry)
+        logger.info("taskworker.worker.prometheus_server_started", extra={"port": port})
 
 
 class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
@@ -122,6 +148,17 @@ class RequeueException(Exception):
     pass
 
 
+ChildState = Literal["pending", "running", "exiting"]
+
+
+@dataclass
+class TrackedChild:
+    process: BaseProcess
+    state: ChildState
+    release: Event
+    busy: bool = False
+
+
 class PushTaskWorker:
     _mp_context: ForkContext | SpawnContext | ForkServerContext
 
@@ -132,6 +169,7 @@ class PushTaskWorker:
         max_child_task_count: int | None = None,
         namespace: str | None = None,
         concurrency: int = 1,
+        min_concurrency: int = 0,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         result_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         rebalance_after: int = DEFAULT_REBALANCE_AFTER,
@@ -145,6 +183,7 @@ class PushTaskWorker:
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
+        prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
     ) -> None:
         app = import_app(app_module)
@@ -164,6 +203,7 @@ class PushTaskWorker:
             send_result_fn=self._send_results,
             max_child_task_count=max_child_task_count,
             concurrency=concurrency,
+            min_concurrency=min_concurrency,
             child_tasks_queue_maxsize=child_tasks_queue_maxsize,
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
@@ -171,6 +211,7 @@ class PushTaskWorker:
             process_type=process_type,
             update_in_batches=update_in_batches,
             skip_awaiting_futures=skip_awaiting_futures,
+            prometheus_port=prometheus_port,
             future_checking_frequency=future_checking_frequency,
         )
 
@@ -563,6 +604,7 @@ class TaskWorker:
         max_child_task_count: int | None = None,
         namespace: str | None = None,
         concurrency: int = 1,
+        min_concurrency: int = 0,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         result_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         rebalance_after: int = DEFAULT_REBALANCE_AFTER,
@@ -591,6 +633,7 @@ class TaskWorker:
             send_result_fn=self._send_results,
             max_child_task_count=max_child_task_count,
             concurrency=concurrency,
+            min_concurrency=min_concurrency,
             child_tasks_queue_maxsize=child_tasks_queue_maxsize,
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
@@ -774,6 +817,7 @@ class TaskWorkerProcessingPool:
         mp_context: ForkContext | SpawnContext | ForkServerContext,
         max_child_task_count: int | None = None,
         concurrency: int = 1,
+        min_concurrency: int = 0,
         child_tasks_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         result_queue_maxsize: int = DEFAULT_WORKER_QUEUE_SIZE,
         processing_pool_name: str | None = None,
@@ -781,9 +825,16 @@ class TaskWorkerProcessingPool:
         process_type: str = "spawn",
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
+        prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
     ) -> None:
         self._concurrency = concurrency
+
+        if min_concurrency < concurrency:
+            self._min_concurrency = min_concurrency
+        else:
+            raise ValueError("Minimum concurrency must be strictly below concurrency")
+
         self._result_queue_maxsize = result_queue_maxsize
         self._processing_pool_name = processing_pool_name or "unknown"
         self._pod_name = pod_name or "unknown"
@@ -807,9 +858,12 @@ class TaskWorkerProcessingPool:
         self._processed_tasks: multiprocessing.Queue[ProcessingResult] = self._mp_context.Queue(
             maxsize=result_queue_maxsize
         )
-        self._children: list[BaseProcess] = []
+        self._children: Dict[UUID, TrackedChild] = {}
+        self._exiting_children: Deque[UUID] = deque()
+        self._children_lock = threading.Lock()
         self._shutdown_event = self._mp_context.Event()
-        self._ready_counter = self._mp_context.Value("i", 0)
+        self._prometheus_port = prometheus_port
+        self._prom: WorkerPrometheusMetrics | None = None
         self._result_thread: threading.Thread | None = None
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
@@ -817,7 +871,73 @@ class TaskWorkerProcessingPool:
     @property
     def ready_count(self) -> int:
         """Number of children that have finished warming up and are consuming."""
-        return self._ready_counter.value
+        with self._children_lock:
+            return sum(1 for c in self._children.values() if c.state == "running")
+
+    def _emit_periodic_metrics(self) -> None:
+        tags = {
+            "processing_pool": self._processing_pool_name,
+            "pod_name": self._pod_name,
+        }
+
+        # Emit queue size metrics
+        try:
+            # Method 'qsize' not implemented on all platforms, such as macOS
+            self._metrics.gauge(
+                "taskworker.child_tasks.size",
+                float(self._child_tasks.qsize()),
+                tags=tags,
+            )
+
+            self._metrics.gauge(
+                "taskworker.processed_tasks.size",
+                float(self._processed_tasks.qsize()),
+                tags=tags,
+            )
+        except Exception as e:
+            logger.debug(
+                "taskworker.worker.queue_gauges.error",
+                extra={"error": e, "processing_pool": self._processing_pool_name},
+            )
+
+        # Count the number of children in each state and waiting for exit
+        with self._children_lock:
+            state_counts: dict[ChildState, int] = {
+                "pending": 0,
+                "running": 0,
+                "exiting": 0,
+            }
+
+            for child in self._children.values():
+                state_counts[child.state] += 1
+
+            busy = sum(1 for child in self._children.values() if child.busy)
+            exiting_children = len(self._exiting_children)
+
+        bounded_busy = max(0, min(busy, self._concurrency))
+        occupancy = bounded_busy / self._concurrency if self._concurrency else 0.0
+        self._metrics.gauge(
+            "taskworker.worker.occupancy",
+            occupancy,
+            tags=tags,
+        )
+        if self._prom is not None:
+            self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(occupancy)
+
+        # Emit number of children in each state
+        for state, count in state_counts.items():
+            self._metrics.gauge(
+                "taskworker.worker.children",
+                float(count),
+                tags={**tags, "state": state},
+            )
+
+        # Emit number of children waiting to exit
+        self._metrics.gauge(
+            "taskworker.worker.exiting_children.size",
+            float(exiting_children),
+            tags=tags,
+        )
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
@@ -843,27 +963,13 @@ class TaskWorkerProcessingPool:
         """
         Start a thread that emits metrics on an interval.
         """
+        if self._prometheus_port is not None and self._prom is None:
+            self._prom = WorkerPrometheusMetrics(self._prometheus_port)
 
         def metrics_thread() -> None:
-            tags = {
-                "processing_pool": self._processing_pool_name,
-                "pod_name": self._pod_name,
-            }
-
             while True:
                 try:
-                    # 'qsize' is not implemented on all platforms, such as macOS
-                    self._metrics.gauge(
-                        "taskworker.child_tasks.size",
-                        float(self._child_tasks.qsize()),
-                        tags=tags,
-                    )
-
-                    self._metrics.gauge(
-                        "taskworker.processed_tasks.size",
-                        float(self._processed_tasks.qsize()),
-                        tags=tags,
-                    )
+                    self._emit_periodic_metrics()
                 except Exception as e:
                     logger.debug(
                         "taskworker.worker.queue_gauges.error",
@@ -924,16 +1030,110 @@ class TaskWorkerProcessingPool:
     def start_spawn_children_thread(self) -> None:
         def spawn_children_thread() -> None:
             logger.debug("taskworker.worker.spawn_children_thread.started")
+
+            # Queue of incoming message from children
+            messages: multiprocessing.Queue[ChildMessage] = self._mp_context.Queue()
+
             while not self._shutdown_event.is_set():
-                self._children = [child for child in self._children if child.is_alive()]
-                if len(self._children) >= self._concurrency:
-                    time.sleep(0.1)
-                    continue
-                for i in range(self._concurrency - len(self._children)):
+                # Read any events that may have come in since the last loop iteration
+                received: List[ChildMessage] = []
+
+                while True:
+                    try:
+                        message = messages.get(block=False)
+                        received.append(message)
+                    except queue.Empty:
+                        break
+
+                with self._children_lock:
+                    children = list(self._children.items())
+
+                    for cid, c in children:
+                        if c.process.is_alive():
+                            continue
+
+                        c.process.join(timeout=0)
+                        self._children.pop(cid)
+
+                        logger.info(
+                            "taskworker.child.exited",
+                            extra={
+                                "pid": c.process.pid,
+                                "cid": str(cid),
+                                "exitcode": c.process.exitcode,
+                                "state": c.state,
+                                "processing_pool": self._processing_pool_name,
+                            },
+                        )
+
+                    for message in received:
+                        child = self._children.get(message.child_id)
+
+                        # If we received a message from a child, we MUST be tracking that child
+                        if child is None:
+                            logger.warning(
+                                "taskworker.child_message.unknown_child",
+                                extra={
+                                    "cid": str(message.child_id),
+                                    "event": message.event,
+                                    "processing_pool": self._processing_pool_name,
+                                },
+                            )
+
+                            continue
+
+                        # This child is now running
+                        if message.event == "running":
+                            child.state = "running"
+
+                        # This child wants to exit, but we may not have enough running children to shut down right away
+                        elif message.event == "exiting":
+                            self._exiting_children.append(message.child_id)
+
+                        # This child is executing a task
+                        elif message.event == "busy":
+                            child.busy = True
+
+                        # This child isn't doing anything right now
+                        elif message.event == "idle":
+                            child.busy = False
+
+                    while True:
+                        # Compute how many children are still running
+                        running = sum(1 for c in self._children.values() if c.state == "running")
+
+                        if running <= self._min_concurrency:
+                            # Cannot shut down any more children without falling below minimum concurrency (guaranteed < concurrency)
+                            break
+
+                        if not self._exiting_children:
+                            # No children are waiting to exit
+                            break
+
+                        child_id = self._exiting_children.popleft()
+                        child = self._children.get(child_id)
+
+                        # Child may have died already
+                        if child is None:
+                            continue
+
+                        child.state = "exiting"
+                        child.release.set()
+
+                    spawned = sum(1 for c in self._children.values() if c.state != "exiting")
+
+                # How many children do we need to spawn?
+                needed = max(self._concurrency - spawned, 0)
+
+                for _ in range(needed):
+                    child_id = uuid4()
+                    release = self._mp_context.Event()
+
                     process = self._mp_context.Process(
-                        name=f"taskworker-child-{i}",
+                        name=f"taskworker-child-{child_id}",
                         target=child_process,
                         args=(
+                            child_id,
                             self._app_module,
                             self._child_tasks,
                             self._processed_tasks,
@@ -943,19 +1143,60 @@ class TaskWorkerProcessingPool:
                             self._process_type,
                             self._skip_awaiting_futures,
                             self._future_checking_frequency,
-                            self._ready_counter,
+                            messages,
+                            release,
                         ),
                     )
-                    process.start()
-                    self._children.append(process)
+
+                    try:
+                        process.start()
+
+                        with self._children_lock:
+                            child = TrackedChild(
+                                process=process,
+                                state="pending",
+                                release=release,
+                            )
+
+                            self._children[child_id] = child
+                    except Exception as e:
+                        logger.exception(
+                            "taskworker.child.spawn.failed",
+                            extra={
+                                "cid": str(child_id),
+                                "error": e,
+                                "processing_pool": self._processing_pool_name,
+                            },
+                        )
+
+                        self._metrics.incr(
+                            "taskworker.worker.child.spawn",
+                            tags={
+                                "processing_pool": self._processing_pool_name,
+                                "result": "failure",
+                            },
+                        )
+
+                        continue
+
                     logger.info(
                         "taskworker.spawn_child",
-                        extra={"pid": process.pid, "processing_pool": self._processing_pool_name},
+                        extra={
+                            "pid": process.pid,
+                            "cid": str(child_id),
+                            "processing_pool": self._processing_pool_name,
+                        },
                     )
+
                     self._metrics.incr(
                         "taskworker.worker.spawn_child",
-                        tags={"processing_pool": self._processing_pool_name},
+                        tags={
+                            "processing_pool": self._processing_pool_name,
+                            "result": "success",
+                        },
                     )
+
+                time.sleep(0.1)
 
         self._spawn_children_thread = threading.Thread(
             name="spawn-children", target=spawn_children_thread, daemon=True
@@ -1013,9 +1254,12 @@ class TaskWorkerProcessingPool:
             self._spawn_children_thread.join()
 
         logger.info("taskworker.worker.shutdown.children")
-        for child in self._children:
+        with self._children_lock:
+            children = [tracked_child.process for tracked_child in self._children.values()]
+
+        for child in children:
             child.terminate()
-        for child in self._children:
+        for child in children:
             child.join(WORKER_CHILD_JOIN_TIMEOUT_SEC)
             if child.is_alive():
                 child.kill()
