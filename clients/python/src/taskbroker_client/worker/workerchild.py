@@ -367,11 +367,12 @@ def child_process(
         )
         _future_completion_thread.start()
 
-        waiting_for_parent_release = False
+        # Track when exit was initiated for metrics
+        exit_initiated: float | None = None
 
         while not shutdown_event.is_set() and not local_shutdown.is_set():
             if max_task_count and processed_task_count >= max_task_count:
-                if not waiting_for_parent_release:
+                if exit_initiated is None:
                     metrics.incr(
                         "taskworker.worker.max_task_count_reached",
                         tags={
@@ -386,9 +387,15 @@ def child_process(
 
                     # Tell the parent this child can be replaced.
                     messages.put_nowait(ChildMessage(child_id, "exiting"))
-                    waiting_for_parent_release = True
+                    exit_initiated = time.monotonic()
 
                 if parent_release.is_set():
+                    metrics.distribution(
+                        "taskworker.worker.child.parent_release_wait_duration",
+                        time.monotonic() - exit_initiated,
+                        tags={"processing_pool": processing_pool_name},
+                    )
+
                     local_shutdown.set()
                     break
 

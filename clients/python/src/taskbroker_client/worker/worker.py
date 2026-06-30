@@ -832,6 +832,7 @@ class TaskWorkerProcessingPool:
             maxsize=result_queue_maxsize
         )
         self._children: Dict[UUID, TrackedChild] = {}
+        self._exiting_children: Deque[UUID] = deque()
         self._children_lock = threading.Lock()
         self._shutdown_event = self._mp_context.Event()
         self._result_thread: threading.Thread | None = None
@@ -843,6 +844,60 @@ class TaskWorkerProcessingPool:
         """Number of children that have finished warming up and are consuming."""
         with self._children_lock:
             return sum(1 for c in self._children.values() if c.state == "running")
+
+    def _emit_periodic_metrics(self) -> None:
+        tags = {
+            "processing_pool": self._processing_pool_name,
+            "pod_name": self._pod_name,
+        }
+
+        # Emit queue size metrics
+        try:
+            # Method 'qsize' not implemented on all platforms, such as macOS
+            self._metrics.gauge(
+                "taskworker.child_tasks.size",
+                float(self._child_tasks.qsize()),
+                tags=tags,
+            )
+
+            self._metrics.gauge(
+                "taskworker.processed_tasks.size",
+                float(self._processed_tasks.qsize()),
+                tags=tags,
+            )
+        except Exception as e:
+            logger.debug(
+                "taskworker.worker.queue_gauges.error",
+                extra={"error": e, "processing_pool": self._processing_pool_name},
+            )
+
+        # Count the number of children in each state and waiting for exit
+        with self._children_lock:
+            state_counts: dict[ChildState, int] = {
+                "pending": 0,
+                "running": 0,
+                "exiting": 0,
+            }
+
+            for child in self._children.values():
+                state_counts[child.state] += 1
+
+            exiting_children = len(self._exiting_children)
+
+        # Emit number of children in each state
+        for state, count in state_counts.items():
+            self._metrics.gauge(
+                "taskworker.worker.children",
+                float(count),
+                tags={**tags, "state": state},
+            )
+
+        # Emit number of children waiting to exit
+        self._metrics.gauge(
+            "taskworker.worker.exiting_children.size",
+            float(exiting_children),
+            tags=tags,
+        )
 
     def send_results(self, results: list[ProcessingResult], is_draining: bool = False) -> None:
         """
@@ -870,25 +925,9 @@ class TaskWorkerProcessingPool:
         """
 
         def metrics_thread() -> None:
-            tags = {
-                "processing_pool": self._processing_pool_name,
-                "pod_name": self._pod_name,
-            }
-
             while True:
                 try:
-                    # 'qsize' is not implemented on all platforms, such as macOS
-                    self._metrics.gauge(
-                        "taskworker.child_tasks.size",
-                        float(self._child_tasks.qsize()),
-                        tags=tags,
-                    )
-
-                    self._metrics.gauge(
-                        "taskworker.processed_tasks.size",
-                        float(self._processed_tasks.qsize()),
-                        tags=tags,
-                    )
+                    self._emit_periodic_metrics()
                 except Exception as e:
                     logger.debug(
                         "taskworker.worker.queue_gauges.error",
@@ -953,9 +992,6 @@ class TaskWorkerProcessingPool:
             # Queue of incoming message from children
             messages: multiprocessing.Queue[ChildMessage] = self._mp_context.Queue()
 
-            # Queue of children that want to exit
-            exiting: Deque[UUID] = deque()
-
             while not self._shutdown_event.is_set():
                 # Read any events that may have come in since the last loop iteration
                 received: List[ChildMessage] = []
@@ -1010,7 +1046,7 @@ class TaskWorkerProcessingPool:
 
                         # This child wants to exit, but we may not have enough running children to shut down right away
                         elif message.event == "exiting":
-                            exiting.append(message.child_id)
+                            self._exiting_children.append(message.child_id)
 
                     while True:
                         # Compute how many children are still running
@@ -1020,14 +1056,19 @@ class TaskWorkerProcessingPool:
                             # Cannot shut down any more children without falling below minimum concurrency (guaranteed < concurrency)
                             break
 
-                        if not exiting:
+                        if not self._exiting_children:
                             # No children are waiting to exit
                             break
 
-                        child_id = exiting.popleft()
+                        child_id = self._exiting_children.popleft()
+                        child = self._children.get(child_id)
 
-                        self._children[child_id].state = "exiting"
-                        self._children[child_id].release.set()
+                        # Child may have died already
+                        if child is None:
+                            continue
+
+                        child.state = "exiting"
+                        child.release.set()
 
                     spawned = sum(1 for c in self._children.values() if c.state != "exiting")
 
