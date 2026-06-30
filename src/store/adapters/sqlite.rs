@@ -27,6 +27,7 @@ use tracing::{debug, instrument, warn};
 
 use crate::config::Config;
 use crate::config::store::StoreConfig;
+use crate::killswitch::KillswitchSelector;
 use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
@@ -1195,6 +1196,53 @@ impl ActivationStore for SqliteStore {
         let mut conn = self
             .acquire_write_conn_metric("remove_killswitched")
             .await?;
+        let query = query_builder.build().execute(&mut *conn).await?;
+
+        Ok(query.rows_affected())
+    }
+
+    /// Remove tasks matching argument-based killswitch selectors. Scans the rows for each
+    /// selector's taskname, decodes the activation, and deletes the ids that match. Decode
+    /// failures fail open (the task is kept).
+    #[instrument(skip_all)]
+    async fn remove_killswitched_selectors(
+        &self,
+        selectors: Vec<KillswitchSelector>,
+    ) -> Result<u64, Error> {
+        let mut conn = self
+            .acquire_write_conn_metric("remove_killswitched_selectors")
+            .await?;
+
+        let mut matched_ids: Vec<String> = Vec::new();
+        for selector in selectors.iter() {
+            let rows: Vec<SqliteRow> = sqlx::query(
+                "SELECT id, activation FROM inflight_taskactivations WHERE taskname = $1",
+            )
+            .bind(&selector.name)
+            .fetch_all(&mut *conn)
+            .await?;
+            for row in rows.iter() {
+                let activation_data: &[u8] = row.get("activation");
+                let Ok(activation) = TaskActivation::decode(activation_data) else {
+                    continue; // fail open
+                };
+                if crate::killswitch::selector_matches(selector, &activation) {
+                    matched_ids.push(row.get("id"));
+                }
+            }
+        }
+
+        if matched_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let mut query_builder =
+            QueryBuilder::new("DELETE FROM inflight_taskactivations WHERE id IN (");
+        let mut separated = query_builder.separated(", ");
+        for id in matched_ids.iter() {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(")");
         let query = query_builder.build().execute(&mut *conn).await?;
 
         Ok(query.rows_affected())

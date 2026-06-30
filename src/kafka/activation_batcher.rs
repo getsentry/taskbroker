@@ -96,11 +96,18 @@ impl Reducer for ActivationBatcher {
         let task_name = &t.taskname;
         let namespace = &t.namespace;
 
-        if runtime_config.drop_task_killswitch.contains(task_name) {
+        // Drop the task if a killswitch matches. `should_drop` only decodes the activation
+        // when a selector targets this task, and fails open on any decode error.
+        if let Some(match_kind) = crate::killswitch::should_drop(
+            &runtime_config.drop_task_killswitch,
+            task_name,
+            &t.activation,
+        ) {
             metrics::counter!(
                 "filter.drop_task_killswitch",
                 "topic" => self.config.kafka_topic.clone(),
                 "taskname" => task_name.clone(),
+                "match" => match_kind,
             )
             .increment(1);
             return Ok(());
@@ -288,6 +295,62 @@ demoted_namespaces:
     }
 
     #[tokio::test]
+    async fn test_drop_task_due_to_selector_killswitch() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  - name: sentry.tasks.unmerge
+    select_kwarg: {project_id: 123}
+demoted_namespaces: []"#;
+
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+
+        // Encode `{"args": [...], "kwargs": {...}}` (written as YAML) into msgpack bytes.
+        let msgpack_params = |yaml: &str| -> Vec<u8> {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            rmp_serde::to_vec_named(&value).unwrap()
+        };
+
+        // Matching project_id: dropped.
+        let matching = ActivationBuilder::new()
+            .id("0")
+            .taskname("sentry.tasks.unmerge")
+            .namespace(&namespace)
+            .build(
+                TaskActivationBuilder::new()
+                    .parameters_bytes(msgpack_params("{args: [], kwargs: {project_id: 123}}")),
+            );
+        batcher.reduce(matching).await.unwrap();
+        assert_eq!(batcher.batch.len(), 0);
+
+        // Same task, different project_id: kept.
+        let non_matching = ActivationBuilder::new()
+            .id("1")
+            .taskname("sentry.tasks.unmerge")
+            .namespace(&namespace)
+            .build(
+                TaskActivationBuilder::new()
+                    .parameters_bytes(msgpack_params("{args: [], kwargs: {project_id: 456}}")),
+            );
+        batcher.reduce(non_matching).await.unwrap();
+        assert_eq!(batcher.batch.len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_drop_task_due_to_expiry() {
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let mut config = Config::default();
@@ -387,8 +450,7 @@ demoted_namespaces:
     #[tokio::test]
     async fn test_forward_task_due_to_demoted_namespace() {
         let test_yaml = r#"
-drop_task_killswitch:
-  -
+drop_task_killswitch: []
 demoted_namespaces:
   - bad_namespace
 demoted_topic_cluster: 0.0.0.0:9092

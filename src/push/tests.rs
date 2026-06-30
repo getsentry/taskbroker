@@ -167,6 +167,13 @@ impl ActivationStore for MockStore {
         Ok(0)
     }
 
+    async fn remove_killswitched_selectors(
+        &self,
+        _selectors: Vec<crate::killswitch::KillswitchSelector>,
+    ) -> Result<u64> {
+        Ok(0)
+    }
+
     async fn clear(&self) -> Result<()> {
         Ok(())
     }

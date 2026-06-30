@@ -24,8 +24,8 @@ struct RawParams<'a> {
 /// Header key and value identifying zstd-compressed `parameters_bytes`. Must match the
 /// producer/worker contract (`CompressionType.ZSTD` in the Python client) so the worker
 /// decompresses payloads taskbroker compresses in raw mode.
-const COMPRESSION_HEADER: &str = "compression-type";
-const COMPRESSION_ZSTD: &str = "zstd";
+pub(crate) const COMPRESSION_HEADER: &str = "compression-type";
+pub(crate) const COMPRESSION_ZSTD: &str = "zstd";
 
 /// Default zstd level for raw-mode payloads, matching the producer's zstandard default.
 const DEFAULT_COMPRESSION_LEVEL: i32 = 3;

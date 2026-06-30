@@ -302,13 +302,26 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
 
-    // 11. Remove killswitched tasks from store
+    // 11. Remove killswitched tasks from store. Guard on emptiness so the common
+    // "no killswitches active" case partitions and clones nothing.
     let runtime_config = runtime_config_manager.read().await;
-    let killswitched_tasks = runtime_config.drop_task_killswitch.clone();
-    if !killswitched_tasks.is_empty() {
+    if !runtime_config.drop_task_killswitch.is_empty() {
         let remove_killswitched_start = Instant::now();
-        if let Ok(count) = store.remove_killswitched(killswitched_tasks).await {
-            result_context.killswitched = count;
+        let (killswitched_tasks, killswitched_selectors) =
+            crate::killswitch::partition_rules(&runtime_config.drop_task_killswitch);
+        if !killswitched_tasks.is_empty()
+            && let Ok(count) = store.remove_killswitched(killswitched_tasks).await
+        {
+            result_context.killswitched += count;
+        }
+        // Selector rules require decoding each candidate activation's arguments, so they
+        // use a separate scan-and-delete path.
+        if !killswitched_selectors.is_empty()
+            && let Ok(count) = store
+                .remove_killswitched_selectors(killswitched_selectors)
+                .await
+        {
+            result_context.killswitched += count;
         }
         metrics::histogram!("upkeep.remove_killswitched")
             .record(remove_killswitched_start.elapsed());
@@ -1343,8 +1356,7 @@ mod tests {
         // Create runtime config with demoted namespaces
         let config = create_config();
         let test_yaml = r#"
-drop_task_killswitch:
-  -
+drop_task_killswitch: []
 demoted_namespaces:
   - bad_namespace1
   - bad_namespace2"#;
@@ -1446,6 +1458,77 @@ demoted_namespaces:
                 .await
                 .unwrap(),
             3
+        );
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_remove_killswitched_selectors(#[case] adapter: &str) {
+        use crate::store::activation::ActivationBuilder;
+        use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
+
+        let config = create_config();
+        let test_yaml = r#"
+drop_task_killswitch:
+  - name: sentry.tasks.unmerge
+    select_kwarg: {project_id: 123}
+demoted_namespaces: []"#;
+
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
+        let producer = create_producer(config.clone());
+        let store = create_test_store(adapter).await;
+        let start_time = Utc::now();
+        let mut last_vacuum = Instant::now();
+
+        let msgpack = |yaml: &str| -> Vec<u8> {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            rmp_serde::to_vec_named(&value).unwrap()
+        };
+        let namespace = generate_unique_namespace();
+        let make = |id: &str, params: Vec<u8>| {
+            ActivationBuilder::new()
+                .id(id)
+                .taskname("sentry.tasks.unmerge")
+                .namespace(&namespace)
+                .added_at(Utc::now())
+                .received_at(Utc::now())
+                .processing_deadline_duration(10)
+                .build(TaskActivationBuilder::new().parameters_bytes(params))
+        };
+
+        let batch = vec![
+            make("0", msgpack("{args: [], kwargs: {project_id: 123}}")), // dropped
+            make("1", msgpack("{args: [], kwargs: {project_id: 456}}")), // kept
+            make("2", msgpack("{args: [], kwargs: {project_id: 123}}")), // dropped
+        ];
+        assert!(store.store(&batch).await.is_ok());
+
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+            &mut last_vacuum,
+            &mut HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(result_context.killswitched, 2);
+        assert_eq!(
+            store
+                .count_by_status(ActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
         );
     }
 
