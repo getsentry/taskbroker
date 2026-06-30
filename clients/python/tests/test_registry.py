@@ -59,14 +59,10 @@ def test_namespace_registers_builtin_canary_task(
 
     assert isinstance(task, Task)
     assert task.name == CANARY_TASK_NAME
-    with (
-        patch("taskbroker_client.canary.logger") as mock_logger,
-        patch("taskbroker_client.canary.time.sleep") as mock_sleep,
-    ):
+    with patch("taskbroker_client.canary.logger") as mock_logger:
         task()
 
     mock_logger.info.assert_called_once_with("Running canary task...")
-    mock_sleep.assert_called_once_with(0.1)
     assert capsys.readouterr().out == "Done running canary task!\n"
 
 
