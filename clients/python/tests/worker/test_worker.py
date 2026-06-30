@@ -35,6 +35,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_sdk.crons import MonitorStatus
 
+from taskbroker_client.canary import CANARY_TASK_NAME
 from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
@@ -55,6 +56,18 @@ SIMPLE_TASK = InflightTaskActivation(
     activation=TaskActivation(
         id="111",
         taskname="examples.simple_task",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+    ),
+)
+
+CANARY_TASK = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="canary",
+        taskname=CANARY_TASK_NAME,
         namespace="examples",
         parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
@@ -822,6 +835,34 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     assert result.task_id == SIMPLE_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     assert mock_capture_checkin.call_count == 0
+
+
+def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(CANARY_TASK)
+    with (
+        mock.patch("taskbroker_client.canary.logger") as mock_logger,
+        mock.patch("taskbroker_client.canary.time.sleep") as mock_sleep,
+    ):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+        )
+
+    result = processed.get()
+    assert result.task_id == CANARY_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+    mock_logger.info.assert_called_once_with("Running canary task...")
+    mock_sleep.assert_called_once_with(0.1)
+    assert capsys.readouterr().out == "Done running canary task!\n"
 
 
 def test_child_process_remove_start_time_kwargs() -> None:
