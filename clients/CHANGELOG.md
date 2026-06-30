@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.8
+
+### New Features ✨
+
+- (taskworker) Emit worker occupancy metric for autoscaling by @enochtangg in [#734](https://github.com/getsentry/taskbroker/pull/734)
+
 ## 0.20.7
 
 ### Internal Changes 🔧
