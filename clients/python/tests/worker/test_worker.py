@@ -497,23 +497,18 @@ class TestTaskWorker(TestCase):
 
     def test_result_thread_sends_full_batch(self) -> None:
         capture = _SendResultCapture()
-        result_queue_maxsize = 5
-        pool = _make_result_thread_pool(
-            capture,
-            concurrency=2,
-            result_queue_maxsize=result_queue_maxsize,
-            update_in_batches=True,
-        )
+        concurrency = 3
+        pool = _make_result_thread_pool(capture, concurrency=concurrency, update_in_batches=True)
         try:
             pool.start_result_thread()
 
-            for i in range(result_queue_maxsize):
+            for i in range(concurrency):
                 pool.put_result(_make_processing_result(str(i)))
 
             capture.wait_for_calls(1)
             batch, is_draining = capture.send_calls[0]
-            self.assertEqual(len(batch), result_queue_maxsize)
-            self.assertEqual({result.task_id for result in batch}, {"0", "1", "2", "3", "4"})
+            self.assertEqual(len(batch), concurrency)
+            self.assertEqual({result.task_id for result in batch}, {"0", "1", "2"})
             self.assertFalse(is_draining)
         finally:
             pool.shutdown()
