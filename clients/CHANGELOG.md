@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.9
+
+### New Features ✨
+
+- (taskworker) Minimum Worker Concurrency by @george-sentry in [#735](https://github.com/getsentry/taskbroker/pull/735)
+
 ## 0.20.8
 
 ### New Features ✨
