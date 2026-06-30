@@ -901,7 +901,7 @@ class TaskWorkerProcessingPool:
                                 break
                             else:
                                 results.append(result)
-                                if len(results) >= self._result_queue_maxsize:
+                                if len(results) >= self._concurrency:
                                     executor.submit(self.send_results, results, False)
                                     results = []
                         except queue.Empty:
