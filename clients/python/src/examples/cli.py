@@ -93,7 +93,7 @@ def scheduler() -> None:
 )
 @click.option(
     "--prometheus-port",
-    help="Expose occupancy on this port for Prometheus scraping. Unset = disabled.",
+    help="Expose prometheus metrics on this port for scraping. Unset = disabled.",
     default=None,
     type=int,
 )
