@@ -1,5 +1,10 @@
 from enum import Enum
 
+INTERNAL_NAMESPACE = "internal"
+"""
+Namespace reserved for taskbroker client internal tasks.
+"""
+
 DEFAULT_PROCESSING_DEADLINE = 10
 """
 The fallback/default processing_deadline that tasks

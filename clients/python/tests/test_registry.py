@@ -1,5 +1,5 @@
 from concurrent.futures import Future
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import msgpack
 import pytest
@@ -9,13 +9,12 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     ON_ATTEMPTS_EXCEEDED_DISCARD,
 )
 
-from taskbroker_client.canary import CANARY_TASK_NAME
 from taskbroker_client.constants import MAX_PARAMETER_BYTES_BEFORE_COMPRESSION, CompressionType
 from taskbroker_client.metrics import NoOpMetricsBackend
 from taskbroker_client.registry import TaskNamespace, TaskRegistry
 from taskbroker_client.retry import LastAction, Retry
 from taskbroker_client.router import DefaultRouter
-from taskbroker_client.task import ExternalTask, Task
+from taskbroker_client.task import Task
 
 from .conftest import producer_factory
 
@@ -41,29 +40,6 @@ def test_namespace_register_task() -> None:
     task = namespace.get("tests.simple_task")
     assert task
     assert task.name == "tests.simple_task"
-
-
-def test_namespace_registers_builtin_canary_task(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    namespace = TaskNamespace(
-        name="tests",
-        application="acme",
-        producer_factory=producer_factory,
-        router=DefaultRouter(),
-        metrics=NoOpMetricsBackend(),
-        retry=None,
-    )
-
-    task = namespace.get(CANARY_TASK_NAME)
-
-    assert isinstance(task, Task)
-    assert task.name == CANARY_TASK_NAME
-    with patch("taskbroker_client.canary.logger") as mock_logger:
-        task()
-
-    mock_logger.info.assert_called_once_with("Running canary task...")
-    assert capsys.readouterr().out == "Done running canary task!\n"
 
 
 def test_namespace_register_inherits_default_retry() -> None:
@@ -373,21 +349,6 @@ def test_registry_get_task() -> None:
 
     with pytest.raises(KeyError):
         registry.get_task(ns.name, "nope")
-
-
-def test_external_namespace_registers_builtin_canary_task() -> None:
-    registry = TaskRegistry(
-        application="acme",
-        producer_factory=producer_factory,
-        router=DefaultRouter(),
-        metrics=NoOpMetricsBackend(),
-    )
-    namespace = registry.create_external_namespace(name="tests", application="other")
-
-    task = namespace.get(CANARY_TASK_NAME)
-
-    assert isinstance(task, ExternalTask)
-    assert task.name == CANARY_TASK_NAME
 
 
 def test_registry_create_namespace_simple() -> None:

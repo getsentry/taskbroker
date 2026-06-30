@@ -36,7 +36,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 from sentry_sdk.crons import MonitorStatus
 
 from taskbroker_client.canary import CANARY_TASK_NAME
-from taskbroker_client.constants import CompressionType
+from taskbroker_client.constants import INTERNAL_NAMESPACE, CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
@@ -69,7 +69,7 @@ CANARY_TASK = InflightTaskActivation(
     activation=TaskActivation(
         id="canary",
         taskname=CANARY_TASK_NAME,
-        namespace="examples",
+        namespace=INTERNAL_NAMESPACE,
         parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
@@ -1156,7 +1156,6 @@ def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
     assert result.task_id == CANARY_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     mock_logger.info.assert_called_once_with("Running canary task...")
-    time.sleep(1)
     assert capsys.readouterr().out == "Done running canary task!\n"
 
 

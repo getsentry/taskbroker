@@ -12,7 +12,6 @@ from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
 
-from taskbroker_client.canary import CANARY_TASK_NAME, canary_task
 from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, CompressionType
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.retry import Retry
@@ -57,15 +56,6 @@ class TaskNamespace:
         self._producers: dict[str, ProducerProtocol] = {}
         self._producer_factory = producer_factory
         self.metrics = metrics
-        self._register_builtin_tasks()
-
-    def _register_builtin_tasks(self) -> None:
-        self._registered_tasks[CANARY_TASK_NAME] = Task(
-            name=CANARY_TASK_NAME,
-            func=canary_task,
-            namespace=self,
-            processing_deadline_duration=self.default_processing_deadline_duration,
-        )
 
     def get(self, name: str) -> Task[Any, Any]:
         """
@@ -232,14 +222,6 @@ class ExternalNamespace(TaskNamespace):
     Tasks registered here are ExternalTask instances that can only be dispatched
     to Kafka, not called locally.
     """
-
-    def _register_builtin_tasks(self) -> None:
-        self._registered_tasks[CANARY_TASK_NAME] = ExternalTask(
-            name=CANARY_TASK_NAME,
-            func=canary_task,
-            namespace=self,
-            processing_deadline_duration=self.default_processing_deadline_duration,
-        )
 
     @property
     def topic(self) -> str:

@@ -5,7 +5,8 @@ from typing import Any
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
-from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE
+from taskbroker_client.canary import CANARY_TASK_NAME, canary_task
+from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, INTERNAL_NAMESPACE
 from taskbroker_client.imports import import_string
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.registry import ExternalNamespace, TaskNamespace, TaskRegistry
@@ -45,6 +46,7 @@ class TaskbrokerApp:
             metrics=self.metrics,
             context_hooks=self.context_hooks,
         )
+        self._register_internal_tasks()
         self.at_most_once_store(at_most_once_store)
 
     def _build_router(self, router_name: str | TaskRouter) -> TaskRouter:
@@ -62,6 +64,10 @@ class TaskbrokerApp:
             metrics_class = import_string(backend_name)
             return metrics_class()
         return backend_name
+
+    def _register_internal_tasks(self) -> None:
+        namespace = self._taskregistry.create_namespace(name=INTERNAL_NAMESPACE)
+        namespace.register(name=CANARY_TASK_NAME)(canary_task)
 
     @property
     def taskregistry(self) -> TaskRegistry:
