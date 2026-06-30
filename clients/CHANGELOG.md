@@ -1,4 +1,16 @@
 # Changelog
+## 0.20.8
+
+### New Features ✨
+
+- (taskworker) Emit worker occupancy metric for autoscaling by @enochtangg in [#734](https://github.com/getsentry/taskbroker/pull/734)
+
+## 0.20.7
+
+### Internal Changes 🔧
+
+- (TaskProducer) Free up the GIL more by @bmckerry in [#733](https://github.com/getsentry/taskbroker/pull/733)
+
 ## 0.20.6
 
 ### New Features ✨

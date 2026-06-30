@@ -199,6 +199,13 @@ impl ActivationStore for MockStore {
     async fn remove_killswitched(&self, _killswitched_tasks: Vec<String>) -> Result<u64, Error> {
         unimplemented!()
     }
+
+    async fn remove_killswitched_selectors(
+        &self,
+        _selectors: Vec<crate::killswitch::KillswitchSelector>,
+    ) -> Result<u64, Error> {
+        unimplemented!()
+    }
 }
 
 fn test_config() -> Arc<Config> {

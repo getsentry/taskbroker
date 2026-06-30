@@ -168,7 +168,7 @@ def _log_task_retry_exhausted(
 @dataclass(frozen=True)
 class ChildMessage:
     child_id: UUID
-    event: Literal["running"] | Literal["exiting"]
+    event: Literal["running", "exiting", "busy", "idle"]
 
 
 def child_process(
@@ -464,6 +464,7 @@ def child_process(
             next_state = TASK_ACTIVATION_STATUS_FAILURE
             # Use time.time() so we can measure against activation.received_at
             execution_start_time = time.time()
+            messages.put_nowait(ChildMessage(child_id, "busy"))
             try:
                 with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
                     _execute_activation(task_func, inflight.activation, app.context_hooks)
@@ -535,6 +536,8 @@ def child_process(
                     and next_state != TASK_ACTIVATION_STATUS_RETRY
                 ):
                     _log_task_failed(inflight.activation, err, processing_pool_name)
+            finally:
+                messages.put_nowait(ChildMessage(child_id, "idle"))
 
             clear_current_task()
             processed_task_count += 1

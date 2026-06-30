@@ -6,6 +6,7 @@ pub mod fetch;
 pub mod flusher;
 pub mod grpc;
 pub mod kafka;
+pub mod killswitch;
 pub mod logging;
 pub mod metrics;
 pub mod push;

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Literal
 from uuid import UUID, uuid4
 
 import grpc
+import prometheus_client
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 from sentry_protos.taskbroker.v1 import taskbroker_pb2_grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -57,6 +58,27 @@ else:
 logger = logging.getLogger(__name__)
 
 WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
+
+
+class WorkerPrometheusMetrics:
+    """
+    Owns the Prometheus registry, server, and metrics we expose for scraping.
+    """
+
+    def __init__(
+        self, port: int, registry: prometheus_client.CollectorRegistry | None = None
+    ) -> None:
+        self.registry = registry or prometheus_client.CollectorRegistry()
+
+        self.occupancy = prometheus_client.Gauge(
+            "taskworker_worker_occupancy",
+            "Fraction of worker child slots currently executing a task (busy / concurrency).",
+            ["processing_pool"],
+            registry=self.registry,
+        )
+
+        prometheus_client.start_http_server(port, registry=self.registry)
+        logger.info("taskworker.worker.prometheus_server_started", extra={"port": port})
 
 
 class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
@@ -134,6 +156,7 @@ class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
+    busy: bool = False
 
 
 class PushTaskWorker:
@@ -160,6 +183,7 @@ class PushTaskWorker:
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
+        prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
     ) -> None:
         app = import_app(app_module)
@@ -187,6 +211,7 @@ class PushTaskWorker:
             process_type=process_type,
             update_in_batches=update_in_batches,
             skip_awaiting_futures=skip_awaiting_futures,
+            prometheus_port=prometheus_port,
             future_checking_frequency=future_checking_frequency,
         )
 
@@ -800,6 +825,7 @@ class TaskWorkerProcessingPool:
         process_type: str = "spawn",
         update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
+        prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
     ) -> None:
         self._concurrency = concurrency
@@ -835,6 +861,8 @@ class TaskWorkerProcessingPool:
         self._exiting_children: Deque[UUID] = deque()
         self._children_lock = threading.Lock()
         self._shutdown_event = self._mp_context.Event()
+        self._prometheus_port = prometheus_port
+        self._prom: WorkerPrometheusMetrics | None = None
         self._result_thread: threading.Thread | None = None
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
@@ -882,7 +910,18 @@ class TaskWorkerProcessingPool:
             for child in self._children.values():
                 state_counts[child.state] += 1
 
+            busy = sum(1 for child in self._children.values() if child.busy)
             exiting_children = len(self._exiting_children)
+
+        bounded_busy = max(0, min(busy, self._concurrency))
+        occupancy = bounded_busy / self._concurrency if self._concurrency else 0.0
+        self._metrics.gauge(
+            "taskworker.worker.occupancy",
+            occupancy,
+            tags=tags,
+        )
+        if self._prom is not None:
+            self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(occupancy)
 
         # Emit number of children in each state
         for state, count in state_counts.items():
@@ -923,6 +962,8 @@ class TaskWorkerProcessingPool:
         """
         Start a thread that emits metrics on an interval.
         """
+        if self._prometheus_port is not None and self._prom is None:
+            self._prom = WorkerPrometheusMetrics(self._prometheus_port)
 
         def metrics_thread() -> None:
             while True:
@@ -1047,6 +1088,14 @@ class TaskWorkerProcessingPool:
                         # This child wants to exit, but we may not have enough running children to shut down right away
                         elif message.event == "exiting":
                             self._exiting_children.append(message.child_id)
+
+                        # This child is executing a task
+                        elif message.event == "busy":
+                            child.busy = True
+
+                        # This child isn't doing anything right now
+                        elif message.event == "idle":
+                            child.busy = False
 
                     while True:
                         # Compute how many children are still running

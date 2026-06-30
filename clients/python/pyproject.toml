@@ -1,6 +1,6 @@
 [project]
 name = "taskbroker-client"
-version = "0.20.6"
+version = "0.20.8"
 description = "Taskbroker python client and worker runtime"
 readme = "README.md"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "grpcio>=1.67.1",
     "grpcio-health-checking>=1.67.1",
     "msgpack>=1.0.0",
+    "prometheus_client>=0.20",
     "protobuf>=5.28.3",
     "redis>=3.4.1",
     "zstandard>=0.18.0",

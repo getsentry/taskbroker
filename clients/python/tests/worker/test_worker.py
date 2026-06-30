@@ -1182,14 +1182,20 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
     process.start()
     try:
         running_message = messages.get(timeout=5)
+        busy_message = messages.get(timeout=5)
+        idle_message = messages.get(timeout=5)
         exiting_message = messages.get(timeout=5)
 
         assert running_message == ChildMessage(child_id, "running")
+        assert busy_message == ChildMessage(child_id, "busy")
+        assert idle_message == ChildMessage(child_id, "idle")
         assert exiting_message == ChildMessage(child_id, "exiting")
         assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
 
         todo.put(SIMPLE_TASK)
         assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
+        assert messages.get(timeout=5) == ChildMessage(child_id, "busy")
+        assert messages.get(timeout=5) == ChildMessage(child_id, "idle")
 
         time.sleep(0.2)
         assert process.is_alive()
@@ -1204,6 +1210,38 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
             process.join(timeout=5)
 
     assert mock_capture_checkin.call_count == 0
+
+
+def test_child_process_emits_busy_and_idle_messages() -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+    ctx = get_context("fork")
+    child_id = uuid4()
+    messages = ctx.Queue()
+    parent_release = ctx.Event()
+    parent_release.set()
+
+    todo.put(SIMPLE_TASK)
+    _child_process(
+        child_id,
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
+        messages=messages,
+        parent_release=parent_release,
+    )
+
+    assert messages.get(timeout=1) == ChildMessage(child_id, "running")
+    assert messages.get(timeout=1) == ChildMessage(child_id, "busy")
+    assert messages.get(timeout=1) == ChildMessage(child_id, "idle")
+    assert processed.get(timeout=1).task_id == SIMPLE_TASK.activation.id
 
 
 def test_child_process_remove_start_time_kwargs() -> None:
