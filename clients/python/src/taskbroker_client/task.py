@@ -201,8 +201,8 @@ class Task(Generic[P, R]):
 
         Argument `sizes` contains minimum activation sizes in bytes, parsed from repeated `--activation-size` values.
 
-        Argument `durations` contains execution deadlines in seconds.
-        If multiple durations are provided, one is randomly selected per activation.
+        Argument `durations` contains execution deadlines in seconds that are added to the default processing deadline.
+        If multiple durations are provided, one is randomly selected per activation and added to the default processing deadline.
 
         Normal `delay` and `apply_async` calls do not use this path.
         """
@@ -363,8 +363,8 @@ class Task(Generic[P, R]):
         With multiple sizes, one target size is randomly selected per activation.
         If the activation size is already ≥ the target, it will be unchanged.
 
-        With one duration, every activation uses that processing deadline.
-        With multiple durations, one processing deadline is randomly selected per activation.
+        With one duration, every activation adds it to the default processing deadline.
+        With multiple durations, one is randomly selected per activation.
         """
         activation = self.create_activation(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
