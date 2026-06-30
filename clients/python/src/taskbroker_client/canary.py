@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from time import sleep
 
-CANARY_TASK_NAME = "canary_task"
+CANARY_TASK_NAME = "_taskbroker_client.canary_task"
 CANARY_TASK_SLEEP_SECONDS = 0.1
 
 logger = logging.getLogger(__name__)
