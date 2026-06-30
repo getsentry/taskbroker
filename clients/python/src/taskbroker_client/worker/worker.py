@@ -835,7 +835,6 @@ class TaskWorkerProcessingPool:
         else:
             raise ValueError("Minimum concurrency must be strictly below concurrency")
 
-        self._result_queue_maxsize = result_queue_maxsize
         self._processing_pool_name = processing_pool_name or "unknown"
         self._pod_name = pod_name or "unknown"
         self._update_in_batches = update_in_batches
