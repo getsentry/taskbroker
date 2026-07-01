@@ -1,8 +1,12 @@
+from unittest.mock import patch
+
 import msgpack
 import pytest
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
 from taskbroker_client.app import TaskbrokerApp
+from taskbroker_client.canary import CANARY_TASK_NAME
+from taskbroker_client.constants import INTERNAL_NAMESPACE
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import Task
@@ -36,6 +40,22 @@ def test_set_config() -> None:
     app.set_config({"rpc_secret": "testing", "ignored": "key"})
     assert app.config["rpc_secret"] == "testing"
     assert "ignored" not in app.config
+
+
+def test_registers_internal_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
+    app = TaskbrokerApp(name="acme", producer_factory=producer_factory)
+
+    namespace = app.get_namespace(INTERNAL_NAMESPACE)
+    task = app.get_task(INTERNAL_NAMESPACE, CANARY_TASK_NAME)
+
+    assert namespace.name == INTERNAL_NAMESPACE
+    assert isinstance(task, Task)
+    assert task.name == CANARY_TASK_NAME
+    with patch("taskbroker_client.canary.logger") as mock_logger:
+        task()
+
+    mock_logger.info.assert_called_once_with("Running canary task...")
+    assert capsys.readouterr().out == "Done running canary task!\n"
 
 
 def test_should_attempt_at_most_once() -> None:

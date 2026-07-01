@@ -12,7 +12,11 @@ from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
 
-from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, CompressionType
+from taskbroker_client.constants import (
+    DEFAULT_PROCESSING_DEADLINE,
+    INTERNAL_NAMESPACE,
+    CompressionType,
+)
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
@@ -345,6 +349,7 @@ class TaskRegistry:
         expires: int | datetime.timedelta | None = None,
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
+        internal: bool = False,
     ) -> TaskNamespace:
         """
         Create a task namespace.
@@ -354,6 +359,8 @@ class TaskRegistry:
 
         Namespaces can define default behavior for tasks defined within a namespace.
         """
+        if name == INTERNAL_NAMESPACE and not internal:
+            raise ValueError(f"{INTERNAL_NAMESPACE!r} is reserved for internal taskbroker tasks.")
         if name in self._namespaces:
             raise ValueError(f"Task namespace with name {name} already exists.")
         namespace = TaskNamespace(

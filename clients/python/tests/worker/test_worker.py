@@ -35,7 +35,8 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_sdk.crons import MonitorStatus
 
-from taskbroker_client.constants import CompressionType
+from taskbroker_client.canary import CANARY_TASK_NAME
+from taskbroker_client.constants import INTERNAL_NAMESPACE, CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
@@ -57,6 +58,18 @@ SIMPLE_TASK = InflightTaskActivation(
         id="111",
         taskname="examples.simple_task",
         namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+    ),
+)
+
+CANARY_TASK = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="canary",
+        taskname=CANARY_TASK_NAME,
+        namespace=INTERNAL_NAMESPACE,
         parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     ),
@@ -323,6 +336,7 @@ def _make_result_thread_pool(
     capture: _SendResultCapture,
     *,
     concurrency: int = 3,
+    result_queue_maxsize: int = 3,
     update_in_batches: bool,
 ) -> TaskWorkerProcessingPool:
     return TaskWorkerProcessingPool(
@@ -331,6 +345,7 @@ def _make_result_thread_pool(
         mp_context=get_context("fork"),
         max_child_task_count=100,
         concurrency=concurrency,
+        result_queue_maxsize=result_queue_maxsize,
         processing_pool_name="test",
         process_type="fork",
         update_in_batches=update_in_batches,
@@ -1116,6 +1131,32 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     assert result.task_id == SIMPLE_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
     assert mock_capture_checkin.call_count == 0
+
+
+def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(CANARY_TASK)
+    with mock.patch("taskbroker_client.canary.logger") as mock_logger:
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
+        )
+
+    result = processed.get()
+    assert result.task_id == CANARY_TASK.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+    mock_logger.info.assert_called_once_with("Running canary task...")
+    assert capsys.readouterr().out == "Done running canary task!\n"
 
 
 def test_child_process_emits_running_message() -> None:

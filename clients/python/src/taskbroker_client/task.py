@@ -5,6 +5,7 @@ import inspect
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
+from math import ceil
 from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, get_origin
 from uuid import uuid4
 
@@ -184,6 +185,49 @@ class Task(Generic[P, R]):
                 wait_for_delivery=self.wait_for_delivery,
             )
 
+    def apply_async_testing(
+        self,
+        args: Any | None = None,
+        kwargs: Any | None = None,
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        bytes: int | None = None,
+        seconds: float | None = None,
+        **options: Any,
+    ) -> None:
+        """
+        Task dispatch for testing tools like the 'taskbroker-send-tasks' command in Sentry.
+
+        If `bytes` is provided, the activation is padded to be at least that size.
+        If `seconds` is provided, it is added to the default processing deadline.
+
+        Normal `delay` and `apply_async` calls do not use this path.
+        """
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
+
+        self._signal_send(task=self, args=args, kwargs=kwargs)
+
+        activation = self.create_testing_activation(
+            args=args,
+            kwargs=kwargs,
+            headers=headers,
+            expires=expires,
+            countdown=countdown,
+            bytes=bytes,
+            seconds=seconds,
+        )
+        if ALWAYS_EAGER:
+            self._call_func(*args, **kwargs)
+        else:
+            self._namespace.send_task(
+                activation,
+                wait_for_delivery=self.wait_for_delivery,
+            )
+
     def _call_func(self, *args: Any, **kwargs: Any) -> None:
         # Overridden in ExternalTask
         if self.pass_headers:
@@ -299,6 +343,51 @@ class Task(Generic[P, R]):
             expires=expires,
             delay=countdown,
         )
+
+    def create_testing_activation(
+        self,
+        args: Collection[Any],
+        kwargs: Mapping[Any, Any],
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        bytes: int | None = None,
+        seconds: float | None = None,
+    ) -> TaskActivation:
+        """
+        Build a `TaskActivation` with optional size padding for testing purposes.
+
+        If `bytes` is provided, the activation is padded to be at least that size.
+        If `seconds` is provided, it is added to the default processing deadline.
+        """
+        activation = self.create_activation(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+
+        if seconds:
+            if seconds < 0:
+                raise ValueError(
+                    f"Test activation seconds is {seconds}, which is NOT greater than zero"
+                )
+
+            activation.processing_deadline_duration = DEFAULT_PROCESSING_DEADLINE + ceil(seconds)
+
+        if bytes:
+            if bytes < 0:
+                raise ValueError(
+                    f"Test activation bytes is {bytes}, which is NOT greater than zero"
+                )
+
+            padding_key = "taskbroker-testing-activation-padding"
+
+            while activation.ByteSize() < bytes:
+                missing_bytes = bytes - activation.ByteSize()
+
+                activation.headers[padding_key] = (
+                    activation.headers.get(padding_key, "") + "x" * missing_bytes
+                )
+
+        return activation
 
     def _create_retry_state(self) -> RetryState:
         retry = self.retry or self._namespace.default_retry or None
