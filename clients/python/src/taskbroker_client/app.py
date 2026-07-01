@@ -66,7 +66,11 @@ class TaskbrokerApp:
         return backend_name
 
     def _register_internal_tasks(self) -> None:
-        namespace = self._taskregistry.create_namespace(name=INTERNAL_NAMESPACE)
+        namespace = self._taskregistry.create_namespace(
+            name=INTERNAL_NAMESPACE,
+            internal=True,
+        )
+
         namespace.register(name=CANARY_TASK_NAME)(canary_task)
 
     @property
