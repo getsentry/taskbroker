@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.10
+
+### New Features ✨
+
+- (taskworker) Better Testing Support by @george-sentry in [#736](https://github.com/getsentry/taskbroker/pull/736)
+
 ## 0.20.9
 
 ### New Features ✨
