@@ -1798,6 +1798,62 @@ def test_child_process_expected_ignored_exception_max_attempts(mock_capture: moc
 
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
+@mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
+def test_child_process_silenced_exception_max_attempts(
+    mock_capture: mock.Mock, mock_logger: mock.Mock
+) -> None:
+    """Silenced exceptions do not raise on retry exhaustion."""
+    activation = InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id="silenced-max-attempts",
+            taskname="examples.will_fail_with_silenced_ignored_exception",
+            namespace="examples",
+            parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+            processing_deadline_duration=2,
+            retry_state=RetryState(
+                # No retries left
+                attempts=1,
+                max_attempts=2,
+                on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
+            ),
+        ),
+    )
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(activation)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
+    )
+
+    assert todo.empty()
+    result = processed.get()
+    assert result.task_id == activation.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+
+    # Silenced error: no Sentry event even though retries are exhausted.
+    assert mock_capture.call_count == 0
+
+    # The structured retry-exhausted log still fires (without logger.exception).
+    mock_logger.exception.assert_not_called()
+    mock_logger.warning.assert_called_once()
+    args, kwargs = mock_logger.warning.call_args
+    assert args[0] == "taskworker.task.retry_exhausted"
+    assert kwargs["extra"]["exception_type"] == "RuntimeError"
+
+
+@mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()

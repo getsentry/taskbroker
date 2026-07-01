@@ -510,17 +510,19 @@ def child_process(
                         next_state = TASK_ACTIVATION_STATUS_RETRY
                     elif retry.max_attempts_reached(inflight.activation.retry_state):
                         with sentry_sdk.isolation_scope() as scope:
-                            retry_error = NoRetriesRemainingError(
-                                f"{inflight.activation.taskname} has consumed all of its retries"
-                            )
-                            retry_error.__cause__ = err
-                            scope.fingerprint = [
-                                "taskworker.no_retries_remaining",
-                                inflight.activation.namespace,
-                                inflight.activation.taskname,
-                            ]
-                            scope.set_transaction_name(inflight.activation.taskname)
-                            sentry_sdk.capture_exception(retry_error)
+                            # Only report to Sentry when the underlying error is not silenced.
+                            if should_capture_error:
+                                retry_error = NoRetriesRemainingError(
+                                    f"{inflight.activation.taskname} has consumed all of its retries"
+                                )
+                                retry_error.__cause__ = err
+                                scope.fingerprint = [
+                                    "taskworker.no_retries_remaining",
+                                    inflight.activation.namespace,
+                                    inflight.activation.taskname,
+                                ]
+                                scope.set_transaction_name(inflight.activation.taskname)
+                                sentry_sdk.capture_exception(retry_error)
                             # Emit a structured worker log without logger.exception so this
                             # branch does not create a second Sentry error event.
                             _log_task_retry_exhausted(
