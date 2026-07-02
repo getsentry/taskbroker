@@ -4,7 +4,7 @@ eval "$(regions-project-env-vars --region="${SENTRY_REGION}")"
 /devinfra/scripts/get-cluster-credentials
 
 # Find all Deployments where the number of ready pods is greater than zero
-deployments=$(kubectl get deployments -A --no-headers | awk '$2 ~ /^task-.*-worker$/ && $5+0 > 0 {print $2}')
+deployments=$(kubectl get deployments -A --no-headers | awk '$2 ~ /^task-.*-broker$/ && $5+0 > 0 {print $2}')
 
 run_migrations() {
   local name="$1"
