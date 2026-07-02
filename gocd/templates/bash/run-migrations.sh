@@ -3,15 +3,17 @@
 eval "$(regions-project-env-vars --region="${SENTRY_REGION}")"
 /devinfra/scripts/get-cluster-credentials
 
-# We ignore StatefulSets as those NEVER run AlloyDB, and we only care about migrations for AlloyDB here
-deployments=$(kubectl get deployments -o name | awk -F/ '/task-.*-broker/ {print $2}')
+# Find all Deployments where the number of ready pods is greater than zero
+deployments=$(kubectl get deployments -A --no-headers | awk '$2 ~ /^task-.*-broker$/ && $5+0 > 0 {print $2}')
 
-for name in $deployments; do
-  LABEL_SELECTOR="app=$name"
+run_migrations() {
+  local name="$1"
+  local label_selector="app=$name"
+
   echo "Running migrations for $name..."
 
   if ! k8s-spawn-job \
-    --label-selector="${LABEL_SELECTOR}" \
+    --label-selector="${label_selector}" \
     --container-name="taskbroker" \
     --try-deployments-and-statefulsets \
     "${name}-migrations" \
@@ -19,11 +21,26 @@ for name in $deployments; do
     /opt/taskbroker \
     -- \
     --run migrations; then
-    echo "Migrations failed for $name, ignoring so the pipeline can continue"
-    continue
+    echo "Migrations failed for $name"
+    return 1
   fi
 
   echo "Done: $name"
+}
+
+pids=()
+
+for name in $deployments; do
+  run_migrations "$name" &
+  pids+=("$!")
 done
 
-exit 0
+status=0
+
+for pid in "${pids[@]}"; do
+  if ! wait "$pid"; then
+    status=1
+  fi
+done
+
+exit "$status"
