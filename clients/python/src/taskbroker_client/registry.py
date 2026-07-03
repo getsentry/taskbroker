@@ -4,7 +4,7 @@ import datetime
 import logging
 from collections.abc import Callable
 from concurrent import futures
-from typing import Any
+from typing import Any, cast
 
 import sentry_sdk
 from arroyo.backends.kafka import KafkaPayload
@@ -167,7 +167,9 @@ class TaskNamespace:
         else:
             self.metrics.incr("taskworker.registry.send_task.success", tags=tags)
 
-    def send_task(self, activation: TaskActivation, wait_for_delivery: bool = False) -> None:
+    def send_task(
+        self, activation: TaskActivation, wait_for_delivery: bool = False
+    ) -> ProducerFuture:
         topic = self.topic
 
         with sentry_sdk.start_span(
@@ -209,6 +211,8 @@ class TaskNamespace:
                 produce_future.result(timeout=10)
             except Exception:
                 logger.exception("Failed to wait for delivery")
+
+        return cast(ProducerFuture, produce_future)
 
     def _producer(self, topic: str) -> ProducerProtocol:
         if topic not in self._producers:
