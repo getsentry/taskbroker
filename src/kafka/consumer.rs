@@ -57,7 +57,7 @@ pub async fn start_no_consume_mode(
                 metadata = Some(md);
                 break;
             }
-            Err(KafkaError::MessageConsumption(RDKafkaErrorCode::BrokerTransportFailure)) => {
+            Err(KafkaError::MetadataFetch(RDKafkaErrorCode::BrokerTransportFailure)) => {
                 error!("Failed to connect to broker, retrying...");
                 retries += 1;
                 continue;
