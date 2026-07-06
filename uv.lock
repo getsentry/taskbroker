@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "sys_platform == 'darwin' or sys_platform == 'linux'",
@@ -645,13 +645,13 @@ wheels = [
 
 [[package]]
 name = "sentry-arroyo"
-version = "2.38.7"
+version = "2.41.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "confluent-kafka", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_arroyo-2.38.7-py3-none-any.whl", hash = "sha256:088f8620e1fa6af950d588e4ddae259b849fb799af9a78dd5b9912ccedd19a4a" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_arroyo-2.41.0-py3-none-any.whl", hash = "sha256:08c0efb1a02a97ba9364f07b53a520ed204d7da015c4ea01f9bc8f9f81d6373b" },
 ]
 
 [[package]]
@@ -772,7 +772,7 @@ dev = [
 
 [[package]]
 name = "taskbroker-client"
-version = "0.20.10"
+version = "0.20.11"
 source = { editable = "clients/python" }
 dependencies = [
     { name = "confluent-kafka", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -830,7 +830,7 @@ requires-dist = [
     { name = "protobuf", specifier = ">=5.28.3" },
     { name = "redis", specifier = ">=3.4.1" },
     { name = "redis-py-cluster", marker = "extra == 'cluster'", specifier = ">=2.1.0" },
-    { name = "sentry-arroyo", specifier = ">=2.38.7" },
+    { name = "sentry-arroyo", specifier = ">=2.41.0" },
     { name = "sentry-protos", specifier = ">=0.26.1" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
