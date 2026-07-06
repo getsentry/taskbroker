@@ -19,6 +19,8 @@ import msgpack
 import pytest
 import zstandard as zstd
 from arroyo.backends.kafka import KafkaPayload
+from arroyo.backends.kafka.producer import FutureTrackingProducer
+from arroyo.backends.kafka.producer import _pending_futures as _arroyo_pending_futures
 from arroyo.types import BrokerValue, Partition, Topic
 from redis import StrictRedis
 
@@ -1957,16 +1959,32 @@ def test_child_process_silenced_exception_does_not_log_task_failed(
     assert failed_calls == []
 
 
-# Tests for TaskProducer future tracking, storage, and drain-on-shutdown behavior
-# in child_process. These tests patch TaskProducer.collect_futures so we can inject
+# Tests for producer future tracking, storage, and drain-on-shutdown behavior
+# in child_process. These tests patch <producer>.collect_futures so we can inject
 # controllable futures without needing a real Kafka broker.
+#
+# child_process collects futures from both the local TaskProducer and arroyo's
+# FutureTrackingProducer (unioning the two registries), so the tests are
+# parametrized to run identically against either producer. This will be removed
+# once all clients are fully ported from TaskProducer to FutureTrackingProducer.
+_PRODUCER_CLASSES = [
+    pytest.param(TaskProducer, id="task_producer"),
+    pytest.param(FutureTrackingProducer, id="future_tracking_producer"),
+]
+
+_PENDING_REGISTRIES = [
+    pytest.param(_pending_futures, id="task_producer"),
+    pytest.param(_arroyo_pending_futures, id="future_tracking_producer"),
+]
 
 
 @pytest.fixture
 def clear_pending_futures() -> Iterator[None]:
     _pending_futures.clear()
+    _arroyo_pending_futures.clear()
     yield
     _pending_futures.clear()
+    _arroyo_pending_futures.clear()
 
 
 @pytest.fixture
@@ -2004,8 +2022,11 @@ def _producing_task(task_id: str = "task-with-futures") -> InflightTaskActivatio
     )
 
 
+@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_tracks_producer_futures(
-    clear_pending_futures: None, restore_signal_handlers: None
+    producer_cls: type,
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
 ) -> None:
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
@@ -2017,7 +2038,7 @@ def test_child_process_tracks_producer_futures(
 
     todo.put(task)
     with mock.patch.object(
-        TaskProducer, "collect_futures", return_value={"test.producer": {done_future}}
+        producer_cls, "collect_futures", return_value={"test.producer": {done_future}}
     ) as collect_mock:
         child_process(
             "examples.app:app",
@@ -2039,8 +2060,11 @@ def test_child_process_tracks_producer_futures(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
+@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_holds_result_until_futures_done(
-    clear_pending_futures: None, restore_signal_handlers: None
+    producer_cls: type,
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
 ) -> None:
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
@@ -2066,7 +2090,7 @@ def test_child_process_holds_result_until_futures_done(
     observer.start()
     try:
         with mock.patch.object(
-            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+            producer_cls, "collect_futures", return_value={"test.producer": {pending_future}}
         ):
             child_process(
                 "examples.app:app",
@@ -2091,8 +2115,11 @@ def test_child_process_holds_result_until_futures_done(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
+@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_skip_awaiting_futures_places_result_immediately(
-    clear_pending_futures: None, restore_signal_handlers: None
+    producer_cls: type,
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
 ) -> None:
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
@@ -2122,7 +2149,7 @@ def test_child_process_skip_awaiting_futures_places_result_immediately(
     observer.start()
     try:
         with mock.patch.object(
-            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+            producer_cls, "collect_futures", return_value={"test.producer": {pending_future}}
         ):
             child_process(
                 "examples.app:app",
@@ -2150,8 +2177,11 @@ def test_child_process_skip_awaiting_futures_places_result_immediately(
     assert processed.empty()
 
 
+@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_drains_pending_futures_on_sigterm(
-    clear_pending_futures: None, restore_signal_handlers: None
+    producer_cls: type,
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
 ) -> None:
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
@@ -2173,7 +2203,7 @@ def test_child_process_drains_pending_futures_on_sigterm(
     sigterm_thread.start()
     try:
         with mock.patch.object(
-            TaskProducer, "collect_futures", return_value={"test.producer": {pending_future}}
+            producer_cls, "collect_futures", return_value={"test.producer": {pending_future}}
         ):
             child_process(
                 "examples.app:app",
@@ -2195,8 +2225,11 @@ def test_child_process_drains_pending_futures_on_sigterm(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
+@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_retries_on_failed_future(
-    clear_pending_futures: None, restore_signal_handlers: None
+    producer_cls: type,
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
 ) -> None:
     retriable_task = InflightTaskActivation(
         host="localhost:50051",
@@ -2223,7 +2256,7 @@ def test_child_process_retries_on_failed_future(
 
     todo.put(retriable_task)
     with mock.patch.object(
-        TaskProducer, "collect_futures", return_value={"test.producer": {failed_future}}
+        producer_cls, "collect_futures", return_value={"test.producer": {failed_future}}
     ):
         child_process(
             "examples.app:app",
@@ -2242,13 +2275,16 @@ def test_child_process_retries_on_failed_future(
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
+@pytest.mark.parametrize("pending_registry", _PENDING_REGISTRIES)
 def test_child_process_clears_pending_futures_when_task_fails(
-    clear_pending_futures: None, restore_signal_handlers: None
+    pending_registry: Any,
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
 ) -> None:
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
-    _pending_futures["test.producer"].append(leftover_future)
-    assert len(_pending_futures) == 1
+    pending_registry["test.producer"].append(leftover_future)
+    assert len(pending_registry) == 1
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2274,7 +2310,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
     # The orphaned future is dropped (the activation will be retried at the
     # broker level if applicable) but the global registry is cleared so it
     # cannot bleed into the next task this child processes.
-    assert len(_pending_futures) == 0
+    assert len(pending_registry) == 0
 
 
 def test_child_process_uses_configured_future_checking_frequency(
