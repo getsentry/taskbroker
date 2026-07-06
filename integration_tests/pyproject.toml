@@ -15,6 +15,7 @@ dev = [
     "grpcio>=1.67.0",
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
+    "psycopg2-binary>=2.9",
     "pyyaml>=6.0.2",
     "sentry-protos>=0.15.0",
     "flake8>=7.3.0",
@@ -56,6 +57,7 @@ disallow_untyped_defs = true
 [[tool.mypy.overrides]]
 module = [
     "confluent_kafka.*",
+    "psycopg2.*",
 ]
 ignore_missing_imports = true
 # end: missing 3rd party stubs

@@ -16,6 +16,7 @@ dev = [
     "grpcio>=1.67.0",
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
+    "psycopg2-binary>=2.9",
     "pyyaml>=6.0.2",
     "sentry-protos>=0.22.1",
     "flake8>=7.3.0",
@@ -57,6 +58,7 @@ module = [
     "redis.*",
     "rediscluster.*",
     "confluent_kafka.*",
+    "psycopg2.*",
     "msgpack",
 ]
 ignore_missing_imports = true
