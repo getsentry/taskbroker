@@ -208,8 +208,11 @@ class Task(Generic[P, R]):
         **options: Any,
     ) -> ProducerFuture | None:
         """
-        Schedule a task and return the producer future for callers that need to
-        wait on delivery alongside other Kafka produces.
+        Schedule a task and return the producer future.
+
+        This does not wait for delivery. Callers that need delivery confirmation
+        must wait on the returned future themselves. Callers that do not need the
+        future should use apply_async().
         """
         activation, args, kwargs = self._create_activation_for_async_dispatch(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
