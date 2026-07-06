@@ -24,7 +24,7 @@ use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
 use taskbroker::kafka::activation_batcher::{ActivationBatcher, ActivationBatcherConfig};
 use taskbroker::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
 use taskbroker::kafka::admin::create_missing_topics;
-use taskbroker::kafka::consumer::start_consumer;
+use taskbroker::kafka::consumer::{start_consumer, start_no_consume_mode};
 use taskbroker::kafka::deserialize::{self, DeserializeConfig};
 use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 use taskbroker::metrics;
@@ -162,19 +162,31 @@ async fn main() -> Result<(), Error> {
     // Consumer(s) from kafka. Each consumed topic gets its own consumer (own
     // group.id and cluster), so we spawn one consumer task per consumable topic,
     // all sharing the one activation store.
-    let consumer_topics: Vec<String> = config
+    let consumer_topics: Vec<(String, bool)> = config
         .consumable_topics()
         .expect("invalid config: no consumable topic")
         .into_iter()
-        .map(|(name, _)| name.to_owned())
+        .map(|(name, cfg)| (name.to_owned(), cfg.consumer_disabled))
         .collect();
 
     let mut consumer_tasks: Vec<(String, JoinHandle<Result<(), Error>>)> = Vec::new();
-    for topic in consumer_topics {
+    for (topic, consumer_disabled) in consumer_topics {
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
         let task_topic = topic.clone();
+
+        if consumer_disabled {
+            let handle = taskbroker::tokio::spawn(async move {
+                start_no_consume_mode(
+                    &[task_topic.as_str()],
+                    &consumer_config.kafka_consumer_config_for(&task_topic),
+                )
+                .await
+            });
+            consumer_tasks.push((topic, handle));
+            continue;
+        }
 
         let handle = taskbroker::tokio::spawn(async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need

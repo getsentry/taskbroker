@@ -14,6 +14,10 @@ pub struct TopicConfig {
     /// Defaults to false, meaning the topic is consumed.
     #[serde(default)]
     pub produce_only: bool,
+    /// If true, this topic is disabled for consumption.
+    /// Defaults to false, meaning the topic is consumed.
+    #[serde(default)]
+    pub consumer_disabled: bool,
     /// Raw mode settings. If set, this topic uses raw mode.
     #[serde(default)]
     pub raw: Option<RawModeConfig>,

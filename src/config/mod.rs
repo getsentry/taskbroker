@@ -564,6 +564,7 @@ impl Config {
                     cluster: DEFAULT_CLUSTER.to_owned(),
                     consumer_group: consumer_group.clone(),
                     produce_only: false,
+                    consumer_disabled: false,
                     raw: raw_config,
                     session_timeout_ms: None,
                     auto_commit_interval_ms: None,
@@ -581,6 +582,7 @@ impl Config {
                     cluster: DEADLETTER_CLUSTER.to_owned(),
                     consumer_group: consumer_group.clone(),
                     produce_only: true,
+                    consumer_disabled: false,
                     raw: None,
                     session_timeout_ms: None,
                     auto_commit_interval_ms: None,
@@ -612,6 +614,7 @@ impl Config {
                         cluster: DEADLETTER_CLUSTER.to_owned(),
                         consumer_group,
                         produce_only: true,
+                        consumer_disabled: false,
                         raw: None,
                         session_timeout_ms: None,
                         auto_commit_interval_ms: None,
@@ -1407,6 +1410,7 @@ kafka_topics:
       application: profiles
       taskname: profiles.process
       processing_deadline_duration: 30
+    consumer_disabled: true
   profiles-retry:
     cluster: profiles-cluster
     consumer_group: taskbroker-profiles-retry
@@ -1435,6 +1439,7 @@ kafka_clusters:
             assert_eq!(profiles.cluster, "profiles-cluster");
             assert_eq!(profiles.consumer_group, "taskbroker-profiles");
             assert!(!profiles.produce_only);
+            assert!(profiles.consumer_disabled);
             assert_eq!(
                 profiles.raw,
                 Some(RawModeConfig {
