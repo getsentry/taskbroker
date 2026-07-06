@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.12
+
+### New Features ✨
+
+- (workerchild) Begin porting producer to FutureTrackingProducer by @bmckerry in [#744](https://github.com/getsentry/taskbroker/pull/744)
+
 ## 0.20.11
 
 ### New Features ✨
