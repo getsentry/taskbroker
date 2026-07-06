@@ -212,7 +212,9 @@ class Task(Generic[P, R]):
 
         This does not wait for delivery. Callers that need delivery confirmation
         must wait on the returned future themselves. Callers that do not need the
-        future should use apply_async().
+        future should use apply_async(). Ignoring the returned future does not
+        cancel or prevent the produce; the task activation has already been
+        handed to the producer.
         """
         activation, args, kwargs = self._create_activation_for_async_dispatch(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
