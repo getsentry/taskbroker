@@ -11,7 +11,6 @@ use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer};
 use rdkafka::error::{KafkaError, KafkaResult};
 use rdkafka::message::{BorrowedMessage, OwnedMessage};
-use rdkafka::metadata::Metadata;
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, ClientContext, Message, Offset, TopicPartitionList};
 
