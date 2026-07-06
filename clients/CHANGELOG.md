@@ -1,4 +1,23 @@
 # Changelog
+## 0.20.11
+
+### New Features ✨
+
+- (taskbroker-client) Expose task enqueue producer future by @lvthanh03 in [#741](https://github.com/getsentry/taskbroker/pull/741)
+
+### Documentation 📚
+
+- (taskbroker_client) Better docstring for apply_async_with_future by @lvthanh03 in [#743](https://github.com/getsentry/taskbroker/pull/743)
+
+### Internal Changes 🔧
+
+- (deps) Bump msgpack from 1.1.1 to 1.2.1 by @dependabot in [#738](https://github.com/getsentry/taskbroker/pull/738)
+- Bump arroyo to 2.41.0 by @bmckerry in [#742](https://github.com/getsentry/taskbroker/pull/742)
+
+### Other
+
+- Silence error logging when exception is silenced by @cmanallen in [#739](https://github.com/getsentry/taskbroker/pull/739)
+
 ## 0.20.10
 
 ### New Features ✨
