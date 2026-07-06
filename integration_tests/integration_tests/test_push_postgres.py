@@ -291,11 +291,16 @@ def test_push_postgres_failure_reverts_to_pending() -> None:
             ), f"no task should be lost: {counts}"
             time.sleep(0.5)
 
-        # Failed pushes revert claimed tasks back to pending, so at steady state
-        # nearly everything is pending (only the small in-flight set is claimed).
-        # push.threads(4) + queue.size(8) bounds the concurrently-claimed set.
+        # Failed pushes revert claimed tasks back to pending, so pending recovers.
+        # The pipeline never fully drains (fetch keeps claiming while pushes fail),
+        # so pending won't return to num_messages; assert it recovers to within the
+        # concurrently-claimed set instead. That set is bounded by a fetch batch
+        # (batch_length) plus what the push pool holds in flight (queue.size +
+        # threads), with headroom for a fresh batch overlapping the previous one.
+        max_in_flight = 32 + 8 + 4  # fetch.batch_length + push.queue.size + push.threads
         assert wait_until(
-            lambda: get_num_tasks_in_postgres_by_status(pg, "Pending") >= num_messages - 12,
+            lambda: get_num_tasks_in_postgres_by_status(pg, "Pending")
+            >= num_messages - max_in_flight,
             timeout=30,
         ), (
             "expected claimed tasks to revert back to pending, got "
