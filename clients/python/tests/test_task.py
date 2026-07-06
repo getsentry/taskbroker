@@ -1,6 +1,7 @@
 import contextlib
 import datetime
 from collections.abc import MutableMapping
+from concurrent.futures import Future
 from typing import Any
 from unittest.mock import patch
 
@@ -150,6 +151,26 @@ def test_delay_immediate_validate_activation(task_namespace: TaskNamespace) -> N
     assert len(calls) == 2
     assert calls[0] == {"mixed": None}
     assert calls[1] == {"mixed": "str"}
+
+
+def test_apply_async_with_future_returns_producer_future(task_namespace: TaskNamespace) -> None:
+    def test_func(*args: Any, **kwargs: Any) -> None:
+        pass
+
+    task = Task(
+        name="test.test_func",
+        func=test_func,
+        namespace=task_namespace,
+    )
+    producer_future: Future[Any] = Future()
+
+    with patch.object(task_namespace, "send_task", return_value=producer_future) as mock_send:
+        assert task.apply_async_with_future(args=["arg2"], kwargs={"org_id": 2}) is producer_future
+
+    assert mock_send.call_count == 1
+    activation = mock_send.call_args.args[0]
+    expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
 
 
 def test_should_retry(task_namespace: TaskNamespace) -> None:

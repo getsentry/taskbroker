@@ -27,7 +27,7 @@ from taskbroker_client.constants import (
 from taskbroker_client.retry import Retry
 
 if TYPE_CHECKING:
-    from taskbroker_client.registry import TaskNamespace
+    from taskbroker_client.registry import ProducerFuture, TaskNamespace
 
 
 ALWAYS_EAGER = False
@@ -150,6 +150,28 @@ class Task(Generic[P, R]):
         """
         self.apply_async(args=args, kwargs=kwargs)
 
+    def _create_activation_for_async_dispatch(
+        self,
+        args: Any | None = None,
+        kwargs: Any | None = None,
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+    ) -> tuple[TaskActivation, Any, Any]:
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
+
+        self._signal_send(task=self, args=args, kwargs=kwargs)
+
+        # Generate an activation even if we're in immediate mode to
+        # catch serialization errors in tests.
+        activation = self.create_activation(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+        return activation, args, kwargs
+
     def apply_async(
         self,
         args: Any | None = None,
@@ -165,16 +187,7 @@ class Task(Generic[P, R]):
         The provided parameters will be msgpack encoded and stored within
         a `TaskActivation` protobuf that is appended to kafka.
         """
-        if args is None:
-            args = []
-        if kwargs is None:
-            kwargs = {}
-
-        self._signal_send(task=self, args=args, kwargs=kwargs)
-
-        # Generate an activation even if we're in immediate mode to
-        # catch serialization errors in tests.
-        activation = self.create_activation(
+        activation, args, kwargs = self._create_activation_for_async_dispatch(
             args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
         )
         if ALWAYS_EAGER:
@@ -184,6 +197,31 @@ class Task(Generic[P, R]):
                 activation,
                 wait_for_delivery=self.wait_for_delivery,
             )
+
+    def apply_async_with_future(
+        self,
+        args: Any | None = None,
+        kwargs: Any | None = None,
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        **options: Any,
+    ) -> ProducerFuture | None:
+        """
+        Schedule a task and return the producer future for callers that need to
+        wait on delivery alongside other Kafka produces.
+        """
+        activation, args, kwargs = self._create_activation_for_async_dispatch(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+        if ALWAYS_EAGER:
+            self._call_func(*args, **kwargs)
+            return None
+
+        return self._namespace.send_task(
+            activation,
+            wait_for_delivery=self.wait_for_delivery,
+        )
 
     def apply_async_testing(
         self,

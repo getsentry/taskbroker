@@ -1,4 +1,5 @@
 from concurrent.futures import Future
+from typing import Any
 from unittest.mock import Mock
 
 import msgpack
@@ -141,7 +142,10 @@ def test_namespace_send_task_no_retry() -> None:
     mock_producer = Mock()
     namespace._producers["taskworker"] = mock_producer
 
-    namespace.send_task(activation)
+    ret_value: Future[Any] = Future()
+    mock_producer.produce.return_value = ret_value
+
+    assert namespace.send_task(activation) is ret_value
     assert mock_producer.produce.call_count == 1
 
     mock_call = mock_producer.produce.call_args
