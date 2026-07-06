@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import multiprocessing
+import os
 import queue
 import signal
 import threading
@@ -21,6 +22,7 @@ import sentry_sdk
 import zstandard as zstd
 from arroyo.backends.abstract import ProducerFuture
 from arroyo.backends.kafka import KafkaPayload
+from arroyo.backends.kafka.producer import FutureTrackingProducer
 from arroyo.types import BrokerValue
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_COMPLETE,
@@ -544,7 +546,10 @@ def child_process(
             clear_current_task()
             processed_task_count += 1
 
-            task_produced_futures = TaskProducer.collect_futures()
+            task_produced_futures = (
+                TaskProducer.collect_futures() | FutureTrackingProducer.collect_futures()
+            )
+
             # If the task function itself failed, we don't need to await any
             # producer futures since it'll be retried anyways
             if next_state != TASK_ACTIVATION_STATUS_COMPLETE:
@@ -848,6 +853,9 @@ def child_process(
 
     # Tell the parent that this child has warmed up and is ready to consume tasks
     messages.put_nowait(ChildMessage(child_id, "running"))
+
+    # Tell FutureTrackingProducer to track producer futures in this process
+    os.environ["ARROYO_TRACK_PRODUCER_FUTURES"] = "True"
 
     # Run the worker loop
     run_worker(
