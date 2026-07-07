@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import multiprocessing
-import os
 import queue
 import signal
 import threading
@@ -546,6 +545,8 @@ def child_process(
             clear_current_task()
             processed_task_count += 1
 
+            # To have Taskworker track futures, set the env var `ARROYO_TRACK_PRODUCER_FUTURES = True`
+            # in the worker process
             task_produced_futures = (
                 TaskProducer.collect_futures() | FutureTrackingProducer.collect_futures()
             )
@@ -853,9 +854,6 @@ def child_process(
 
     # Tell the parent that this child has warmed up and is ready to consume tasks
     messages.put_nowait(ChildMessage(child_id, "running"))
-
-    # Tell FutureTrackingProducer to track producer futures in this process
-    os.environ["ARROYO_TRACK_PRODUCER_FUTURES"] = "True"
 
     # Run the worker loop
     run_worker(
