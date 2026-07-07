@@ -501,6 +501,28 @@ wheels = [
 ]
 
 [[package]]
+name = "psycopg2-binary"
+version = "2.9.10"
+source = { registry = "https://pypi.devinfra.sentry.io/simple" }
+wheels = [
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp311-cp311-macosx_12_0_x86_64.whl", hash = "sha256:04392983d0bb89a8717772a193cfaac58871321e3ec69514e1c4e0d4957b5aff" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:1a6784f0ce3fec4edc64e985865c17778514325074adf5ad8f80636cd029ef7c" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b5f86c56eeb91dc3135b3fd8a95dc7ae14c538a2f3ad77a19645cf55bab1799c" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:512d29bb12608891e349af6a0cccedce51677725a921c07dba6342beaf576f9a" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp312-cp312-macosx_12_0_x86_64.whl", hash = "sha256:880845dfe1f85d9d5f7c412efea7a08946a46894537e4e5d091732eb1d34d9a0" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:9440fa522a79356aaa482aa4ba500b65f28e5d0e63b801abf6aa152a29bd842a" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e3923c1d9870c49a2d44f795df0c889a22380d36ef92440ff618ec315757e539" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8cd9b4f2cfab88ed4a9106192de509464b75a906462fb846b936eabe45c2063e" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp313-cp313-macosx_12_0_x86_64.whl", hash = "sha256:26540d4a9a4e2b096f1ff9cce51253d0504dca5a85872c7f7be23be5a53eb18d" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:e217ce4d37667df0bc1c397fdcd8de5e81018ef305aed9415c3b093faaeb10fb" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:245159e7ab20a71d989da00f280ca57da7641fa2cdcf71749c193cea540a74f7" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8608c078134f0b3cbd9f89b34bd60a943b23fd33cc5f065e8d5f840061bd0673" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:ce313780d0c3f165f37b759873128abc950136b18d73dad7d56a4ec2e6a30491" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp314-cp314-manylinux_2_31_aarch64.whl", hash = "sha256:3393e93c4923aceea70524588ce683387ac882d5827086d44960e84612746d90" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/psycopg2_binary-2.9.10-cp314-cp314-manylinux_2_31_x86_64.whl", hash = "sha256:957d8df3b59e1662d1c74b5e0e76b58fbeeddab5713dae0db9bbc3a36e4b003b" },
+]
+
+[[package]]
 name = "pycodestyle"
 version = "2.14.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
@@ -740,6 +762,7 @@ dev = [
     { name = "orjson", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pre-commit", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "psycopg2-binary", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pytest", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pyyaml", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-devenv", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -762,6 +785,7 @@ dev = [
     { name = "orjson", specifier = ">=3.10.10" },
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "protobuf", specifier = ">=5.28.3" },
+    { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "sentry-devenv", specifier = ">=1.22.2" },
@@ -871,6 +895,7 @@ dev = [
     { name = "orjson", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pre-commit", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "protobuf", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
+    { name = "psycopg2-binary", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pytest", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "pyyaml", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "sentry-devenv", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -893,6 +918,7 @@ dev = [
     { name = "orjson", specifier = ">=3.10.10" },
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "protobuf", specifier = ">=5.28.3" },
+    { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pytest", specifier = ">=8.3.3" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "sentry-devenv", specifier = ">=1.22.2" },

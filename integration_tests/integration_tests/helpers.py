@@ -2,11 +2,13 @@ import socket
 import sqlite3
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import orjson
+import psycopg2
 from confluent_kafka import Consumer, KafkaException, Producer
 from google.protobuf.timestamp_pb2 import Timestamp
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -212,6 +214,132 @@ def get_num_tasks_group_by_status(
     for task_count in rows:
         task_count_in_sqlite[task_count[0]] = task_count[1]
     return task_count_in_sqlite
+
+
+@dataclass
+class PostgresConfig:
+    """
+    Connection details for the postgres-backed activation store.
+
+    Defaults mirror the devservices shared-postgres container (reachable on the
+    host at 127.0.0.1:5432, postgres/password) and the Rust test conventions in
+    `src/test_utils.rs`. Each test should use a unique `database_name` so runs
+    don't collide; the taskbroker creates and migrates it on startup when
+    `run_migrations` is set in the store config.
+    """
+
+    database_name: str
+    host: str = "127.0.0.1"
+    port: int = 5432
+    username: str = "postgres"
+    password: str = "password"
+    default_database_name: str = "postgres"
+
+    def store_config(self) -> dict[str, Any]:
+        """
+        Build the `store` config block that selects the postgres adapter and
+        points it at this database (dumped into the taskbroker's yaml config).
+        """
+        return {
+            "adapter": "postgres",
+            "pg": {
+                "run_migrations": True,
+                "host": self.host,
+                "port": self.port,
+                "username": self.username,
+                "password": self.password,
+                "ddl_username": self.username,
+                "ddl_password": self.password,
+                "database_name": self.database_name,
+                "default_database_name": self.default_database_name,
+            },
+        }
+
+
+def unique_pg_database_name(prefix: str) -> str:
+    """A unique, valid postgres database identifier (ASCII alnum + underscore)."""
+    return f"{prefix}_{uuid4().hex}"
+
+
+def _pg_connect(pg: PostgresConfig, database: str) -> Any:
+    conn = psycopg2.connect(
+        host=pg.host,
+        port=pg.port,
+        user=pg.username,
+        password=pg.password,
+        dbname=database,
+    )
+    conn.autocommit = True
+    return conn
+
+
+def _pg_fetchall(pg: PostgresConfig, query: str, params: tuple[Any, ...] = ()) -> list[Any]:
+    """Run a read query against the test database and close the connection.
+
+    These helpers are polled frequently, so each opens and closes its own
+    connection to avoid leaking connections against postgres' connection cap.
+    """
+    conn = _pg_connect(pg, pg.database_name)
+    try:
+        cur = conn.cursor()
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        cur.close()
+        return rows
+    finally:
+        conn.close()
+
+
+def get_num_tasks_in_postgres(pg: PostgresConfig) -> int:
+    rows = _pg_fetchall(pg, "SELECT count(*) FROM inflight_taskactivations;")
+    return int(rows[0][0])
+
+
+def get_num_tasks_in_postgres_by_status(pg: PostgresConfig, status: str) -> int:
+    """
+    Count activations with a given status. Note: the postgres store persists
+    the capitalized enum name (e.g. 'Pending', 'Claimed', 'Processing',
+    'Complete'), unlike the lowercase values used by the sqlite adapter.
+    """
+    rows = _pg_fetchall(
+        pg,
+        "SELECT count(*) FROM inflight_taskactivations WHERE status = %s;",
+        (status,),
+    )
+    return int(rows[0][0])
+
+
+def get_num_tasks_in_postgres_group_by_status(pg: PostgresConfig) -> dict[str, int]:
+    rows = _pg_fetchall(
+        pg, "SELECT status, count(id) FROM inflight_taskactivations GROUP BY status;"
+    )
+    return {row[0]: int(row[1]) for row in rows}
+
+
+def drop_postgres_db(pg: PostgresConfig) -> None:
+    """
+    Drop the test database. Connects to the default database, terminates any
+    lingering connections (the broker may not have fully torn down its pools),
+    then drops. Best-effort: swallows errors so cleanup never fails a test.
+    """
+    # Note: don't use `with conn:` here. psycopg2's connection context manager
+    # wraps the block in a transaction, and DROP DATABASE cannot run inside one.
+    conn = None
+    try:
+        conn = _pg_connect(pg, pg.default_database_name)  # autocommit=True
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = %s AND pid <> pg_backend_pid();",
+            (pg.database_name,),
+        )
+        cur.execute(f'DROP DATABASE IF EXISTS "{pg.database_name}";')
+        cur.close()
+    except Exception as e:
+        print(f"Failed to drop postgres db {pg.database_name}: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def get_available_ports(count: int) -> list[int]:
