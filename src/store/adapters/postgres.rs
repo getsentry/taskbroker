@@ -63,12 +63,12 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
         {
             return Err(anyhow!(
                 "invalid database_name {:?}: only ASCII alphanumerics and underscores are allowed",
-                &config.pg.database_name
+                config.pg.database_name
             ));
         }
 
-        println!("Creating database {}", &config.pg.database_name);
-        sqlx::query(format!("CREATE DATABASE {}", &config.pg.database_name).as_str())
+        println!("Creating database {}", config.pg.database_name);
+        sqlx::query(format!("CREATE DATABASE {}", config.pg.database_name).as_str())
             .execute(&default_pool)
             .await?;
     }
@@ -1419,7 +1419,7 @@ impl ActivationStore for PostgresStore {
         let default_pool =
             create_default_postgres_pool(&self.connection, &self.config.pg.default_database_name)
                 .await?;
-        let _ = sqlx::query(format!("DROP DATABASE {}", &self.config.pg.database_name).as_str())
+        let _ = sqlx::query(format!("DROP DATABASE {}", self.config.pg.database_name).as_str())
             .bind(&self.config.pg.database_name)
             .execute(&default_pool)
             .await;
