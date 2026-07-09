@@ -20,8 +20,7 @@ import msgpack
 import sentry_sdk
 import zstandard as zstd
 from arroyo.backends.abstract import ProducerFuture
-from arroyo.backends.kafka import KafkaPayload
-from arroyo.backends.kafka.producer import FutureTrackingProducer
+from arroyo.backends.kafka import FutureTrackingProducer, KafkaPayload
 from arroyo.types import BrokerValue
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_COMPLETE,
@@ -39,7 +38,6 @@ from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
 from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
-from taskbroker_client.worker.producer import TaskProducer
 
 logger = logging.getLogger(__name__)
 
@@ -547,9 +545,7 @@ def child_process(
 
             # To have Taskworker track futures, set the env var `ARROYO_TRACK_PRODUCER_FUTURES = True`
             # in the worker process
-            task_produced_futures = (
-                TaskProducer.collect_futures() | FutureTrackingProducer.collect_futures()
-            )
+            task_produced_futures = FutureTrackingProducer.collect_futures()
 
             # If the task function itself failed, we don't need to await any
             # producer futures since it'll be retried anyways
