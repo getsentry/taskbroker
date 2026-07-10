@@ -46,7 +46,7 @@ from taskbroker_client.worker.client import (
     TaskbrokerClient,
     parse_rpc_secret_list,
 )
-from taskbroker_client.worker.push_clients import BatchPushTaskbrokerClient, PushTaskbrokerClient
+from taskbroker_client.worker.push_clients import PushTaskbrokerClient
 from taskbroker_client.worker.workerchild import ChildMessage, child_process
 
 if TYPE_CHECKING:
@@ -180,7 +180,6 @@ class PushTaskWorker:
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
         grpc_port: int = 50052,
         push_task_timeout: float = 5,
-        update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
         prometheus_port: int | None = None,
@@ -209,7 +208,6 @@ class PushTaskWorker:
             processing_pool_name=processing_pool_name,
             pod_name=pod_name,
             process_type=process_type,
-            update_in_batches=update_in_batches,
             skip_awaiting_futures=skip_awaiting_futures,
             prometheus_port=prometheus_port,
             future_checking_frequency=future_checking_frequency,
@@ -275,21 +273,22 @@ class PushTaskWorker:
         """
         Send a result to the broker. If the set has failed before, sleep briefly before retrying.
         """
-        assert (
-            len(results) == 1
-        ), "Only one result can be sent at a time with the regular push client"
-        result = results[0]
+        for result in results:
+            self._metrics.distribution(
+                "taskworker.worker.complete_duration",
+                time.monotonic() - result.receive_timestamp,
+                tags={"processing_pool": self._processing_pool_name},
+            )
         self._metrics.distribution(
-            "taskworker.worker.complete_duration",
-            time.monotonic() - result.receive_timestamp,
+            "taskworker.worker.update_status_batch_size",
+            len(results),
             tags={"processing_pool": self._processing_pool_name},
         )
 
         logger.debug(
-            "taskworker.workers._send_result",
+            "taskworker.send_update_task_batch.batch_sent",
             extra={
-                "task_id": result.task_id,
-                "next": False,  # Push mode doesn't support fetching next tasks
+                "results": [result.task_id for result in results],
                 "processing_pool": self._processing_pool_name,
             },
         )
@@ -297,25 +296,25 @@ class PushTaskWorker:
         self._grpc_sync_event.wait(self._setstatus_backoff_seconds)
 
         try:
-            self.client.update_tasks([result])
+            self.client.update_tasks(results)
             self._setstatus_backoff_seconds = 0
             return None
         except grpc.RpcError as e:
             self._setstatus_backoff_seconds = min(self._setstatus_backoff_seconds + 1, 10)
             logger.warning(
-                "taskworker.send_update_task.failed",
-                extra={"task_id": result.task_id, "error": e},
+                "taskworker.send_update_task_batch.failed",
+                extra={"results": [result.task_id for result in results], "error": e},
             )
             if e.code() != grpc.StatusCode.NOT_FOUND:
                 # If the task was not found, we can't update it, so we should just return None
-                raise RequeueException(f"Failed to update task: {e}")
+                raise RequeueException(f"Failed to update task batch: {e}")
         except HostTemporarilyUnavailable as e:
             self._setstatus_backoff_seconds = min(
                 self._setstatus_backoff_seconds + 4, MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE
             )
             logger.info(
-                "taskworker.send_update_task.temporarily_unavailable",
-                extra={"task_id": result.task_id, "error": str(e)},
+                "taskworker.send_update_task_batch.temporarily_unavailable",
+                extra={"task_ids": [result.task_id for result in results], "error": str(e)},
             )
             raise RequeueException(f"Failed to update task: {e}")
 
@@ -503,87 +502,6 @@ class PushTaskWorker:
         self._stop_health_check_thread()
         self._grpc_sync_event.set()
         self.worker_pool.shutdown()
-
-
-class BatchPushTaskWorker(PushTaskWorker):
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        assert (
-            kwargs["update_in_batches"] is True
-        ), "BatchPushTaskWorker must be initialized with update_in_batches=True"
-        super().__init__(*args, **kwargs)
-
-    def _create_client(
-        self,
-        service: str,
-        application: str,
-        metrics: MetricsBackend,
-        health_check_settings: HealthCheckSettings | None = None,
-        rpc_secret: str | None = None,
-        grpc_config: str | None = None,
-        processing_pool_name: str | None = None,
-    ) -> PushTaskbrokerClient:
-        return BatchPushTaskbrokerClient(
-            service=service,
-            application=application,
-            metrics=metrics,
-            health_check_settings=health_check_settings,
-            rpc_secret=rpc_secret,
-            grpc_config=grpc_config,
-            processing_pool_name=processing_pool_name,
-        )
-
-    def _send_results(
-        self, results: list[ProcessingResult], is_draining: bool = False
-    ) -> InflightTaskActivation | None:
-        """
-        Send a result to the broker. If the set has failed before, sleep briefly before retrying.
-        """
-        for result in results:
-            self._metrics.distribution(
-                "taskworker.worker.complete_duration",
-                time.monotonic() - result.receive_timestamp,
-                tags={"processing_pool": self._processing_pool_name},
-            )
-        self._metrics.distribution(
-            "taskworker.worker.update_status_batch_size",
-            len(results),
-            tags={"processing_pool": self._processing_pool_name},
-        )
-
-        logger.debug(
-            "taskworker.send_update_task_batch.batch_sent",
-            extra={
-                "results": [result.task_id for result in results],
-                "processing_pool": self._processing_pool_name,
-            },
-        )
-        # Use the shutdown_event as a sleep mechanism
-        self._grpc_sync_event.wait(self._setstatus_backoff_seconds)
-
-        try:
-            self.client.update_tasks(results)
-            self._setstatus_backoff_seconds = 0
-            return None
-        except grpc.RpcError as e:
-            self._setstatus_backoff_seconds = min(self._setstatus_backoff_seconds + 1, 10)
-            logger.warning(
-                "taskworker.send_update_task_batch.failed",
-                extra={"results": [result.task_id for result in results], "error": e},
-            )
-            if e.code() != grpc.StatusCode.NOT_FOUND:
-                # If the task was not found, we can't update it, so we should just return None
-                raise RequeueException(f"Failed to update task batch: {e}")
-        except HostTemporarilyUnavailable as e:
-            self._setstatus_backoff_seconds = min(
-                self._setstatus_backoff_seconds + 4, MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE
-            )
-            logger.info(
-                "taskworker.send_update_task_batch.temporarily_unavailable",
-                extra={"task_ids": [result.task_id for result in results], "error": str(e)},
-            )
-            raise RequeueException(f"Failed to update task: {e}")
-
-        return None
 
 
 class TaskWorker:
@@ -823,7 +741,6 @@ class TaskWorkerProcessingPool:
         processing_pool_name: str | None = None,
         pod_name: str | None = None,
         process_type: str = "spawn",
-        update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
@@ -837,7 +754,6 @@ class TaskWorkerProcessingPool:
 
         self._processing_pool_name = processing_pool_name or "unknown"
         self._pod_name = pod_name or "unknown"
-        self._update_in_batches = update_in_batches
 
         self._send_result_fn = send_result_fn
 
@@ -1001,14 +917,10 @@ class TaskWorkerProcessingPool:
                     while True:
                         try:
                             result = self._processed_tasks.get(timeout=1.0)
-                            if not self._update_in_batches:
-                                executor.submit(self.send_results, [result], False)
-                                break
-                            else:
-                                results.append(result)
-                                if len(results) >= self._concurrency:
-                                    executor.submit(self.send_results, results, False)
-                                    results = []
+                            results.append(result)
+                            if len(results) >= self._concurrency:
+                                executor.submit(self.send_results, results, False)
+                                results = []
                         except queue.Empty:
                             if not results:
                                 # Only increment if there was nothing in the queue at all
@@ -1016,7 +928,7 @@ class TaskWorkerProcessingPool:
                                     "taskworker.worker.result_thread.queue_empty",
                                     tags={"processing_pool": self._processing_pool_name},
                                 )
-                            elif self._update_in_batches:
+                            else:
                                 executor.submit(self.send_results, results, False)
                                 results = []
                             break
