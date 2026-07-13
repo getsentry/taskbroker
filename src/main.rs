@@ -110,7 +110,7 @@ async fn main() -> Result<(), Error> {
 
     canary_tasks::enqueue(&config, store.as_ref()).await?;
 
-    // Get startup time after migrations, vacuum, and startup canaries.
+    // Get startup time after migrations, vacuum, and startup canaries
     let startup_time = Utc::now();
 
     // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
