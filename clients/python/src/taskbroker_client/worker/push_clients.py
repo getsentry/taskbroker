@@ -98,66 +98,6 @@ class PushTaskbrokerClient:
     def emit_health_check(self) -> None:
         self._emit_health_check()
 
-    def update_tasks(self, processing_results: list[ProcessingResult]) -> None:
-        for processing_result in processing_results:
-            self._update_task_single(processing_result)
-
-    def _update_task_single(
-        self,
-        processing_result: ProcessingResult,
-    ) -> None:
-        """
-        Update the status for a given task activation.
-        """
-        self._emit_health_check()
-
-        request = SetTaskStatusRequest(
-            id=processing_result.task_id,
-            status=processing_result.status,
-            fetch_next_task=None,
-            max_attempts=processing_result.max_attempts,
-            delay_on_retry=processing_result.delay_on_retry,
-        )
-
-        retries = 0
-        exception = None
-        while retries < 3:
-            try:
-                with self._metrics.timer(
-                    "taskworker.update_task.rpc",
-                    tags={
-                        "service": self._service,
-                        "processing_pool": self._processing_pool_name,
-                    },
-                ):
-                    self._stub.SetTaskStatus(request)
-                exception = None
-                break
-            except grpc.RpcError as err:
-                exception = err
-                self._metrics.incr(
-                    "taskworker.client.rpc_error",
-                    tags={
-                        "method": "SetTaskStatus",
-                        "status": err.code().name,
-                        "processing_pool": self._processing_pool_name,
-                    },
-                )
-            finally:
-                retries += 1
-
-        if exception:
-            raise exception
-
-
-class BatchPushTaskbrokerClient(PushTaskbrokerClient):
-    """
-    Taskworker RPC client wrapper
-
-    Push brokers are a deployment so they don't need to be connected to individually. There is one service provided
-    that works for all the brokers. This client pushes batches of activation updates.
-    """
-
     def update_tasks(
         self,
         processing_results: list[ProcessingResult],
