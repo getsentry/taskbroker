@@ -9,6 +9,6 @@ logger = logging.getLogger(__name__)
 
 
 def canary_task() -> None:
-    logger.info("Running canary task...")
+    print("Running canary task...")
     sleep(0.1)
     print("Done running canary task!")
