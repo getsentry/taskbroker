@@ -338,6 +338,7 @@ def _make_result_thread_pool(
     *,
     concurrency: int = 3,
     result_queue_maxsize: int = 3,
+    update_in_batches: bool = False,
 ) -> TaskWorkerProcessingPool:
     return TaskWorkerProcessingPool(
         app_module="examples.app:app",
@@ -347,6 +348,7 @@ def _make_result_thread_pool(
         concurrency=concurrency,
         result_queue_maxsize=result_queue_maxsize,
         processing_pool_name="test",
+        update_in_batches=update_in_batches,
         process_type="fork",
     )
 
@@ -611,7 +613,7 @@ class TestTaskWorker(TestCase):
     def test_result_thread_sends_full_batch(self) -> None:
         capture = _SendResultCapture()
         concurrency = 3
-        pool = _make_result_thread_pool(capture, concurrency=concurrency)
+        pool = _make_result_thread_pool(capture, concurrency=concurrency, update_in_batches=True)
         try:
             pool.start_result_thread()
 
@@ -628,7 +630,7 @@ class TestTaskWorker(TestCase):
 
     def test_result_thread_flushes_partial_batch_on_queue_empty(self) -> None:
         capture = _SendResultCapture()
-        pool = _make_result_thread_pool(capture)
+        pool = _make_result_thread_pool(capture, update_in_batches=True)
         try:
             pool.start_result_thread()
 
