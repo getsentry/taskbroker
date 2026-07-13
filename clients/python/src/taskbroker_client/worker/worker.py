@@ -208,6 +208,7 @@ class PushTaskWorker:
             processing_pool_name=processing_pool_name,
             pod_name=pod_name,
             process_type=process_type,
+            update_in_batches=True,
             skip_awaiting_futures=skip_awaiting_futures,
             prometheus_port=prometheus_port,
             future_checking_frequency=future_checking_frequency,
@@ -556,6 +557,7 @@ class TaskWorker:
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
             process_type=process_type,
+            update_in_batches=False,
             skip_awaiting_futures=skip_awaiting_futures,
             future_checking_frequency=future_checking_frequency,
         )
@@ -741,6 +743,7 @@ class TaskWorkerProcessingPool:
         processing_pool_name: str | None = None,
         pod_name: str | None = None,
         process_type: str = "spawn",
+        update_in_batches: bool = False,
         skip_awaiting_futures: bool = True,
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
@@ -763,7 +766,7 @@ class TaskWorkerProcessingPool:
         self._metrics = app.metrics
         self._skip_awaiting_futures = skip_awaiting_futures
         self._future_checking_frequency = future_checking_frequency
-
+        self._update_in_batches = update_in_batches
         self._mp_context = mp_context
         self._process_type = process_type
 
@@ -917,10 +920,15 @@ class TaskWorkerProcessingPool:
                     while True:
                         try:
                             result = self._processed_tasks.get(timeout=1.0)
-                            results.append(result)
-                            if len(results) >= self._concurrency:
-                                executor.submit(self.send_results, results, False)
-                                results = []
+                            if not self._update_in_batches:
+                                # This needs to stay until the pull taskbroker is removed
+                                executor.submit(self.send_results, [result], False)
+                                break
+                            else:
+                                results.append(result)
+                                if len(results) >= self._concurrency:
+                                    executor.submit(self.send_results, results, False)
+                                    results = []
                         except queue.Empty:
                             if not results:
                                 # Only increment if there was nothing in the queue at all
@@ -928,7 +936,7 @@ class TaskWorkerProcessingPool:
                                     "taskworker.worker.result_thread.queue_empty",
                                     tags={"processing_pool": self._processing_pool_name},
                                 )
-                            else:
+                            elif self._update_in_batches:
                                 executor.submit(self.send_results, results, False)
                                 results = []
                             break
