@@ -1,10 +1,5 @@
 #!/bin/bash
 
-# IMPORTANT: this script is inlined into the GoCD pipeline definition via
-# importstr, and GoCD runs parameter substitution over it. A literal hash that
-# is not in the first column breaks the config-repo parse, silently freezing the
-# pipeline on its last good render.
-
 eval "$(regions-project-env-vars --region="${SENTRY_REGION}")"
 /devinfra/scripts/get-cluster-credentials
 
@@ -17,7 +12,6 @@ run_migrations() {
 
   echo "Running migrations for $name..."
 
-# Reuse the broker's own args
   local broker_args=()
   read -r -a broker_args < <(kubectl get deployment "$name" -o json \
     | jq -r '.spec.template.spec.containers[] | select(.name == "taskbroker") | .args // [] | join(" ")')
