@@ -12,9 +12,10 @@ run_migrations() {
 
   echo "Running migrations for $name..."
 
+  # Reuse the broker's own args.
   local broker_args=()
-  mapfile -t broker_args < <(kubectl get deployment "$name" \
-    -o jsonpath='{range .spec.template.spec.containers[?(@.name=="taskbroker")].args[*]}{.}{"\n"}{end}')
+  read -r -a broker_args < <(kubectl get deployment "$name" \
+    -o jsonpath='{.spec.template.spec.containers[?(@.name=="taskbroker")].args[*]}') || true
 
   if ! k8s-spawn-job \
     --label-selector="${label_selector}" \
