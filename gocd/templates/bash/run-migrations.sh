@@ -12,14 +12,9 @@ run_migrations() {
 
   echo "Running migrations for $name..."
 
-  local config_args=()
-  local config_path
-  config_path="$(kubectl get deployment "$name" \
-    -o jsonpath='{range .spec.template.spec.containers[?(@.name=="taskbroker")].args[*]}{.}{"\n"}{end}' \
-    | grep -A1 -x -- '--config' | tail -n1 || true)"
-  if [[ -n "${config_path}" ]]; then
-    config_args=(--config "${config_path}")
-  fi
+  local broker_args=()
+  mapfile -t broker_args < <(kubectl get deployment "$name" \
+    -o jsonpath='{range .spec.template.spec.containers[?(@.name=="taskbroker")].args[*]}{.}{"\n"}{end}')
 
   if ! k8s-spawn-job \
     --label-selector="${label_selector}" \
@@ -29,7 +24,7 @@ run_migrations() {
     "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
     /opt/taskbroker \
     -- \
-    "${config_args[@]}" \
+    "${broker_args[@]}" \
     --run migrations; then
     echo "Migrations failed for $name"
     return 1
