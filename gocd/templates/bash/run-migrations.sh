@@ -3,8 +3,7 @@
 # IMPORTANT: this script is inlined into the GoCD pipeline definition via
 # importstr, and GoCD runs parameter substitution over it. A literal hash that
 # is not in the first column breaks the config-repo parse, silently freezing the
-# pipeline on its last good render. So keep every comment in column 1, and avoid
-# any mid-line hash (for example, bash array-length syntax on a variable).
+# pipeline on its last good render.
 
 eval "$(regions-project-env-vars --region="${SENTRY_REGION}")"
 /devinfra/scripts/get-cluster-credentials
