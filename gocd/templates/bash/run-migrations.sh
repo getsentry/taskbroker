@@ -12,6 +12,11 @@ run_migrations() {
 
   echo "Running migrations for $name..."
 
+  # Reuse the broker's own args.
+  local broker_args=()
+  read -r -a broker_args < <(kubectl get deployment "$name" \
+    -o jsonpath='{.spec.template.spec.containers[?(@.name=="taskbroker")].args[*]}') || true
+
   if ! k8s-spawn-job \
     --label-selector="${label_selector}" \
     --container-name="taskbroker" \
@@ -20,6 +25,7 @@ run_migrations() {
     "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
     /opt/taskbroker \
     -- \
+    "${broker_args[@]}" \
     --run migrations; then
     echo "Migrations failed for $name"
     return 1
