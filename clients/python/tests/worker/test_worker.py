@@ -1053,24 +1053,22 @@ def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
     shutdown = Event()
 
     todo.put(CANARY_TASK)
-    with mock.patch("taskbroker_client.canary.logger") as mock_logger:
-        child_process(
-            "examples.app:app",
-            todo,
-            processed,
-            shutdown,
-            max_task_count=1,
-            processing_pool_name="test",
-            process_type="fork",
-            skip_awaiting_futures=False,
-            future_checking_frequency=0.1,
-        )
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
+    )
 
     result = processed.get()
     assert result.task_id == CANARY_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
-    mock_logger.info.assert_called_once_with("Running canary task...")
-    assert capsys.readouterr().out == "Done running canary task!\n"
+    assert capsys.readouterr().out == "Running canary task...\nDone running canary task!\n"
 
 
 def test_child_process_emits_running_message() -> None:

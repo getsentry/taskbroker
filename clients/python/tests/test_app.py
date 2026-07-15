@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 import msgpack
 import pytest
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
@@ -51,11 +49,9 @@ def test_registers_internal_canary_task(capsys: pytest.CaptureFixture[str]) -> N
     assert namespace.name == INTERNAL_NAMESPACE
     assert isinstance(task, Task)
     assert task.name == CANARY_TASK_NAME
-    with patch("taskbroker_client.canary.logger") as mock_logger:
-        task()
+    task()
 
-    mock_logger.info.assert_called_once_with("Running canary task...")
-    assert capsys.readouterr().out == "Done running canary task!\n"
+    assert capsys.readouterr().out == "Running canary task...\nDone running canary task!\n"
 
 
 def test_should_attempt_at_most_once() -> None:

@@ -166,6 +166,10 @@ pub struct Config {
     /// when it starts up, but before the GRPC server, consumer and upkeep begin.
     pub full_vacuum_on_start: bool,
 
+    /// Number of internal canary tasks to add to the store for each configured
+    /// worker pool when the broker starts. Set to zero to disable.
+    pub canary_tasks: u32,
+
     /// Enable the upkeep thread to perforam a full `VACUUM` on the database
     /// periodically.
     pub full_vacuum_on_upkeep: bool,
@@ -267,6 +271,7 @@ impl Default for Config {
             max_message_size: 5000000,
             grpc_max_message_size: 52 * 1024 * 1024, // 52MB
             full_vacuum_on_start: true,
+            canary_tasks: 0,
             full_vacuum_on_upkeep: true,
             vacuum_interval_ms: 30000,
             log_async_backtrace: false,
@@ -915,6 +920,7 @@ mod tests {
         assert_eq!(config.store.max_pending_count, 2048);
         assert_eq!(config.store.max_processing_count, 2048);
         assert_eq!(config.store.sqlite.vacuum_page_count, None);
+        assert_eq!(config.canary_tasks, 0);
         assert_eq!(
             config.worker_map.get("sentry").map(String::as_str),
             Some("http://127.0.0.1:50052")
@@ -1026,6 +1032,7 @@ mod tests {
                 max_processing_attempts: 5
                 vacuum_page_count: 1000
                 full_vacuum_on_start: true
+                canary_tasks: 3
                 worker_map:
                     sentry: http://worker-sentry:50052
                     launchpad: http://worker-launchpad:50053
@@ -1064,6 +1071,7 @@ mod tests {
             assert_eq!(config.store.sqlite.vacuum_page_count, Some(1000));
             assert_eq!(config.store.max_size, Some(3_000_000_000));
             assert!(config.full_vacuum_on_start);
+            assert_eq!(config.canary_tasks, 3);
             assert_eq!(
                 config.worker_map,
                 BTreeMap::from([
@@ -1085,6 +1093,7 @@ mod tests {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
             jail.set_env("TASKBROKER_DATABASE_ADAPTER", "postgres");
             jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
+            jail.set_env("TASKBROKER_CANARY_TASKS", "2");
 
             let args = Args {
                 run: Run::Broker,
@@ -1094,6 +1103,7 @@ mod tests {
             assert_eq!(config.log_filter, "error");
             assert_eq!(config.store.adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.store.max_processing_attempts, 5);
+            assert_eq!(config.canary_tasks, 2);
 
             Ok(())
         });
