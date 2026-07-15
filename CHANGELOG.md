@@ -1,4 +1,27 @@
 # Changelog
+## 26.7.0
+
+### New Features ✨
+
+- Add a flag to disable consuming from a topic by @evanh in [#745](https://github.com/getsentry/taskbroker/pull/745)
+
+### Bug Fixes 🐛
+
+- (gocd) Pass --config to migration job for use_yaml_config pools by @enochtangg in [#753](https://github.com/getsentry/taskbroker/pull/753)
+- (lint) Make clippy happy by @bmckerry in [#749](https://github.com/getsentry/taskbroker/pull/749)
+- Repair migration config-repo parse and pass --config for yaml pools by @enochtangg in [#755](https://github.com/getsentry/taskbroker/pull/755)
+
+### Internal Changes 🔧
+
+- (client) Make BatchPushTaskWorker the default by @evanh in [#751](https://github.com/getsentry/taskbroker/pull/751)
+- (integration) Add postgres-backed push mode integration tests by @evanh in [#746](https://github.com/getsentry/taskbroker/pull/746)
+- (workerchild) Don't set future tracking env var by @bmckerry in [#747](https://github.com/getsentry/taskbroker/pull/747)
+- Pin rust to 1.96 by @untitaker in [#750](https://github.com/getsentry/taskbroker/pull/750)
+
+### Other
+
+- debug(gocd): Instrument migration job to find why --config is dropped by @enochtangg in [#754](https://github.com/getsentry/taskbroker/pull/754)
+
 ## 26.6.0
 
 ### Bug Fixes 🐛
