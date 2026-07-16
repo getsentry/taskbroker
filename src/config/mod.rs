@@ -202,6 +202,7 @@ pub struct Config {
     pub status_update_interval_ms: u64,
 
     /// Maps every application to its worker endpoint, both represented as strings.
+    #[validate(length(min = 1))]
     pub worker_map: BTreeMap<String, String>,
 
     /// The namespace to assign to raw mode activations.
@@ -903,7 +904,6 @@ mod tests {
     use figment::Jail;
     use validator::Validate;
 
-    use crate::config::fetch::FetchConfig;
     use crate::logging::LogFormat;
     use crate::{Args, Run};
 
@@ -929,15 +929,16 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_invalid_fields() {
-        let mut config = Config {
-            fetch: FetchConfig {
-                threads: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut config = Config::default();
+
+        // Worker map cannot be empty
+        assert!(config.validate().is_err());
+
+        config.worker_map = [("sentry".into(), "http://sentry:50052".into())].into();
+        assert!(config.validate().is_ok());
 
         // Fetch threads cannot be zero
+        config.fetch.threads = 0;
         assert!(config.validate().is_err());
 
         config.fetch.threads = 1;
