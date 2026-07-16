@@ -276,7 +276,7 @@ impl Default for Config {
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
-            worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
+            worker_map: [].into(),
             raw_namespace: None,
             raw_application: None,
             raw_taskname: None,
