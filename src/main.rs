@@ -318,14 +318,19 @@ async fn main() -> Result<(), Error> {
             let mut map = HashMap::new();
 
             for (application, endpoint) in config.worker_map.clone() {
-                let worker = match Worker::connect(config.clone(), endpoint).await {
+                let worker = match Worker::connect(config.clone(), endpoint.clone()).await {
                     Ok(w) => {
-                        debug!("Connected to worker!");
+                        debug!(application, endpoint, "Connected to worker!");
                         Box::new(w) as Box<dyn WorkerClient>
                     }
 
                     Err(e) => {
-                        error!(error = ?e, "Failed to connect to worker");
+                        error!(
+                            application,
+                            endpoint,
+                            error = ?e,
+                            "Failed to connect to worker"
+                        );
                         return Err(e);
                     }
                 };
