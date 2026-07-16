@@ -202,6 +202,7 @@ pub struct Config {
     pub status_update_interval_ms: u64,
 
     /// Maps every application to its worker endpoint, both represented as strings.
+    #[validate(length(min = 1))]
     pub worker_map: BTreeMap<String, String>,
 
     /// The namespace to assign to raw mode activations.
@@ -276,7 +277,7 @@ impl Default for Config {
             batch_status_updates: false,
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
-            worker_map: [("sentry".into(), "http://127.0.0.1:50052".into())].into(),
+            worker_map: [].into(),
             raw_namespace: None,
             raw_application: None,
             raw_taskname: None,
@@ -299,6 +300,15 @@ impl Config {
         // Use "__" for nested configurations via environment variables, like `TASKBROKER_KAFKA_TOPICS__PROFILES__CLUSTER`
         builder = builder.merge(Env::prefixed("TASKBROKER_").split("__"));
         let mut config: Config = builder.extract()?;
+
+        let worker_map_provided = builder
+            .find_metadata("worker_map")
+            .is_some_and(|metadata| metadata.name != DEFAULT_CONFIG_PROVIDER);
+
+        // Only provide a default worker map if the user didn't provide one.
+        if !worker_map_provided {
+            config.worker_map = [("sentry".into(), "http://127.0.0.1:50052".into())].into();
+        }
 
         // Map deprecated fields to current fields
         config.map_deprecated_options(&mut builder);
@@ -894,7 +904,6 @@ mod tests {
     use figment::Jail;
     use validator::Validate;
 
-    use crate::config::fetch::FetchConfig;
     use crate::logging::LogFormat;
     use crate::{Args, Run};
 
@@ -915,23 +924,21 @@ mod tests {
         assert_eq!(config.store.max_pending_count, 2048);
         assert_eq!(config.store.max_processing_count, 2048);
         assert_eq!(config.store.sqlite.vacuum_page_count, None);
-        assert_eq!(
-            config.worker_map.get("sentry").map(String::as_str),
-            Some("http://127.0.0.1:50052")
-        );
+        assert!(config.worker_map.is_empty());
     }
 
     #[test]
     fn test_validate_rejects_invalid_fields() {
-        let mut config = Config {
-            fetch: FetchConfig {
-                threads: 0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut config = Config::default();
+
+        // Worker map cannot be empty
+        assert!(config.validate().is_err());
+
+        config.worker_map = [("sentry".into(), "http://sentry:50052".into())].into();
+        assert!(config.validate().is_ok());
 
         // Fetch threads cannot be zero
+        config.fetch.threads = 0;
         assert!(config.validate().is_err());
 
         config.fetch.threads = 1;
@@ -1027,8 +1034,8 @@ mod tests {
                 vacuum_page_count: 1000
                 full_vacuum_on_start: true
                 worker_map:
-                    sentry: http://worker-sentry:50052
-                    launchpad: http://worker-launchpad:50053
+                    sentry: http://sentry:50052
+                    launchpad: http://launchpad:50052
             "#,
             )?;
             // Env vars always override config file
@@ -1067,12 +1074,36 @@ mod tests {
             assert_eq!(
                 config.worker_map,
                 BTreeMap::from([
-                    ("sentry".to_owned(), "http://worker-sentry:50052".to_owned(),),
-                    (
-                        "launchpad".to_owned(),
-                        "http://worker-launchpad:50053".to_owned(),
-                    ),
+                    ("sentry".to_owned(), "http://sentry:50052".to_owned(),),
+                    ("launchpad".to_owned(), "http://launchpad:50052".to_owned(),),
                 ])
+            );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_worker_map_from_config_file_replaces_default() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+                worker_map:
+                    launchpad: http://launchpad:50052
+            "#,
+            )?;
+
+            let args = Args {
+                run: Run::Broker,
+                config: Some("config.yaml".to_owned()),
+            };
+
+            let config = Config::from_args(&args).unwrap();
+
+            assert_eq!(
+                config.worker_map,
+                BTreeMap::from([("launchpad".to_owned(), "http://launchpad:50052".to_owned(),)])
             );
 
             Ok(())
@@ -1133,9 +1164,8 @@ mod tests {
                 BTreeMap::from([("key".to_owned(), "value".to_owned())])
             );
             assert_eq!(
-                config.worker_map.get("sentry").map(String::as_str),
-                Some("http://127.0.0.1:50052"),
-                "partial env override must not drop worker_map defaults"
+                config.worker_map,
+                BTreeMap::from([("sentry".to_owned(), "http://127.0.0.1:50052".to_owned(),)])
             );
 
             Ok(())
@@ -1149,7 +1179,7 @@ mod tests {
             jail.set_env("TASKBROKER_LOG_FILTER", "error");
             jail.set_env(
                 "TASKBROKER_WORKER_MAP",
-                "{sentry=http://127.0.0.1:60052,launchpad=http://127.0.0.1:60053}",
+                "{launchpad=http://127.0.0.1:50052}",
             );
 
             let args = Args {
@@ -1159,10 +1189,7 @@ mod tests {
             let config = Config::from_args(&args).unwrap();
             assert_eq!(
                 config.worker_map,
-                BTreeMap::from([
-                    ("sentry".to_owned(), "http://127.0.0.1:60052".to_owned(),),
-                    ("launchpad".to_owned(), "http://127.0.0.1:60053".to_owned(),),
-                ])
+                BTreeMap::from([("launchpad".to_owned(), "http://127.0.0.1:50052".to_owned(),)])
             );
 
             Ok(())
