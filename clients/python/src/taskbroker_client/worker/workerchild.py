@@ -691,7 +691,7 @@ def child_process(
 
             child_span: AbstractContextManager[Any] = (
                 sentry_sdk.traces.start_span(
-                    activation.taskname,
+                    name=activation.taskname,
                     attributes={
                         "sentry.op": OP.QUEUE_PROCESS,
                         "sentry.origin": "taskworker",
