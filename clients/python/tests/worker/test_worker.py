@@ -1024,7 +1024,9 @@ class TestWorkerServicer(TestCase):
 @pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_complete(
-    sentry_init: Callable[..., None], span_streaming: bool, mock_capture_checkin: mock.MagicMock
+    mock_capture_checkin: mock.MagicMock,
+    sentry_init: Callable[..., None],
+    span_streaming: bool,
 ) -> None:
     sentry_init(
         traces_sample_rate=1.0,
@@ -2480,6 +2482,7 @@ def test_child_process_uses_configured_future_checking_frequency(
     """The idle future-checking loop polls on the configured interval."""
     sentry_init(
         traces_sample_rate=1.0,
+        enable_backpressure_handling=False,  # To avoid time.sleep which the test patches.
         _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
     )
 
@@ -2508,6 +2511,8 @@ def test_child_process_uses_configured_future_checking_frequency(
     def recording_sleep(seconds: float) -> None:
         idle_sleeps.append(seconds)
         real_sleep(seconds)
+
+    import examples.tasks  # noqa: F401; Ensure time.sleep reference is set before patching.
 
     # time.sleep is only used by the idle branch of check_task_future_completion
     # inside workerchild, so every recorded call comes from that loop. The task's
