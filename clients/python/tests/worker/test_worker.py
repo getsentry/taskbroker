@@ -1023,7 +1023,8 @@ class TestWorkerServicer(TestCase):
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_complete(
-    sentry_init: Callable[..., None], mock_capture_checkin: mock.MagicMock
+    mock_capture_checkin: mock.MagicMock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1116,8 +1117,8 @@ def test_child_process_emits_running_message(sentry_init: Callable[..., None]) -
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_emits_exiting_once_and_continues_until_release(
-    sentry_init: Callable[..., None],
     mock_capture_checkin: mock.MagicMock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1282,7 +1283,9 @@ def test_child_process_retry_task(sentry_init: Callable[..., None]) -> None:
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_retry_task_max_attempts(
-    sentry_init: Callable[..., None], mock_capture: mock.Mock, mock_logger: mock.Mock
+    mock_capture: mock.Mock,
+    mock_logger: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1461,7 +1464,8 @@ def test_child_process_at_most_once(sentry_init: Callable[..., None]) -> None:
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_record_checkin(
-    sentry_init: Callable[..., None], mock_capture_checkin: mock.Mock
+    mock_capture_checkin: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1530,7 +1534,8 @@ def test_child_process_pass_headers(sentry_init: Callable[..., None]) -> None:
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_terminate_task(
-    sentry_init: Callable[..., None], mock_logger: mock.Mock
+    mock_logger: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1581,7 +1586,8 @@ def test_child_process_terminate_task(
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_decompression(
-    sentry_init: Callable[..., None], mock_capture_checkin: mock.MagicMock
+    mock_capture_checkin: mock.MagicMock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1670,7 +1676,8 @@ def test_child_process_context_hooks(sentry_init: Callable[..., None]) -> None:
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_silenced_timeout(
-    sentry_init: Callable[..., None], mock_logger: mock.Mock
+    mock_logger: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1705,7 +1712,8 @@ def test_child_process_silenced_timeout(
 
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_silenced_exception_with_retries(
-    sentry_init: Callable[..., None], mock_capture: mock.Mock
+    mock_capture: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1737,7 +1745,8 @@ def test_child_process_silenced_exception_with_retries(
 
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_expected_ignored_exception_max_attempts(
-    sentry_init: Callable[..., None], mock_capture: mock.Mock
+    mock_capture: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1770,7 +1779,9 @@ def test_child_process_expected_ignored_exception_max_attempts(
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_silenced_exception_max_attempts(
-    sentry_init: Callable[..., None], mock_capture: mock.Mock, mock_logger: mock.Mock
+    mock_capture: mock.Mock,
+    mock_logger: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     """Silenced exceptions do not raise on retry exhaustion."""
     sentry_init(traces_sample_rate=1.0)
@@ -1827,7 +1838,8 @@ def test_child_process_silenced_exception_max_attempts(
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_retry_on_deadline_exceeded(
-    sentry_init: Callable[..., None], mock_logger: mock.Mock
+    mock_logger: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     sentry_init(traces_sample_rate=1.0)
 
@@ -1864,7 +1876,8 @@ def test_child_process_retry_on_deadline_exceeded(
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_general_exception_logs_task_failed(
-    sentry_init: Callable[..., None], mock_logger: mock.Mock
+    mock_logger: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     """A non-retriable Exception emits taskworker.task.failed with all fields."""
     sentry_init(traces_sample_rate=1.0)
@@ -1904,8 +1917,8 @@ def test_child_process_general_exception_logs_task_failed(
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_silenced_exception_does_not_log_task_failed(
-    sentry_init: Callable[..., None],
     mock_logger: mock.Mock,
+    sentry_init: Callable[..., None],
 ) -> None:
     """When err is in silenced_exceptions, taskworker.task.failed is NOT logged.
     Preserves the silencing semantics added in #608."""
