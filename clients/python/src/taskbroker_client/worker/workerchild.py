@@ -622,7 +622,6 @@ def child_process(
             span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
             yield span
 
-
     def _execute_activation(
         task_func: Task[Any, Any],
         activation: TaskActivation,
@@ -643,6 +642,17 @@ def child_process(
             }
         }
         if is_span_streaming:
+            sentry_sdk.traces.continue_trace(headers)
+            Scope.set_custom_sampling_context(sampling_context)
+
+            parent_span = sentry_sdk.traces.start_span(
+                name=activation.taskname,
+                attributes={
+                    "sentry.op": "queue.task.taskworker",
+                    "sentry.origin": "taskworker",
+                },
+            )
+        else:
             transaction = sentry_sdk.continue_trace(
                 environ_or_headers=headers,
                 op="queue.task.taskworker",
@@ -650,17 +660,8 @@ def child_process(
                 origin="taskworker",
             )
 
-            parent_span = sentry_sdk.start_transaction(transaction, custom_sampling_context=sampling_context)
-        else:
-            sentry_sdk.traces.continue_trace(headers)
-            Scope.set_custom_sampling_context(sampling_context)
-            
-            parent_span = sentry_sdk.traces.start_span(
-                name=activation.taskname,
-                attributes = {
-                    "sentry.op": "queue.task.taskworker",
-                    "sentry.origin": "taskworker",
-                }
+            parent_span = sentry_sdk.start_transaction(
+                transaction, custom_sampling_context=sampling_context
             )
 
         with (
@@ -680,18 +681,22 @@ def child_process(
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
 
-            child_span = sentry_sdk.traces.start_span(
-                activation.taskname,
-                attributes={
-                    "sentry.op": OP.QUEUE_PROCESS,
-                    "sentry.origin": "taskworker",
-                    SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
-                    SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
-                    SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY: latency,
-                    SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT: activation.retry_state.attempts,
-                    SPANDATA.MESSAGING_SYSTEM: "taskworker",
-                }
-            ) if is_span_streaming else _task_processing_span(activation=activation, latency=latency)
+            child_span = (
+                sentry_sdk.traces.start_span(
+                    activation.taskname,
+                    attributes={
+                        "sentry.op": OP.QUEUE_PROCESS,
+                        "sentry.origin": "taskworker",
+                        SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
+                        SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
+                        SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY: latency,
+                        SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT: activation.retry_state.attempts,
+                        SPANDATA.MESSAGING_SYSTEM: "taskworker",
+                    },
+                )
+                if is_span_streaming
+                else _task_processing_span(activation=activation, latency=latency)
+            )
 
             with child_span:
                 # TODO(taskworker) remove this when doing cleanup
