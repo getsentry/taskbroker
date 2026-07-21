@@ -6,7 +6,6 @@ import pytest
 import sentry_sdk
 import time_machine
 from arroyo.backends.kafka import KafkaProducer
-from pytest import FixtureRequest
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.transport import Transport
 
@@ -29,7 +28,7 @@ def freeze_time(t: str | datetime | None = None) -> time_machine.travel:
 
 
 @pytest.fixture
-def sentry_init(request: FixtureRequest) -> Generator[Callable[..., None], None, None]:
+def sentry_init() -> Generator[Callable[..., None], None, None]:
     def inner(*a: Any, **kw: Any) -> None:
         kw.setdefault("transport", TestTransport())
         client = sentry_sdk.Client(*a, **kw)
