@@ -2326,9 +2326,14 @@ def test_child_process_clears_pending_futures_when_task_fails(
 
 
 def test_child_process_uses_configured_future_checking_frequency(
-    clear_pending_futures: None, restore_signal_handlers: None
+    sentry_init: Callable[..., None], clear_pending_futures: None, restore_signal_handlers: None
 ) -> None:
     """The idle future-checking loop polls on the configured interval."""
+    sentry_init(
+        traces_sample_rate=1.0,
+        enable_backpressure_handling=False,  # To avoid time.sleep which the test patches.
+    )
+
     # A task that runs long enough for the idle future-checking loop to poll a
     # few times before max_task_count triggers shutdown.
     slow_task = InflightTaskActivation(
