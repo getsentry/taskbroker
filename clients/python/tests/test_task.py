@@ -297,10 +297,14 @@ def test_create_activation_parameters(task_namespace: TaskNamespace) -> None:
     assert activation.parameters == ""
 
 
+@pytest.mark.parametrize("span_streaming", (False, True))
 def test_create_activation_tracing(
-    sentry_init: Callable[..., None], task_namespace: TaskNamespace
+    sentry_init: Callable[..., None], span_streaming: bool, task_namespace: TaskNamespace
 ) -> None:
-    sentry_init(traces_sample_rate=1.0)
+    sentry_init(
+        traces_sample_rate=1.0,
+        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
+    )
 
     @task_namespace.register(name="test.parameters")
     def with_parameters(one: str, two: int, org_id: int) -> None:
@@ -314,10 +318,14 @@ def test_create_activation_tracing(
     assert "baggage" in headers
 
 
+@pytest.mark.parametrize("span_streaming", (False, True))
 def test_create_activation_tracing_headers(
-    sentry_init: Callable[..., None], task_namespace: TaskNamespace
+    sentry_init: Callable[..., None], span_streaming: bool, task_namespace: TaskNamespace
 ) -> None:
-    sentry_init(traces_sample_rate=1.0)
+    sentry_init(
+        traces_sample_rate=1.0,
+        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
+    )
 
     @task_namespace.register(name="test.parameters")
     def with_parameters(one: str, two: int, org_id: int) -> None:
@@ -334,10 +342,14 @@ def test_create_activation_tracing_headers(
     assert headers["key"] == "value"
 
 
+@pytest.mark.parametrize("span_streaming", (False, True))
 def test_create_activation_tracing_disable(
-    sentry_init: Callable[..., None], task_namespace: TaskNamespace
+    sentry_init: Callable[..., None], span_streaming: bool, task_namespace: TaskNamespace
 ) -> None:
-    sentry_init(traces_sample_rate=1.0)
+    sentry_init(
+        traces_sample_rate=1.0,
+        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
+    )
 
     @task_namespace.register(name="test.parameters")
     def with_parameters(one: str, two: int, org_id: int) -> None:
