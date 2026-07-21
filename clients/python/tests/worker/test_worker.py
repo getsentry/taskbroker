@@ -2360,6 +2360,8 @@ def test_child_process_uses_configured_future_checking_frequency(
         idle_sleeps.append(seconds)
         real_sleep(seconds)
 
+    import examples.tasks  # noqa: F401  — ensure sleep ref is bound before patching
+
     # time.sleep is only used by the idle branch of check_task_future_completion
     # inside workerchild, so every recorded call comes from that loop. The task's
     # own sleep uses a separate `from time import sleep` import in examples.tasks.
