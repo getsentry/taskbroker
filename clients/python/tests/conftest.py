@@ -29,9 +29,12 @@ def freeze_time(t: str | datetime | None = None) -> time_machine.travel:
 
 @pytest.fixture
 def sentry_init() -> Generator[Callable[..., None], None, None]:
+    clients = []
+
     def inner(*a: Any, **kw: Any) -> None:
         kw.setdefault("transport", TestTransport())
         client = sentry_sdk.Client(*a, **kw)
+        clients.append(client)
         sentry_sdk.get_global_scope().set_client(client)
 
     old_client = sentry_sdk.get_global_scope().client
@@ -39,6 +42,8 @@ def sentry_init() -> Generator[Callable[..., None], None, None]:
         sentry_sdk.get_current_scope().set_client(None)
         yield inner
     finally:
+        for client in clients:
+            client.close()
         sentry_sdk.get_global_scope().set_client(old_client)
 
 
