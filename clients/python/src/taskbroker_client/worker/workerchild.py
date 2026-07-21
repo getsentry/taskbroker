@@ -662,9 +662,9 @@ def child_process(
                     attributes={
                         "sentry.op": "queue.task.taskworker",
                         "sentry.origin": "taskworker",
-                        "args": args,
-                        "kwargs": kwargs,
-                        "id": activation.id,
+                        "taskworker-task.args": args,
+                        "taskworker-task.kwargs": kwargs,
+                        "taskworker-task.id": activation.id,
                     },
                 )
             else:
