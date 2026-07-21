@@ -46,9 +46,6 @@ def sentry_init() -> Generator[Callable[..., None], None, None]:
 
 
 class TestTransport(Transport):
-    def __init__(self) -> None:
-        Transport.__init__(self)
-
     def capture_envelope(self, _: Envelope) -> None:
         """No-op capture_envelope for tests"""
         pass
