@@ -711,28 +711,25 @@ def child_process(
                 if "__start_time" in kwargs:
                     kwargs.pop("__start_time")
 
-                try:
-                    with contextlib.ExitStack() as stack:
-                        with metrics.timer(
-                            "taskworker.worker.context_rebuild.duration",
-                            tags={
-                                "namespace": activation.namespace,
-                                "taskname": activation.taskname,
-                            },
-                        ):
-                            for hook in context_hooks:
-                                stack.enter_context(hook.on_execute(headers))
-                        if task_func.pass_headers:
-                            if "headers" in kwargs:
-                                raise TypeError(
-                                    f"Task '{task_func.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
-                                    "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
-                                )
-                            task_func(*args, headers=headers, **kwargs)
-                        else:
-                            task_func(*args, **kwargs)
-                except Exception:
-                    raise
+                with contextlib.ExitStack() as stack:
+                    with metrics.timer(
+                        "taskworker.worker.context_rebuild.duration",
+                        tags={
+                            "namespace": activation.namespace,
+                            "taskname": activation.taskname,
+                        },
+                    ):
+                        for hook in context_hooks:
+                            stack.enter_context(hook.on_execute(headers))
+                    if task_func.pass_headers:
+                        if "headers" in kwargs:
+                            raise TypeError(
+                                f"Task '{task_func.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
+                                "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
+                            )
+                        task_func(*args, headers=headers, **kwargs)
+                    else:
+                        task_func(*args, **kwargs)
 
     def record_task_execution(
         activation: TaskActivation,

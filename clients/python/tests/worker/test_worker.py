@@ -1022,7 +1022,11 @@ class TestWorkerServicer(TestCase):
 
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
-def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
+def test_child_process_complete(
+    sentry_init: Callable[..., None], mock_capture_checkin: mock.MagicMock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1047,7 +1051,11 @@ def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     assert mock_capture_checkin.call_count == 0
 
 
-def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
+def test_child_process_canary_task(
+    sentry_init: Callable[..., None], capsys: pytest.CaptureFixture[str]
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1073,7 +1081,9 @@ def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
     assert capsys.readouterr().out == "Done running canary task!\n"
 
 
-def test_child_process_emits_running_message() -> None:
+def test_child_process_emits_running_message(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1106,8 +1116,11 @@ def test_child_process_emits_running_message() -> None:
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_emits_exiting_once_and_continues_until_release(
+    sentry_init: Callable[..., None],
     mock_capture_checkin: mock.MagicMock,
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     shutdown = Event()
     ctx = get_context("fork")
     child_id = uuid4()
@@ -1167,7 +1180,9 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
     assert mock_capture_checkin.call_count == 0
 
 
-def test_child_process_emits_busy_and_idle_messages() -> None:
+def test_child_process_emits_busy_and_idle_messages(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1199,7 +1214,9 @@ def test_child_process_emits_busy_and_idle_messages() -> None:
     assert processed.get(timeout=1).task_id == SIMPLE_TASK.activation.id
 
 
-def test_child_process_remove_start_time_kwargs() -> None:
+def test_child_process_remove_start_time_kwargs(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     activation = InflightTaskActivation(
         host="localhost:50051",
         receive_timestamp=0,
@@ -1236,7 +1253,9 @@ def test_child_process_remove_start_time_kwargs() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-def test_child_process_retry_task() -> None:
+def test_child_process_retry_task(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1263,8 +1282,10 @@ def test_child_process_retry_task() -> None:
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_retry_task_max_attempts(
-    mock_capture: mock.Mock, mock_logger: mock.Mock
+    sentry_init: Callable[..., None], mock_capture: mock.Mock, mock_logger: mock.Mock
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     # Create an activation that is on its final attempt and
     # will raise an error again.
     activation = InflightTaskActivation(
@@ -1324,7 +1345,9 @@ def test_child_process_retry_task_max_attempts(
     assert extra["retry_max_attempts"] == 3
 
 
-def test_child_process_failure_task() -> None:
+def test_child_process_failure_task(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1348,7 +1371,9 @@ def test_child_process_failure_task() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_FAILURE
 
 
-def test_child_process_shutdown() -> None:
+def test_child_process_shutdown(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1372,7 +1397,9 @@ def test_child_process_shutdown() -> None:
     assert processed.qsize() == 0
 
 
-def test_child_process_unknown_task() -> None:
+def test_child_process_unknown_task(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1400,7 +1427,9 @@ def test_child_process_unknown_task() -> None:
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-def test_child_process_at_most_once() -> None:
+def test_child_process_at_most_once(sentry_init: Callable[..., None]) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1431,7 +1460,11 @@ def test_child_process_at_most_once() -> None:
 
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
-def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
+def test_child_process_record_checkin(
+    sentry_init: Callable[..., None], mock_capture_checkin: mock.Mock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1463,8 +1496,10 @@ def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
     )
 
 
-def test_child_process_pass_headers() -> None:
+def test_child_process_pass_headers(sentry_init: Callable[..., None]) -> None:
     """Task with pass_headers=True receives headers from the activation."""
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1494,7 +1529,11 @@ def test_child_process_pass_headers() -> None:
 
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
+def test_child_process_terminate_task(
+    sentry_init: Callable[..., None], mock_logger: mock.Mock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1541,7 +1580,10 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
 
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
-def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> None:
+def test_child_process_decompression(
+    sentry_init: Callable[..., None], mock_capture_checkin: mock.MagicMock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -1567,8 +1609,10 @@ def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> No
     assert mock_capture_checkin.call_count == 0
 
 
-def test_child_process_context_hooks() -> None:
+def test_child_process_context_hooks(sentry_init: Callable[..., None]) -> None:
     """Context hooks' on_execute is called with activation headers during task execution."""
+    sentry_init(traces_sample_rate=1.0)
+
     executed_headers: list[dict[str, str]] = []
 
     class RecordingHook:
@@ -1625,7 +1669,11 @@ def test_child_process_context_hooks() -> None:
 
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_silenced_timeout(mock_logger: mock.Mock) -> None:
+def test_child_process_silenced_timeout(
+    sentry_init: Callable[..., None], mock_logger: mock.Mock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1656,7 +1704,11 @@ def test_child_process_silenced_timeout(mock_logger: mock.Mock) -> None:
 
 
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_silenced_exception_with_retries(mock_capture: mock.Mock) -> None:
+def test_child_process_silenced_exception_with_retries(
+    sentry_init: Callable[..., None], mock_capture: mock.Mock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1684,7 +1736,11 @@ def test_child_process_silenced_exception_with_retries(mock_capture: mock.Mock) 
 
 
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_expected_ignored_exception_max_attempts(mock_capture: mock.Mock) -> None:
+def test_child_process_expected_ignored_exception_max_attempts(
+    sentry_init: Callable[..., None], mock_capture: mock.Mock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1714,9 +1770,11 @@ def test_child_process_expected_ignored_exception_max_attempts(mock_capture: moc
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_silenced_exception_max_attempts(
-    mock_capture: mock.Mock, mock_logger: mock.Mock
+    sentry_init: Callable[..., None], mock_capture: mock.Mock, mock_logger: mock.Mock
 ) -> None:
     """Silenced exceptions do not raise on retry exhaustion."""
+    sentry_init(traces_sample_rate=1.0)
+
     activation = InflightTaskActivation(
         host="localhost:50051",
         receive_timestamp=0,
@@ -1768,7 +1826,11 @@ def test_child_process_silenced_exception_max_attempts(
 
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> None:
+def test_child_process_retry_on_deadline_exceeded(
+    sentry_init: Callable[..., None], mock_logger: mock.Mock
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1801,8 +1863,12 @@ def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> Non
 
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_general_exception_logs_task_failed(mock_logger: mock.Mock) -> None:
+def test_child_process_general_exception_logs_task_failed(
+    sentry_init: Callable[..., None], mock_logger: mock.Mock
+) -> None:
     """A non-retriable Exception emits taskworker.task.failed with all fields."""
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1838,10 +1904,13 @@ def test_child_process_general_exception_logs_task_failed(mock_logger: mock.Mock
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_silenced_exception_does_not_log_task_failed(
+    sentry_init: Callable[..., None],
     mock_logger: mock.Mock,
 ) -> None:
     """When err is in silenced_exceptions, taskworker.task.failed is NOT logged.
     Preserves the silencing semantics added in #608."""
+    sentry_init(traces_sample_rate=1.0)
+
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1936,10 +2005,13 @@ def _producing_task(task_id: str = "task-with-futures") -> InflightTaskActivatio
 
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_tracks_producer_futures(
+    sentry_init: Callable[..., None],
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -1974,10 +2046,13 @@ def test_child_process_tracks_producer_futures(
 
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_holds_result_until_futures_done(
+    sentry_init: Callable[..., None],
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2029,10 +2104,13 @@ def test_child_process_holds_result_until_futures_done(
 
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_skip_awaiting_futures_places_result_immediately(
+    sentry_init: Callable[..., None],
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2091,10 +2169,13 @@ def test_child_process_skip_awaiting_futures_places_result_immediately(
 
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_drains_pending_futures_on_sigterm(
+    sentry_init: Callable[..., None],
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2139,10 +2220,13 @@ def test_child_process_drains_pending_futures_on_sigterm(
 
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_retries_on_failed_future(
+    sentry_init: Callable[..., None],
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     retriable_task = InflightTaskActivation(
         host="localhost:50051",
         receive_timestamp=0,
@@ -2189,10 +2273,13 @@ def test_child_process_retries_on_failed_future(
 
 @pytest.mark.parametrize("pending_registry", _PENDING_REGISTRIES)
 def test_child_process_clears_pending_futures_when_task_fails(
+    sentry_init: Callable[..., None],
     pending_registry: Any,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
     pending_registry["test.producer"].append(leftover_future)
@@ -2226,9 +2313,11 @@ def test_child_process_clears_pending_futures_when_task_fails(
 
 
 def test_child_process_uses_configured_future_checking_frequency(
-    clear_pending_futures: None, restore_signal_handlers: None
+    sentry_init: Callable[..., None], clear_pending_futures: None, restore_signal_handlers: None
 ) -> None:
     """The idle future-checking loop polls on the configured interval."""
+    sentry_init(traces_sample_rate=1.0)
+
     # A task that runs long enough for the idle future-checking loop to poll a
     # few times before max_task_count triggers shutdown.
     slow_task = InflightTaskActivation(

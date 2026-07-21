@@ -2,7 +2,7 @@ import contextlib
 import datetime
 from collections.abc import MutableMapping
 from concurrent.futures import Future
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import patch
 
 import msgpack
@@ -297,7 +297,11 @@ def test_create_activation_parameters(task_namespace: TaskNamespace) -> None:
     assert activation.parameters == ""
 
 
-def test_create_activation_tracing(task_namespace: TaskNamespace) -> None:
+def test_create_activation_tracing(
+    sentry_init: Callable[..., None], task_namespace: TaskNamespace
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     @task_namespace.register(name="test.parameters")
     def with_parameters(one: str, two: int, org_id: int) -> None:
         raise NotImplementedError
@@ -310,7 +314,11 @@ def test_create_activation_tracing(task_namespace: TaskNamespace) -> None:
     assert "baggage" in headers
 
 
-def test_create_activation_tracing_headers(task_namespace: TaskNamespace) -> None:
+def test_create_activation_tracing_headers(
+    sentry_init: Callable[..., None], task_namespace: TaskNamespace
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     @task_namespace.register(name="test.parameters")
     def with_parameters(one: str, two: int, org_id: int) -> None:
         raise NotImplementedError
@@ -326,7 +334,11 @@ def test_create_activation_tracing_headers(task_namespace: TaskNamespace) -> Non
     assert headers["key"] == "value"
 
 
-def test_create_activation_tracing_disable(task_namespace: TaskNamespace) -> None:
+def test_create_activation_tracing_disable(
+    sentry_init: Callable[..., None], task_namespace: TaskNamespace
+) -> None:
+    sentry_init(traces_sample_rate=1.0)
+
     @task_namespace.register(name="test.parameters")
     def with_parameters(one: str, two: int, org_id: int) -> None:
         raise NotImplementedError
