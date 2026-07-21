@@ -14,7 +14,7 @@ from multiprocessing.synchronize import Event
 from types import FrameType
 from typing import Any, Literal
 from uuid import UUID
-from contextlib import contextmanager
+from contextlib import contextmanager, AbstractContextManager
 
 # XXX: Don't import any modules that will import django here, do those within child_process
 import msgpack
@@ -605,7 +605,7 @@ def child_process(
             await_task_futures(task)
 
     @contextmanager
-    def _task_processing_span(activation: TaskActivation, latency: float) -> Span:
+    def _task_processing_span(activation: TaskActivation, latency: float) -> Generator[Span, None, None]:
         """Provide a span in the transaction-based tracing API with relevant attributes set."""
         with sentry_sdk.start_span(
             op=OP.QUEUE_PROCESS,
@@ -672,7 +672,7 @@ def child_process(
             sentry_sdk.isolation_scope(),
             parent_span,
         ):
-            if not is_span_streaming:
+            if isinstance(parent_span, Span):
                 parent_span.set_data(
                     "taskworker-task", {"args": args, "kwargs": kwargs, "id": activation.id}
                 )
@@ -681,7 +681,7 @@ def child_process(
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
 
-            child_span = (
+            child_span: AbstractContextManager[Any] = (
                 sentry_sdk.traces.start_span(
                     activation.taskname,
                     attributes={
