@@ -8,13 +8,13 @@ import signal
 import threading
 import time
 from collections.abc import Callable, Generator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from multiprocessing.synchronize import Event
 from types import FrameType
 from typing import Any, Literal
 from uuid import UUID
-from contextlib import contextmanager, AbstractContextManager
 
 # XXX: Don't import any modules that will import django here, do those within child_process
 import msgpack
@@ -31,11 +31,12 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivation,
     TaskActivationStatus,
 )
-from sentry_sdk.consts import OP, SPANDATA, SPANSTATUS
+from sentry_sdk.consts import OP, SPANDATA
 from sentry_sdk.crons import MonitorStatus, capture_checkin
-from sentry_sdk.tracing_utils import has_span_streaming_enabled
 from sentry_sdk.scope import Scope
-from sentry_sdk.tracing import Span
+from sentry_sdk.traces import StreamedSpan
+from sentry_sdk.tracing import NoOpSpan, Span, Transaction
+from sentry_sdk.tracing_utils import has_span_streaming_enabled
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import CompressionType
@@ -605,7 +606,9 @@ def child_process(
             await_task_futures(task)
 
     @contextmanager
-    def _task_processing_span(activation: TaskActivation, latency: float) -> Generator[Span, None, None]:
+    def _task_processing_span(
+        activation: TaskActivation, latency: float
+    ) -> Generator[Span, None, None]:
         """Provide a span in the transaction-based tracing API with relevant attributes set."""
         with sentry_sdk.start_span(
             op=OP.QUEUE_PROCESS,
@@ -641,6 +644,8 @@ def child_process(
                 "task": activation.taskname,
             }
         }
+
+        parent_span: Transaction | NoOpSpan | StreamedSpan
         if is_span_streaming:
             sentry_sdk.traces.continue_trace(headers)
             Scope.set_custom_sampling_context(sampling_context)
