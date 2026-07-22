@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import datetime
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from concurrent import futures
+from contextlib import AbstractContextManager, contextmanager
 from typing import Any, cast
 
 import sentry_sdk
@@ -11,6 +12,8 @@ from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
+from sentry_sdk.tracing import Span
+from sentry_sdk.tracing_utils import has_span_streaming_enabled
 
 from taskbroker_client.constants import (
     DEFAULT_PROCESSING_DEADLINE,
@@ -167,11 +170,9 @@ class TaskNamespace:
         else:
             self.metrics.incr("taskworker.registry.send_task.success", tags=tags)
 
-    def send_task(
-        self, activation: TaskActivation, wait_for_delivery: bool = False
-    ) -> ProducerFuture:
-        topic = self.topic
-
+    @contextmanager
+    def _task_publishing_span(self, activation: TaskActivation) -> Generator[Span, None, None]:
+        """Provide a span in the transaction-based tracing API with relevant attributes set."""
         with sentry_sdk.start_span(
             op=OP.QUEUE_PUBLISH,
             name=activation.taskname,
@@ -180,7 +181,31 @@ class TaskNamespace:
             span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
             span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
             span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
+            yield span
 
+    def send_task(
+        self, activation: TaskActivation, wait_for_delivery: bool = False
+    ) -> ProducerFuture:
+        topic = self.topic
+
+        is_span_streaming = has_span_streaming_enabled(sentry_sdk.get_client().options)
+
+        span: AbstractContextManager[Any] = (
+            sentry_sdk.traces.start_span(
+                name=activation.taskname,
+                attributes={
+                    "sentry.op": OP.QUEUE_PUBLISH,
+                    "sentry.origin": "taskworker",
+                    SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
+                    SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
+                    SPANDATA.MESSAGING_SYSTEM: "taskworker",
+                },
+            )
+            if is_span_streaming
+            else self._task_publishing_span(activation=activation)
+        )
+
+        with span:
             produce_future = self._producer(topic).produce(
                 Topic(name=topic),
                 KafkaPayload(key=None, value=activation.SerializeToString(), headers=[]),
