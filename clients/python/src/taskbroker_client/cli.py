@@ -70,7 +70,12 @@ def scheduler() -> None:
         time.sleep(sleep_time)
 
 
-@click.command()
+@click.group()
+def worker() -> None:
+    """Run a taskbroker worker."""
+
+
+@worker.command()
 @click.option(
     "--app-module",
     help="The dotted path to the TaskRegistry app, e.g. 'examples.app:app'.",
@@ -162,7 +167,7 @@ def scheduler() -> None:
     help="Set ARROYO_TRACK_PRODUCER_FUTURES to enable arroyo producer future tracking.",
     default=False,
 )
-def worker(
+def pull(
     app_module: str,
     broker_hosts: tuple[str, ...],
     max_child_task_count: int | None,
@@ -184,7 +189,7 @@ def worker(
 
     os.environ["ARROYO_TRACK_PRODUCER_FUTURES"] = str(track_producer_futures)
 
-    click.echo("Starting worker")
+    click.echo("Starting worker in pull mode")
     worker = TaskWorker(
         app_module=app_module,
         broker_hosts=list(broker_hosts),
@@ -206,7 +211,7 @@ def worker(
     raise SystemExit(exitcode)
 
 
-@click.command()
+@worker.command()
 @click.option(
     "--app-module",
     help="The dotted path to the TaskRegistry app, e.g. 'examples.app:app'.",
@@ -331,7 +336,7 @@ def worker(
     help="Set ARROYO_TRACK_PRODUCER_FUTURES to enable arroyo producer future tracking.",
     default=False,
 )
-def push_worker(
+def push(
     app_module: str,
     broker_service: str,
     max_child_task_count: int | None,
@@ -359,7 +364,7 @@ def push_worker(
 
     os.environ["ARROYO_TRACK_PRODUCER_FUTURES"] = str(track_producer_futures)
 
-    click.echo("Starting push worker")
+    click.echo("Starting worker in push mode")
     worker = PushTaskWorker(
         app_module=app_module,
         broker_service=broker_service,
