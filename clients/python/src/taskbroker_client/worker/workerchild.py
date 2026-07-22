@@ -8,7 +8,6 @@ import signal
 import threading
 import time
 from collections.abc import Callable, Generator, Sequence
-from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from functools import partial
 from multiprocessing.synchronize import Event
@@ -33,14 +32,13 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_sdk.consts import OP, SPANDATA
 from sentry_sdk.crons import MonitorStatus, capture_checkin
-from sentry_sdk.scope import Scope
 from sentry_sdk.traces import StreamedSpan
-from sentry_sdk.tracing import NoOpSpan, Span, Transaction
-from sentry_sdk.tracing_utils import has_span_streaming_enabled
+from sentry_sdk.tracing import Span
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
+from taskbroker_client.sdk import start_span, start_transaction
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
 from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
@@ -605,26 +603,6 @@ def child_process(
         for task in pending_task_futures.copy():
             await_task_futures(task)
 
-    @contextmanager
-    def _task_processing_span(
-        activation: TaskActivation, latency: float
-    ) -> Generator[Span, None, None]:
-        """Provide a span in the transaction-based tracing API with relevant attributes set."""
-        with sentry_sdk.start_span(
-            op=OP.QUEUE_PROCESS,
-            name=activation.taskname,
-            origin="taskworker",
-        ) as span:
-            span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
-            span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
-            span.set_data(SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY, latency)
-            span.set_data(
-                SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT,
-                activation.retry_state.attempts,
-            )
-            span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-            yield span
-
     def _execute_activation(
         task_func: Task[Any, Any],
         activation: TaskActivation,
@@ -636,103 +614,86 @@ def child_process(
         args = parameters.get("args", [])
         kwargs = parameters.get("kwargs", {})
 
+        headers = dict(activation.headers)
+
         with (
             metrics.track_memory_usage(
                 "taskworker.worker.memory_change",
                 tags={"namespace": activation.namespace, "taskname": activation.taskname},
             ),
             sentry_sdk.isolation_scope(),
+            start_transaction(
+                name=activation.taskname,
+                origin="taskworker",
+                headers=headers,
+                sampling_context={
+                    "taskworker": {
+                        "task": activation.taskname,
+                    }
+                },
+            ) as parent_span,
         ):
-            is_span_streaming = has_span_streaming_enabled(sentry_sdk.get_client().options)
-
-            headers = dict(activation.headers)
-            sampling_context = {
-                "taskworker": {
-                    "task": activation.taskname,
-                }
-            }
-
-            parent_span: Transaction | NoOpSpan | StreamedSpan
-            if is_span_streaming:
-                sentry_sdk.traces.continue_trace(headers)
-                Scope.set_custom_sampling_context(sampling_context)
-
-                parent_span = sentry_sdk.traces.start_span(
-                    name=activation.taskname,
-                    attributes={
-                        "sentry.op": "queue.task.taskworker",
-                        "sentry.origin": "taskworker",
-                        "taskworker-task.args": args,
-                        "taskworker-task.kwargs": kwargs,
-                        "taskworker-task.id": activation.id,
-                    },
-                )
-            else:
-                transaction = sentry_sdk.continue_trace(
-                    environ_or_headers=headers,
-                    op="queue.task.taskworker",
-                    name=activation.taskname,
-                    origin="taskworker",
+            if isinstance(parent_span, StreamedSpan):
+                parent_span.set_attribute("taskworker-task.args", args)
+                parent_span.set_attribute("taskworker-task.kwargs", kwargs)
+                parent_span.set_attribute("taskworker-task.id", activation.id)
+            elif isinstance(parent_span, Span):
+                parent_span.set_data(
+                    "taskworker-task", {"args": args, "kwargs": kwargs, "id": activation.id}
                 )
 
-                parent_span = sentry_sdk.start_transaction(
-                    transaction, custom_sampling_context=sampling_context
-                )
+            task_added_time = activation.received_at.ToDatetime().timestamp()
+            # latency attribute needs to be in milliseconds
+            latency = (time.time() - task_added_time) * 1000
 
-            with parent_span:
-                if isinstance(parent_span, Span):
-                    parent_span.set_data(
-                        "taskworker-task", {"args": args, "kwargs": kwargs, "id": activation.id}
+            with start_span(
+                name=activation.taskname, op=OP.QUEUE_PROCESS, origin="taskworker"
+            ) as child_span:
+                if isinstance(child_span, StreamedSpan):
+                    child_span.set_attribute(
+                        SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace
                     )
+                    child_span.set_attribute(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
+                    child_span.set_attribute(SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY, latency)
+                    child_span.set_attribute(
+                        SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT, activation.retry_state.attempts
+                    )
+                    child_span.set_attribute(SPANDATA.MESSAGING_SYSTEM, "taskworker")
+                elif isinstance(parent_span, Span):
+                    child_span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
+                    child_span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
+                    child_span.set_data(SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY, latency)
+                    child_span.set_data(
+                        SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT, activation.retry_state.attempts
+                    )
+                    child_span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
 
-                task_added_time = activation.received_at.ToDatetime().timestamp()
-                # latency attribute needs to be in milliseconds
-                latency = (time.time() - task_added_time) * 1000
+                # TODO(taskworker) remove this when doing cleanup
+                # The `__start_time` parameter is spliced into task parameters by
+                # sentry.celery.SentryTask._add_metadata and needs to be removed
+                # from kwargs like sentry.tasks.base.instrumented_task does.
+                if "__start_time" in kwargs:
+                    kwargs.pop("__start_time")
 
-                child_span: AbstractContextManager[Any] = (
-                    sentry_sdk.traces.start_span(
-                        name=activation.taskname,
-                        attributes={
-                            "sentry.op": OP.QUEUE_PROCESS,
-                            "sentry.origin": "taskworker",
-                            SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
-                            SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
-                            SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY: latency,
-                            SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT: activation.retry_state.attempts,
-                            SPANDATA.MESSAGING_SYSTEM: "taskworker",
+                with contextlib.ExitStack() as stack:
+                    with metrics.timer(
+                        "taskworker.worker.context_rebuild.duration",
+                        tags={
+                            "namespace": activation.namespace,
+                            "taskname": activation.taskname,
                         },
-                    )
-                    if is_span_streaming
-                    else _task_processing_span(activation=activation, latency=latency)
-                )
-
-                with child_span:
-                    # TODO(taskworker) remove this when doing cleanup
-                    # The `__start_time` parameter is spliced into task parameters by
-                    # sentry.celery.SentryTask._add_metadata and needs to be removed
-                    # from kwargs like sentry.tasks.base.instrumented_task does.
-                    if "__start_time" in kwargs:
-                        kwargs.pop("__start_time")
-
-                    with contextlib.ExitStack() as stack:
-                        with metrics.timer(
-                            "taskworker.worker.context_rebuild.duration",
-                            tags={
-                                "namespace": activation.namespace,
-                                "taskname": activation.taskname,
-                            },
-                        ):
-                            for hook in context_hooks:
-                                stack.enter_context(hook.on_execute(headers))
-                        if task_func.pass_headers:
-                            if "headers" in kwargs:
-                                raise TypeError(
-                                    f"Task '{task_func.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
-                                    "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
-                                )
-                            task_func(*args, headers=headers, **kwargs)
-                        else:
-                            task_func(*args, **kwargs)
+                    ):
+                        for hook in context_hooks:
+                            stack.enter_context(hook.on_execute(headers))
+                    if task_func.pass_headers:
+                        if "headers" in kwargs:
+                            raise TypeError(
+                                f"Task '{task_func.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
+                                "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
+                            )
+                        task_func(*args, headers=headers, **kwargs)
+                    else:
+                        task_func(*args, **kwargs)
 
     def record_task_execution(
         activation: TaskActivation,
