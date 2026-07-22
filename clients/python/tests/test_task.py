@@ -310,7 +310,7 @@ def test_create_activation_tracing(
     def with_parameters(one: str, two: int, org_id: int) -> None:
         raise NotImplementedError
 
-    with sentry_sdk.start_transaction(op="test.task"):
+    with sentry_sdk.traces.start_span(name="test.task"):
         activation = with_parameters.create_activation(["one", 22], {"org_id": 99})
 
     headers = activation.headers
@@ -331,7 +331,7 @@ def test_create_activation_tracing_headers(
     def with_parameters(one: str, two: int, org_id: int) -> None:
         raise NotImplementedError
 
-    with sentry_sdk.start_transaction(op="test.task"):
+    with sentry_sdk.traces.start_span(name="test.task"):
         activation = with_parameters.create_activation(
             ["one", 22], {"org_id": 99}, {"key": "value"}
         )
@@ -355,7 +355,7 @@ def test_create_activation_tracing_disable(
     def with_parameters(one: str, two: int, org_id: int) -> None:
         raise NotImplementedError
 
-    with sentry_sdk.start_transaction(op="test.task"):
+    with sentry_sdk.traces.start_span(name="test.task"):
         activation = with_parameters.create_activation(
             ["one", 22], {"org_id": 99}, {"sentry-propagate-traces": False}
         )
