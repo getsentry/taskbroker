@@ -34,9 +34,7 @@ def start_transaction(
             origin=origin,
         )
 
-        span = sentry_sdk.start_transaction(
-            transaction, op, custom_sampling_context=sampling_context
-        )
+        span = sentry_sdk.start_transaction(transaction, custom_sampling_context=sampling_context)
     except Exception:
         pass
 
