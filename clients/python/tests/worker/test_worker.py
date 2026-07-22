@@ -1021,18 +1021,8 @@ class TestWorkerServicer(TestCase):
             )
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
-def test_child_process_complete(
-    mock_capture_checkin: mock.MagicMock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_complete(mock_capture_checkin: mock.MagicMock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1057,15 +1047,7 @@ def test_child_process_complete(
     assert mock_capture_checkin.call_count == 0
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_canary_task(
-    sentry_init: Callable[..., None], span_streaming: bool, capsys: pytest.CaptureFixture[str]
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1091,15 +1073,7 @@ def test_child_process_canary_task(
     assert capsys.readouterr().out == "Done running canary task!\n"
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_emits_running_message(
-    sentry_init: Callable[..., None], span_streaming: bool
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_emits_running_message() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1130,18 +1104,10 @@ def test_child_process_emits_running_message(
     assert message == ChildMessage(child_id, "running")
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_emits_exiting_once_and_continues_until_release(
     mock_capture_checkin: mock.MagicMock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     shutdown = Event()
     ctx = get_context("fork")
     child_id = uuid4()
@@ -1201,15 +1167,7 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
     assert mock_capture_checkin.call_count == 0
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_emits_busy_and_idle_messages(
-    sentry_init: Callable[..., None], span_streaming: bool
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_emits_busy_and_idle_messages() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1241,15 +1199,7 @@ def test_child_process_emits_busy_and_idle_messages(
     assert processed.get(timeout=1).task_id == SIMPLE_TASK.activation.id
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_remove_start_time_kwargs(
-    sentry_init: Callable[..., None], span_streaming: bool
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_remove_start_time_kwargs() -> None:
     activation = InflightTaskActivation(
         host="localhost:50051",
         receive_timestamp=0,
@@ -1286,13 +1236,7 @@ def test_child_process_remove_start_time_kwargs(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_retry_task(sentry_init: Callable[..., None], span_streaming: bool) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_retry_task() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1316,20 +1260,11 @@ def test_child_process_retry_task(sentry_init: Callable[..., None], span_streami
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_retry_task_max_attempts(
-    mock_capture: mock.Mock,
-    mock_logger: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
+    mock_capture: mock.Mock, mock_logger: mock.Mock
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     # Create an activation that is on its final attempt and
     # will raise an error again.
     activation = InflightTaskActivation(
@@ -1389,13 +1324,7 @@ def test_child_process_retry_task_max_attempts(
     assert extra["retry_max_attempts"] == 3
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_failure_task(sentry_init: Callable[..., None], span_streaming: bool) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_failure_task() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1419,13 +1348,7 @@ def test_child_process_failure_task(sentry_init: Callable[..., None], span_strea
     assert result.status == TASK_ACTIVATION_STATUS_FAILURE
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_shutdown(sentry_init: Callable[..., None], span_streaming: bool) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_shutdown() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1449,13 +1372,7 @@ def test_child_process_shutdown(sentry_init: Callable[..., None], span_streaming
     assert processed.qsize() == 0
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_unknown_task(sentry_init: Callable[..., None], span_streaming: bool) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_unknown_task() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1483,13 +1400,7 @@ def test_child_process_unknown_task(sentry_init: Callable[..., None], span_strea
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_at_most_once(sentry_init: Callable[..., None], span_streaming: bool) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_at_most_once() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1519,18 +1430,8 @@ def test_child_process_at_most_once(sentry_init: Callable[..., None], span_strea
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
-def test_child_process_record_checkin(
-    mock_capture_checkin: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_record_checkin(mock_capture_checkin: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1562,14 +1463,8 @@ def test_child_process_record_checkin(
     )
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_pass_headers(sentry_init: Callable[..., None], span_streaming: bool) -> None:
+def test_child_process_pass_headers() -> None:
     """Task with pass_headers=True receives headers from the activation."""
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1598,18 +1493,8 @@ def test_child_process_pass_headers(sentry_init: Callable[..., None], span_strea
     redis.delete("task-headers-value", "task-headers-count", "task-headers-custom")
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_terminate_task(
-    mock_logger: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1655,17 +1540,8 @@ def test_child_process_terminate_task(
     assert "execution deadline" in extra["exception_message"]
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
-def test_child_process_decompression(
-    mock_capture_checkin: mock.MagicMock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
+def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> None:
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -1691,16 +1567,8 @@ def test_child_process_decompression(
     assert mock_capture_checkin.call_count == 0
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
-def test_child_process_context_hooks(
-    sentry_init: Callable[..., None], span_streaming: bool
-) -> None:
+def test_child_process_context_hooks() -> None:
     """Context hooks' on_execute is called with activation headers during task execution."""
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     executed_headers: list[dict[str, str]] = []
 
     class RecordingHook:
@@ -1756,18 +1624,8 @@ def test_child_process_context_hooks(
         app.context_hooks.remove(hook)
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_silenced_timeout(
-    mock_logger: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_silenced_timeout(mock_logger: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1797,18 +1655,8 @@ def test_child_process_silenced_timeout(
     assert failed_calls == []
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_silenced_exception_with_retries(
-    mock_capture: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_silenced_exception_with_retries(mock_capture: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1835,18 +1683,8 @@ def test_child_process_silenced_exception_with_retries(
     assert mock_capture.call_count == 0
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
-def test_child_process_expected_ignored_exception_max_attempts(
-    mock_capture: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_expected_ignored_exception_max_attempts(mock_capture: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1873,21 +1711,12 @@ def test_child_process_expected_ignored_exception_max_attempts(
     assert mock_capture.call_count == 0
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 @mock.patch("taskbroker_client.worker.workerchild.sentry_sdk.capture_exception")
 def test_child_process_silenced_exception_max_attempts(
-    mock_capture: mock.Mock,
-    mock_logger: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
+    mock_capture: mock.Mock, mock_logger: mock.Mock
 ) -> None:
     """Silenced exceptions do not raise on retry exhaustion."""
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     activation = InflightTaskActivation(
         host="localhost:50051",
         receive_timestamp=0,
@@ -1938,18 +1767,8 @@ def test_child_process_silenced_exception_max_attempts(
     assert kwargs["extra"]["exception_type"] == "RuntimeError"
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_retry_on_deadline_exceeded(
-    mock_logger: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
+def test_child_process_retry_on_deadline_exceeded(mock_logger: mock.Mock) -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -1981,19 +1800,9 @@ def test_child_process_retry_on_deadline_exceeded(
     assert kwargs["extra"]["exception_type"] == "ProcessingDeadlineExceeded"
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.logger")
-def test_child_process_general_exception_logs_task_failed(
-    mock_logger: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-) -> None:
+def test_child_process_general_exception_logs_task_failed(mock_logger: mock.Mock) -> None:
     """A non-retriable Exception emits taskworker.task.failed with all fields."""
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -2027,20 +1836,12 @@ def test_child_process_general_exception_logs_task_failed(
     assert "exception_message" in extra
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @mock.patch("taskbroker_client.worker.workerchild.logger")
 def test_child_process_silenced_exception_does_not_log_task_failed(
     mock_logger: mock.Mock,
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
 ) -> None:
     """When err is in silenced_exceptions, taskworker.task.failed is NOT logged.
     Preserves the silencing semantics added in #608."""
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
@@ -2133,20 +1934,12 @@ def _producing_task(task_id: str = "task-with-futures") -> InflightTaskActivatio
     )
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_tracks_producer_futures(
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2179,20 +1972,12 @@ def test_child_process_tracks_producer_futures(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_holds_result_until_futures_done(
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2242,20 +2027,12 @@ def test_child_process_holds_result_until_futures_done(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_skip_awaiting_futures_places_result_immediately(
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2312,20 +2089,12 @@ def test_child_process_skip_awaiting_futures_places_result_immediately(
     assert processed.empty()
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_drains_pending_futures_on_sigterm(
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     task = _producing_task()
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2368,20 +2137,12 @@ def test_child_process_drains_pending_futures_on_sigterm(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_retries_on_failed_future(
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
     producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     retriable_task = InflightTaskActivation(
         host="localhost:50051",
         receive_timestamp=0,
@@ -2426,20 +2187,12 @@ def test_child_process_retries_on_failed_future(
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 @pytest.mark.parametrize("pending_registry", _PENDING_REGISTRIES)
 def test_child_process_clears_pending_futures_when_task_fails(
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
     pending_registry: Any,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
-    sentry_init(
-        traces_sample_rate=1.0,
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
     pending_registry["test.producer"].append(leftover_future)
@@ -2472,20 +2225,10 @@ def test_child_process_clears_pending_futures_when_task_fails(
     assert len(pending_registry) == 0
 
 
-@pytest.mark.parametrize("span_streaming", (False, True))
 def test_child_process_uses_configured_future_checking_frequency(
-    sentry_init: Callable[..., None],
-    span_streaming: bool,
-    clear_pending_futures: None,
-    restore_signal_handlers: None,
+    clear_pending_futures: None, restore_signal_handlers: None
 ) -> None:
     """The idle future-checking loop polls on the configured interval."""
-    sentry_init(
-        traces_sample_rate=1.0,
-        enable_backpressure_handling=False,  # To avoid time.sleep which the test patches.
-        _experiments={"trace_lifecycle": "stream" if span_streaming else "static"},
-    )
-
     # A task that runs long enough for the idle future-checking loop to poll a
     # few times before max_task_count triggers shutdown.
     slow_task = InflightTaskActivation(
@@ -2511,8 +2254,6 @@ def test_child_process_uses_configured_future_checking_frequency(
     def recording_sleep(seconds: float) -> None:
         idle_sleeps.append(seconds)
         real_sleep(seconds)
-
-    import examples.tasks  # noqa: F401; Ensure time.sleep reference is set before patching.
 
     # time.sleep is only used by the idle branch of check_task_future_completion
     # inside workerchild, so every recorded call comes from that loop. The task's

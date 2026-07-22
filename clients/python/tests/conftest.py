@@ -1,13 +1,7 @@
-from collections.abc import Callable, Generator
 from datetime import UTC, datetime
-from typing import Any
 
-import pytest
-import sentry_sdk
 import time_machine
 from arroyo.backends.kafka import KafkaProducer
-from sentry_sdk.envelope import Envelope
-from sentry_sdk.transport import Transport
 
 from taskbroker_client.types import AtMostOnceStore
 
@@ -25,30 +19,6 @@ def freeze_time(t: str | datetime | None = None) -> time_machine.travel:
     if t is None:
         t = datetime.now(UTC)
     return time_machine.travel(t, tick=False)
-
-
-@pytest.fixture
-def sentry_init() -> Generator[Callable[..., None], None, None]:
-    def inner(*a: Any, **kw: Any) -> None:
-        kw.setdefault("transport", TestTransport())
-        client = sentry_sdk.Client(*a, **kw)
-        sentry_sdk.get_global_scope().set_client(client)
-
-    old_client = sentry_sdk.get_global_scope().client
-    try:
-        sentry_sdk.get_current_scope().set_client(None)
-        yield inner
-    finally:
-        current = sentry_sdk.get_global_scope().client
-        if current is not None:
-            current.close()
-        sentry_sdk.get_global_scope().set_client(old_client)
-
-
-class TestTransport(Transport):
-    def capture_envelope(self, _: Envelope) -> None:
-        """No-op capture_envelope for tests"""
-        pass
 
 
 class StubAtMostOnce(AtMostOnceStore):
