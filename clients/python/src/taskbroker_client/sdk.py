@@ -9,7 +9,7 @@ from sentry_sdk.tracing_utils import has_span_streaming_enabled
 
 
 def start_transaction(
-    name: str, origin: str, headers: dict[str, Any], sampling_context: dict[str, Any]
+    name: str, op: str, origin: str, headers: dict[str, Any], sampling_context: dict[str, Any]
 ) -> Transaction | NoOpSpan | StreamedSpan | ContextManager[Any]:
     """Start a transaction, or a span if span streaming is enabled."""
     span = None
@@ -22,18 +22,21 @@ def start_transaction(
             return sentry_sdk.traces.start_span(
                 name=name,
                 attributes={
+                    "sentry.op": op,
                     "sentry.origin": origin,
                 },
             )
 
         transaction = sentry_sdk.continue_trace(
             environ_or_headers=headers,
-            op="queue.task.taskworker",
+            op=op,
             name=name,
             origin=origin,
         )
 
-        span = sentry_sdk.start_transaction(transaction, custom_sampling_context=sampling_context)
+        span = sentry_sdk.start_transaction(
+            transaction, op, custom_sampling_context=sampling_context
+        )
     except Exception:
         pass
 

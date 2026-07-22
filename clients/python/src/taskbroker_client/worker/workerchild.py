@@ -624,6 +624,7 @@ def child_process(
             sentry_sdk.isolation_scope(),
             start_transaction(
                 name=activation.taskname,
+                op="queue.task.taskworker",
                 origin="taskworker",
                 headers=headers,
                 sampling_context={
@@ -659,7 +660,7 @@ def child_process(
                         SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT, activation.retry_state.attempts
                     )
                     child_span.set_attribute(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-                elif isinstance(parent_span, Span):
+                elif isinstance(child_span, Span):
                     child_span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
                     child_span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
                     child_span.set_data(SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY, latency)

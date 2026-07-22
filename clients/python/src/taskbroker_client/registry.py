@@ -11,6 +11,7 @@ from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
 from sentry_sdk.traces import StreamedSpan
+from sentry_sdk.tracing import Span
 
 from taskbroker_client.constants import (
     DEFAULT_PROCESSING_DEADLINE,
@@ -182,7 +183,7 @@ class TaskNamespace:
                 span.set_attribute(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
                 span.set_attribute(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
                 span.set_attribute(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-            else:
+            elif isinstance(span, Span):
                 span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
                 span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
                 span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
