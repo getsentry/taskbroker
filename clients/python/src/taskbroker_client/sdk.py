@@ -45,7 +45,6 @@ def start_transaction(
 
 def start_span(name: str, op: str, origin: str) -> Span | StreamedSpan | ContextManager[Any]:
     """Start a span in the currently active trace lifecycle."""
-    span = None
     try:
         is_span_streaming = has_span_streaming_enabled(sentry_sdk.get_client().options)
         if is_span_streaming:
@@ -57,7 +56,7 @@ def start_span(name: str, op: str, origin: str) -> Span | StreamedSpan | Context
                 },
             )
 
-        span = sentry_sdk.start_span(
+        return sentry_sdk.start_span(
             op=op,
             name=name,
             origin=origin,
@@ -65,6 +64,4 @@ def start_span(name: str, op: str, origin: str) -> Span | StreamedSpan | Context
     except Exception:
         pass
 
-    if span is None:
-        return nullcontext()
-    return span
+    return nullcontext()
