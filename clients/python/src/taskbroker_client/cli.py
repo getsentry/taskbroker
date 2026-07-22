@@ -5,7 +5,6 @@ import time
 import click
 
 from taskbroker_client.constants import (
-    DEFAULT_GRPC_MAX_MESSAGE_SIZE,
     DEFAULT_REBALANCE_AFTER,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
@@ -295,7 +294,7 @@ def worker(
 @click.option(
     "--grpc-max-message-size",
     help="Maximum gRPC send/receive message size, in bytes.",
-    default=DEFAULT_GRPC_MAX_MESSAGE_SIZE,
+    default=-1,
     type=int,
 )
 @click.option(

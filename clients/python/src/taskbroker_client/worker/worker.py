@@ -179,7 +179,7 @@ class PushTaskWorker:
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
         grpc_port: int = 50052,
-        grpc_max_message_size: int | None = None,
+        grpc_max_message_size: int = -1,
         push_task_timeout: float = 5,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
@@ -440,7 +440,7 @@ class PushTaskWorker:
 
             max_message_size = (
                 self._grpc_max_message_size
-                if self._grpc_max_message_size is not None
+                if self._grpc_max_message_size > 0
                 else int(
                     os.environ.get(
                         "TASKBROKER_GRPC_MAX_MESSAGE_SIZE", DEFAULT_GRPC_MAX_MESSAGE_SIZE
