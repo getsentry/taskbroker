@@ -1,4 +1,13 @@
 # Changelog
+## 0.20.13
+
+### Internal Changes 🔧
+
+#### O11y
+
+- Support SDK configured with the streaming trace lifecycle by @alexander-alderman-webb in [#757](https://github.com/getsentry/taskbroker/pull/757)
+- Remove redundant span status assignment by @alexander-alderman-webb in [#759](https://github.com/getsentry/taskbroker/pull/759)
+
 ## 0.20.12
 
 ### New Features ✨
