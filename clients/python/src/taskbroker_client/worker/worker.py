@@ -671,6 +671,8 @@ class TaskWorker:
         )
 
         self._grpc_sync_event.wait(self._setstatus_backoff_seconds)
+        if self._grpc_sync_event.is_set():
+            fetch_next = None
 
         try:
             next_task = self.client.update_task(result, fetch_next)

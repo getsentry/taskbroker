@@ -30,6 +30,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_COMPLETE,
     TASK_ACTIVATION_STATUS_FAILURE,
     TASK_ACTIVATION_STATUS_RETRY,
+    FetchNextTask,
     PushTaskRequest,
     PushTaskResponse,
     RetryState,
@@ -467,6 +468,23 @@ class TestTaskWorker(TestCase):
 
         assert task is None
         mock_get.assert_not_called()
+
+    def test_send_update_does_not_fetch_next_during_shutdown(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+        )
+        taskworker._grpc_sync_event.set()
+        result = _make_processing_result("completed")
+
+        with mock.patch.object(
+            taskworker.client, "update_task", return_value=None
+        ) as update:
+            taskworker._send_update_task(result, FetchNextTask(namespace="examples"))
+
+        update.assert_called_once_with(result, None)
 
     def test_fetch_no_task(self) -> None:
         taskworker = TaskWorker(
