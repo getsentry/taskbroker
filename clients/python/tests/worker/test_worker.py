@@ -479,9 +479,7 @@ class TestTaskWorker(TestCase):
         taskworker._grpc_sync_event.set()
         result = _make_processing_result("completed")
 
-        with mock.patch.object(
-            taskworker.client, "update_task", return_value=None
-        ) as update:
+        with mock.patch.object(taskworker.client, "update_task", return_value=None) as update:
             taskworker._send_update_task(result, FetchNextTask(namespace="examples"))
 
         update.assert_called_once_with(result, None)
@@ -907,9 +905,7 @@ def test_push_worker_handles_sigterm_without_raising() -> None:
     fake_server.wait_for_termination.side_effect = lambda: handlers[signal.SIGTERM]()
 
     with (
-        mock.patch(
-            "taskbroker_client.worker.worker.signal.signal", side_effect=install_handler
-        ),
+        mock.patch("taskbroker_client.worker.worker.signal.signal", side_effect=install_handler),
         mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
         mock.patch.object(taskworker.worker_pool, "start_result_thread"),
         mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
@@ -949,9 +945,7 @@ def test_push_worker_does_not_start_server_when_signal_arrives_during_setup() ->
     fake_server.add_insecure_port.side_effect = lambda *args: handlers[signal.SIGTERM]()
 
     with (
-        mock.patch(
-            "taskbroker_client.worker.worker.signal.signal", side_effect=install_handler
-        ),
+        mock.patch("taskbroker_client.worker.worker.signal.signal", side_effect=install_handler),
         mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
         mock.patch.object(taskworker.worker_pool, "start_result_thread"),
         mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
