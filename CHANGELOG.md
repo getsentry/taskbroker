@@ -1,4 +1,10 @@
 # Changelog
+## 26.7.1
+
+### New Features ✨
+
+- (cli) Add worker CLI with configurable options by @evanh in [#760](https://github.com/getsentry/taskbroker/pull/760)
+
 ## 26.7.0
 
 ### New Features ✨
