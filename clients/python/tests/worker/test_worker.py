@@ -919,6 +919,44 @@ def test_push_worker_handles_sigterm_without_raising() -> None:
     shutdown.assert_called_once_with()
 
 
+def test_push_worker_does_not_start_server_when_signal_arrives_during_setup() -> None:
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
+    handlers: dict[signal.Signals, Callable[..., None]] = {}
+
+    def install_handler(signum: signal.Signals, handler: Callable[..., None]) -> None:
+        handlers[signum] = handler
+
+    fake_health = mock.MagicMock()
+    fake_server = mock.MagicMock()
+    fake_server.add_insecure_port.side_effect = lambda *args: handlers[signal.SIGTERM]()
+
+    with (
+        mock.patch(
+            "taskbroker_client.worker.worker.signal.signal", side_effect=install_handler
+        ),
+        mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_result_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
+        mock.patch.object(taskworker.worker_pool, "shutdown") as shutdown,
+        mock.patch.object(taskworker, "_stop_health_check_thread"),
+        mock.patch("taskbroker_client.worker.worker.grpc.server", return_value=fake_server),
+        mock.patch(
+            "taskbroker_client.worker.worker.health.HealthServicer", return_value=fake_health
+        ),
+        mock.patch("taskbroker_client.worker.worker.health_pb2_grpc.add_HealthServicer_to_server"),
+        mock.patch(
+            "taskbroker_client.worker.worker.taskbroker_pb2_grpc"
+            ".add_WorkerServiceServicer_to_server"
+        ),
+    ):
+        exitcode = taskworker.start()
+
+    assert exitcode == 0
+    fake_server.start.assert_not_called()
+    fake_server.stop.assert_not_called()
+    shutdown.assert_called_once_with()
+
+
 def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
     from grpc_health.v1 import health_pb2
 
@@ -954,7 +992,8 @@ def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
         if c.args[1] == health_pb2.HealthCheckResponse.SERVING
     ]
     assert serving_calls == []
-    # We never reached server.wait_for_termination() (returned before it).
+    # We never started the server or reached wait_for_termination().
+    fake_server.start.assert_not_called()
     fake_server.wait_for_termination.assert_not_called()
 
 

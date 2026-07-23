@@ -419,11 +419,12 @@ class PushTaskWorker:
         # synchronization primitives may be held.
 
         server: grpc.Server | None = None
+        server_started = False
         health_servicer: health.HealthServicer | None = None
 
         def signal_handler(*args: Any) -> None:
             self._grpc_sync_event.set()
-            if server:
+            if server is not None and server_started:
                 server.stop(grace=5)
 
         signal.signal(signal.SIGINT, signal_handler)
@@ -459,7 +460,13 @@ class PushTaskWorker:
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
 
             server.add_insecure_port(f"[::]:{self._grpc_port}")
+            if self._grpc_sync_event.is_set():
+                return 0
+
             server.start()
+            server_started = True
+            if self._grpc_sync_event.is_set():
+                return 0
 
             # Hold NOT_SERVING until children are warm so the pod stays out of
             # the NEG/readiness set while its child processes are still loading.
@@ -484,7 +491,7 @@ class PushTaskWorker:
                 health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
                 health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
 
-            if server is not None:
+            if server is not None and server_started:
                 server.stop(grace=5)
 
             self._stop_health_check_thread()
