@@ -18,7 +18,12 @@ logging.basicConfig(
 )
 
 
-@click.command()
+@click.group()
+def worker() -> None:
+    """Run a taskbroker worker."""
+
+
+@worker.command()
 @click.option(
     "--count",
     help="The number of tasks to generate",
@@ -39,7 +44,7 @@ def spawn(count: int = 1, sleep_seconds: float = 0.1) -> None:
     click.echo("Complete")
 
 
-@click.command()
+@worker.command()
 def scheduler() -> None:
     from redis import StrictRedis
 
@@ -68,11 +73,6 @@ def scheduler() -> None:
     while True:
         sleep_time = scheduler.tick()
         time.sleep(sleep_time)
-
-
-@click.group()
-def worker() -> None:
-    """Run a taskbroker worker."""
 
 
 @worker.command()
