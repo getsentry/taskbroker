@@ -6,7 +6,6 @@ from collections.abc import Callable
 from concurrent import futures
 from typing import Any, cast
 
-import sentry_sdk
 from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
@@ -20,6 +19,7 @@ from taskbroker_client.constants import (
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
+from taskbroker_client.sdk import start_span
 from taskbroker_client.task import ExternalTask, P, R, Task
 from taskbroker_client.types import ContextHook, ProducerFactory, ProducerProtocol
 
@@ -172,15 +172,16 @@ class TaskNamespace:
     ) -> ProducerFuture:
         topic = self.topic
 
-        with sentry_sdk.start_span(
-            op=OP.QUEUE_PUBLISH,
+        with start_span(
             name=activation.taskname,
+            op=OP.QUEUE_PUBLISH,
             origin="taskworker",
-        ) as span:
-            span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
-            span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
-            span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-
+            attributes={
+                SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
+                SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
+                SPANDATA.MESSAGING_SYSTEM: "taskworker",
+            },
+        ):
             produce_future = self._producer(topic).produce(
                 Topic(name=topic),
                 KafkaPayload(key=None, value=activation.SerializeToString(), headers=[]),
