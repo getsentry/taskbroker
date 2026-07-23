@@ -688,6 +688,9 @@ class TaskWorker:
 
     def fetch_task(self) -> InflightTaskActivation | None:
         self._grpc_sync_event.wait(self._gettask_backoff_seconds)
+        if self._grpc_sync_event.is_set():
+            return None
+
         try:
             activation = self.client.get_task(self._namespace)
         except grpc.RpcError as e:

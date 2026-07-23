@@ -453,6 +453,21 @@ class TestTaskWorker(TestCase):
         assert task
         assert task.activation.id == SIMPLE_TASK.activation.id
 
+    def test_fetch_task_skips_request_during_shutdown(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+        )
+        taskworker._grpc_sync_event.set()
+
+        with mock.patch.object(taskworker.client, "get_task") as mock_get:
+            task = taskworker.fetch_task()
+
+        assert task is None
+        mock_get.assert_not_called()
+
     def test_fetch_no_task(self) -> None:
         taskworker = TaskWorker(
             app_module="examples.app:app",
@@ -726,7 +741,9 @@ class TestTaskWorker(TestCase):
             handlers[signal.SIGTERM]()
 
         with (
-            mock.patch("taskbroker_client.worker.worker.signal.signal", side_effect=install_handler),
+            mock.patch(
+                "taskbroker_client.worker.worker.signal.signal", side_effect=install_handler
+            ),
             mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
             mock.patch.object(taskworker.worker_pool, "start_result_thread"),
             mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
@@ -872,7 +889,9 @@ def test_push_worker_handles_sigterm_without_raising() -> None:
     fake_server.wait_for_termination.side_effect = lambda: handlers[signal.SIGTERM]()
 
     with (
-        mock.patch("taskbroker_client.worker.worker.signal.signal", side_effect=install_handler),
+        mock.patch(
+            "taskbroker_client.worker.worker.signal.signal", side_effect=install_handler
+        ),
         mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
         mock.patch.object(taskworker.worker_pool, "start_result_thread"),
         mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
