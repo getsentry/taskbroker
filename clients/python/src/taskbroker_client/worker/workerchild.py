@@ -32,6 +32,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_sdk.consts import OP, SPANDATA
 from sentry_sdk.crons import MonitorStatus, capture_checkin
+from sentry_sdk.tracing import Span
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import CompressionType
@@ -625,8 +626,6 @@ def child_process(
                 op="queue.task.taskworker",
                 origin="taskworker",
                 attributes={
-                    "taskworker-task.args": args,
-                    "taskworker-task.kwargs": kwargs,
                     "taskworker-task.id": activation.id,
                 },
                 headers=headers,
@@ -635,8 +634,13 @@ def child_process(
                         "task": activation.taskname,
                     }
                 },
-            ),
+            ) as transaction,
         ):
+            # Do not attach on StreamedSpan because eager serialization increases memory use.
+            if isinstance(transaction, Span):
+                transaction.set_data("taskworker-task.args", args)
+                transaction.set_data("taskworker-task.kwargs", kwargs)
+
             task_added_time = activation.received_at.ToDatetime().timestamp()
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
