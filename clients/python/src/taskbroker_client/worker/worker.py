@@ -581,6 +581,7 @@ class TaskWorker:
         self._metrics = app.metrics
 
         self._grpc_sync_event = self._mp_context.Event()
+        self._shutdown_requested = threading.Event()
 
         self._gettask_backoff_seconds = 0
         self._setstatus_backoff_seconds = 0
@@ -595,20 +596,23 @@ class TaskWorker:
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
-        # Convert signals into KeyboardInterrupt.
-        # Running shutdown() within the signal handler can lead to deadlocks
+        # Set a threading flag and wake up any blocked multiprocessing.Event.wait() call
+        # rather than raising KeyboardInterrupt. Raising KeyboardInterrupt inside
+        # multiprocessing.Event.wait() can corrupt the internal semaphore state, causing
+        # "ValueError: semaphore or lock released too many times".
         def signal_handler(*args: Any) -> None:
-            raise KeyboardInterrupt()
+            self._shutdown_requested.set()
+            self._grpc_sync_event.set()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
         try:
-            while True:
+            while not self._shutdown_requested.is_set():
                 self.run_once()
-        except KeyboardInterrupt:
+        finally:
             self.shutdown()
-            raise
+        return 0
 
     def run_once(self) -> None:
         """Access point for tests to run a single worker loop"""
@@ -691,6 +695,8 @@ class TaskWorker:
 
     def fetch_task(self) -> InflightTaskActivation | None:
         self._grpc_sync_event.wait(self._gettask_backoff_seconds)
+        if self._shutdown_requested.is_set():
+            return None
         try:
             activation = self.client.get_task(self._namespace)
         except grpc.RpcError as e:
