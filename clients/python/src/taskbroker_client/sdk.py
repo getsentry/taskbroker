@@ -9,7 +9,12 @@ from sentry_sdk.tracing_utils import has_span_streaming_enabled
 
 
 def start_transaction(
-    name: str, op: str, origin: str, headers: dict[str, Any], sampling_context: dict[str, Any]
+    name: str,
+    op: str,
+    origin: str,
+    attributes: dict[str, Any],
+    headers: dict[str, Any],
+    sampling_context: dict[str, Any],
 ) -> Transaction | NoOpSpan | StreamedSpan | ContextManager[Any]:
     """Start a transaction, or a span if span streaming is enabled."""
     span = None
@@ -24,6 +29,7 @@ def start_transaction(
                 attributes={
                     "sentry.op": op,
                     "sentry.origin": origin,
+                    **attributes,
                 },
             )
 
@@ -35,6 +41,8 @@ def start_transaction(
         )
 
         span = sentry_sdk.start_transaction(transaction, custom_sampling_context=sampling_context)
+        for key, value in attributes.items():
+            span.set_data(key, value)
     except Exception:
         pass
 
@@ -43,7 +51,9 @@ def start_transaction(
     return span
 
 
-def start_span(name: str, op: str, origin: str) -> Span | StreamedSpan | ContextManager[Any]:
+def start_span(
+    name: str, op: str, origin: str, attributes: dict[str, Any]
+) -> Span | StreamedSpan | ContextManager[Any]:
     """Start a span in the currently active trace lifecycle."""
     try:
         is_span_streaming = has_span_streaming_enabled(sentry_sdk.get_client().options)
@@ -53,14 +63,19 @@ def start_span(name: str, op: str, origin: str) -> Span | StreamedSpan | Context
                 attributes={
                     "sentry.op": op,
                     "sentry.origin": origin,
+                    **attributes,
                 },
             )
 
-        return sentry_sdk.start_span(
+        span = sentry_sdk.start_span(
             op=op,
             name=name,
             origin=origin,
         )
+        for key, value in attributes.items():
+            span.set_data(key, value)
+
+        return span
     except Exception:
         pass
 

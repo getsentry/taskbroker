@@ -32,8 +32,6 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_sdk.consts import OP, SPANDATA
 from sentry_sdk.crons import MonitorStatus, capture_checkin
-from sentry_sdk.traces import StreamedSpan
-from sentry_sdk.tracing import Span
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import CompressionType
@@ -626,49 +624,35 @@ def child_process(
                 name=activation.taskname,
                 op="queue.task.taskworker",
                 origin="taskworker",
+                attributes={
+                    "taskworker-task.args": args,
+                    "taskworker-task.kwargs": kwargs,
+                    "taskworker-task.id": activation.id,
+                },
                 headers=headers,
                 sampling_context={
                     "taskworker": {
                         "task": activation.taskname,
                     }
                 },
-            ) as parent_span,
+            ),
         ):
-            if isinstance(parent_span, StreamedSpan):
-                parent_span.set_attribute("taskworker-task.args", args)
-                parent_span.set_attribute("taskworker-task.kwargs", kwargs)
-                parent_span.set_attribute("taskworker-task.id", activation.id)
-            elif isinstance(parent_span, Span):
-                parent_span.set_data(
-                    "taskworker-task", {"args": args, "kwargs": kwargs, "id": activation.id}
-                )
-
             task_added_time = activation.received_at.ToDatetime().timestamp()
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
 
             with start_span(
-                name=activation.taskname, op=OP.QUEUE_PROCESS, origin="taskworker"
-            ) as child_span:
-                if isinstance(child_span, StreamedSpan):
-                    child_span.set_attribute(
-                        SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace
-                    )
-                    child_span.set_attribute(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
-                    child_span.set_attribute(SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY, latency)
-                    child_span.set_attribute(
-                        SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT, activation.retry_state.attempts
-                    )
-                    child_span.set_attribute(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-                elif isinstance(child_span, Span):
-                    child_span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
-                    child_span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
-                    child_span.set_data(SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY, latency)
-                    child_span.set_data(
-                        SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT, activation.retry_state.attempts
-                    )
-                    child_span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-
+                name=activation.taskname,
+                op=OP.QUEUE_PROCESS,
+                origin="taskworker",
+                attributes={
+                    SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
+                    SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
+                    SPANDATA.MESSAGING_MESSAGE_RECEIVE_LATENCY: latency,
+                    SPANDATA.MESSAGING_MESSAGE_RETRY_COUNT: activation.retry_state.attempts,
+                    SPANDATA.MESSAGING_SYSTEM: "taskworker",
+                },
+            ):
                 # TODO(taskworker) remove this when doing cleanup
                 # The `__start_time` parameter is spliced into task parameters by
                 # sentry.celery.SentryTask._add_metadata and needs to be removed

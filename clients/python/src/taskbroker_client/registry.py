@@ -10,8 +10,6 @@ from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
-from sentry_sdk.traces import StreamedSpan
-from sentry_sdk.tracing import Span
 
 from taskbroker_client.constants import (
     DEFAULT_PROCESSING_DEADLINE,
@@ -178,16 +176,12 @@ class TaskNamespace:
             name=activation.taskname,
             op=OP.QUEUE_PUBLISH,
             origin="taskworker",
-        ) as span:
-            if isinstance(span, StreamedSpan):
-                span.set_attribute(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
-                span.set_attribute(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
-                span.set_attribute(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-            elif isinstance(span, Span):
-                span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
-                span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
-                span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-
+            attributes={
+                SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
+                SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
+                SPANDATA.MESSAGING_SYSTEM: "taskworker",
+            },
+        ):
             produce_future = self._producer(topic).produce(
                 Topic(name=topic),
                 KafkaPayload(key=None, value=activation.SerializeToString(), headers=[]),
