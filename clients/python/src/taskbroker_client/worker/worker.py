@@ -415,16 +415,16 @@ class PushTaskWorker:
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
-        # Convert signals into KeyboardInterrupt.
-        # Running shutdown() within the signal handler can lead to deadlocks
+        # Signal shutdown without raising an exception while multiprocessing
+        # synchronization primitives may be held.
 
         server: grpc.Server | None = None
         health_servicer: health.HealthServicer | None = None
 
         def signal_handler(*args: Any) -> None:
+            self._grpc_sync_event.set()
             if server:
                 server.stop(grace=5)
-            raise KeyboardInterrupt()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
@@ -477,11 +477,7 @@ class PushTaskWorker:
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
             self._start_health_check_thread()
 
-            try:
-                server.wait_for_termination()
-            except KeyboardInterrupt:
-                # Signals are converted to KeyboardInterrupt, swallow for exit code 0
-                pass
+            server.wait_for_termination()
 
         finally:
             if health_servicer is not None:
@@ -595,20 +591,21 @@ class TaskWorker:
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
-        # Convert signals into KeyboardInterrupt.
-        # Running shutdown() within the signal handler can lead to deadlocks
+        # Signal shutdown without raising an exception while multiprocessing
+        # synchronization primitives may be held.
         def signal_handler(*args: Any) -> None:
-            raise KeyboardInterrupt()
+            self._grpc_sync_event.set()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
         try:
-            while True:
+            while not self._grpc_sync_event.is_set():
                 self.run_once()
-        except KeyboardInterrupt:
+        finally:
             self.shutdown()
-            raise
+
+        return 0
 
     def run_once(self) -> None:
         """Access point for tests to run a single worker loop"""

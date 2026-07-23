@@ -710,6 +710,35 @@ class TestTaskWorker(TestCase):
             assert redis.get("no-retries-remaining"), "key should exist if except block was hit"
             redis.delete("no-retries-remaining")
 
+    def test_start_handles_sigterm_without_raising(self) -> None:
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+        )
+        handlers: dict[signal.Signals, Callable[..., None]] = {}
+
+        def install_handler(signum: signal.Signals, handler: Callable[..., None]) -> None:
+            handlers[signum] = handler
+
+        def request_shutdown() -> None:
+            handlers[signal.SIGTERM]()
+
+        with (
+            mock.patch("taskbroker_client.worker.worker.signal.signal", side_effect=install_handler),
+            mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
+            mock.patch.object(taskworker.worker_pool, "start_result_thread"),
+            mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
+            mock.patch.object(taskworker.worker_pool, "shutdown") as shutdown,
+            mock.patch.object(taskworker, "run_once", side_effect=request_shutdown),
+        ):
+            exitcode = taskworker.start()
+
+        assert exitcode == 0
+        assert taskworker._grpc_sync_event.is_set()
+        shutdown.assert_called_once_with()
+
     def test_constructor_push_mode(self) -> None:
         taskworker = PushTaskWorker(
             app_module="examples.app:app",
@@ -829,6 +858,46 @@ def test_await_children_warm_unblocks_when_children_warm() -> None:
         if c.args[0] == "taskworker.worker.warmup_timeout"
     ]
     assert timeout_calls == []
+
+
+def test_push_worker_handles_sigterm_without_raising() -> None:
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
+    handlers: dict[signal.Signals, Callable[..., None]] = {}
+
+    def install_handler(signum: signal.Signals, handler: Callable[..., None]) -> None:
+        handlers[signum] = handler
+
+    fake_health = mock.MagicMock()
+    fake_server = mock.MagicMock()
+    fake_server.wait_for_termination.side_effect = lambda: handlers[signal.SIGTERM]()
+
+    with (
+        mock.patch("taskbroker_client.worker.worker.signal.signal", side_effect=install_handler),
+        mock.patch.object(taskworker.worker_pool, "start_metrics_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_result_thread"),
+        mock.patch.object(taskworker.worker_pool, "start_spawn_children_thread"),
+        mock.patch.object(taskworker.worker_pool, "shutdown") as shutdown,
+        mock.patch.object(taskworker, "_start_health_check_thread"),
+        mock.patch.object(taskworker, "_stop_health_check_thread"),
+        mock.patch.object(
+            TaskWorkerProcessingPool, "ready_count", new_callable=mock.PropertyMock, return_value=2
+        ),
+        mock.patch("taskbroker_client.worker.worker.grpc.server", return_value=fake_server),
+        mock.patch(
+            "taskbroker_client.worker.worker.health.HealthServicer", return_value=fake_health
+        ),
+        mock.patch("taskbroker_client.worker.worker.health_pb2_grpc.add_HealthServicer_to_server"),
+        mock.patch(
+            "taskbroker_client.worker.worker.taskbroker_pb2_grpc"
+            ".add_WorkerServiceServicer_to_server"
+        ),
+    ):
+        exitcode = taskworker.start()
+
+    assert exitcode == 0
+    assert taskworker._grpc_sync_event.is_set()
+    fake_server.stop.assert_called_with(grace=5)
+    shutdown.assert_called_once_with()
 
 
 def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
