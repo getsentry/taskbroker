@@ -42,7 +42,6 @@ from taskbroker_client.constants import INTERNAL_NAMESPACE, CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
-from taskbroker_client.worker.producer import TaskProducer, _pending_futures
 from taskbroker_client.worker.worker import (
     PushTaskWorker,
     TaskWorker,
@@ -1872,30 +1871,14 @@ def test_child_process_silenced_exception_does_not_log_task_failed(
 
 
 # Tests for producer future tracking, storage, and drain-on-shutdown behavior
-# in child_process. These tests patch <producer>.collect_futures so we can inject
+# in child_process. These tests patch FutureTrackingProducer.collect_futures so we can inject
 # controllable futures without needing a real Kafka broker.
-#
-# child_process collects futures from both the local TaskProducer and arroyo's
-# FutureTrackingProducer (unioning the two registries), so the tests are
-# parametrized to run identically against either producer. This will be removed
-# once all clients are fully ported from TaskProducer to FutureTrackingProducer.
-_PRODUCER_CLASSES = [
-    pytest.param(TaskProducer, id="task_producer"),
-    pytest.param(FutureTrackingProducer, id="future_tracking_producer"),
-]
-
-_PENDING_REGISTRIES = [
-    pytest.param(_pending_futures, id="task_producer"),
-    pytest.param(_arroyo_pending_futures, id="future_tracking_producer"),
-]
 
 
 @pytest.fixture
 def clear_pending_futures() -> Iterator[None]:
-    _pending_futures.clear()
     _arroyo_pending_futures.clear()
     yield
-    _pending_futures.clear()
     _arroyo_pending_futures.clear()
 
 
@@ -1934,9 +1917,7 @@ def _producing_task(task_id: str = "task-with-futures") -> InflightTaskActivatio
     )
 
 
-@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_tracks_producer_futures(
-    producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
@@ -1950,7 +1931,7 @@ def test_child_process_tracks_producer_futures(
 
     todo.put(task)
     with mock.patch.object(
-        producer_cls, "collect_futures", return_value={"test.producer": {done_future}}
+        FutureTrackingProducer, "collect_futures", return_value={"test.producer": {done_future}}
     ) as collect_mock:
         child_process(
             "examples.app:app",
@@ -1972,9 +1953,7 @@ def test_child_process_tracks_producer_futures(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_holds_result_until_futures_done(
-    producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
@@ -2002,7 +1981,9 @@ def test_child_process_holds_result_until_futures_done(
     observer.start()
     try:
         with mock.patch.object(
-            producer_cls, "collect_futures", return_value={"test.producer": {pending_future}}
+            FutureTrackingProducer,
+            "collect_futures",
+            return_value={"test.producer": {pending_future}},
         ):
             child_process(
                 "examples.app:app",
@@ -2027,9 +2008,7 @@ def test_child_process_holds_result_until_futures_done(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_skip_awaiting_futures_places_result_immediately(
-    producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
@@ -2061,7 +2040,9 @@ def test_child_process_skip_awaiting_futures_places_result_immediately(
     observer.start()
     try:
         with mock.patch.object(
-            producer_cls, "collect_futures", return_value={"test.producer": {pending_future}}
+            FutureTrackingProducer,
+            "collect_futures",
+            return_value={"test.producer": {pending_future}},
         ):
             child_process(
                 "examples.app:app",
@@ -2089,9 +2070,7 @@ def test_child_process_skip_awaiting_futures_places_result_immediately(
     assert processed.empty()
 
 
-@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_drains_pending_futures_on_sigterm(
-    producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
@@ -2115,7 +2094,9 @@ def test_child_process_drains_pending_futures_on_sigterm(
     sigterm_thread.start()
     try:
         with mock.patch.object(
-            producer_cls, "collect_futures", return_value={"test.producer": {pending_future}}
+            FutureTrackingProducer,
+            "collect_futures",
+            return_value={"test.producer": {pending_future}},
         ):
             child_process(
                 "examples.app:app",
@@ -2137,9 +2118,7 @@ def test_child_process_drains_pending_futures_on_sigterm(
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
 
 
-@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_retries_on_failed_future(
-    producer_cls: type,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
@@ -2168,7 +2147,7 @@ def test_child_process_retries_on_failed_future(
 
     todo.put(retriable_task)
     with mock.patch.object(
-        producer_cls, "collect_futures", return_value={"test.producer": {failed_future}}
+        FutureTrackingProducer, "collect_futures", return_value={"test.producer": {failed_future}}
     ):
         child_process(
             "examples.app:app",
@@ -2187,16 +2166,14 @@ def test_child_process_retries_on_failed_future(
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
 
 
-@pytest.mark.parametrize("pending_registry", _PENDING_REGISTRIES)
 def test_child_process_clears_pending_futures_when_task_fails(
-    pending_registry: Any,
     clear_pending_futures: None,
     restore_signal_handlers: None,
 ) -> None:
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
-    pending_registry["test.producer"].append(leftover_future)
-    assert len(pending_registry) == 1
+    _arroyo_pending_futures["test.producer"].append(leftover_future)
+    assert len(_arroyo_pending_futures) == 1
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
@@ -2222,7 +2199,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
     # The orphaned future is dropped (the activation will be retried at the
     # broker level if applicable) but the global registry is cleared so it
     # cannot bleed into the next task this child processes.
-    assert len(pending_registry) == 0
+    assert len(_arroyo_pending_futures) == 0
 
 
 def test_child_process_uses_configured_future_checking_frequency(

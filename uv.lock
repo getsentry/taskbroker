@@ -667,13 +667,13 @@ wheels = [
 
 [[package]]
 name = "sentry-arroyo"
-version = "2.41.0"
+version = "2.41.1"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "confluent-kafka", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_arroyo-2.41.0-py3-none-any.whl", hash = "sha256:08c0efb1a02a97ba9364f07b53a520ed204d7da015c4ea01f9bc8f9f81d6373b" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_arroyo-2.41.1-py3-none-any.whl", hash = "sha256:12465dd0d388d2ad4abab5e243ca348ad22bd6dc68434d765e41683c9a565573" },
 ]
 
 [[package]]
@@ -854,7 +854,7 @@ requires-dist = [
     { name = "protobuf", specifier = ">=5.28.3" },
     { name = "redis", specifier = ">=3.4.1" },
     { name = "redis-py-cluster", marker = "extra == 'cluster'", specifier = ">=2.1.0" },
-    { name = "sentry-arroyo", specifier = ">=2.41.0" },
+    { name = "sentry-arroyo", specifier = ">=2.41.1" },
     { name = "sentry-protos", specifier = ">=0.26.1" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.43.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
