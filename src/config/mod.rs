@@ -291,25 +291,33 @@ impl Default for Config {
 impl Config {
     pub fn dump_redacted_yaml(&self) -> Result<String> {
         let mut config = self.clone();
-        let redacted_value = String::from("******");
 
-        config.sentry_dsn = Some(redacted_value.clone());
+        let redacted_value = String::from("******");
+        let redact_optional = |value: &mut Option<String>| {
+            if let Some(value) = value.as_mut() {
+                *value = redacted_value.clone();
+            }
+        };
+
+        // Redact optional strings
+        redact_optional(&mut config.sentry_dsn);
+        redact_optional(&mut config.deprecated.kafka_sasl_password);
+        redact_optional(&mut config.deprecated.kafka_deadletter_sasl_password);
+        redact_optional(&mut config.deprecated.pg_password);
+        redact_optional(&mut config.deprecated.pg_ddl_password);
+
+        for cluster in config.kafka_clusters.values_mut() {
+            redact_optional(&mut cluster.sasl_password);
+        }
+
+        // Redact strings
         config
             .grpc_shared_secret
             .iter_mut()
             .for_each(|s| *s = redacted_value.clone());
 
-        config.deprecated.kafka_sasl_password = Some(redacted_value.clone());
-        config.deprecated.kafka_deadletter_sasl_password = Some(redacted_value.clone());
-        config.deprecated.pg_password = Some(redacted_value.clone());
-        config.deprecated.pg_ddl_password = Some(redacted_value.clone());
-
         config.store.pg.password = redacted_value.clone();
         config.store.pg.ddl_password = redacted_value.clone();
-
-        for cluster in config.kafka_clusters.values_mut() {
-            cluster.sasl_password = Some(redacted_value.clone());
-        }
 
         Ok(serde_yaml::to_string(&config)?)
     }
