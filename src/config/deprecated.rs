@@ -62,7 +62,7 @@ macro_rules! map {
 
 pub(crate) use map;
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Default)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Default)]
 pub struct DeprecatedConfig {
     /// The topic to fetch task messages from.
     /// Deprecated: use kafka_topics instead. Mutually exclusive with the new
