@@ -66,6 +66,8 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
+    info!(config = config.dump_redacted_yaml()?, "Configuration");
+
     if args.run == Run::Migrations {
         return config.store.adapter.migrate(&config).await;
     }

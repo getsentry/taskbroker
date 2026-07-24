@@ -49,7 +49,7 @@ pub enum DeliveryMode {
     Push,
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct Config {
     /// Deprecated configuration options. Not meant to be used.
     #[serde(flatten)]
@@ -289,6 +289,31 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn dump_redacted_yaml(&self) -> Result<String> {
+        let mut config = self.clone();
+        let redacted_value = String::from("******");
+
+        config.sentry_dsn = Some(redacted_value.clone());
+        config
+            .grpc_shared_secret
+            .iter_mut()
+            .for_each(|s| *s = redacted_value.clone());
+
+        config.deprecated.kafka_sasl_password = Some(redacted_value.clone());
+        config.deprecated.kafka_deadletter_sasl_password = Some(redacted_value.clone());
+        config.deprecated.pg_password = Some(redacted_value.clone());
+        config.deprecated.pg_ddl_password = Some(redacted_value.clone());
+
+        config.store.pg.password = redacted_value.clone();
+        config.store.pg.ddl_password = redacted_value.clone();
+
+        for cluster in config.kafka_clusters.values_mut() {
+            cluster.sasl_password = Some(redacted_value.clone());
+        }
+
+        Ok(serde_yaml::to_string(&config)?)
+    }
+
     /// Build a config instance from defaults, env vars, file + CLI options
     pub fn from_args(args: &Args) -> Result<Self> {
         let mut builder = Figment::from(Config::default());
