@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.14
+
+### Bug Fixes 🐛
+
+- Revert "ref(o11y): Support `sentry-sdk` configured with the streaming trace lifecycle (#757)" in [57724b62](https://github.com/getsentry/taskbroker/commit/57724b62a637cc9f7862c617e47f071bb687f7f3)
+
 ## 0.20.13
 
 ### Internal Changes 🔧
