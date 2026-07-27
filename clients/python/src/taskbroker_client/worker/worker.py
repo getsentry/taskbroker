@@ -179,6 +179,7 @@ class PushTaskWorker:
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
         grpc_port: int = 50052,
+        grpc_max_message_size: int = -1,
         push_task_timeout: float = 5,
         skip_awaiting_futures: bool = True,
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
@@ -243,6 +244,7 @@ class PushTaskWorker:
         self._processing_pool_name: str = processing_pool_name or "unknown"
 
         self._grpc_port = grpc_port
+        self._grpc_max_message_size = grpc_max_message_size
         self._grpc_secrets = parse_rpc_secret_list(app.config["rpc_secret"])
         self._push_task_timeout = push_task_timeout
 
@@ -436,8 +438,14 @@ class PushTaskWorker:
             if self._grpc_secrets:
                 interceptors = [RequestSignatureServerInterceptor(self._grpc_secrets)]
 
-            max_message_size = int(
-                os.environ.get("TASKBROKER_GRPC_MAX_MESSAGE_SIZE", DEFAULT_GRPC_MAX_MESSAGE_SIZE)
+            max_message_size = (
+                self._grpc_max_message_size
+                if self._grpc_max_message_size > 0
+                else int(
+                    os.environ.get(
+                        "TASKBROKER_GRPC_MAX_MESSAGE_SIZE", DEFAULT_GRPC_MAX_MESSAGE_SIZE
+                    )
+                )
             )
             server = grpc.server(
                 ThreadPoolExecutor(max_workers=self._concurrency),

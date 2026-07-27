@@ -1971,6 +1971,42 @@ def test_child_process_tracks_producer_futures(
 
 
 @pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
+def test_child_process_ignores_empty_producer_future_sets(
+    producer_cls: type,
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(task)
+    with (
+        mock.patch.object(producer_cls, "collect_futures", return_value={"test.producer": set()}),
+        mock.patch(
+            "taskbroker_client.worker.workerchild.ActivationWithPendingFutures"
+        ) as pending_task,
+    ):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
+        )
+
+    pending_task.assert_not_called()
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+@pytest.mark.parametrize("producer_cls", _PRODUCER_CLASSES)
 def test_child_process_holds_result_until_futures_done(
     producer_cls: type,
     clear_pending_futures: None,

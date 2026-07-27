@@ -6,7 +6,7 @@ use validator::Validate;
 use crate::config::batch::BatchConfig;
 use crate::config::validate;
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct PushQueueConfig {
     /// The size of the push queue.
     #[validate(range(min = 1))]
@@ -27,7 +27,7 @@ impl Default for PushQueueConfig {
     }
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct PushUpdateConfig {
     // Update claimed → processing updates in batches?
     pub batched: bool,
@@ -50,7 +50,7 @@ impl Default for PushUpdateConfig {
     }
 }
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct PushConfig {
     /// The number of concurrent push threads to run.
     #[validate(range(min = 1))]

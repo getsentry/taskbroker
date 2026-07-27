@@ -6,7 +6,7 @@ use validator::Validate;
 use crate::config::validate;
 use crate::fetch::MAX_FETCH_THREADS;
 
-#[derive(PartialEq, Debug, Deserialize, Serialize, Validate)]
+#[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Validate)]
 pub struct FetchConfig {
     /// The number of concurrent fetch loops in push mode, which should be ≤ `MAX_FETCH_THREADS` and a power of two.
     #[validate(range(min = 1, max = MAX_FETCH_THREADS), custom(function = "validate::power_of_two"))]
