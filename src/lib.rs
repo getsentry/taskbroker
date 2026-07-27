@@ -1,6 +1,7 @@
 use clap::{Parser, ValueEnum};
 use std::fs;
 
+pub mod canary_tasks;
 pub mod config;
 pub mod fetch;
 pub mod flusher;
