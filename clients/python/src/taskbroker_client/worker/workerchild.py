@@ -556,7 +556,7 @@ def child_process(
             if next_state != TASK_ACTIVATION_STATUS_COMPLETE:
                 task_produced_futures = {}
 
-            if len(task_produced_futures) == 0:
+            if not any(task_produced_futures.values()):
                 _task_execution_complete(
                     inflight,
                     next_state,
