@@ -57,6 +57,12 @@ def start_span(
     """Start a span in the currently active trace lifecycle."""
     try:
         is_span_streaming = has_span_streaming_enabled(sentry_sdk.get_client().options)
+
+        # Early return to avoid large increase in span volume.
+        # Mirrors transaction-based tracing, in which `start_span()` no-ops when there is no active transaction.
+        if is_span_streaming and sentry_sdk.traces.get_current_span() is None:
+            return nullcontext()
+
         if is_span_streaming:
             return sentry_sdk.traces.start_span(
                 name=name,
