@@ -1,21 +1,17 @@
-use std::cmp;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
 use async_backtrace::framed;
-use chrono::Utc;
-use elegant_departure::get_shutdown_guard;
 use flume::Sender;
-use tokio::time::sleep;
-use tracing::{debug, info, warn};
 
 use crate::config::Config;
-use crate::push::QueueError;
+use crate::fetch::thread::FetchThread;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, TopicPartition};
-use crate::timed;
+use crate::store::types::BucketRange;
+
+mod thread;
 
 /// This value should be a power of two. If it decreases, some ranges will no longer be queried.
 /// That means the pending activation query will skip tasks within these ranges.
@@ -62,136 +58,21 @@ impl FetchPool {
     /// Spawns one task per effective fetch thread ([`normalize_fetch_threads`]), each claiming pending work only in its bucket subrange.
     #[framed]
     pub async fn start(&self) -> Result<()> {
-        let fetch_backoff = self.config.fetch.backoff;
         let fetch_threads = self.config.fetch.threads;
 
         let mut fetch_pool = crate::tokio::spawn_pool(fetch_threads, |thread_index| {
-            let store = self.store.clone();
-            let sender = self.sender.clone();
             let config = self.config.clone();
 
-            let limit = Some(config.fetch.batch_length);
-            let bucket = Some(bucket_range_for_fetch_thread(thread_index, fetch_threads));
+            let bucket = bucket_range_for_fetch_thread(thread_index, fetch_threads);
 
-            let guard = get_shutdown_guard().shutdown_on_drop();
+            let mut thread = FetchThread {
+                sender: self.sender.clone(),
+                store: self.store.clone(),
+                config,
+                bucket,
+            };
 
-            async_backtrace::frame!(async move {
-                loop {
-                    tokio::select! {
-                        _ = guard.wait() => {
-                            info!("Fetch loop received shutdown signal");
-                            return;
-                        }
-
-                        _ = async {
-                            let start = Instant::now();
-
-                            debug!("Fetching next batch of pending activations...");
-                            metrics::counter!("fetch.loop.count").increment(1);
-
-                            let mut backoff = false;
-
-                            let result = store.claim_activations_for_push(limit, bucket).await;
-                            metrics::histogram!("fetch.claim_activations_for_push.duration").record(start.elapsed());
-
-                            match result {
-                                Ok(activations) if activations.is_empty() => {
-                                    metrics::counter!("fetch.empty").increment(1);
-                                    debug!("No pending activations");
-
-                                    // Wait for pending activations to appear
-                                    backoff = true;
-                                }
-
-                                Ok(activations) => {
-                                    metrics::counter!("fetch.claimed")
-                                        .increment(activations.len() as u64);
-                                    metrics::histogram!("fetch.claim_batch_size")
-                                        .record(activations.len() as f64);
-
-                                    debug!("Fetched {} activations", activations.len());
-
-                                    // Use this instant to track claimed → pushed latency
-                                    let start = Instant::now();
-
-                                    for activation in activations {
-                                        let id = activation.id.clone();
-
-                                        if activation.processing_attempts < 1 {
-                                            let latency = cmp::max(0, activation.received_latency(Utc::now()));
-
-                                            // Age-based drain can claim activations from partitions
-                                            // this broker doesn't own; tag so those orphans are visible.
-                                            let owned_partition = store.owns_partition(
-                                                &TopicPartition::new(activation.topic.clone(), activation.partition),
-                                            );
-
-                                            metrics::histogram!(
-                                                "push.received_to_claimed.latency",
-                                                "namespace" => activation.namespace.clone(),
-                                                "taskname" => activation.taskname.clone(),
-                                                "owned_partition" => owned_partition.to_string(),
-                                            )
-                                            .record(latency as f64);
-                                        } else {
-                                            debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → claimed latency recording");
-                                        }
-
-                                        match push_task(activation, start, sender.clone(), config.clone()).await {
-                                            Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
-
-                                            Err(QueueError::Timeout) => {
-                                                metrics::counter!("fetch.submit", "result" => "timeout")
-                                                    .increment(1);
-
-                                                warn!(
-                                                    task_id = %id,
-                                                    "Submit to push pool timed out after {} milliseconds",
-                                                    config.push.queue.timeout.as_millis()
-                                                );
-
-                                                // Wait for push queue to empty
-                                                backoff = true;
-                                            }
-
-                                            Err(QueueError::Closed) => {
-                                                metrics::counter!("fetch.submit", "result" => "closed")
-                                                    .increment(1);
-
-                                                warn!(
-                                                    task_id = %id,
-                                                    "Submit to push pool failed due to closed channel",
-                                                );
-
-                                                // We cannot recover from a closed channel
-                                                return;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Err(e) => {
-                                    metrics::counter!("fetch.store_error").increment(1);
-                                    warn!(
-                                        error = ?e,
-                                        "Store failed while fetching tasks"
-                                    );
-
-                                    // Store may be down, wait before trying again
-                                    backoff = true;
-                                }
-                            };
-
-                            metrics::histogram!("fetch.loop.duration")
-                                .record(start.elapsed());
-
-                            if backoff {
-                                sleep(fetch_backoff).await;
-                            }
-                        } => {}
-                    }
-                }
-            })
+            async move { thread.start().await }
         });
 
         while let Some(res) = fetch_pool.join_next().await {
@@ -201,30 +82,6 @@ impl FetchPool {
         }
 
         Ok(())
-    }
-}
-
-async fn push_task(
-    activation: Activation,
-    time: Instant,
-    sender: Sender<(Activation, Instant)>,
-    config: Arc<Config>,
-) -> Result<(), QueueError> {
-    metrics::gauge!("push.queue.depth").set(sender.len() as f64);
-
-    let duration = config.push.queue.timeout;
-    let future = sender.send_async((activation, time));
-    let timeout = tokio::time::timeout(duration, future);
-
-    match timed!(timeout, "push.queue.wait_duration") {
-        // The channel was full so the send timed out
-        Err(_) => Err(QueueError::Timeout),
-
-        // The channel may close early if the push pool encounters an error
-        Ok(Err(_)) => Err(QueueError::Closed),
-
-        // Pushed to channel successfully
-        Ok(_) => Ok(()),
     }
 }
 
