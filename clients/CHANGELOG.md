@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.15
+
+### Bug Fixes 🐛
+
+- (workerchild) Ignore empty producer future sets by @lvthanh03 in [#766](https://github.com/getsentry/taskbroker/pull/766)
+
 ## 0.20.14
 
 ### Bug Fixes 🐛
