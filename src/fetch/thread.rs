@@ -105,7 +105,12 @@ impl FetchThread {
                         )
                         .record(latency as f64);
                     } else {
-                        debug!(task_id = %id, namespace = activation.namespace, taskname = activation.taskname, "Activation already processed, skipping received → claimed latency recording");
+                        debug!(
+                            task_id = %id,
+                            namespace = activation.namespace,
+                            taskname = activation.taskname,
+                            "Activation already processed, skipping received → claimed latency recording"
+                        );
                     }
 
                     match self.push_task(activation, start).await {
