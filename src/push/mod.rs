@@ -57,9 +57,9 @@ pub fn compute_claim_duration_ms(config: &Config) -> u64 {
         let batch_length = config.push.update.batch.length.max(1) as u64;
 
         // The lazy updater channel is one batch long. If it is full, the next task can
-        // wait behind the query currently in flight, the queued batch, and its own batch
-        let updater_batches = (batch_length + 1).div_ceil(batch_length) + 1;
-        updater_batches * QUERY_MS
+        // wait behind the query currently in flight and the queued batch
+        let queued_updates = batch_length + 1;
+        queued_updates * QUERY_MS
     } else {
         rounds * QUERY_MS
     };
