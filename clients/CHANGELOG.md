@@ -1,4 +1,14 @@
 # Changelog
+## 0.20.16
+
+### New Features ✨
+
+- (taskbroker) Add Canary Task Sending to Taskbroker by @george-sentry in [#752](https://github.com/getsentry/taskbroker/pull/752)
+
+### Bug Fixes 🐛
+
+- (python) Shut workers down without raising from signal handlers by @untitaker in [#764](https://github.com/getsentry/taskbroker/pull/764)
+
 ## 0.20.15
 
 ### Bug Fixes 🐛
