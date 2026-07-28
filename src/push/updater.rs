@@ -126,6 +126,8 @@ impl Updater for LazyUpdater {
         let batch_length = self.config.push.update.batch.length;
 
         let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         let mut buffer = Vec::with_capacity(batch_length);
 
         loop {
@@ -139,11 +141,20 @@ impl Updater for LazyUpdater {
                     match received {
                         Ok(id) => {
                             buffer.push(id);
-                            metrics::gauge!("push.updater.queue.depth").set(self.receiver.len() as f64);
+
+                            // Drain the entire queue
+                            while buffer.len() < batch_length {
+                                match self.receiver.try_recv() {
+                                    Ok(id) => buffer.push(id),
+                                    Err(_) => break
+                                };
+                            }
 
                             if buffer.len() >= batch_length {
                                 self.flush_with_reason(&mut buffer, "full").await;
                             }
+
+                            metrics::gauge!("push.updater.queue.depth").set(self.receiver.len() as f64);
                         }
 
                         Err(_) => break,
