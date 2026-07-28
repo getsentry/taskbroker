@@ -53,7 +53,16 @@ pub fn compute_claim_duration_ms(config: &Config) -> u64 {
 
     // In the worst case, the tasks in the push queue will take `QUERY_MS` time to update from claimed to processing
     // Since query timeouts aren't actually enforced right now, this is merely an approximation
-    let update_query_ms = rounds * QUERY_MS;
+    let update_query_ms = if config.push.update.batched {
+        let batch_length = config.push.update.batch.length.max(1) as u64;
+
+        // The lazy updater channel is one batch long. If it is full, the next task can
+        // wait behind the query currently in flight, the queued batch, and its own batch
+        let updater_batches = (batch_length + 1).div_ceil(batch_length) + 1;
+        updater_batches * QUERY_MS
+    } else {
+        rounds * QUERY_MS
+    };
 
     // Batched push updates can wait in the updater buffer until either the batch fills or the periodic flush runs
     let batch_delay_ms = if config.push.update.batched {

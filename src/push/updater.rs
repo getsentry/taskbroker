@@ -46,13 +46,7 @@ pub struct LazyUpdater {
 
 impl LazyUpdater {
     pub fn new(config: Arc<Config>, store: Arc<dyn ActivationStore>) -> Self {
-        let capacity = config
-            .push
-            .queue
-            .size
-            .max(config.push.update.batch.length)
-            .max(config.push.threads);
-        let (sender, receiver) = flume::bounded(capacity);
+        let (sender, receiver) = flume::bounded(config.push.update.batch.length);
         let stop = Notify::new();
 
         Self {
@@ -95,6 +89,30 @@ impl LazyUpdater {
             }
         }
     }
+
+    async fn flush_with_reason(&self, buffer: &mut Vec<String>, reason: &'static str) -> bool {
+        match self.flush(buffer).await {
+            Ok(_) => {
+                metrics::counter!("push.updater.flush", "reason" => reason, "result" => "ok")
+                    .increment(1);
+
+                true
+            }
+
+            Err(e) => {
+                metrics::counter!("push.updater.flush", "reason" => reason, "result" => "error")
+                    .increment(1);
+
+                error!(
+                    error = ?e,
+                    reason,
+                    "Failed to flush claimed → processing updates"
+                );
+
+                false
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -105,8 +123,9 @@ impl Updater for LazyUpdater {
 
         // Flush every `interval` milliseconds
         let period = self.config.push.update.batch.interval;
-        let mut interval = tokio::time::interval(period);
         let batch_length = self.config.push.update.batch.length;
+
+        let mut interval = tokio::time::interval(period);
         let mut buffer = Vec::with_capacity(batch_length);
 
         loop {
@@ -116,28 +135,14 @@ impl Updater for LazyUpdater {
                     break;
                 }
 
-                received = self.receiver.recv_async() => {
+                received = self.receiver.recv_async(), if buffer.len() < batch_length => {
                     match received {
                         Ok(id) => {
                             buffer.push(id);
                             metrics::gauge!("push.updater.queue.depth").set(self.receiver.len() as f64);
 
                             if buffer.len() >= batch_length {
-                                match self.flush(&mut buffer).await {
-                                    Ok(_) => {
-                                        metrics::counter!("push.updater.flush", "reason" => "full", "result" => "ok")
-                                            .increment(1)
-                                    }
-
-                                    Err(e) => {
-                                        metrics::counter!("push.updater.flush", "reason" => "full", "result" => "error").increment(1);
-
-                                        error!(
-                                            error = ?e,
-                                            "Failed to flush claimed → processing updates (full buffer)"
-                                        );
-                                    }
-                                }
+                                self.flush_with_reason(&mut buffer, "full").await;
                             }
                         }
 
@@ -145,19 +150,8 @@ impl Updater for LazyUpdater {
                     }
                 }
 
-                _ = interval.tick(), if self.config.push.update.batched => {
-                    match self.flush(&mut buffer).await {
-                        Ok(_) => metrics::counter!("push.updater.flush", "reason" => "tick", "result" => "ok").increment(1),
-
-                        Err(e) => {
-                            metrics::counter!("push.updater.flush", "reason" => "tick", "result" => "error").increment(1);
-
-                            error!(
-                                error = ?e,
-                                "Failed to flush claimed → processing updates (tick)"
-                            );
-                        }
-                    }
+                _ = interval.tick() => {
+                    self.flush_with_reason(&mut buffer, "tick").await;
                 }
             }
         }
@@ -167,20 +161,7 @@ impl Updater for LazyUpdater {
             buffer.push(id);
         }
 
-        match self.flush(&mut buffer).await {
-            Ok(_) => metrics::counter!("push.updater.flush", "reason" => "exit", "result" => "ok")
-                .increment(1),
-
-            Err(e) => {
-                metrics::counter!("push.updater.flush", "reason" => "exit", "result" => "error")
-                    .increment(1);
-
-                error!(
-                    error = ?e,
-                    "Failed to flush claimed → processing updates (exit)"
-                );
-            }
-        }
+        self.flush_with_reason(&mut buffer, "exit").await;
 
         drop(guard);
         Ok(())
