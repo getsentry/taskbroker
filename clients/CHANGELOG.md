@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.17
+
+### Bug Fixes 🐛
+
+- Revert "fix(python): Shut workers down without raising from signal handlers (#764)" in [e9d14941](https://github.com/getsentry/taskbroker/commit/e9d14941f83450b6a24076c1ae29c9d76f07cfa5)
+
 ## 0.20.16
 
 ### New Features ✨
