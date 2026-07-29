@@ -35,7 +35,6 @@ from taskbroker_client.constants import (
     DEFAULT_WORKER_QUEUE_SIZE,
     DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
     MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE,
-    SHUTDOWN_POLL_INTERVAL_SEC,
     WORKER_CHILD_JOIN_TIMEOUT_SEC,
 )
 from taskbroker_client.metrics import MetricsBackend
@@ -59,60 +58,6 @@ else:
 logger = logging.getLogger(__name__)
 
 WORKER_SERVICE_NAME = "sentry_protos.taskbroker.v1.WorkerService"
-
-
-class ShutdownSignal:
-    """
-    Shutdown state that a signal handler is allowed to flip.
-
-    Python runs signal handlers on the main thread in between bytecodes, which
-    makes plain attribute assignment safe but anything that takes a lock unsafe:
-    if the interrupted code already holds that lock, the handler blocks forever
-    on the thread that would have released it. `threading.Event.set()` and
-    `multiprocessing.Event.set()` both take a non-reentrant lock, so neither may
-    be called from a handler. `request()` therefore only assigns a bool.
-
-    The event is here so that a shutdown noticed on the main thread can wake
-    sleeps on the result thread, and is only ever set from normal code.
-    """
-
-    def __init__(self) -> None:
-        self._requested = False
-        self._event = threading.Event()
-
-    def request(self) -> None:
-        """
-        Ask for shutdown. This is the only method a signal handler may call.
-        """
-        self._requested = True
-
-    def set(self) -> None:
-        """
-        Ask for shutdown and wake anything sleeping in `wait()`.
-
-        Takes a lock, so this must never be called from a signal handler.
-        """
-        self._requested = True
-        self._event.set()
-
-    def is_set(self) -> bool:
-        return self._requested
-
-    def wait(self, timeout: float) -> bool:
-        """
-        Sleep up to `timeout` seconds, returning True if shutdown was requested.
-
-        A handler can only flip the bool, so this polls rather than relying on
-        the event alone.
-        """
-        deadline = time.monotonic() + timeout
-        while True:
-            if self._requested:
-                return True
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            self._event.wait(min(remaining, SHUTDOWN_POLL_INTERVAL_SEC))
 
 
 class WorkerPrometheusMetrics:
@@ -287,7 +232,7 @@ class PushTaskWorker:
         )
         self._metrics = app.metrics
         self._concurrency = concurrency
-        self._shutdown_signal = ShutdownSignal()
+        self._grpc_sync_event = self._mp_context.Event()
         self._health_check_sec_per_touch = (
             None if health_check_file_path is None else health_check_sec_per_touch
         )
@@ -350,8 +295,8 @@ class PushTaskWorker:
                 "processing_pool": self._processing_pool_name,
             },
         )
-        # Use the shutdown signal as a sleep mechanism
-        self._shutdown_signal.wait(self._setstatus_backoff_seconds)
+        # Use the shutdown_event as a sleep mechanism
+        self._grpc_sync_event.wait(self._setstatus_backoff_seconds)
 
         try:
             self.client.update_tasks(results)
@@ -445,8 +390,8 @@ class PushTaskWorker:
                     },
                 )
                 break
-            # Sleep and break early if shutdown was requested.
-            if self._shutdown_signal.wait(0.25):
+            # Sleep and break early if shutdown was requested via shutdown().
+            if self._grpc_sync_event.wait(0.25):
                 break
 
         self._metrics.distribution(
@@ -472,17 +417,16 @@ class PushTaskWorker:
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
+        # Convert signals into KeyboardInterrupt.
+        # Running shutdown() within the signal handler can lead to deadlocks
+
         server: grpc.Server | None = None
-        server_started = False
         health_servicer: health.HealthServicer | None = None
 
-        # Record the request and let the loop below act on it. Raising from a
-        # handler unwinds at an arbitrary bytecode and can leave the locks held
-        # by the interrupted code in a broken state; calling anything that takes
-        # a lock (server.stop(), Event.set()) can deadlock against the code the
-        # handler interrupted. See ShutdownSignal.
         def signal_handler(*args: Any) -> None:
-            self._shutdown_signal.request()
+            if server:
+                server.stop(grace=5)
+            raise KeyboardInterrupt()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
@@ -523,13 +467,7 @@ class PushTaskWorker:
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
 
             server.add_insecure_port(f"[::]:{self._grpc_port}")
-
-            # Don't accept connections we are about to drop.
-            if self._shutdown_signal.is_set():
-                return 0
-
             server.start()
-            server_started = True
 
             # Hold NOT_SERVING until children are warm so the pod stays out of
             # the NEG/readiness set while its child processes are still loading.
@@ -537,7 +475,7 @@ class PushTaskWorker:
 
             # If shutdown was requested during warmup, don't advertise SERVING.
             # Bail to the finally below, which sets NOT_SERVING and tears everything down.
-            if self._shutdown_signal.is_set():
+            if self._grpc_sync_event.is_set():
                 return 0
 
             # Indicate that the server is ready
@@ -547,20 +485,22 @@ class PushTaskWorker:
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
             self._start_health_check_thread()
 
-            # Poll so a signal handler that only flipped a bool still gets us out.
-            while not self._shutdown_signal.is_set():
-                if server.wait_for_termination(timeout=SHUTDOWN_POLL_INTERVAL_SEC):
-                    break
+            try:
+                server.wait_for_termination()
+            except KeyboardInterrupt:
+                # Signals are converted to KeyboardInterrupt, swallow for exit code 0
+                pass
 
         finally:
             if health_servicer is not None:
                 health_servicer.set("", health_pb2.HealthCheckResponse.NOT_SERVING)
                 health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.NOT_SERVING)
 
-            if server is not None and server_started:
+            if server is not None:
                 server.stop(grace=5)
 
-            self.shutdown()
+            self._stop_health_check_thread()
+            self.worker_pool.shutdown()
 
         return 0
 
@@ -569,7 +509,7 @@ class PushTaskWorker:
         Shutdown the worker.
         """
         self._stop_health_check_thread()
-        self._shutdown_signal.set()
+        self._grpc_sync_event.set()
         self.worker_pool.shutdown()
 
 
@@ -648,7 +588,7 @@ class TaskWorker:
         )
         self._metrics = app.metrics
 
-        self._shutdown_signal = ShutdownSignal()
+        self._grpc_sync_event = self._mp_context.Event()
 
         self._gettask_backoff_seconds = 0
         self._setstatus_backoff_seconds = 0
@@ -663,24 +603,20 @@ class TaskWorker:
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
 
-        # Record the request and let the loop below act on it. Raising from a
-        # handler unwinds at an arbitrary bytecode and can leave the locks held
-        # by the interrupted code in a broken state; calling anything that takes
-        # a lock (Event.set()) can deadlock against the code the handler
-        # interrupted. See ShutdownSignal.
+        # Convert signals into KeyboardInterrupt.
+        # Running shutdown() within the signal handler can lead to deadlocks
         def signal_handler(*args: Any) -> None:
-            self._shutdown_signal.request()
+            raise KeyboardInterrupt()
 
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
 
         try:
-            while not self._shutdown_signal.is_set():
+            while True:
                 self.run_once()
-        finally:
+        except KeyboardInterrupt:
             self.shutdown()
-
-        return 0
+            raise
 
     def run_once(self) -> None:
         """Access point for tests to run a single worker loop"""
@@ -738,9 +674,7 @@ class TaskWorker:
             },
         )
 
-        if self._shutdown_signal.wait(self._setstatus_backoff_seconds):
-            # Don't claim a task we won't be around to run.
-            fetch_next = None
+        self._grpc_sync_event.wait(self._setstatus_backoff_seconds)
 
         try:
             next_task = self.client.update_task(result, fetch_next)
@@ -764,9 +698,7 @@ class TaskWorker:
             raise RequeueException(f"Failed to update task: {e}")
 
     def fetch_task(self) -> InflightTaskActivation | None:
-        if self._shutdown_signal.wait(self._gettask_backoff_seconds):
-            return None
-
+        self._grpc_sync_event.wait(self._gettask_backoff_seconds)
         try:
             activation = self.client.get_task(self._namespace)
         except grpc.RpcError as e:
@@ -799,7 +731,7 @@ class TaskWorker:
         """
         Shutdown the worker.
         """
-        self._shutdown_signal.set()
+        self._grpc_sync_event.set()
         self.worker_pool.shutdown()
 
 
