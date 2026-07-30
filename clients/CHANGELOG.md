@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.18
+
+### Internal Changes 🔧
+
+- (o11y) Support `sentry-sdk` configured with the streaming trace lifecycle (#757) by @alexander-alderman-webb in [#767](https://github.com/getsentry/taskbroker/pull/767)
+
 ## 0.20.17
 
 ### Bug Fixes 🐛
