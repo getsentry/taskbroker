@@ -150,6 +150,11 @@ pub struct Config {
     /// (reclaiming free pages) are executed
     pub maintenance_task_interval_ms: u64,
 
+    /// The frequency (in milliseconds) at which Tokio runtime metrics
+    /// (worker-thread utilization, queue depths) are sampled and emitted.
+    #[validate(range(min = 1))]
+    pub runtime_metrics_interval_ms: u64,
+
     /// The maximum number of seconds a task can be delayed until.
     /// Tasks delayed greater than this duration are capped.
     pub max_delayed_task_allowed_sec: u64,
@@ -268,6 +273,7 @@ impl Default for Config {
             health_check_killswitched: false,
             upkeep_deadline_reset_skip_after_startup_sec: 60,
             maintenance_task_interval_ms: 6000,
+            runtime_metrics_interval_ms: 5000,
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
             grpc_max_message_size: 52 * 1024 * 1024, // 52MB
