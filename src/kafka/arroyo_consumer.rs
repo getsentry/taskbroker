@@ -31,7 +31,7 @@ use tokio::time::sleep;
 use tracing::{error, info};
 
 use crate::config::Config;
-use crate::kafka::activation_batcher::ActivationBatcherConfig;
+use crate::kafka::activation_batch::ActivationBatchConfig;
 use crate::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
 use crate::kafka::deserialize::{self, DeserializeConfig};
 use crate::killswitch;
@@ -184,8 +184,8 @@ impl ProcessingStrategyFactory<KafkaPayload> for TaskbrokerStrategyFactory {
             self.activation_store.clone(),
             ActivationWriterConfig::from_topic(&self.config, &self.topic),
         );
-        let accumulator_config = ActivationBatcherConfig::from_topic(&self.config, &self.topic);
-        let forwarder_config = ActivationBatcherConfig::from_topic(&self.config, &self.topic);
+        let accumulator_config = ActivationBatchConfig::from_topic(&self.config, &self.topic);
+        let forwarder_config = ActivationBatchConfig::from_topic(&self.config, &self.topic);
         let row_weight = accumulator_config
             .max_batch_size
             .saturating_add(accumulator_config.max_batch_len.saturating_sub(1))
@@ -317,7 +317,7 @@ fn batch_input_weight(input: &BatchInput) -> usize {
 
 #[allow(clippy::result_large_err)]
 fn activation_batch_accumulator(
-    config: ActivationBatcherConfig,
+    config: ActivationBatchConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     runtime: Handle,
 ) -> Arc<BatchAccumulator> {
@@ -499,7 +499,7 @@ struct ActivationForwarder {
 
 impl ActivationForwarder {
     fn new(
-        config: ActivationBatcherConfig,
+        config: ActivationBatchConfig,
         runtime_config_manager: Arc<RuntimeConfigManager>,
     ) -> Self {
         let producer: Arc<FutureProducer> = Arc::new(

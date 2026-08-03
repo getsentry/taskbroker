@@ -1,4 +1,4 @@
-pub mod activation_batcher;
+pub mod activation_batch;
 pub mod activation_writer;
 pub mod admin;
 pub mod arroyo_consumer;
