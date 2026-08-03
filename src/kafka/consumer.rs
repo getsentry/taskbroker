@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{Error, anyhow};
@@ -55,41 +54,4 @@ pub async fn start_no_consume_mode(
     let guard = elegant_departure::get_shutdown_guard();
     guard.wait().await;
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-pub struct ReduceConfig {
-    pub shutdown_condition: ReduceShutdownCondition,
-    pub shutdown_behaviour: ReduceShutdownBehaviour,
-    pub when_full_behaviour: ReducerWhenFullBehaviour,
-    pub flush_interval: Option<Duration>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReduceShutdownCondition {
-    Signal,
-    Drain,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReduceShutdownBehaviour {
-    Flush,
-    Drop,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReducerWhenFullBehaviour {
-    Flush,
-    Backpressure,
-}
-
-pub trait Reducer {
-    type Input;
-    type Output;
-
-    fn reduce(&mut self, t: Self::Input) -> impl Future<Output = Result<(), Error>> + Send;
-    fn flush(&mut self) -> impl Future<Output = Result<Option<Self::Output>, Error>> + Send;
-    fn reset(&mut self);
-    fn is_full(&self) -> impl Future<Output = bool> + Send;
-    fn get_reduce_config(&self) -> ReduceConfig;
 }
