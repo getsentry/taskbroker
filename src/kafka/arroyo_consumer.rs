@@ -1,23 +1,28 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Error, anyhow};
+use futures::future::join_all;
 use rdkafka::Message as _;
 use rdkafka::Timestamp;
+use rdkafka::config::ClientConfig;
 use rdkafka::message::OwnedMessage;
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
 use sentry_arroyo::backends::kafka::InitialOffset;
 use sentry_arroyo::backends::kafka::config::KafkaConfig;
 use sentry_arroyo::backends::kafka::types::KafkaPayload;
 use sentry_arroyo::processing::StreamProcessor;
 use sentry_arroyo::processing::strategies::commit_offsets::CommitOffsets;
+use sentry_arroyo::processing::strategies::reduce::Reduce;
 use sentry_arroyo::processing::strategies::run_task_in_threads::{
     ConcurrencyConfig, RunTaskFunc, RunTaskInThreads,
 };
 use sentry_arroyo::processing::strategies::{
-    CommitRequest, InvalidMessage, InvalidMessageReason, MessageRejected, ProcessingStrategy,
-    ProcessingStrategyFactory, StrategyError, SubmitError, merge_commit_request,
+    CommitRequest, MessageRejected, ProcessingStrategy, ProcessingStrategyFactory, StrategyError,
+    SubmitError, merge_commit_request,
 };
 use sentry_arroyo::types::{InnerMessage, Message, Partition, Topic};
 use tokio::runtime::Handle;
@@ -26,10 +31,10 @@ use tokio::time::sleep;
 use tracing::{error, info};
 
 use crate::config::Config;
-use crate::kafka::activation_batcher::{ActivationBatcher, ActivationBatcherConfig};
+use crate::kafka::activation_batcher::ActivationBatcherConfig;
 use crate::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
-use crate::kafka::consumer::Reducer;
 use crate::kafka::deserialize::{self, DeserializeConfig};
+use crate::killswitch;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
@@ -39,7 +44,26 @@ const DEFAULT_MAX_POLL_INTERVAL_MS: usize = 300_000;
 const STORE_BACKPRESSURE_REPOLL: Duration = Duration::from_millis(250);
 
 type ActivationDeserializer =
-    dyn Fn(&OwnedMessage) -> Result<Activation, Error> + Send + Sync + 'static;
+    dyn Fn(&OwnedMessage) -> Result<Option<Activation>, Error> + Send + Sync + 'static;
+type BatchAccumulator = dyn Fn(
+        ActivationBatch,
+        Message<BatchInput>,
+    ) -> Result<ActivationBatch, (SubmitError<BatchInput>, ActivationBatch)>
+    + Send
+    + Sync;
+
+#[derive(Clone)]
+struct BatchInput {
+    activation: Option<Box<Activation>>,
+    weight: usize,
+}
+
+#[derive(Clone, Default)]
+struct ActivationBatch {
+    activations: Vec<Activation>,
+    activation_bytes: usize,
+    forward_payloads: Vec<Vec<u8>>,
+}
 
 pub async fn start_consumer(
     topic: &str,
@@ -160,24 +184,54 @@ impl ProcessingStrategyFactory<KafkaPayload> for TaskbrokerStrategyFactory {
             self.activation_store.clone(),
             ActivationWriterConfig::from_topic(&self.config, &self.topic),
         );
-        let store = ActivationStoreStrategy::new(commit, writer, self.runtime.clone());
-        let batcher = ActivationBatcher::new(
-            ActivationBatcherConfig::from_topic(&self.config, &self.topic),
-            self.runtime_config_manager.clone(),
+        let accumulator_config = ActivationBatcherConfig::from_topic(&self.config, &self.topic);
+        let forwarder_config = ActivationBatcherConfig::from_topic(&self.config, &self.topic);
+        let row_weight = accumulator_config
+            .max_batch_size
+            .saturating_add(accumulator_config.max_batch_len.saturating_sub(1))
+            .checked_div(accumulator_config.max_batch_len.max(1))
+            .unwrap_or(1)
+            .max(1);
+        let max_batch_size = accumulator_config.max_batch_size;
+        let max_batch_time_ms = accumulator_config.max_batch_time_ms;
+        let store = ActivationStoreStrategy::new(
+            commit,
+            writer,
+            ActivationForwarder::new(forwarder_config, self.runtime_config_manager.clone()),
+            self.runtime.clone(),
         );
-        let batch = ActivationBatchStrategy::new(store, batcher, self.runtime.clone());
+        let batch = Reduce::new(
+            store,
+            activation_batch_accumulator(
+                accumulator_config,
+                self.runtime_config_manager.clone(),
+                self.runtime.clone(),
+            ),
+            Arc::new(ActivationBatch::default),
+            max_batch_size,
+            Duration::from_millis(max_batch_time_ms),
+            batch_input_weight,
+        )
+        .flush_empty_batches(true);
+        let deserializer_config = DeserializeConfig::from_topic(&self.config, &self.topic);
+        let deserializer = Arc::new(deserialize::new(deserializer_config));
+        let deserializer = Arc::new(move |message: &OwnedMessage| deserializer(message).map(Some));
+        let deserialize_row_weight = row_weight;
+        let map_deserializer = deserializer.clone();
+        let map_topic = self.topic.clone();
         let concurrency = ConcurrencyConfig::with_runtime(
             self.assigned_partitions.lock().unwrap().len().max(1),
             self.runtime.clone(),
         );
-        let deserializer = Arc::new(deserialize::new(DeserializeConfig::from_topic(
-            &self.config,
-            &self.topic,
-        )));
         let map = RunTaskInThreads::new(
             batch,
             move |message: Message<KafkaPayload>| {
-                deserialize_message(message, deserializer.clone())
+                deserialize_message(
+                    message,
+                    map_deserializer.clone(),
+                    deserialize_row_weight,
+                    map_topic.clone(),
+                )
             },
             &concurrency,
             Some("taskbroker_deserialize"),
@@ -211,17 +265,31 @@ impl ProcessingStrategyFactory<KafkaPayload> for TaskbrokerStrategyFactory {
 fn deserialize_message(
     message: Message<KafkaPayload>,
     deserializer: Arc<ActivationDeserializer>,
-) -> RunTaskFunc<Option<Activation>, String> {
+    row_weight: usize,
+    configured_topic: String,
+) -> RunTaskFunc<BatchInput, String> {
     Box::pin(async move {
         let owned_message = match message_to_owned(&message) {
             Ok(owned_message) => owned_message,
             Err(err) => {
                 error!("Failed to convert Arroyo Kafka message, skipping: {err:?}");
-                return Ok(message.replace(None));
+                return Ok(message.replace(BatchInput {
+                    activation: None,
+                    weight: row_weight,
+                }));
             }
         };
         match deserializer(&owned_message) {
-            Ok(activation) => Ok(message.replace(Some(activation))),
+            Ok(activation) => {
+                let weight = activation
+                    .as_ref()
+                    .map(|activation| activation.activation.len().max(row_weight))
+                    .unwrap_or(row_weight);
+                Ok(message.replace(BatchInput {
+                    activation: activation.map(Box::new),
+                    weight,
+                }))
+            }
             Err(err) => {
                 // Explicit poison-message policy for this prototype: malformed
                 // payloads are logged and skipped by committing their offsets.
@@ -231,11 +299,102 @@ fn deserialize_message(
                     topic = ?owned_message.topic(),
                     partition = ?owned_message.partition(),
                     offset = ?owned_message.offset(),
+                    configured_topic = ?configured_topic,
                     "Failed to deserialize message, skipping: {err:?}",
                 );
-                Ok(message.replace(None))
+                Ok(message.replace(BatchInput {
+                    activation: None,
+                    weight: row_weight,
+                }))
             }
         }
+    })
+}
+
+fn batch_input_weight(input: &BatchInput) -> usize {
+    input.weight
+}
+
+#[allow(clippy::result_large_err)]
+fn activation_batch_accumulator(
+    config: ActivationBatcherConfig,
+    runtime_config_manager: Arc<RuntimeConfigManager>,
+    runtime: Handle,
+) -> Arc<BatchAccumulator> {
+    Arc::new(move |mut batch, message| {
+        let BatchInput { activation, .. } = message.into_payload();
+        let Some(activation) = activation else {
+            return Ok(batch);
+        };
+
+        let runtime_config = runtime.block_on(runtime_config_manager.read());
+        let forward_topic = runtime_config
+            .demoted_topic
+            .clone()
+            .unwrap_or(config.kafka_long_topic.clone());
+        let task_name = &activation.taskname;
+        let namespace = &activation.namespace;
+
+        if !runtime_config.drop_task_killswitch.is_empty() {
+            let should_drop_start = Instant::now();
+            let match_kind = killswitch::should_drop(
+                &runtime_config.drop_task_killswitch,
+                task_name,
+                &activation.activation,
+            );
+            metrics::histogram!(
+                "filter.drop_task_killswitch.duration",
+                "topic" => config.kafka_topic.clone(),
+            )
+            .record(should_drop_start.elapsed());
+            if let Some(match_kind) = match_kind {
+                metrics::counter!(
+                    "filter.drop_task_killswitch",
+                    "topic" => config.kafka_topic.clone(),
+                    "taskname" => task_name.clone(),
+                    "match" => match_kind,
+                )
+                .increment(1);
+                return Ok(batch);
+            }
+        }
+
+        if let Some(expires_at) = activation.expires_at
+            && chrono::Utc::now() > expires_at
+        {
+            metrics::counter!(
+                "filter.expired_at_consumer",
+                "topic" => config.kafka_topic.clone(),
+            )
+            .increment(1);
+            return Ok(batch);
+        }
+
+        if runtime_config.demoted_namespaces.contains(namespace) {
+            if forward_topic == config.kafka_topic {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace.skipped",
+                    "topic" => config.kafka_topic.clone(),
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+            } else {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace",
+                    "topic" => config.kafka_topic.clone(),
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+                batch.forward_payloads.push(activation.activation);
+                return Ok(batch);
+            }
+        }
+
+        batch.activation_bytes += activation.activation.len();
+        batch.activations.push(*activation);
+        Ok(batch)
     })
 }
 
@@ -328,233 +487,100 @@ fn revoke_remaining_partitions(
     partitions.clear();
 }
 
-struct ActivationBatchStrategy<N> {
-    next_step: N,
-    batcher: Option<ActivationBatcher>,
-    runtime: Handle,
-    committable: BTreeMap<Partition, u64>,
-    flush_task: Option<JoinHandle<BatchFlushResult>>,
-    carried_message: Option<Message<Vec<Activation>>>,
-    commit_request_carried_over: Option<CommitRequest>,
-    flush_interval: Option<Duration>,
-    last_flush: Instant,
+struct ActivationForwarder {
+    topic: String,
+    producer_config: ClientConfig,
+    kafka_long_topic: String,
+    send_timeout_ms: u64,
+    runtime_config_manager: Arc<RuntimeConfigManager>,
+    producer: Arc<FutureProducer>,
+    producer_cluster: String,
 }
 
-struct BatchFlushResult {
-    batcher: ActivationBatcher,
-    committable: BTreeMap<Partition, u64>,
-    result: Result<Option<Vec<Activation>>, Error>,
-}
+impl ActivationForwarder {
+    fn new(
+        config: ActivationBatcherConfig,
+        runtime_config_manager: Arc<RuntimeConfigManager>,
+    ) -> Self {
+        let producer: Arc<FutureProducer> = Arc::new(
+            config
+                .producer_config
+                .create()
+                .expect("Could not create kafka producer in activation forwarder"),
+        );
+        let producer_cluster = config
+            .producer_config
+            .get("bootstrap.servers")
+            .expect("producer config always sets bootstrap.servers")
+            .to_owned();
 
-impl<N> ActivationBatchStrategy<N> {
-    fn new(next_step: N, batcher: ActivationBatcher, runtime: Handle) -> Self {
-        let flush_interval = batcher.get_reduce_config().flush_interval;
         Self {
-            next_step,
-            batcher: Some(batcher),
-            runtime,
-            committable: BTreeMap::new(),
-            flush_task: None,
-            carried_message: None,
-            commit_request_carried_over: None,
-            flush_interval,
-            last_flush: Instant::now(),
+            topic: config.kafka_topic,
+            producer_config: config.producer_config,
+            kafka_long_topic: config.kafka_long_topic,
+            send_timeout_ms: config.send_timeout_ms,
+            runtime_config_manager,
+            producer,
+            producer_cluster,
         }
     }
 
-    fn retry_carried_message(&mut self) -> Result<(), StrategyError>
-    where
-        N: ProcessingStrategy<Vec<Activation>>,
-    {
-        let Some(message) = self.carried_message.take() else {
-            return Ok(());
-        };
-        match self.next_step.submit(message) {
-            Ok(()) => Ok(()),
-            Err(SubmitError::MessageRejected(MessageRejected { message })) => {
-                self.carried_message = Some(message);
-                Ok(())
-            }
-            Err(SubmitError::InvalidMessage(invalid)) => Err(invalid.into()),
-        }
-    }
-
-    fn finish_flush(&mut self) -> Result<(), StrategyError>
-    where
-        N: ProcessingStrategy<Vec<Activation>>,
-    {
-        let Some(task) = self.flush_task.as_ref() else {
-            return Ok(());
-        };
-        if !task.is_finished() {
+    async fn forward(&mut self, payloads: Vec<Vec<u8>>) -> Result<(), Error> {
+        if payloads.is_empty() {
             return Ok(());
         }
 
-        let task = self.flush_task.take().unwrap();
-        let BatchFlushResult {
-            batcher,
-            committable,
-            result,
-        } = self.runtime.block_on(task).map_err(|err| {
-            StrategyError::Other(anyhow!("activation batch flush task failed: {err}").into())
-        })?;
-        self.batcher = Some(batcher);
-        self.last_flush = Instant::now();
-
-        match result {
-            Ok(Some(batch)) => {
-                let message = Message::new_any_message(batch, committable);
-                match self.next_step.submit(message) {
-                    Ok(()) => Ok(()),
-                    Err(SubmitError::MessageRejected(MessageRejected { message })) => {
-                        self.carried_message = Some(message);
-                        Ok(())
-                    }
-                    Err(SubmitError::InvalidMessage(invalid)) => Err(invalid.into()),
-                }
-            }
-            Ok(None) => {
-                self.committable.extend(committable);
-                Ok(())
-            }
-            Err(err) => Err(StrategyError::Other(err.into())),
+        let runtime_config = self.runtime_config_manager.read().await;
+        let forward_cluster = runtime_config
+            .demoted_topic_cluster
+            .clone()
+            .unwrap_or_else(|| {
+                self.producer_config
+                    .get("bootstrap.servers")
+                    .expect("producer config always sets bootstrap.servers")
+                    .to_string()
+            });
+        if self.producer_cluster != forward_cluster {
+            let mut new_config = self.producer_config.clone();
+            new_config.set("bootstrap.servers", &forward_cluster);
+            self.producer = Arc::new(
+                new_config
+                    .create()
+                    .expect("Could not create kafka producer in activation forwarder"),
+            );
+            self.producer_cluster = forward_cluster;
         }
-    }
+        let forward_topic = runtime_config
+            .demoted_topic
+            .clone()
+            .unwrap_or(self.kafka_long_topic.clone());
+        drop(runtime_config);
 
-    fn maybe_start_flush(&mut self, force: bool)
-    where
-        N: ProcessingStrategy<Vec<Activation>>,
-    {
-        if self.flush_task.is_some()
-            || self.carried_message.is_some()
-            || self.committable.is_empty()
-        {
-            return;
-        }
+        let sends = payloads.iter().map(|payload| {
+            self.producer.send(
+                FutureRecord::<(), Vec<u8>>::to(&forward_topic).payload(payload),
+                Timeout::After(Duration::from_millis(self.send_timeout_ms)),
+            )
+        });
 
-        let should_flush = force
-            || self
-                .flush_interval
-                .is_some_and(|interval| self.last_flush.elapsed() >= interval)
-            || self
-                .batcher
-                .as_ref()
-                .is_some_and(|batcher| self.runtime.block_on(batcher.is_full()));
+        let results = join_all(sends).await;
+        let success_count = results.iter().filter(|result| result.is_ok()).count();
 
-        if !should_flush {
-            return;
-        }
+        metrics::histogram!("consumer.forward_attempts", "topic" => self.topic.clone())
+            .record(results.len() as f64);
+        metrics::histogram!("consumer.forward_successes", "topic" => self.topic.clone())
+            .record(success_count as f64);
+        metrics::histogram!("consumer.forward_failures", "topic" => self.topic.clone())
+            .record((results.len() - success_count) as f64);
 
-        let mut batcher = self.batcher.take().unwrap();
-        let committable = std::mem::take(&mut self.committable);
-        self.flush_task = Some(self.runtime.spawn(async move {
-            let result = batcher.flush().await;
-            BatchFlushResult {
-                batcher,
-                committable,
-                result,
-            }
-        }));
-    }
-}
-
-impl<N> ProcessingStrategy<Option<Activation>> for ActivationBatchStrategy<N>
-where
-    N: ProcessingStrategy<Vec<Activation>>,
-{
-    fn poll(&mut self) -> Result<Option<CommitRequest>, StrategyError> {
-        let commit_request = self.next_step.poll()?;
-        self.commit_request_carried_over =
-            merge_commit_request(self.commit_request_carried_over.take(), commit_request);
-
-        self.retry_carried_message()?;
-        self.finish_flush()?;
-        self.maybe_start_flush(false);
-
-        Ok(self.commit_request_carried_over.take())
-    }
-
-    fn submit(
-        &mut self,
-        message: Message<Option<Activation>>,
-    ) -> Result<(), SubmitError<Option<Activation>>> {
-        if self.batcher.is_none() || self.flush_task.is_some() || self.carried_message.is_some() {
-            return Err(SubmitError::MessageRejected(MessageRejected { message }));
-        }
-
-        let committable: Vec<_> = message.committable().collect();
-        let Some(activation) = message.into_payload() else {
-            let skipped = Message::new_any_message(Vec::new(), committable.into_iter().collect());
-            match self.next_step.submit(skipped) {
-                Ok(()) => return Ok(()),
-                Err(SubmitError::MessageRejected(MessageRejected { message })) => {
-                    self.carried_message = Some(message);
-                    return Ok(());
-                }
-                Err(SubmitError::InvalidMessage(invalid)) => {
-                    return Err(SubmitError::InvalidMessage(invalid));
-                }
-            }
-        };
-        let Some(batcher) = self.batcher.as_mut() else {
-            unreachable!("checked above");
-        };
-
-        self.runtime
-            .block_on(batcher.reduce(activation))
-            .map_err(|err| {
-                error!("Failed to batch activation: {err}");
-                SubmitError::InvalidMessage(InvalidMessage {
-                    partition: committable
-                        .first()
-                        .map(|(partition, _)| *partition)
-                        .unwrap_or_else(|| Partition::new(Topic::new("unknown"), 0)),
-                    offset: committable
-                        .first()
-                        .map(|(_, offset)| offset.saturating_sub(1))
-                        .unwrap_or(0),
-                    reason: InvalidMessageReason::Invalid,
-                })
-            })?;
-
-        self.committable.extend(committable);
-        self.maybe_start_flush(false);
         Ok(())
-    }
-
-    fn terminate(&mut self) {
-        if let Some(task) = &self.flush_task {
-            task.abort();
-        }
-        self.flush_task = None;
-        self.next_step.terminate();
-    }
-
-    fn join(&mut self, timeout: Option<Duration>) -> Result<Option<CommitRequest>, StrategyError> {
-        let deadline = timeout.map(|timeout| Instant::now() + timeout);
-        self.maybe_start_flush(true);
-
-        while self.flush_task.is_some() || self.carried_message.is_some() {
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                break;
-            }
-            let commit_request = self.poll()?;
-            self.commit_request_carried_over =
-                merge_commit_request(self.commit_request_carried_over.take(), commit_request);
-            std::thread::sleep(Duration::from_millis(10));
-        }
-
-        let next_commit = self.next_step.join(timeout)?;
-        Ok(merge_commit_request(
-            self.commit_request_carried_over.take(),
-            next_commit,
-        ))
     }
 }
 
 struct ActivationStoreStrategy<N> {
     next_step: N,
     writer: Option<ActivationWriter>,
+    forwarder: Option<ActivationForwarder>,
     runtime: Handle,
     write_task: Option<JoinHandle<StoreWriteResult>>,
     carried_message: Option<Message<()>>,
@@ -563,15 +589,22 @@ struct ActivationStoreStrategy<N> {
 
 struct StoreWriteResult {
     writer: ActivationWriter,
-    message: Message<Vec<Activation>>,
+    forwarder: ActivationForwarder,
+    message: Message<ActivationBatch>,
     result: Result<(), Error>,
 }
 
 impl<N> ActivationStoreStrategy<N> {
-    fn new(next_step: N, writer: ActivationWriter, runtime: Handle) -> Self {
+    fn new(
+        next_step: N,
+        writer: ActivationWriter,
+        forwarder: ActivationForwarder,
+        runtime: Handle,
+    ) -> Self {
         Self {
             next_step,
             writer: Some(writer),
+            forwarder: Some(forwarder),
             runtime,
             write_task: None,
             carried_message: None,
@@ -610,12 +643,14 @@ impl<N> ActivationStoreStrategy<N> {
         let task = self.write_task.take().unwrap();
         let StoreWriteResult {
             writer,
+            forwarder,
             message,
             result,
         } = self.runtime.block_on(task).map_err(|err| {
             StrategyError::Other(anyhow!("activation store write task failed: {err}").into())
         })?;
         self.writer = Some(writer);
+        self.forwarder = Some(forwarder);
         result.map_err(|err| StrategyError::Other(err.into()))?;
 
         match self.next_step.submit(message.replace(())) {
@@ -629,7 +664,7 @@ impl<N> ActivationStoreStrategy<N> {
     }
 }
 
-impl<N> ProcessingStrategy<Vec<Activation>> for ActivationStoreStrategy<N>
+impl<N> ProcessingStrategy<ActivationBatch> for ActivationStoreStrategy<N>
 where
     N: ProcessingStrategy<()>,
 {
@@ -646,28 +681,39 @@ where
 
     fn submit(
         &mut self,
-        message: Message<Vec<Activation>>,
-    ) -> Result<(), SubmitError<Vec<Activation>>> {
-        if self.writer.is_none() || self.write_task.is_some() || self.carried_message.is_some() {
+        message: Message<ActivationBatch>,
+    ) -> Result<(), SubmitError<ActivationBatch>> {
+        if self.writer.is_none()
+            || self.forwarder.is_none()
+            || self.write_task.is_some()
+            || self.carried_message.is_some()
+        {
             return Err(SubmitError::MessageRejected(MessageRejected { message }));
         }
 
-        let mut writer = self.writer.take().unwrap();
+        let writer = self.writer.take().unwrap();
+        let mut forwarder = self.forwarder.take().unwrap();
         self.write_task = Some(self.runtime.spawn(async move {
             let batch = message.payload().clone();
             let result = async {
-                writer.reduce(batch).await?;
+                metrics::histogram!("consumer.batch_rows", "topic" => forwarder.topic.clone())
+                    .record(batch.activations.len() as f64);
+                metrics::histogram!("consumer.batch_bytes", "topic" => forwarder.topic.clone())
+                    .record(batch.activation_bytes as f64);
+
+                forwarder.forward(batch.forward_payloads).await?;
                 loop {
-                    match writer.flush().await? {
-                        Some(()) => return Ok(()),
-                        None => sleep(STORE_BACKPRESSURE_REPOLL).await,
+                    if writer.write_batch(&batch.activations).await? {
+                        return Ok(());
                     }
+                    sleep(STORE_BACKPRESSURE_REPOLL).await;
                 }
             }
             .await;
 
             StoreWriteResult {
                 writer,
+                forwarder,
                 message,
                 result,
             }
