@@ -1,7 +1,7 @@
 pub mod activation_batch;
 pub mod activation_writer;
 pub mod admin;
-pub mod arroyo_consumer;
+pub mod arroyo;
 pub mod consumer;
 pub mod deserialize;
 pub mod deserialize_activation;

@@ -23,7 +23,7 @@ use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
 use taskbroker::kafka::admin::create_missing_topics;
-use taskbroker::kafka::arroyo_consumer::start_consumer;
+use taskbroker::kafka::arroyo::start_consumer;
 use taskbroker::kafka::consumer::start_no_consume_mode;
 use taskbroker::metrics;
 use taskbroker::push::PushPool;
