@@ -22,14 +22,10 @@ use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
 use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
-use taskbroker::kafka::activation_batcher::{ActivationBatcher, ActivationBatcherConfig};
-use taskbroker::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
 use taskbroker::kafka::admin::create_missing_topics;
-use taskbroker::kafka::consumer::{start_consumer, start_no_consume_mode};
-use taskbroker::kafka::deserialize::{self, DeserializeConfig};
-use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
+use taskbroker::kafka::arroyo_consumer::start_consumer;
+use taskbroker::kafka::consumer::start_no_consume_mode;
 use taskbroker::metrics;
-use taskbroker::processing_strategy;
 use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
 use taskbroker::store::adapters::postgres::{self, PostgresStore};
@@ -199,30 +195,10 @@ async fn main() -> Result<(), Error> {
             // an outer select here like the other tasks.
             let topic_refs = [task_topic.as_str()];
             start_consumer(
-                &topic_refs,
-                &consumer_config.kafka_consumer_config_for(&task_topic),
+                topic_refs[0],
+                consumer_config.clone(),
                 consumer_store.clone(),
-                processing_strategy!({
-                    err:
-                        OsStreamWriter::new(
-                            Duration::from_secs(1),
-                            OsStream::StdErr,
-                        ),
-
-                    map:
-                        deserialize::new(DeserializeConfig::from_topic(&consumer_config, &task_topic)),
-
-                    reduce:
-                        ActivationBatcher::new(
-                            ActivationBatcherConfig::from_topic(&consumer_config, &task_topic),
-                            runtime_config_manager.clone()
-                        ),
-                        ActivationWriter::new(
-                            consumer_store.clone(),
-                            ActivationWriterConfig::from_topic(&consumer_config, &task_topic)
-                        ),
-
-                }),
+                runtime_config_manager.clone(),
             )
             .await
         });
