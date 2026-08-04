@@ -1,15 +1,14 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
 use elegant_departure::get_shutdown_guard;
-use tokio::sync::{Mutex, MutexGuard, Notify, RwLock};
+use flume::{Receiver, Sender};
+use tokio::sync::Notify;
 use tonic::async_trait;
 use tracing::{error, info, warn};
 
 use crate::config::Config;
 use crate::store::traits::ActivationStore;
-use crate::timed;
 
 /// Represents an entity that can update tasks in some way. Meant to abstract away
 /// the update logic, which varies between delivery modes, batching configurations, and so on.
@@ -35,11 +34,11 @@ pub struct LazyUpdater {
     /// The activation store.
     store: Arc<dyn ActivationStore>,
 
-    /// Last time the buffer was flushed.
-    last_flush: Arc<RwLock<DateTime<Utc>>>,
+    /// Sent activation IDs that need to be updated.
+    sender: Sender<String>,
 
-    /// Sent activations that need to be updated.
-    buffer: Arc<Mutex<Vec<String>>>,
+    /// Receives activation IDs for the background updater loop.
+    receiver: Receiver<String>,
 
     /// Signals the background task to stop.
     stop: Notify,
@@ -47,52 +46,25 @@ pub struct LazyUpdater {
 
 impl LazyUpdater {
     pub fn new(config: Arc<Config>, store: Arc<dyn ActivationStore>) -> Self {
-        let buffer = Arc::new(Mutex::new(vec![]));
-        let last_flush = Arc::new(RwLock::new(Utc::now()));
+        let (sender, receiver) = flume::bounded(config.push.update.batch.length);
         let stop = Notify::new();
 
         Self {
             config,
             store,
-            buffer,
-            last_flush,
+            sender,
+            receiver,
             stop,
         }
     }
 
-    async fn lock_buffer(&self, operation: &'static str) -> MutexGuard<'_, Vec<String>> {
-        match self.buffer.try_lock() {
-            Ok(buffer) => {
-                metrics::counter!(
-                    "push.updater.buffer.lock",
-                    "operation" => operation,
-                    "result" => "uncontended"
-                )
-                .increment(1);
-
-                buffer
-            }
-
-            Err(_) => {
-                metrics::counter!(
-                    "push.updater.buffer.lock",
-                    "operation" => operation,
-                    "result" => "contended"
-                )
-                .increment(1);
-
-                timed!(
-                    self.buffer.lock(),
-                    "push.updater.buffer.lock.wait",
-                    "operation" => operation
-                )
-            }
-        }
-    }
-
     /// Flush buffered activations to the store. Empties the buffer on success, refills on failure.
-    async fn flush(&self, buffer: &mut MutexGuard<'_, Vec<String>>) -> Result<()> {
-        let ids: Vec<_> = buffer.drain(..).collect();
+    async fn flush(&self, buffer: &mut Vec<String>) -> Result<()> {
+        if buffer.is_empty() {
+            return Ok(());
+        }
+
+        let ids = std::mem::take(buffer);
         let expected = ids.len() as u64;
 
         match self.store.mark_processing_batch(&ids).await {
@@ -107,10 +79,6 @@ impl LazyUpdater {
                 metrics::histogram!("push.updater.flush.expected").record(expected as f64);
                 metrics::histogram!("push.updater.flush.actual").record(actual as f64);
 
-                // Indicate that this is the last time we performed a periodic flush
-                let mut last_flush = self.last_flush.write().await;
-                *last_flush = Utc::now();
-
                 Ok(())
             }
 
@@ -118,6 +86,30 @@ impl LazyUpdater {
                 // Flush failed, return IDs to buffer
                 buffer.extend(ids);
                 Err(e)
+            }
+        }
+    }
+
+    async fn flush_with_reason(&self, buffer: &mut Vec<String>, reason: &'static str) -> bool {
+        match self.flush(buffer).await {
+            Ok(_) => {
+                metrics::counter!("push.updater.flush", "reason" => reason, "result" => "ok")
+                    .increment(1);
+
+                true
+            }
+
+            Err(e) => {
+                metrics::counter!("push.updater.flush", "reason" => reason, "result" => "error")
+                    .increment(1);
+
+                error!(
+                    error = ?e,
+                    reason,
+                    "Failed to flush claimed → processing updates"
+                );
+
+                false
             }
         }
     }
@@ -131,7 +123,12 @@ impl Updater for LazyUpdater {
 
         // Flush every `interval` milliseconds
         let period = self.config.push.update.batch.interval;
+        let batch_length = self.config.push.update.batch.length;
+
         let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut buffer = Vec::with_capacity(batch_length);
 
         loop {
             tokio::select! {
@@ -140,83 +137,50 @@ impl Updater for LazyUpdater {
                     break;
                 }
 
-                _ = interval.tick(), if self.config.push.update.batched => {
-                    // Lock the ID buffer
-                    let mut buffer = self.lock_buffer("tick").await;
+                received = self.receiver.recv_async(), if buffer.len() < batch_length => {
+                    match received {
+                        Ok(id) => {
+                            buffer.push(id);
 
-                    // Make sure we aren't flushing too soon
-                    let now = Utc::now().timestamp_millis();
-                    let elapsed = now - self.last_flush.read().await.timestamp_millis();
+                            // Drain the entire queue
+                            while buffer.len() < batch_length {
+                                match self.receiver.try_recv() {
+                                    Ok(id) => buffer.push(id),
+                                    Err(_) => break
+                                };
+                            }
 
-                    if elapsed < (self.config.push.update.batch.interval.as_millis() as i64) {
-                        // Too soon!
-                        continue;
-                    }
+                            if buffer.len() >= batch_length {
+                                self.flush_with_reason(&mut buffer, "full").await;
+                            }
 
-                    match self.flush(&mut buffer).await {
-                        Ok(_) => metrics::counter!("push.updater.flush", "reason" => "tick", "result" => "ok").increment(1),
-
-                        Err(e) => {
-                            metrics::counter!("push.updater.flush", "reason" => "tick", "result" => "error").increment(1);
-
-                            error!(
-                                error = ?e,
-                                "Failed to flush claimed → processing updates (tick)"
-                            );
+                            metrics::gauge!("push.updater.queue.depth").set(self.receiver.len() as f64);
                         }
+
+                        Err(_) => break,
                     }
+                }
+
+                _ = interval.tick() => {
+                    self.flush_with_reason(&mut buffer, "tick").await;
                 }
             }
         }
 
-        // Perform one last flush before exiting
-        let mut buffer = self.lock_buffer("exit").await;
-
-        match self.flush(&mut buffer).await {
-            Ok(_) => metrics::counter!("push.updater.flush", "reason" => "exit", "result" => "ok")
-                .increment(1),
-
-            Err(e) => {
-                metrics::counter!("push.updater.flush", "reason" => "exit", "result" => "error")
-                    .increment(1);
-
-                error!(
-                    error = ?e,
-                    "Failed to flush claimed → processing updates (exit)"
-                );
-            }
+        // Drain all IDs that arrived before the updater stopped, then perform one last flush.
+        while let Ok(id) = self.receiver.try_recv() {
+            buffer.push(id);
         }
+
+        self.flush_with_reason(&mut buffer, "exit").await;
 
         drop(guard);
         Ok(())
     }
 
     async fn update(&self, id: &str) -> Result<()> {
-        // Lock the ID buffer
-        let mut buffer = self.lock_buffer("update").await;
-
-        if buffer.len() >= self.config.push.update.batch.length {
-            // Flush first
-            match self.flush(&mut buffer).await {
-                Ok(_) => {
-                    metrics::counter!("push.updater.flush", "reason" => "full", "result" => "ok")
-                        .increment(1)
-                }
-
-                Err(e) => {
-                    metrics::counter!("push.updater.flush", "reason" => "full", "result" => "error").increment(1);
-
-                    error!(
-                        error = ?e,
-                        "Failed to flush claimed → processing updates (full buffer)"
-                    );
-
-                    return Err(e);
-                }
-            }
-        }
-
-        buffer.push(id.to_string());
+        self.sender.send_async(id.to_string()).await?;
+        metrics::gauge!("push.updater.queue.depth").set(self.sender.len() as f64);
         Ok(())
     }
 

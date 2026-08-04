@@ -15,6 +15,7 @@ use tonic::transport::Server;
 use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
 
+use taskbroker::canary_tasks;
 use taskbroker::config::store::DatabaseAdapter;
 use taskbroker::config::{Config, DeliveryMode};
 use taskbroker::fetch::FetchPool;
@@ -66,6 +67,8 @@ async fn main() -> Result<(), Error> {
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
 
+    info!(config = config.dump_redacted_yaml()?, "Configuration");
+
     if args.run == Run::Migrations {
         return config.store.adapter.migrate(&config).await;
     }
@@ -106,7 +109,10 @@ async fn main() -> Result<(), Error> {
             Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
         }
     }
-    // Get startup time after migrations and vacuum
+
+    canary_tasks::enqueue(&config, store.as_ref()).await?;
+
+    // Get startup time after migrations, vacuum, and startup canaries
     let startup_time = Utc::now();
 
     // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
@@ -318,14 +324,19 @@ async fn main() -> Result<(), Error> {
             let mut map = HashMap::new();
 
             for (application, endpoint) in config.worker_map.clone() {
-                let worker = match Worker::connect(config.clone(), endpoint).await {
+                let worker = match Worker::connect(config.clone(), endpoint.clone()).await {
                     Ok(w) => {
-                        debug!("Connected to worker!");
+                        debug!(application, endpoint, "Connected to worker!");
                         Box::new(w) as Box<dyn WorkerClient>
                     }
 
                     Err(e) => {
-                        error!(error = ?e, "Failed to connect to worker");
+                        error!(
+                            application,
+                            endpoint,
+                            error = ?e,
+                            "Failed to connect to worker"
+                        );
                         return Err(e);
                     }
                 };

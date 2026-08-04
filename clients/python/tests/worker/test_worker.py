@@ -43,7 +43,6 @@ from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.worker import (
-    BatchPushTaskWorker,
     PushTaskWorker,
     TaskWorker,
     TaskWorkerProcessingPool,
@@ -338,7 +337,7 @@ def _make_result_thread_pool(
     *,
     concurrency: int = 3,
     result_queue_maxsize: int = 3,
-    update_in_batches: bool,
+    update_in_batches: bool = False,
 ) -> TaskWorkerProcessingPool:
     return TaskWorkerProcessingPool(
         app_module="examples.app:app",
@@ -348,8 +347,8 @@ def _make_result_thread_pool(
         concurrency=concurrency,
         result_queue_maxsize=result_queue_maxsize,
         processing_pool_name="test",
-        process_type="fork",
         update_in_batches=update_in_batches,
+        process_type="fork",
     )
 
 
@@ -647,7 +646,7 @@ class TestTaskWorker(TestCase):
 
     def test_result_thread_sends_results_individually_without_batching(self) -> None:
         capture = _SendResultCapture()
-        pool = _make_result_thread_pool(capture, update_in_batches=False)
+        pool = _make_result_thread_pool(capture)
         try:
             pool.start_result_thread()
 
@@ -722,19 +721,6 @@ class TestTaskWorker(TestCase):
         self.assertTrue(taskworker.client is not None)
         self.assertEqual(taskworker._grpc_port, 50099)
 
-    def test_constructor_batch_push_mode(self) -> None:
-        taskworker = BatchPushTaskWorker(
-            app_module="examples.app:app",
-            broker_service="127.0.0.1:50051",
-            max_child_task_count=100,
-            process_type="fork",
-            grpc_port=50099,
-            update_in_batches=True,
-        )
-
-        self.assertTrue(taskworker.client is not None)
-        self.assertEqual(taskworker._grpc_port, 50099)
-
 
 def test_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
     taskworker = PushTaskWorker(
@@ -744,30 +730,6 @@ def test_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
         process_type="fork",
         health_check_file_path=str(tmp_path / "health"),
         health_check_sec_per_touch=0.01,
-    )
-
-    with mock.patch.object(taskworker.client, "emit_health_check") as mock_emit:
-        taskworker._start_health_check_thread()
-        try:
-            start = time.time()
-            while mock_emit.call_count < 2 and time.time() - start < 1:
-                time.sleep(0.01)
-        finally:
-            taskworker._stop_health_check_thread()
-
-    assert mock_emit.call_count >= 2
-    assert taskworker._health_check_thread is None
-
-
-def test_batch_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
-    taskworker = BatchPushTaskWorker(
-        app_module="examples.app:app",
-        broker_service="127.0.0.1:50051",
-        max_child_task_count=100,
-        process_type="fork",
-        health_check_file_path=str(tmp_path / "health"),
-        health_check_sec_per_touch=0.01,
-        update_in_batches=True,
     )
 
     with mock.patch.object(taskworker.client, "emit_health_check") as mock_emit:
@@ -1035,33 +997,6 @@ class TestWorkerServicer(TestCase):
         self.assertEqual(inflight.activation.id, SIMPLE_TASK.activation.id)
         self.assertEqual(inflight.host, "broker-host:50051")
 
-    def test_batch_push_task_success(self) -> None:
-        taskworker = BatchPushTaskWorker(
-            app_module="examples.app:app",
-            broker_service="127.0.0.1:50051",
-            max_child_task_count=100,
-            process_type="fork",
-            update_in_batches=True,
-        )
-        with mock.patch.object(
-            taskworker.worker_pool, "push_task", return_value=True
-        ) as mock_push_task:
-            request = PushTaskRequest(
-                task=SIMPLE_TASK.activation,
-                callback_url="broker-host:50051",
-            )
-            mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker.worker_pool)
-
-            response = servicer.PushTask(request, mock_context)
-
-        self.assertIsInstance(response, PushTaskResponse)
-        mock_context.abort.assert_not_called()
-        mock_push_task.assert_called_once_with(mock.ANY, timeout=5)
-        (inflight,) = mock_push_task.call_args[0]
-        self.assertEqual(inflight.activation.id, SIMPLE_TASK.activation.id)
-        self.assertEqual(inflight.host, "broker-host:50051")
-
     def test_push_task_worker_busy(self) -> None:
         taskworker = PushTaskWorker(
             app_module="examples.app:app",
@@ -1069,29 +1004,6 @@ class TestWorkerServicer(TestCase):
             max_child_task_count=100,
             process_type="fork",
             child_tasks_queue_maxsize=1,
-        )
-        with mock.patch.object(taskworker.worker_pool, "push_task", return_value=False):
-            request = PushTaskRequest(
-                task=SIMPLE_TASK.activation,
-                callback_url="broker-host:50051",
-            )
-            mock_context = mock.MagicMock()
-            servicer = WorkerServicer(taskworker.worker_pool)
-
-            servicer.PushTask(request, mock_context)
-
-            mock_context.abort.assert_called_once_with(
-                grpc.StatusCode.RESOURCE_EXHAUSTED, "worker busy"
-            )
-
-    def test_batch_push_task_worker_busy(self) -> None:
-        taskworker = BatchPushTaskWorker(
-            app_module="examples.app:app",
-            broker_service="127.0.0.1:50051",
-            max_child_task_count=100,
-            process_type="fork",
-            child_tasks_queue_maxsize=1,
-            update_in_batches=True,
         )
         with mock.patch.object(taskworker.worker_pool, "push_task", return_value=False):
             request = PushTaskRequest(
@@ -1140,24 +1052,22 @@ def test_child_process_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
     shutdown = Event()
 
     todo.put(CANARY_TASK)
-    with mock.patch("taskbroker_client.canary.logger") as mock_logger:
-        child_process(
-            "examples.app:app",
-            todo,
-            processed,
-            shutdown,
-            max_task_count=1,
-            processing_pool_name="test",
-            process_type="fork",
-            skip_awaiting_futures=False,
-            future_checking_frequency=0.1,
-        )
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        shutdown,
+        max_task_count=1,
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
+    )
 
     result = processed.get()
     assert result.task_id == CANARY_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
-    mock_logger.info.assert_called_once_with("Running canary task...")
-    assert capsys.readouterr().out == "Done running canary task!\n"
+    assert capsys.readouterr().out == "Running canary task...\nDone running canary task!\n"
 
 
 def test_child_process_emits_running_message() -> None:
@@ -2036,6 +1946,42 @@ def test_child_process_tracks_producer_futures(
     # collect_futures is called once per executed task
     assert collect_mock.call_count == 1
 
+    result = processed.get(timeout=5)
+    assert result.task_id == task.activation.id
+    assert result.status == TASK_ACTIVATION_STATUS_COMPLETE
+
+
+def test_child_process_ignores_empty_producer_future_sets(
+    clear_pending_futures: None,
+    restore_signal_handlers: None,
+) -> None:
+    task = _producing_task()
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    shutdown = Event()
+
+    todo.put(task)
+    with (
+        mock.patch.object(
+            FutureTrackingProducer, "collect_futures", return_value={"test.producer": set()}
+        ),
+        mock.patch(
+            "taskbroker_client.worker.workerchild.ActivationWithPendingFutures"
+        ) as pending_task,
+    ):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            shutdown,
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
+        )
+
+    pending_task.assert_not_called()
     result = processed.get(timeout=5)
     assert result.task_id == task.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_COMPLETE

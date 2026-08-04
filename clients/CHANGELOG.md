@@ -1,4 +1,47 @@
 # Changelog
+## 0.20.18
+
+### Internal Changes 🔧
+
+- (o11y) Support `sentry-sdk` configured with the streaming trace lifecycle (#757) by @alexander-alderman-webb in [#767](https://github.com/getsentry/taskbroker/pull/767)
+
+## 0.20.17
+
+### Bug Fixes 🐛
+
+- Revert "fix(python): Shut workers down without raising from signal handlers (#764)" in [e9d14941](https://github.com/getsentry/taskbroker/commit/e9d14941f83450b6a24076c1ae29c9d76f07cfa5)
+
+## 0.20.16
+
+### New Features ✨
+
+- (taskbroker) Add Canary Task Sending to Taskbroker by @george-sentry in [#752](https://github.com/getsentry/taskbroker/pull/752)
+
+### Bug Fixes 🐛
+
+- (python) Shut workers down without raising from signal handlers by @untitaker in [#764](https://github.com/getsentry/taskbroker/pull/764)
+
+## 0.20.15
+
+### Bug Fixes 🐛
+
+- (workerchild) Ignore empty producer future sets by @lvthanh03 in [#766](https://github.com/getsentry/taskbroker/pull/766)
+
+## 0.20.14
+
+### Bug Fixes 🐛
+
+- Revert "ref(o11y): Support `sentry-sdk` configured with the streaming trace lifecycle (#757)" in [57724b62](https://github.com/getsentry/taskbroker/commit/57724b62a637cc9f7862c617e47f071bb687f7f3)
+
+## 0.20.13
+
+### Internal Changes 🔧
+
+#### O11y
+
+- Support SDK configured with the streaming trace lifecycle by @alexander-alderman-webb in [#757](https://github.com/getsentry/taskbroker/pull/757)
+- Remove redundant span status assignment by @alexander-alderman-webb in [#759](https://github.com/getsentry/taskbroker/pull/759)
+
 ## 0.20.12
 
 ### New Features ✨
