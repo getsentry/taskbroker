@@ -28,7 +28,6 @@ def start_transaction(
                 name=name,
                 attributes={
                     "sentry.op": op,
-                    "sentry.origin": origin,
                     **attributes,
                 },
             )
@@ -68,7 +67,6 @@ def start_span(
                 name=name,
                 attributes={
                     "sentry.op": op,
-                    "sentry.origin": origin,
                     **attributes,
                 },
             )
