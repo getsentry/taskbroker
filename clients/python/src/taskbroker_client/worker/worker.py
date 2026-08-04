@@ -842,13 +842,16 @@ class TaskWorkerProcessingPool:
 
         bounded_busy = max(0, min(busy, self._concurrency))
         occupancy = bounded_busy / self._concurrency if self._concurrency else 0.0
-        self._metrics.gauge(
-            "taskworker.worker.occupancy",
-            occupancy,
-            tags=tags,
-        )
-        if self._prom is not None:
-            self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(occupancy)
+        if state_counts["running"] > 0:
+            self._metrics.gauge(
+                "taskworker.worker.occupancy",
+                occupancy,
+                tags=tags,
+            )
+            if self._prom is not None:
+                self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
+                    occupancy
+                )
 
         # Emit number of children in each state
         for state, count in state_counts.items():

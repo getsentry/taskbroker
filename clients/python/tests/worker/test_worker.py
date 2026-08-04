@@ -47,6 +47,7 @@ from taskbroker_client.worker.worker import (
     PushTaskWorker,
     TaskWorker,
     TaskWorkerProcessingPool,
+    TrackedChild,
     WorkerServicer,
 )
 from taskbroker_client.worker.workerchild import ChildMessage
@@ -868,6 +869,56 @@ def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
     assert serving_calls == []
     # We never reached server.wait_for_termination() (returned before it).
     fake_server.wait_for_termination.assert_not_called()
+
+
+def _make_tracked_child(state: str, busy: bool) -> TrackedChild:
+    return TrackedChild(
+        process=mock.Mock(),
+        state=state,  # type: ignore[arg-type]
+        release=mock.Mock(),
+        busy=busy,
+    )
+
+
+def _gauge_calls(metrics: mock.Mock, name: str) -> list[Any]:
+    return [c for c in metrics.gauge.call_args_list if c.args[0] == name]
+
+
+def test_emit_periodic_metrics_skips_occupancy_during_warmup() -> None:
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    # A freshly started pod has only pending children; none are consuming yet.
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("pending", busy=False)
+        pool._children[uuid4()] = _make_tracked_child("pending", busy=False)
+
+    pool._emit_periodic_metrics()
+
+    # Occupancy must not be emitted while warming up, otherwise fresh pods
+    # publish misleading zeros that drag down the fleet-wide average.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
+    # Other gauges still fire so warmup stays observable.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.children")
+
+
+def test_emit_periodic_metrics_reports_occupancy_once_warm() -> None:
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy=True)
+        pool._children[uuid4()] = _make_tracked_child("running", busy=True)
+        pool._children[uuid4()] = _make_tracked_child("running", busy=False)
+        # A still-warming child does not block reporting for the warm ones.
+        pool._children[uuid4()] = _make_tracked_child("pending", busy=False)
+
+    pool._emit_periodic_metrics()
+
+    occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
+    assert len(occupancy_calls) == 1
+    # 2 busy children over the configured concurrency of 4.
+    assert occupancy_calls[0].args[1] == pytest.approx(0.5)
 
 
 def test_spawn_children_counts_pending_children_toward_concurrency() -> None:
