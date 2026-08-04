@@ -156,13 +156,9 @@ class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
-    # Time-weighted busy tracking. `busy_since` is the monotonic timestamp of the
-    # currently-open busy segment (None while idle); `busy_accumulated` is the busy
-    # seconds banked since the last occupancy flush. Together they let us report the
-    # fraction of the interval a child spent executing, rather than a single
-    # instantaneous busy/idle sample.
-    busy_since: float | None = None
-    busy_accumulated: float = 0.0
+    # Time-weighted busy tracking
+    busy_since: float | None = None  # monotonic timestamp of the currently-open busy segment
+    busy_accumulated: float = 0.0  # the busy seconds banked since the last occupancy flush
 
 
 class PushTaskWorker:
@@ -793,7 +789,6 @@ class TaskWorkerProcessingPool:
         self._children: Dict[UUID, TrackedChild] = {}
         self._exiting_children: Deque[UUID] = deque()
         self._children_lock = threading.Lock()
-        # Start of the interval currently being accumulated for occupancy.
         self._last_occupancy_flush_at = time.monotonic()
         self._shutdown_event = self._mp_context.Event()
         self._prometheus_port = prometheus_port
@@ -834,6 +829,7 @@ class TaskWorkerProcessingPool:
                 extra={"error": e, "processing_pool": self._processing_pool_name},
             )
 
+        # Calculate time-weighted occupancy.
         now = time.monotonic()
         with self._children_lock:
             state_counts: dict[ChildState, int] = {
