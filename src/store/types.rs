@@ -1,3 +1,5 @@
+use sentry_arroyo::types::Partition;
+
 pub type BucketRange = (i16, i16);
 
 /// A Kafka topic paired with one of its partition indices. Partition indices
@@ -27,6 +29,18 @@ impl std::fmt::Display for TopicPartition {
 impl From<&(String, i32)> for TopicPartition {
     fn from((topic, partition): &(String, i32)) -> Self {
         Self::new(topic.clone(), *partition)
+    }
+}
+
+impl From<Partition> for TopicPartition {
+    fn from(partition: Partition) -> Self {
+        Self::new(partition.topic.as_str(), i32::from(partition.index))
+    }
+}
+
+impl From<&Partition> for TopicPartition {
+    fn from(partition: &Partition) -> Self {
+        Self::from(*partition)
     }
 }
 

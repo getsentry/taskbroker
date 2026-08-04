@@ -3,14 +3,13 @@ use std::time::Duration;
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message as _;
-use rdkafka::Message;
-use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sentry_protos::taskbroker::v1::TaskActivation;
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::fetch::MAX_FETCH_THREADS;
+use crate::kafka::message::ConsumerMessage;
 use crate::store::activation::{Activation, ActivationStatus};
 
 pub struct DeserializeActivationConfig {
@@ -34,8 +33,8 @@ pub fn bucket_from_id(id: &str) -> i16 {
 
 pub fn new(
     config: DeserializeActivationConfig,
-) -> impl Fn(&OwnedMessage) -> Result<Activation, Error> {
-    move |msg: &OwnedMessage| {
+) -> impl Fn(&ConsumerMessage) -> Result<Activation, Error> {
+    move |msg: &ConsumerMessage| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
         };
@@ -124,13 +123,23 @@ mod tests {
 
     use chrono::Utc;
     use prost::Message as _;
-    use rdkafka::Timestamp;
-    use rdkafka::message::OwnedMessage;
+    use sentry_arroyo::backends::kafka::types::KafkaPayload as ArroyoKafkaPayload;
+    use sentry_arroyo::types::{BrokerMessage, Partition as ArroyoPartition, Topic};
 
+    use crate::kafka::message::ConsumerMessage;
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
 
     use super::{Config, DeserializeActivationConfig, new};
+
+    fn test_message(payload: Vec<u8>) -> ConsumerMessage {
+        ConsumerMessage::new(BrokerMessage::new(
+            ArroyoKafkaPayload::new(None, None, Some(payload)),
+            ArroyoPartition::new(Topic::new("taskworker"), 0),
+            0,
+            Utc::now(),
+        ))
+    }
 
     #[test]
     fn test_processing_attempts_set() {
@@ -151,15 +160,7 @@ mod tests {
             })
             .processing_deadline_duration(10)
             .build();
-        let message = OwnedMessage::new(
-            Some(activation.encode_to_vec()),
-            None,
-            "taskworker".into(),
-            Timestamp::now(),
-            0,
-            0,
-            None,
-        );
+        let message = test_message(activation.encode_to_vec());
         let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
@@ -190,15 +191,7 @@ mod tests {
             .processing_deadline_duration(10)
             .expires(100)
             .build();
-        let message = OwnedMessage::new(
-            Some(activation.encode_to_vec()),
-            None,
-            "taskworker".into(),
-            Timestamp::now(),
-            0,
-            0,
-            None,
-        );
+        let message = test_message(activation.encode_to_vec());
         let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
@@ -230,15 +223,7 @@ mod tests {
             .processing_deadline_duration(10)
             .delay(100)
             .build();
-        let message = OwnedMessage::new(
-            Some(activation.encode_to_vec()),
-            None,
-            "taskworker".into(),
-            Timestamp::now(),
-            0,
-            0,
-            None,
-        );
+        let message = test_message(activation.encode_to_vec());
         let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
@@ -270,15 +255,7 @@ mod tests {
             .processing_deadline_duration(10)
             .delay(100)
             .build();
-        let message = OwnedMessage::new(
-            Some(activation.encode_to_vec()),
-            None,
-            "taskworker".into(),
-            Timestamp::now(),
-            0,
-            0,
-            None,
-        );
+        let message = test_message(activation.encode_to_vec());
         let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());
@@ -311,15 +288,7 @@ mod tests {
             .processing_deadline_duration(10)
             .delay(delay_sec)
             .build();
-        let message = OwnedMessage::new(
-            Some(activation.encode_to_vec()),
-            None,
-            "taskworker".into(),
-            Timestamp::now(),
-            0,
-            0,
-            None,
-        );
+        let message = test_message(activation.encode_to_vec());
         let inflight_opt = deserializer(&message);
 
         assert!(inflight_opt.is_ok());

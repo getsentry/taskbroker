@@ -7,6 +7,8 @@ use anyhow::{Result, anyhow};
 use figment::providers::{Env, Format, Yaml};
 use figment::{Figment, Metadata, Profile, Provider};
 use rdkafka::ClientConfig;
+use sentry_arroyo::backends::kafka::InitialOffset;
+use sentry_arroyo::backends::kafka::config::KafkaConfig;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use validator::Validate;
@@ -879,6 +881,89 @@ impl Config {
             .set("enable.auto.offset.store", "false");
 
         config
+    }
+
+    /// Convert the application `Config` into an Arroyo `KafkaConfig` for the consumer of a specific topic.
+    /// This is intentionally separate from `kafka_consumer_config_for`, which is still used to validate metadata when consumption is disabled.
+    pub fn arroyo_kafka_consumer_config_for(&self, topic_name: &str) -> KafkaConfig {
+        let topic_config = self
+            .kafka_topics
+            .get(topic_name)
+            .unwrap_or_else(|| panic!("Unknown topic '{topic_name}' - was config validated?"));
+
+        let cluster = self
+            .cluster(&topic_config.cluster)
+            .expect("Cluster lookup failed - was config validated?");
+
+        let auto_offset_reset = topic_config
+            .auto_offset_reset
+            .as_deref()
+            .unwrap_or(&self.kafka_auto_offset_reset);
+
+        let auto_offset_reset = match auto_offset_reset {
+            "earliest" => InitialOffset::Earliest,
+            "latest" => InitialOffset::Latest,
+            "error" => InitialOffset::Error,
+            other => panic!("Unknown auto.offset.reset '{other}' - was config validated?"),
+        };
+
+        let session_timeout_ms = topic_config
+            .session_timeout_ms
+            .unwrap_or(self.kafka_session_timeout_ms);
+
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("enable.partition.eof".to_owned(), "false".to_owned());
+        overrides.insert(
+            "session.timeout.ms".to_owned(),
+            session_timeout_ms.to_string(),
+        );
+
+        if let Some(ref sasl_mechanism) = cluster.sasl_mechanism {
+            overrides.insert("sasl.mechanism".to_owned(), sasl_mechanism.clone());
+        }
+
+        if let Some(ref sasl_username) = cluster.sasl_username {
+            overrides.insert("sasl.username".to_owned(), sasl_username.clone());
+        }
+
+        if let Some(ref sasl_password) = cluster.sasl_password {
+            overrides.insert("sasl.password".to_owned(), sasl_password.clone());
+        }
+
+        if let Some(ref security_protocol) = cluster.security_protocol {
+            overrides.insert("security.protocol".to_owned(), security_protocol.clone());
+        }
+
+        if let Some(ref ssl_ca_location) = cluster.ssl_ca_location {
+            overrides.insert("ssl.ca.location".to_owned(), ssl_ca_location.clone());
+        }
+
+        if let Some(ref ssl_certificate_location) = cluster.ssl_certificate_location {
+            overrides.insert(
+                "ssl.certificate.location".to_owned(),
+                ssl_certificate_location.clone(),
+            );
+        }
+
+        if let Some(ref ssl_private_key_location) = cluster.ssl_key_location {
+            overrides.insert(
+                "ssl.key.location".to_owned(),
+                ssl_private_key_location.clone(),
+            );
+        }
+
+        KafkaConfig::new_consumer_config(
+            cluster
+                .address
+                .split(',')
+                .map(|broker| broker.trim().to_owned())
+                .collect(),
+            topic_config.consumer_group.clone(),
+            auto_offset_reset,
+            false,
+            300_000,
+            Some(overrides),
+        )
     }
 
     /// Build an rdkafka::ClientConfig for an admin client on a named cluster.

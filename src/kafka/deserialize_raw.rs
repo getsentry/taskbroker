@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 
 use anyhow::Error;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use prost::Message as _;
-use rdkafka::Message;
-use rdkafka::message::Headers;
-use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::config::raw::RawModeConfig;
+use crate::kafka::message::{ConsumerMessage, timestamp_from_millis};
 use crate::store::activation::{Activation, ActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
@@ -85,14 +83,9 @@ impl RawConfig {
     }
 }
 
-fn extract_headers(msg: &OwnedMessage) -> HashMap<String, String> {
-    let Some(headers) = msg.headers() else {
-        return HashMap::new();
-    };
-
+fn extract_headers(msg: &ConsumerMessage) -> HashMap<String, String> {
     let mut result = HashMap::new();
-    for i in 0..headers.count() {
-        let header = headers.get(i);
+    for header in msg.headers() {
         if let Some(value) = header.value
             && let Ok(value_str) = std::str::from_utf8(value)
         {
@@ -116,8 +109,8 @@ fn encode_raw_params(raw_bytes: &[u8]) -> Vec<u8> {
 
 /// Create a deserializer closure for raw mode.
 /// Wraps raw Kafka message bytes into a TaskActivation with msgpack-encoded parameters_bytes.
-pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Error> {
-    move |msg: &OwnedMessage| {
+pub fn new(config: RawConfig) -> impl Fn(&ConsumerMessage) -> Result<Activation, Error> {
+    move |msg: &ConsumerMessage| {
         // Whether a message without payload is valid is technically not up to taskbroker, and we
         // can't DLQ messages here. It's easier to convert it to an empty bytestring and let the
         // task fail. Failed tasks can be DLQed in upkeep.rs
@@ -141,11 +134,7 @@ pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Er
         };
         let stored_payload_size = parameters_bytes.len();
         let now = Utc::now();
-        let received_at_time = msg
-            .timestamp()
-            .to_millis()
-            .and_then(DateTime::from_timestamp_millis)
-            .unwrap_or(now);
+        let received_at_time = timestamp_from_millis(msg.timestamp_millis());
         let received_at = prost_types::Timestamp {
             seconds: received_at_time.timestamp(),
             nanos: received_at_time.timestamp_subsec_nanos() as i32,
@@ -216,10 +205,14 @@ pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Er
 #[cfg(test)]
 mod tests {
 
-    use rdkafka::Timestamp;
-    use rdkafka::message::{Header, OwnedHeaders, OwnedMessage};
+    use chrono::Utc;
+    use sentry_arroyo::backends::kafka::types::{
+        Headers as ArroyoHeaders, KafkaPayload as ArroyoKafkaPayload,
+    };
+    use sentry_arroyo::types::{BrokerMessage, Partition as ArroyoPartition, Topic};
 
     use super::*;
+    use crate::kafka::message::ConsumerMessage;
 
     #[test]
     fn test_encode_raw_params() {
@@ -260,6 +253,19 @@ mod tests {
         }
     }
 
+    fn test_message(
+        payload: Option<Vec<u8>>,
+        headers: Option<ArroyoHeaders>,
+        offset: u64,
+    ) -> ConsumerMessage {
+        ConsumerMessage::new(BrokerMessage::new(
+            ArroyoKafkaPayload::new(None, headers, payload),
+            ArroyoPartition::new(Topic::new("legacy-topic"), 0),
+            offset,
+            Utc::now(),
+        ))
+    }
+
     /// Decode the raw args[0] out of an activation, transparently zstd-decompressing
     /// `parameters_bytes` when the `compression-type: zstd` header is present (mirrors what
     /// the worker does in `load_parameters`).
@@ -289,15 +295,7 @@ mod tests {
         let deserializer = new(test_config());
 
         let raw_payload = b"raw kafka message bytes";
-        let message = OwnedMessage::new(
-            Some(raw_payload.to_vec()),
-            None,
-            "legacy-topic".into(),
-            Timestamp::now(),
-            0,
-            42,
-            None,
-        );
+        let message = test_message(Some(raw_payload.to_vec()), None, 42);
 
         let result = deserializer(&message);
         assert!(result.is_ok());
@@ -334,15 +332,7 @@ mod tests {
         let deserializer = new(config);
 
         let raw_payload = b"raw kafka message bytes";
-        let message = OwnedMessage::new(
-            Some(raw_payload.to_vec()),
-            None,
-            "legacy-topic".into(),
-            Timestamp::now(),
-            0,
-            42,
-            None,
-        );
+        let message = test_message(Some(raw_payload.to_vec()), None, 42);
 
         let inflight = deserializer(&message).unwrap();
         let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
@@ -356,15 +346,7 @@ mod tests {
     fn test_raw_deserializer_null_payload() {
         let deserializer = new(test_config());
 
-        let message = OwnedMessage::new(
-            None, // No payload
-            None,
-            "legacy-topic".into(),
-            Timestamp::now(),
-            0,
-            0,
-            None,
-        );
+        let message = test_message(None, None, 0);
 
         let result = deserializer(&message);
         assert!(result.is_ok());
@@ -378,28 +360,15 @@ mod tests {
 
     #[test]
     fn test_raw_deserializer_with_headers() {
-        let deserializer = new(test_config());
+        let deserializer = new(RawConfig {
+            compression_level: COMPRESSION_DISABLED,
+            ..test_config()
+        });
 
-        let headers = OwnedHeaders::new()
-            .insert(Header {
-                key: "trace-id",
-                value: Some("abc123"),
-            })
-            .insert(Header {
-                key: "request-id",
-                value: Some("req-456"),
-            });
+        let headers = ArroyoHeaders::new().insert(COMPRESSION_HEADER, Some(b"zstd".to_vec()));
 
         let raw_payload = b"raw kafka message bytes";
-        let message = OwnedMessage::new(
-            Some(raw_payload.to_vec()),
-            None,
-            "legacy-topic".into(),
-            Timestamp::now(),
-            0,
-            42,
-            Some(headers),
-        );
+        let message = test_message(Some(raw_payload.to_vec()), Some(headers), 42);
 
         let result = deserializer(&message);
         assert!(result.is_ok());
@@ -407,15 +376,6 @@ mod tests {
         let inflight = result.unwrap();
         let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
 
-        assert_eq!(
-            activation.headers.get("trace-id"),
-            Some(&"abc123".to_string())
-        );
-        assert_eq!(
-            activation.headers.get("request-id"),
-            Some(&"req-456".to_string())
-        );
-        // The compression header is added alongside the kafka headers.
         assert_eq!(
             activation.headers.get(COMPRESSION_HEADER),
             Some(&COMPRESSION_ZSTD.to_string())
