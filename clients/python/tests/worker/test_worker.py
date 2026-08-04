@@ -871,12 +871,18 @@ def test_start_does_not_serve_when_shutdown_during_warmup() -> None:
     fake_server.wait_for_termination.assert_not_called()
 
 
-def _make_tracked_child(state: str, busy: bool) -> TrackedChild:
+def _make_tracked_child(
+    state: str,
+    *,
+    busy_since: float | None = None,
+    busy_accumulated: float = 0.0,
+) -> TrackedChild:
     return TrackedChild(
         process=mock.Mock(),
         state=state,  # type: ignore[arg-type]
         release=mock.Mock(),
-        busy=busy,
+        busy_since=busy_since,
+        busy_accumulated=busy_accumulated,
     )
 
 
@@ -890,8 +896,8 @@ def test_emit_periodic_metrics_skips_occupancy_during_warmup() -> None:
 
     # A freshly started pod has only pending children; none are consuming yet.
     with pool._children_lock:
-        pool._children[uuid4()] = _make_tracked_child("pending", busy=False)
-        pool._children[uuid4()] = _make_tracked_child("pending", busy=False)
+        pool._children[uuid4()] = _make_tracked_child("pending")
+        pool._children[uuid4()] = _make_tracked_child("pending")
 
     pool._emit_periodic_metrics()
 
@@ -900,25 +906,110 @@ def test_emit_periodic_metrics_skips_occupancy_during_warmup() -> None:
     assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
     # Other gauges still fire so warmup stays observable.
     assert _gauge_calls(pool._metrics, "taskworker.worker.children")
+    # Concurrency is static and emitted even before any child is warm.
+    concurrency_calls = _gauge_calls(pool._metrics, "taskworker.worker.concurrency")
+    assert len(concurrency_calls) == 1
+    assert concurrency_calls[0].args[1] == pytest.approx(4.0)
 
 
-def test_emit_periodic_metrics_reports_occupancy_once_warm() -> None:
-    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+def test_emit_periodic_metrics_time_weights_busy_over_the_interval() -> None:
+    # Worked example: interval [10.0, 11.0], 3 running children.
+    #   A: 0.19s banked, idle at flush
+    #   B: 0.30s banked + open segment since 10.70 -> +0.30 across the boundary
+    #   C: 0.45s banked, idle at flush
+    # busy_time = 0.19 + 0.60 + 0.45 = 1.24 -> occupancy = 1.24 / (1.0 * 3)
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=8)
     pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
 
+    child_b = uuid4()
     with pool._children_lock:
-        pool._children[uuid4()] = _make_tracked_child("running", busy=True)
-        pool._children[uuid4()] = _make_tracked_child("running", busy=True)
-        pool._children[uuid4()] = _make_tracked_child("running", busy=False)
-        # A still-warming child does not block reporting for the warm ones.
-        pool._children[uuid4()] = _make_tracked_child("pending", busy=False)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=0.19)
+        pool._children[child_b] = _make_tracked_child(
+            "running", busy_accumulated=0.30, busy_since=10.70
+        )
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=0.45)
 
-    pool._emit_periodic_metrics()
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
 
     occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
     assert len(occupancy_calls) == 1
-    # 2 busy children over the configured concurrency of 4.
-    assert occupancy_calls[0].args[1] == pytest.approx(0.5)
+    assert occupancy_calls[0].args[1] == pytest.approx(1.24 / 3)
+
+    # The open segment is carried into the next interval; banks are drained.
+    assert pool._children[child_b].busy_since == pytest.approx(11.0)
+    for child in pool._children.values():
+        assert child.busy_accumulated == 0.0
+    assert pool._last_occupancy_flush_at == pytest.approx(11.0)
+
+
+def test_emit_periodic_metrics_divides_by_running_children() -> None:
+    # Two children busy for the whole 1s interval, one idle, one still warming.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=8)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=0.0)
+        # Excluded from both numerator and denominator.
+        pool._children[uuid4()] = _make_tracked_child("pending")
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
+    assert len(occupancy_calls) == 1
+    # 2 busy-child-seconds over 3 running slots for a 1s interval.
+    assert occupancy_calls[0].args[1] == pytest.approx(2 / 3)
+
+
+def test_emit_periodic_metrics_clamps_occupancy_to_one() -> None:
+    # A draining child can still be mid-task, so busy-time can exceed the running
+    # capacity for the interval; occupancy must clamp to 1.0.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
+        pool._children[uuid4()] = _make_tracked_child("exiting", busy_accumulated=1.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
+    assert len(occupancy_calls) == 1
+    assert occupancy_calls[0].args[1] == pytest.approx(1.0)
+
+
+def test_spawn_children_tracks_busy_and_idle_transitions() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=1)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 1)
+        messages = fake_context.queues[-1]
+        child_id = fake_context.processes[0].args[0]
+
+        messages.put(ChildMessage(child_id, "running"))
+        _wait_for(lambda: pool.ready_count == 1)
+
+        # "busy" opens a segment.
+        messages.put(ChildMessage(child_id, "busy"))
+        _wait_for(lambda: pool._children[child_id].busy_since is not None)
+
+        # "idle" closes it and banks a positive amount of busy-time.
+        messages.put(ChildMessage(child_id, "idle"))
+        _wait_for(
+            lambda: pool._children[child_id].busy_since is None
+            and pool._children[child_id].busy_accumulated > 0
+        )
+    finally:
+        pool.shutdown()
 
 
 def test_spawn_children_counts_pending_children_toward_concurrency() -> None:

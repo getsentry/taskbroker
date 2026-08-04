@@ -156,7 +156,13 @@ class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
-    busy: bool = False
+    # Time-weighted busy tracking. `busy_since` is the monotonic timestamp of the
+    # currently-open busy segment (None while idle); `busy_accumulated` is the busy
+    # seconds banked since the last occupancy flush. Together they let us report the
+    # fraction of the interval a child spent executing, rather than a single
+    # instantaneous busy/idle sample.
+    busy_since: float | None = None
+    busy_accumulated: float = 0.0
 
 
 class PushTaskWorker:
@@ -787,6 +793,8 @@ class TaskWorkerProcessingPool:
         self._children: Dict[UUID, TrackedChild] = {}
         self._exiting_children: Deque[UUID] = deque()
         self._children_lock = threading.Lock()
+        # Start of the interval currently being accumulated for occupancy.
+        self._last_occupancy_flush_at = time.monotonic()
         self._shutdown_event = self._mp_context.Event()
         self._prometheus_port = prometheus_port
         self._prom: WorkerPrometheusMetrics | None = None
@@ -826,7 +834,7 @@ class TaskWorkerProcessingPool:
                 extra={"error": e, "processing_pool": self._processing_pool_name},
             )
 
-        # Count the number of children in each state and waiting for exit
+        now = time.monotonic()
         with self._children_lock:
             state_counts: dict[ChildState, int] = {
                 "pending": 0,
@@ -834,15 +842,25 @@ class TaskWorkerProcessingPool:
                 "exiting": 0,
             }
 
+            busy_time = 0.0
             for child in self._children.values():
                 state_counts[child.state] += 1
 
-            busy = sum(1 for child in self._children.values() if child.busy)
+                if child.busy_since is not None:
+                    child.busy_accumulated += now - child.busy_since
+                    child.busy_since = now
+                busy_time += child.busy_accumulated
+                child.busy_accumulated = 0.0
+
             exiting_children = len(self._exiting_children)
 
-        bounded_busy = max(0, min(busy, self._concurrency))
-        occupancy = bounded_busy / self._concurrency if self._concurrency else 0.0
-        if state_counts["running"] > 0:
+        elapsed = now - self._last_occupancy_flush_at
+        self._last_occupancy_flush_at = now
+
+        running_count = state_counts["running"]
+        if running_count > 0 and elapsed > 0:
+            occupancy = busy_time / (elapsed * running_count)
+            occupancy = max(0.0, min(occupancy, 1.0))
             self._metrics.gauge(
                 "taskworker.worker.occupancy",
                 occupancy,
@@ -852,6 +870,12 @@ class TaskWorkerProcessingPool:
                 self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
                     occupancy
                 )
+
+        self._metrics.gauge(
+            "taskworker.worker.concurrency",
+            float(self._concurrency),
+            tags=tags,
+        )
 
         # Emit number of children in each state
         for state, count in state_counts.items():
@@ -1020,13 +1044,19 @@ class TaskWorkerProcessingPool:
                         elif message.event == "exiting":
                             self._exiting_children.append(message.child_id)
 
-                        # This child is executing a task
+                        # This child started executing a task: open a busy segment.
+                        # Guard against duplicate "busy" so we don't lose the
+                        # original start time.
                         elif message.event == "busy":
-                            child.busy = True
+                            if child.busy_since is None:
+                                child.busy_since = time.monotonic()
 
-                        # This child isn't doing anything right now
+                        # This child finished a task: close the open busy segment
+                        # and bank the elapsed time. Guard against a stray "idle".
                         elif message.event == "idle":
-                            child.busy = False
+                            if child.busy_since is not None:
+                                child.busy_accumulated += time.monotonic() - child.busy_since
+                                child.busy_since = None
 
                     while True:
                         # Compute how many children are still running
