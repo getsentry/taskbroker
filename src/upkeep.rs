@@ -47,8 +47,7 @@ pub async fn upkeep(
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
-    let mut emitted_depth_keys: HashSet<DepthKey> = HashSet::new();
-    let mut emitted_lag_applications: HashSet<String> = HashSet::new();
+    let mut emitted_gauges = EmittedGauges::default();
     loop {
         select! {
             _ = timer.tick() => {
@@ -59,8 +58,7 @@ pub async fn upkeep(
                     startup_time,
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
-                    &mut emitted_depth_keys,
-                    &mut emitted_lag_applications,
+                    &mut emitted_gauges,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
@@ -79,6 +77,14 @@ pub async fn upkeep(
         }
     }
     Ok(())
+}
+
+/// Tracks metric series emitted on the previous upkeep cycle so we can zero
+/// gauges that no longer have rows.
+#[derive(Default)]
+struct EmittedGauges {
+    depth_keys: HashSet<DepthKey>,
+    lag_applications: HashSet<String>,
 }
 
 // Debugging context
@@ -132,8 +138,7 @@ pub async fn do_upkeep(
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
-    emitted_depth_keys: &mut HashSet<DepthKey>,
-    emitted_lag_applications: &mut HashSet<String>,
+    emitted_gauges: &mut EmittedGauges,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -518,7 +523,7 @@ pub async fn do_upkeep(
     if let Ok(depths) = depth_counts {
         let current: HashSet<DepthKey> = depths.keys().cloned().collect();
 
-        for key in emitted_depth_keys.difference(&current) {
+        for key in emitted_gauges.depth_keys.difference(&current) {
             let topic = key.topic.clone();
             let application = key.application.clone();
             metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "application" => application.clone())
@@ -544,14 +549,14 @@ pub async fn do_upkeep(
                 .set(counts.delay as f64);
         }
 
-        *emitted_depth_keys = current;
+        emitted_gauges.depth_keys = current;
     }
 
     // Global max lag remains untagged for existing dashboards; per-application
     // series let us attribute backlog by task application.
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
     let current_apps: HashSet<String> = max_lag_by_application.keys().cloned().collect();
-    for application in emitted_lag_applications.difference(&current_apps) {
+    for application in emitted_gauges.lag_applications.difference(&current_apps) {
         metrics::gauge!(
             "upkeep.pending_activation.max_lag.sec",
             "application" => application.clone()
@@ -565,7 +570,7 @@ pub async fn do_upkeep(
         )
         .set(*lag);
     }
-    *emitted_lag_applications = current_apps;
+    emitted_gauges.lag_applications = current_apps;
 
     if let Ok(db_file_meta) = db_file_meta {
         metrics::gauge!("upkeep.db_file_size.bytes").set(db_file_meta.len() as f64);
@@ -657,7 +662,7 @@ mod tests {
         create_integration_config_from_base, create_producer, create_test_store, make_activations,
         replace_retry_state, reset_topic,
     };
-    use crate::upkeep::{create_retry_activation, do_upkeep};
+    use super::{EmittedGauges, create_retry_activation, do_upkeep};
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
@@ -799,8 +804,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -862,8 +866,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -915,8 +918,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -976,8 +978,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1031,8 +1032,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1079,8 +1079,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1147,8 +1146,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1195,8 +1193,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1247,8 +1244,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1331,8 +1327,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1365,8 +1360,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1422,8 +1416,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1485,8 +1478,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1557,8 +1549,7 @@ demoted_namespaces: []"#;
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
@@ -1602,8 +1593,7 @@ demoted_namespaces: []"#;
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut EmittedGauges::default(),
         )
         .await;
 
