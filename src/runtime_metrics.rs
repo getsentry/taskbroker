@@ -1,20 +1,38 @@
-use std::time::Duration;
+//! Per-broker Tokio runtime metrics.
+//!
+//! Emits gauges describing how busy the shared Tokio worker pool is, the most
+//! important being `runtime.worker_utilization`: the mean fraction of worker
+//! threads that were actively executing tasks over the last sampling window.
+//!
+//! Tokio exposes `worker_total_busy_duration` as a **monotonic cumulative counter** per worker,
+//! not an instantaneous rate. A single reading is meaningless on its own; to derive
+//! a utilization ratio we remember the previous cumulative total (and when it was taken) and divide
+//! the delta over the window by that window's maximum possible busy time
+//! (`elapsed * num_workers`). [`WorkerBusySampler`] owns that state.
 
-use tokio::runtime::Handle;
+use std::time::{Duration, Instant};
+
+use tokio::runtime::{Handle, RuntimeMetrics};
 use tokio::time::{self, MissedTickBehavior};
+
+#[cfg(not(tokio_unstable))]
+compile_error!(
+    "taskbroker's runtime metrics require the Tokio unstable API; build with \
+     `--cfg tokio_unstable` (see .cargo/config.toml) or set \
+     RUSTFLAGS=\"--cfg tokio_unstable\""
+);
 
 /// Computes the mean worker-thread busy ratio in `[0.0, 1.0]`.
 ///
-/// `busy_delta_secs` is the total busy time accrued across all worker threads
-/// since the previous sample; dividing by `elapsed_secs * num_workers` (the
-/// maximum possible busy time for the whole pool over that window) yields the
-/// fraction of the pool that was busy.
-#[cfg(tokio_unstable)]
-fn utilization_ratio(busy_delta_secs: f64, elapsed_secs: f64, num_workers: usize) -> f64 {
+/// `busy_secs` is the total busy time accrued across all worker threads over
+/// the window; dividing by `elapsed_secs * num_workers` (the maximum possible
+/// busy time for the whole pool over that window) yields the fraction of the
+/// pool that was busy.
+fn utilization_ratio(busy_secs: f64, elapsed_secs: f64, num_workers: usize) -> f64 {
     if elapsed_secs <= 0.0 || num_workers == 0 {
         return 0.0;
     }
-    (busy_delta_secs / (elapsed_secs * num_workers as f64)).clamp(0.0, 1.0)
+    (busy_secs / (elapsed_secs * num_workers as f64)).clamp(0.0, 1.0)
 }
 
 /// Samples the current Tokio runtime's metrics every `interval` and emits them
@@ -26,34 +44,22 @@ pub async fn run(interval: Duration) -> anyhow::Result<()> {
     let mut timer = time::interval(interval);
     timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    #[cfg(not(tokio_unstable))]
-    tracing::warn!(
-        "Tokio worker utilization metric unavailable: built without `--cfg tokio_unstable`; \
-         emitting stable runtime counts only"
-    );
-
-    #[cfg(tokio_unstable)]
-    let mut sampler = unstable::WorkerBusySampler::new(&runtime_metrics);
+    let mut sampler = WorkerBusySampler::new(&runtime_metrics);
 
     loop {
         tokio::select! {
             _ = timer.tick() => {
-                // Stable metrics (available regardless of `tokio_unstable`).
                 metrics::gauge!("runtime.num_workers")
                     .set(runtime_metrics.num_workers() as f64);
                 metrics::gauge!("runtime.num_alive_tasks")
                     .set(runtime_metrics.num_alive_tasks() as f64);
 
-                // Detailed per-worker metrics (require `tokio_unstable`).
-                #[cfg(tokio_unstable)]
-                {
-                    let sample = sampler.sample(&runtime_metrics);
-                    metrics::gauge!("runtime.worker_utilization").set(sample.utilization);
-                    metrics::gauge!("runtime.global_queue_depth")
-                        .set(sample.global_queue_depth as f64);
-                    metrics::gauge!("runtime.worker_local_queue_depth")
-                        .set(sample.local_queue_depth as f64);
-                }
+                let sample = sampler.sample(&runtime_metrics);
+                metrics::gauge!("runtime.worker_utilization").set(sample.utilization);
+                metrics::gauge!("runtime.global_queue_depth")
+                    .set(sample.global_queue_depth as f64);
+                metrics::gauge!("runtime.worker_local_queue_depth")
+                    .set(sample.local_queue_depth as f64);
             }
             _ = guard.wait() => break,
         }
@@ -62,76 +68,70 @@ pub async fn run(interval: Duration) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(tokio_unstable)]
-mod unstable {
-    use std::time::Instant;
+/// A single sampling result derived from the runtime's per-worker metrics.
+struct Sample {
+    /// Mean worker-thread busy ratio in `[0.0, 1.0]`.
+    utilization: f64,
+    /// Number of tasks queued in the runtime's global (injection) queue.
+    global_queue_depth: usize,
+    /// Total tasks queued across every worker's local run queue.
+    local_queue_depth: usize,
+}
 
-    use tokio::runtime::RuntimeMetrics;
+/// Holds the state needed to turn Tokio's monotonic `worker_total_busy_duration`
+/// counter into a per-window utilization ratio: the previous cumulative busy
+/// total and the instant it was read.
+struct WorkerBusySampler {
+    prev_busy_secs: f64,
+    last_sample: Instant,
+}
 
-    use super::utilization_ratio;
-
-    /// A single sampling result derived from the runtime's per-worker metrics.
-    pub struct Sample {
-        /// Mean worker-thread busy ratio in `[0.0, 1.0]`.
-        pub utilization: f64,
-        /// Number of tasks queued in the runtime's global (injection) queue.
-        pub global_queue_depth: usize,
-        /// Total tasks queued across all workers' local run queues.
-        pub local_queue_depth: usize,
-    }
-
-    /// Tracks the cumulative worker busy duration between samples so that
-    /// utilization can be computed from the delta over the sampling window.
-    pub struct WorkerBusySampler {
-        prev_busy_secs: f64,
-        last_sample: Instant,
-    }
-
-    impl WorkerBusySampler {
-        pub fn new(runtime_metrics: &RuntimeMetrics) -> Self {
-            Self {
-                prev_busy_secs: total_busy_secs(runtime_metrics),
-                last_sample: Instant::now(),
-            }
-        }
-
-        pub fn sample(&mut self, runtime_metrics: &RuntimeMetrics) -> Sample {
-            let now = Instant::now();
-            let busy_secs = total_busy_secs(runtime_metrics);
-            let elapsed_secs = now.duration_since(self.last_sample).as_secs_f64();
-            // `worker_total_busy_duration` is monotonic, but guard against clock
-            // effects / worker count changes producing a negative delta.
-            let busy_delta_secs = (busy_secs - self.prev_busy_secs).max(0.0);
-
-            self.prev_busy_secs = busy_secs;
-            self.last_sample = now;
-
-            let num_workers = runtime_metrics.num_workers();
-            let local_queue_depth = (0..num_workers)
-                .map(|worker| runtime_metrics.worker_local_queue_depth(worker))
-                .sum();
-
-            Sample {
-                utilization: utilization_ratio(busy_delta_secs, elapsed_secs, num_workers),
-                global_queue_depth: runtime_metrics.global_queue_depth(),
-                local_queue_depth,
-            }
+impl WorkerBusySampler {
+    fn new(runtime_metrics: &RuntimeMetrics) -> Self {
+        Self {
+            prev_busy_secs: total_busy_secs(runtime_metrics),
+            last_sample: Instant::now(),
         }
     }
 
-    /// Sums `worker_total_busy_duration` across every worker thread, in seconds.
-    fn total_busy_secs(runtime_metrics: &RuntimeMetrics) -> f64 {
-        (0..runtime_metrics.num_workers())
-            .map(|worker| {
-                runtime_metrics
-                    .worker_total_busy_duration(worker)
-                    .as_secs_f64()
-            })
-            .sum()
+    fn sample(&mut self, runtime_metrics: &RuntimeMetrics) -> Sample {
+        let now = Instant::now();
+        let cumulative_busy_secs = total_busy_secs(runtime_metrics);
+        let elapsed_secs = now.duration_since(self.last_sample).as_secs_f64();
+        // The counter is monotonic, but clamp to guard against clock effects or
+        // a changing worker count producing a negative delta.
+        let busy_delta_secs = (cumulative_busy_secs - self.prev_busy_secs).max(0.0);
+
+        self.prev_busy_secs = cumulative_busy_secs;
+        self.last_sample = now;
+
+        let num_workers = runtime_metrics.num_workers();
+        let local_queue_depth = (0..num_workers)
+            .map(|worker| runtime_metrics.worker_local_queue_depth(worker))
+            .sum();
+
+        Sample {
+            utilization: utilization_ratio(busy_delta_secs, elapsed_secs, num_workers),
+            global_queue_depth: runtime_metrics.global_queue_depth(),
+            local_queue_depth,
+        }
     }
 }
 
-#[cfg(all(test, tokio_unstable))]
+/// Sums each worker's cumulative `worker_total_busy_duration` (a monotonic
+/// counter of time spent executing tasks, never idle/parked) into a single
+/// pool-wide total, in seconds.
+fn total_busy_secs(runtime_metrics: &RuntimeMetrics) -> f64 {
+    (0..runtime_metrics.num_workers())
+        .map(|worker| {
+            runtime_metrics
+                .worker_total_busy_duration(worker)
+                .as_secs_f64()
+        })
+        .sum()
+}
+
+#[cfg(test)]
 mod tests {
     use super::utilization_ratio;
 

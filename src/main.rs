@@ -168,7 +168,7 @@ async fn main() -> Result<(), Error> {
     // Tokio runtime metrics sampler: emits per-broker worker-thread utilization
     // and queue-depth gauges.
     let runtime_metrics_task = taskbroker::tokio::spawn(taskbroker::runtime_metrics::run(
-        Duration::from_millis(config.runtime_metrics_interval_ms),
+        config.runtime_metrics_interval,
     ));
 
     // Consumer(s) from kafka. Each consumed topic gets its own consumer (own
