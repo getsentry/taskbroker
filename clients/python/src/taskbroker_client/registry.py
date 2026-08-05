@@ -17,7 +17,7 @@ from taskbroker_client.constants import (
     CompressionType,
 )
 from taskbroker_client.metrics import MetricsBackend
-from taskbroker_client.retry import Retry
+from taskbroker_client.retry import LastAction, Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.sdk import start_span
 from taskbroker_client.task import ExternalTask, P, R, Task
@@ -47,6 +47,7 @@ class TaskNamespace:
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
         context_hooks: list[ContextHook] | None = None,
+        is_raw_mode: bool = False,
     ):
         self.name = name
         self.application = application
@@ -54,6 +55,7 @@ class TaskNamespace:
         self.default_retry = retry
         self.default_expires = expires  # seconds
         self.default_processing_deadline_duration = processing_deadline_duration  # seconds
+        self.is_raw_mode = is_raw_mode
         self.app_feature = app_feature or name
         self.context_hooks: list[ContextHook] = context_hooks or []
         self._registered_tasks: dict[str, Task[Any, Any]] = {}
@@ -81,6 +83,66 @@ class TaskNamespace:
     def topic(self) -> str:
         """The topic that a namespace is routed to."""
         return self.router.route_namespace(self.name)
+
+    def _validate_raw_mode(
+        self,
+        *,
+        name: str,
+        retry: Retry | None,
+        expires: int | datetime.timedelta | None,
+        processing_deadline_duration: int | datetime.timedelta | None,
+        at_most_once: bool,
+        compression_type: CompressionType,
+    ) -> None:
+        """
+        Reject task options that taskbroker ignores in raw mode.
+
+        Nothing produces a raw-mode task: taskbroker consumes the topic and builds the
+        activation itself. Options that a producer would normally embed in the
+        activation therefore never reach the broker. Some of them it takes from the
+        topic's `raw:` config instead, and the rest it hardcodes. Either way the
+        decorator value is inert, so reject it here instead of dropping it silently at
+        runtime.
+        """
+        if self._registered_tasks:
+            registered = ", ".join(sorted(self._registered_tasks))
+            raise ValueError(
+                f"Raw-mode namespace {self.name!r} already has a registered task "
+                f"({registered}). taskbroker only spawns the single taskname configured "
+                f"for the raw topic, so {name!r} would never run. Give it its own namespace."
+            )
+
+        from_topic_config = []
+        if expires is not None or self.default_expires is not None:
+            from_topic_config.append("expires")
+        if (
+            processing_deadline_duration is not None
+            or self.default_processing_deadline_duration != DEFAULT_PROCESSING_DEADLINE
+        ):
+            from_topic_config.append("processing_deadline_duration")
+        if compression_type != CompressionType.PLAINTEXT:
+            from_topic_config.append("compression_type")
+        if from_topic_config:
+            raise ValueError(
+                f"Task {name!r} in raw-mode namespace {self.name!r} sets "
+                f"{', '.join(from_topic_config)} (on the task or as a namespace default). "
+                "In raw mode taskbroker takes these from the topic's `raw:` block in its "
+                "own config, not from the decorator, so the value here has no effect and "
+                "will silently drift from what is deployed."
+            )
+
+        if at_most_once:
+            raise ValueError(
+                f"Task {name!r} in raw-mode namespace {self.name!r} sets at_most_once. "
+                "taskbroker hardcodes at_most_once=false for raw activations, so the task "
+                "would still be retried past its processing deadline."
+            )
+        if retry is not None and retry._times_exceeded == LastAction.Deadletter:
+            raise ValueError(
+                f"Task {name!r} in raw-mode namespace {self.name!r} sets "
+                "retry times_exceeded=LastAction.Deadletter. taskbroker hardcodes Discard "
+                "for raw activations, so exhausted tasks would be dropped, not deadlettered."
+            )
 
     def register(
         self,
@@ -135,6 +197,15 @@ class TaskNamespace:
             task_retry = retry
             if not at_most_once:
                 task_retry = retry or self.default_retry
+            if self.is_raw_mode:
+                self._validate_raw_mode(
+                    name=name,
+                    retry=task_retry,
+                    expires=expires,
+                    processing_deadline_duration=processing_deadline_duration,
+                    at_most_once=at_most_once,
+                    compression_type=compression_type,
+                )
             task = Task(
                 name=name,
                 func=func,
@@ -355,6 +426,7 @@ class TaskRegistry:
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
         internal: bool = False,
+        is_raw_mode: bool = False,
     ) -> TaskNamespace:
         """
         Create a task namespace.
@@ -363,6 +435,13 @@ class TaskRegistry:
         infrastructure to be scaled based on a region's requirements.
 
         Namespaces can define default behavior for tasks defined within a namespace.
+
+        Set `is_raw_mode` when the namespace backs a topic that taskbroker consumes in
+        "raw mode", where taskbroker builds activations from raw Kafka messages itself
+        rather than a producer sending them. A raw topic maps 1:1 onto a namespace and
+        onto a single task, both pinned in taskbroker's own config. The flag makes that
+        contract explicit and rejects task options taskbroker would ignore; see
+        `TaskNamespace._validate_raw_mode`.
         """
         if name == INTERNAL_NAMESPACE and not internal:
             raise ValueError(f"{INTERNAL_NAMESPACE!r} is reserved for internal taskbroker tasks.")
@@ -379,6 +458,7 @@ class TaskRegistry:
             processing_deadline_duration=processing_deadline_duration,
             app_feature=app_feature,
             context_hooks=self._context_hooks,
+            is_raw_mode=is_raw_mode,
         )
         self._namespaces[name] = namespace
 
