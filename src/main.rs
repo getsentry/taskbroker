@@ -165,6 +165,12 @@ async fn main() -> Result<(), Error> {
         }
     });
 
+    // Tokio runtime metrics sampler: emits per-broker worker-thread utilization
+    // and queue-depth gauges.
+    let runtime_metrics_task = taskbroker::tokio::spawn(taskbroker::runtime_metrics::run(
+        config.runtime_metrics_interval,
+    ));
+
     // Consumer(s) from kafka. Each consumed topic gets its own consumer (own
     // group.id and cluster), so we spawn one consumer task per consumable topic,
     // all sharing the one activation store.
@@ -378,7 +384,11 @@ async fn main() -> Result<(), Error> {
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
-        .on_completion(log_task_completion("maintenance_task", maintenance_task));
+        .on_completion(log_task_completion("maintenance_task", maintenance_task))
+        .on_completion(log_task_completion(
+            "runtime_metrics_task",
+            runtime_metrics_task,
+        ));
 
     for (topic, handle) in consumer_tasks {
         departure =

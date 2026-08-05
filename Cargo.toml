@@ -8,6 +8,9 @@ edition = "2024"
 [profile.release]
 debug = 1
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
 [dependencies]
 anyhow = "1.0.92"
 async-backtrace = "0.2"
@@ -43,14 +46,20 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "transport",
     # additional features
     "tracing",
-    "logs"
+    "logs",
 ] }
 sentry_protos = "0.22.0"
 serde = "1.0.214"
 serde_bytes = "0.11"
 serde_yaml = "0.9.34"
 sha2 = "0.10.8"
-sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "tls-rustls-ring-webpki", "chrono", "postgres"] }
+sqlx = { version = "0.8.6", features = [
+    "sqlite",
+    "runtime-tokio",
+    "tls-rustls-ring-webpki",
+    "chrono",
+    "postgres",
+] }
 tokio = { version = "1.43.1", features = ["full"] }
 tokio-stream = { version = "0.1.16", features = ["full"] }
 tokio-util = "0.7.12"

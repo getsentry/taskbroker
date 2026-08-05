@@ -18,6 +18,7 @@ COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
 COPY ./benches ./benches
+COPY ./.cargo ./.cargo
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release

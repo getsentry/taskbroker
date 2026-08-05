@@ -12,6 +12,7 @@ pub mod logging;
 pub mod metrics;
 pub mod push;
 pub mod runtime_config;
+pub mod runtime_metrics;
 pub mod serde;
 pub mod store;
 pub mod test_utils;

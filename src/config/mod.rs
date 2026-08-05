@@ -150,6 +150,13 @@ pub struct Config {
     /// (reclaiming free pages) are executed
     pub maintenance_task_interval_ms: u64,
 
+    /// The frequency at which Tokio runtime metrics (worker-thread
+    /// utilization, queue depths) are sampled and emitted, e.g. `"1s"` or
+    /// `"500ms"`.
+    #[serde(with = "crate::serde::duration")]
+    #[validate(custom(function = "validate::nonzero_duration"))]
+    pub runtime_metrics_interval: Duration,
+
     /// The maximum number of seconds a task can be delayed until.
     /// Tasks delayed greater than this duration are capped.
     pub max_delayed_task_allowed_sec: u64,
@@ -268,6 +275,7 @@ impl Default for Config {
             health_check_killswitched: false,
             upkeep_deadline_reset_skip_after_startup_sec: 60,
             maintenance_task_interval_ms: 6000,
+            runtime_metrics_interval: Duration::from_secs(1),
             max_delayed_task_allowed_sec: 3600,
             max_message_size: 5000000,
             grpc_max_message_size: 52 * 1024 * 1024, // 52MB
