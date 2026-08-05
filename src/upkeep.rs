@@ -82,7 +82,7 @@ pub async fn upkeep(
 /// Tracks metric series emitted on the previous upkeep cycle so we can zero
 /// gauges that no longer have rows.
 #[derive(Debug, Default)]
-struct EmittedGauges {
+pub(crate) struct EmittedGauges {
     depth_keys: HashSet<DepthKey>,
     lag_applications: HashSet<String>,
 }
@@ -131,7 +131,7 @@ impl UpkeepResults {
     name = "upkeep::do_upkeep",
     skip(store, config, producer, runtime_config_manager, emitted_gauges)
 )]
-pub async fn do_upkeep(
+pub(crate) async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<dyn ActivationStore>,
     producer: Arc<FutureProducer>,
