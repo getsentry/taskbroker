@@ -155,7 +155,7 @@ async fn test_count_depths(#[case] adapter: &str) {
 }
 
 #[tokio::test]
-async fn test_count_depths_per_partition_postgres() {
+async fn test_count_depths_by_application_postgres() {
     let store = create_test_store("postgres").await;
 
     // Assign three partitions; partition 2 will have no activations and must
@@ -200,32 +200,16 @@ async fn test_count_depths_per_partition_postgres() {
         .await
         .unwrap();
 
-    let depths = store.count_depths_per_partition().await.unwrap();
+    let depths = store.count_depths_by_application().await.unwrap();
 
-    let p0 = depths
-        .get(&DepthKey::new(DEFAULT_TOPIC, 0, "sentry"))
-        .expect("partition 0 missing");
-    assert_eq!(p0.pending, 2, "partition 0 pending");
-    assert_eq!(p0.processing, 1, "partition 0 processing");
-    assert_eq!(p0.delay, 0, "partition 0 delay");
-    assert_eq!(p0.claimed, 0, "partition 0 claimed");
-
-    let p1 = depths
-        .get(&DepthKey::new(DEFAULT_TOPIC, 1, "sentry"))
-        .expect("partition 1 missing");
-    assert_eq!(p1.pending, 0, "partition 1 pending");
-    assert_eq!(p1.delay, 1, "partition 1 delay");
-    assert_eq!(p1.processing, 0, "partition 1 processing");
-    assert_eq!(p1.claimed, 0, "partition 1 claimed");
-
-    // Zero-fill: partition 2 is assigned but has no rows.
-    let p2 = depths
-        .get(&DepthKey::new(DEFAULT_TOPIC, 2, ""))
-        .expect("partition 2 missing (zero-fill failed)");
-    assert_eq!(p2.pending, 0, "partition 2 pending");
-    assert_eq!(p2.delay, 0, "partition 2 delay");
-    assert_eq!(p2.processing, 0, "partition 2 processing");
-    assert_eq!(p2.claimed, 0, "partition 2 claimed");
+    let sentry = depths
+        .get(&DepthKey::new(DEFAULT_TOPIC, "sentry"))
+        .expect("sentry application missing");
+    assert_eq!(sentry.pending, 2, "pending");
+    assert_eq!(sentry.processing, 1, "processing");
+    assert_eq!(sentry.delay, 1, "delay");
+    assert_eq!(sentry.claimed, 0, "claimed");
+    assert_eq!(depths.len(), 1, "partitions should be aggregated");
 
     store.remove_db().await.unwrap();
 }
@@ -2147,8 +2131,14 @@ async fn test_pending_activation_max_lag_orders_by_runnable_time(#[case] adapter
     assert!(store.store(&pending).await.is_ok());
 
     let (max_lag, by_app) = store.pending_activation_max_lag(&now).await;
-    assert!(29.0 < max_lag, "global max should be runnable-app lag, got {max_lag}");
-    assert!(max_lag < 31.0, "global max should be runnable-app lag, got {max_lag}");
+    assert!(
+        29.0 < max_lag,
+        "global max should be runnable-app lag, got {max_lag}"
+    );
+    assert!(
+        max_lag < 31.0,
+        "global max should be runnable-app lag, got {max_lag}"
+    );
     assert!(
         4.0 < by_app["delayed-app"] && by_app["delayed-app"] < 6.0,
         "delayed-app lag: {:?}",
@@ -2166,11 +2156,13 @@ async fn test_pending_activation_max_lag_orders_by_runnable_time(#[case] adapter
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
-async fn test_count_depths_per_partition_by_application(#[case] adapter: &str) {
+async fn test_count_depths_by_application(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     if adapter == "postgres" {
         store.assign_partitions(
-            &mut [0].into_iter().map(|p| TopicPartition::new(DEFAULT_TOPIC, p)),
+            &mut [0]
+                .into_iter()
+                .map(|p| TopicPartition::new(DEFAULT_TOPIC, p)),
         );
     }
 
@@ -2183,7 +2175,7 @@ async fn test_count_depths_per_partition_by_application(#[case] adapter: &str) {
     batch[2].status = ActivationStatus::Processing;
     assert!(store.store(&batch).await.is_ok());
 
-    let depths = store.count_depths_per_partition().await.unwrap();
+    let depths = store.count_depths_by_application().await.unwrap();
     let alpha = depths
         .iter()
         .filter_map(|(key, counts)| (key.application == "alpha").then_some(counts))

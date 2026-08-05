@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -24,7 +24,9 @@ use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, DepthCounts, DepthKey, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{
+    BucketRange, DepthCounts, DepthKey, FailedTasksForwarder, TopicPartition,
+};
 
 /// Run migrations.
 pub async fn migrate(config: &StoreConfig) -> Result<()> {
@@ -705,12 +707,9 @@ impl ActivationStore for PostgresStore {
     /// Lag is measured from when a task became runnable (COALESCE(delay_until, received_at)),
     /// so a long-delayed task cannot hide an older runnable one. No tasks = 0 lag.
     #[framed]
-    async fn pending_activation_max_lag(
-        &self,
-        now: &DateTime<Utc>,
-    ) -> (f64, HashMap<String, f64>) {
+    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> (f64, HashMap<String, f64>) {
         let mut query_builder = QueryBuilder::new(
-            "SELECT DISTINCT ON (application) application, received_at, delay_until
+            "SELECT application, MIN(COALESCE(delay_until, received_at))
             FROM inflight_taskactivations
             WHERE status IN (",
         );
@@ -721,14 +720,10 @@ impl ActivationStore for PostgresStore {
         query_builder.push(" AND processing_attempts = 0");
 
         self.add_partition_condition(&mut query_builder, false);
-
-        // Order by effective runnable time so lag selection matches the lag formula.
-        query_builder.push(
-            " ORDER BY application, COALESCE(delay_until, received_at) ASC",
-        );
+        query_builder.push(" GROUP BY application");
 
         let result = match query_builder
-            .build_query_as::<(String, DateTime<Utc>, Option<DateTime<Utc>>)>()
+            .build_query_as::<(String, DateTime<Utc>)>()
             .fetch_all(&self.read_pool)
             .await
         {
@@ -742,14 +737,8 @@ impl ActivationStore for PostgresStore {
         let mut by_application = HashMap::new();
         let mut max_lag = 0.0_f64;
 
-        for (application, received_at, delay_until) in result {
-            let millis = now.signed_duration_since(received_at).num_milliseconds()
-                - delay_until.map_or(0, |delay_time| {
-                    delay_time
-                        .signed_duration_since(received_at)
-                        .num_milliseconds()
-                });
-            let lag = millis as f64 / 1000.0;
+        for (application, runnable_at) in result {
+            let lag = now.signed_duration_since(runnable_at).num_milliseconds() as f64 / 1000.0;
             max_lag = max_lag.max(lag);
             by_application.insert(application, lag);
         }
@@ -822,11 +811,9 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn count_depths_per_partition(&self) -> Result<HashMap<DepthKey, DepthCounts>, Error> {
-        // Per-owned-(topic, partition, application) gauge: scoped to owned pairs
-        // only (no drain escape) — depths for partitions this broker doesn't own
-        // would be meaningless. Grouping by application attributes backlog while
-        // retaining topic/partition for ownership views.
+    async fn count_depths_by_application(&self) -> Result<HashMap<DepthKey, DepthCounts>, Error> {
+        // Scope to owned topic/partition pairs, then aggregate across partitions.
+        // Partition is intentionally not exposed as a metric dimension.
         let assigned: Vec<TopicPartition> =
             self.partitions.read().unwrap().iter().cloned().collect();
         if assigned.is_empty() {
@@ -834,7 +821,7 @@ impl ActivationStore for PostgresStore {
         }
 
         let mut query_builder = QueryBuilder::new(
-            "SELECT topic, partition, application,
+            "SELECT topic, application,
                     COUNT(*) FILTER (WHERE status = 'Pending'),
                     COUNT(*) FILTER (WHERE status = 'Delay'),
                     COUNT(*) FILTER (WHERE status = 'Claimed'),
@@ -853,19 +840,19 @@ impl ActivationStore for PostgresStore {
             query_builder.push_bind(tp.partition);
             query_builder.push(")");
         }
-        query_builder.push(") GROUP BY topic, partition, application");
+        query_builder.push(") GROUP BY topic, application");
 
-        let rows: Vec<(String, i32, String, i64, i64, i64, i64)> = query_builder
+        let rows: Vec<(String, String, i64, i64, i64, i64)> = query_builder
             .build_query_as()
             .fetch_all(&self.read_pool)
             .await?;
 
-        let mut counts: HashMap<DepthKey, DepthCounts> = rows
+        Ok(rows
             .into_iter()
             .map(
-                |(topic, partition, application, pending, delay, claimed, processing)| {
+                |(topic, application, pending, delay, claimed, processing)| {
                     (
-                        DepthKey::new(topic, partition, application),
+                        DepthKey::new(topic, application),
                         DepthCounts {
                             pending: pending as usize,
                             delay: delay as usize,
@@ -875,28 +862,7 @@ impl ActivationStore for PostgresStore {
                     )
                 },
             )
-            .collect();
-
-        // Zero-fill assigned partitions with no rows so gauges clear after drain.
-        let seen_partitions: HashSet<TopicPartition> = counts
-            .keys()
-            .map(|key| key.topic_partition())
-            .collect();
-        for tp in &assigned {
-            if !seen_partitions.contains(tp) {
-                counts.insert(
-                    DepthKey::new(tp.topic.clone(), tp.partition, ""),
-                    DepthCounts {
-                        pending: 0,
-                        delay: 0,
-                        claimed: 0,
-                        processing: 0,
-                    },
-                );
-            }
-        }
-
-        Ok(counts)
+            .collect())
     }
 
     /// Update the status of a specific activation.

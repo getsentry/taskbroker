@@ -449,7 +449,7 @@ pub async fn do_upkeep(
 
     let now = Utc::now();
     let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
-        store.count_depths_per_partition(),
+        store.count_depths_by_application(),
         store.pending_activation_max_lag(&now),
         fs::metadata(config.store.sqlite.path.clone()),
         fs::metadata(config.store.sqlite.path.clone() + "-wal")
@@ -513,37 +513,34 @@ pub async fn do_upkeep(
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
-    // State of activations, tagged per topic/partition/application. Dashboards
-    // aggregating without those filters still see the global total via tag sum.
-    // Zero out gauges for keys we emitted last cycle but no longer have.
+    // State of activations, tagged by topic/application. Partition is omitted to
+    // keep metric cardinality bounded. Zero out keys no longer present.
     if let Ok(depths) = depth_counts {
         let current: HashSet<DepthKey> = depths.keys().cloned().collect();
 
         for key in emitted_depth_keys.difference(&current) {
             let topic = key.topic.clone();
-            let partition = key.partition.to_string();
             let application = key.application.clone();
-            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "application" => application.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "application" => application.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "application" => application.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition, "application" => application)
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "application" => application)
                 .set(0.0);
         }
 
         for (key, counts) in &depths {
             let topic = key.topic.clone();
-            let partition = key.partition.to_string();
             let application = key.application.clone();
-            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "application" => application.clone())
                 .set(counts.pending as f64);
-            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "application" => application.clone())
                 .set(counts.claimed as f64);
-            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "application" => application.clone())
                 .set(counts.processing as f64);
-            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition, "application" => application)
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "application" => application)
                 .set(counts.delay as f64);
         }
 

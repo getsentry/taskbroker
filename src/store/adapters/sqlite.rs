@@ -32,7 +32,9 @@ use crate::killswitch::KillswitchSelector;
 use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, DepthCounts, DepthKey, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{
+    BucketRange, DepthCounts, DepthKey, FailedTasksForwarder, TopicPartition,
+};
 
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
@@ -720,24 +722,13 @@ impl ActivationStore for SqliteStore {
     /// as we are interested in latency to the *first* attempt.
     /// Lag is measured from when a task became runnable (COALESCE(delay_until, received_at)),
     /// so a long-delayed task cannot hide an older runnable one. No tasks = 0 lag.
-    async fn pending_activation_max_lag(
-        &self,
-        now: &DateTime<Utc>,
-    ) -> (f64, HashMap<String, f64>) {
-        // One row per application: the oldest runnable activation for that app.
-        // SQLite has no DISTINCT ON, so use a correlated min over effective start.
+    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> (f64, HashMap<String, f64>) {
         let result = match sqlx::query(
-            "SELECT a.application, a.received_at, a.delay_until
-            FROM inflight_taskactivations a
-            WHERE (a.status = $1 OR a.status = $2)
-              AND a.processing_attempts = 0
-              AND COALESCE(a.delay_until, a.received_at) = (
-                  SELECT MIN(COALESCE(b.delay_until, b.received_at))
-                  FROM inflight_taskactivations b
-                  WHERE (b.status = $1 OR b.status = $2)
-                    AND b.processing_attempts = 0
-                    AND b.application = a.application
-              )",
+            "SELECT application, MIN(COALESCE(delay_until, received_at)) AS runnable_at
+            FROM inflight_taskactivations
+            WHERE (status = $1 OR status = $2)
+              AND processing_attempts = 0
+            GROUP BY application",
         )
         .bind(ActivationStatus::Pending)
         .bind(ActivationStatus::Claimed)
@@ -756,26 +747,16 @@ impl ActivationStore for SqliteStore {
 
         for row in result {
             let application: String = row.get("application");
-            let received_at: DateTime<Utc> = row.get("received_at");
-            let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
-            let millis = now.signed_duration_since(received_at).num_milliseconds()
-                - delay_until.map_or(0, |delay_time| {
-                    delay_time
-                        .signed_duration_since(received_at)
-                        .num_milliseconds()
-                });
-            let lag = millis as f64 / 1000.0;
+            let runnable_at: DateTime<Utc> = row.get("runnable_at");
+            let lag = now.signed_duration_since(runnable_at).num_milliseconds() as f64 / 1000.0;
             max_lag = max_lag.max(lag);
-            by_application
-                .entry(application)
-                .and_modify(|existing: &mut f64| *existing = existing.max(lag))
-                .or_insert(lag);
+            by_application.insert(application, lag);
         }
 
         (max_lag, by_application)
     }
 
-    async fn count_depths_per_partition(&self) -> Result<HashMap<DepthKey, DepthCounts>, Error> {
+    async fn count_depths_by_application(&self) -> Result<HashMap<DepthKey, DepthCounts>, Error> {
         // SQLite is single-broker / not partition-aware for ownership. Group by
         // application so upkeep gauges can still break backlog down by app.
         let rows = sqlx::query(
@@ -796,7 +777,7 @@ impl ActivationStore for SqliteStore {
 
         if rows.is_empty() {
             return Ok(HashMap::from([(
-                DepthKey::new(crate::config::DEFAULT_TOPIC, -1, ""),
+                DepthKey::new(crate::config::DEFAULT_TOPIC, ""),
                 DepthCounts {
                     pending: 0,
                     delay: 0,
@@ -811,7 +792,7 @@ impl ActivationStore for SqliteStore {
             .map(|row| {
                 let application: String = row.get("application");
                 (
-                    DepthKey::new(crate::config::DEFAULT_TOPIC, -1, application),
+                    DepthKey::new(crate::config::DEFAULT_TOPIC, application),
                     DepthCounts {
                         pending: row.get::<i64, _>("pending") as usize,
                         delay: row.get::<i64, _>("delay") as usize,
