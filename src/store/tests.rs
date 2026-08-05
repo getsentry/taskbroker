@@ -16,7 +16,7 @@ use crate::config::{Config, DEFAULT_TOPIC};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
 use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
-use crate::store::types::TopicPartition;
+use crate::store::types::{DepthKey, TopicPartition};
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
     create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
@@ -203,7 +203,7 @@ async fn test_count_depths_per_partition_postgres() {
     let depths = store.count_depths_per_partition().await.unwrap();
 
     let p0 = depths
-        .get(&TopicPartition::new(DEFAULT_TOPIC, 0))
+        .get(&DepthKey::new(DEFAULT_TOPIC, 0, "sentry"))
         .expect("partition 0 missing");
     assert_eq!(p0.pending, 2, "partition 0 pending");
     assert_eq!(p0.processing, 1, "partition 0 processing");
@@ -211,7 +211,7 @@ async fn test_count_depths_per_partition_postgres() {
     assert_eq!(p0.claimed, 0, "partition 0 claimed");
 
     let p1 = depths
-        .get(&TopicPartition::new(DEFAULT_TOPIC, 1))
+        .get(&DepthKey::new(DEFAULT_TOPIC, 1, "sentry"))
         .expect("partition 1 missing");
     assert_eq!(p1.pending, 0, "partition 1 pending");
     assert_eq!(p1.delay, 1, "partition 1 delay");
@@ -220,7 +220,7 @@ async fn test_count_depths_per_partition_postgres() {
 
     // Zero-fill: partition 2 is assigned but has no rows.
     let p2 = depths
-        .get(&TopicPartition::new(DEFAULT_TOPIC, 2))
+        .get(&DepthKey::new(DEFAULT_TOPIC, 2, ""))
         .expect("partition 2 missing (zero-fill failed)");
     assert_eq!(p2.pending, 0, "partition 2 pending");
     assert_eq!(p2.delay, 0, "partition 2 delay");
@@ -2027,14 +2027,14 @@ async fn test_pending_activation_max_lag_no_pending(#[case] adapter: &str) {
     let now = Utc::now();
     let store = create_test_store(adapter).await;
     // No activations, max lag is 0
-    assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
+    assert_eq!(0.0, store.pending_activation_max_lag(&now).await.0);
 
     let mut processing = make_activations(1);
     processing[0].status = ActivationStatus::Processing;
     assert!(store.store(&processing).await.is_ok());
 
     // No pending or claimed activations, max lag is 0
-    assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
+    assert_eq!(0.0, store.pending_activation_max_lag(&now).await.0);
     store.remove_db().await.unwrap();
 }
 
@@ -2053,7 +2053,7 @@ async fn test_pending_activation_max_lag_use_oldest(#[case] adapter: &str) {
     pending[2].received_at = now - Duration::from_secs(50);
     assert!(store.store(&pending).await.is_ok());
 
-    let result = store.pending_activation_max_lag(&now).await;
+    let result = store.pending_activation_max_lag(&now).await.0;
     assert!(11.0 < result, "Should not get the small record");
     assert!(result < 501.0, "Should not get an inflated value");
     store.remove_db().await.unwrap();
@@ -2074,7 +2074,7 @@ async fn test_pending_activation_max_lag_use_oldest_with_claimed(#[case] adapter
     pending[2].received_at = now - Duration::from_secs(50);
     assert!(store.store(&pending).await.is_ok());
 
-    let result = store.pending_activation_max_lag(&now).await;
+    let result = store.pending_activation_max_lag(&now).await.0;
     assert!(11.0 < result, "Should not get the small record");
     assert!(result < 501.0, "Should not get an inflated value");
     store.remove_db().await.unwrap();
@@ -2097,7 +2097,7 @@ async fn test_pending_activation_max_lag_ignore_processing_attempts(#[case] adap
     pending[2].processing_attempts = 1;
     assert!(store.store(&pending).await.is_ok());
 
-    let result = store.pending_activation_max_lag(&now).await;
+    let result = store.pending_activation_max_lag(&now).await.0;
     assert_eq!(result, 10.0, "max lag: {result:?}");
     store.remove_db().await.unwrap();
 }
@@ -2118,9 +2118,97 @@ async fn test_pending_activation_max_lag_account_for_delayed(#[case] adapter: &s
     pending[1].status = ActivationStatus::Claimed;
     assert!(store.store(&pending).await.is_ok());
 
-    let result = store.pending_activation_max_lag(&now).await;
+    let result = store.pending_activation_max_lag(&now).await.0;
     assert!(22.00 < result, "result: {result}");
     assert!(result < 24.00, "result: {result}");
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_pending_activation_max_lag_orders_by_runnable_time(#[case] adapter: &str) {
+    // A long-delayed task with an early received_at must not hide a more recent
+    // but already-runnable task when selecting max lag.
+    let now = Utc::now();
+    let store = create_test_store(adapter).await;
+
+    let mut pending = make_activations(2);
+    // Old received_at, but only became runnable 5s ago.
+    pending[0].received_at = now - Duration::from_secs(1000);
+    pending[0].delay_until = Some(now - Duration::from_secs(5));
+    pending[0].application = "delayed-app".into();
+
+    // Newer received_at, runnable immediately, older effective lag (~30s).
+    pending[1].received_at = now - Duration::from_secs(30);
+    pending[1].delay_until = None;
+    pending[1].application = "runnable-app".into();
+    assert!(store.store(&pending).await.is_ok());
+
+    let (max_lag, by_app) = store.pending_activation_max_lag(&now).await;
+    assert!(29.0 < max_lag, "global max should be runnable-app lag, got {max_lag}");
+    assert!(max_lag < 31.0, "global max should be runnable-app lag, got {max_lag}");
+    assert!(
+        4.0 < by_app["delayed-app"] && by_app["delayed-app"] < 6.0,
+        "delayed-app lag: {:?}",
+        by_app.get("delayed-app")
+    );
+    assert!(
+        29.0 < by_app["runnable-app"] && by_app["runnable-app"] < 31.0,
+        "runnable-app lag: {:?}",
+        by_app.get("runnable-app")
+    );
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_count_depths_per_partition_by_application(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    if adapter == "postgres" {
+        store.assign_partitions(
+            &mut [0].into_iter().map(|p| TopicPartition::new(DEFAULT_TOPIC, p)),
+        );
+    }
+
+    let mut batch = make_activations(3);
+    batch[0].application = "alpha".into();
+    batch[0].status = ActivationStatus::Pending;
+    batch[1].application = "alpha".into();
+    batch[1].status = ActivationStatus::Delay;
+    batch[2].application = "beta".into();
+    batch[2].status = ActivationStatus::Processing;
+    assert!(store.store(&batch).await.is_ok());
+
+    let depths = store.count_depths_per_partition().await.unwrap();
+    let alpha = depths
+        .iter()
+        .filter_map(|(key, counts)| (key.application == "alpha").then_some(counts))
+        .fold((0, 0, 0, 0), |acc, c| {
+            (
+                acc.0 + c.pending,
+                acc.1 + c.delay,
+                acc.2 + c.claimed,
+                acc.3 + c.processing,
+            )
+        });
+    assert_eq!(alpha, (1, 1, 0, 0), "alpha depths");
+
+    let beta = depths
+        .iter()
+        .filter_map(|(key, counts)| (key.application == "beta").then_some(counts))
+        .fold((0, 0, 0, 0), |acc, c| {
+            (
+                acc.0 + c.pending,
+                acc.1 + c.delay,
+                acc.2 + c.claimed,
+                acc.3 + c.processing,
+            )
+        });
+    assert_eq!(beta, (0, 0, 0, 1), "beta depths");
     store.remove_db().await.unwrap();
 }
 

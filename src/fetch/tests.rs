@@ -110,7 +110,10 @@ impl ActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
+    async fn pending_activation_max_lag(
+        &self,
+        _now: &DateTime<Utc>,
+    ) -> (f64, std::collections::HashMap<String, f64>) {
         unimplemented!()
     }
 

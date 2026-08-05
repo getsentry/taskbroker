@@ -8,7 +8,7 @@ use tracing::warn;
 
 use crate::killswitch::KillswitchSelector;
 use crate::store::activation::{Activation, ActivationStatus};
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, DepthCounts, DepthKey, FailedTasksForwarder, TopicPartition};
 
 #[async_trait]
 pub trait ActivationStore: Send + Sync {
@@ -105,8 +105,13 @@ pub trait ActivationStore: Send + Sync {
     ) -> Result<u64, Error>;
 
     /// COUNT OPERATIONS
-    /// Get the age of the oldest pending activation in seconds
-    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64;
+    /// Get the age of the oldest pending/claimed activation in seconds, overall
+    /// and broken down by application. Lag is measured from when a task became
+    /// runnable (after any delay_until), not from raw received_at.
+    async fn pending_activation_max_lag(
+        &self,
+        now: &DateTime<Utc>,
+    ) -> (f64, HashMap<String, f64>);
 
     /// Count activations with Pending status
     async fn count_pending_activations(&self) -> Result<usize, Error> {
@@ -141,15 +146,14 @@ pub trait ActivationStore: Send + Sync {
         })
     }
 
-    /// Queue depths grouped by (topic, partition) for upkeep gauges. The default
-    /// implementation returns the flat total under the default topic and sentinel
-    /// partition -1 for stores that aren't partition-aware.
-    async fn count_depths_per_partition(
-        &self,
-    ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
+    /// Queue depths grouped by (topic, partition, application) for upkeep gauges.
+    /// The default implementation returns the flat total under the default topic,
+    /// sentinel partition -1, and empty application for stores that aren't
+    /// partition-aware.
+    async fn count_depths_per_partition(&self) -> Result<HashMap<DepthKey, DepthCounts>, Error> {
         let total = self.count_depths().await?;
         Ok(HashMap::from([(
-            TopicPartition::new(crate::config::DEFAULT_TOPIC, -1),
+            DepthKey::new(crate::config::DEFAULT_TOPIC, -1, ""),
             total,
         )]))
     }

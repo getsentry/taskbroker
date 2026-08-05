@@ -21,7 +21,7 @@ use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::traits::ActivationStore;
-use crate::store::types::TopicPartition;
+use crate::store::types::DepthKey;
 
 /// The upkeep task that periodically performs upkeep
 /// on the activation store
@@ -47,7 +47,8 @@ pub async fn upkeep(
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
-    let mut emitted_partitions: HashSet<TopicPartition> = HashSet::new();
+    let mut emitted_depth_keys: HashSet<DepthKey> = HashSet::new();
+    let mut emitted_lag_applications: HashSet<String> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
@@ -58,7 +59,8 @@ pub async fn upkeep(
                     startup_time,
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
-                    &mut emitted_partitions,
+                    &mut emitted_depth_keys,
+                    &mut emitted_lag_applications,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
@@ -130,7 +132,8 @@ pub async fn do_upkeep(
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
-    emitted_partitions: &mut HashSet<TopicPartition>,
+    emitted_depth_keys: &mut HashSet<DepthKey>,
+    emitted_lag_applications: &mut HashSet<String>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
@@ -451,6 +454,7 @@ pub async fn do_upkeep(
         fs::metadata(config.store.sqlite.path.clone()),
         fs::metadata(config.store.sqlite.path.clone() + "-wal")
     );
+    let (max_lag, max_lag_by_application) = max_lag;
 
     if let Ok(ref depths) = depth_counts {
         for counts in depths.values() {
@@ -509,40 +513,62 @@ pub async fn do_upkeep(
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
-    // State of activations, tagged per partition. Dashboards aggregating
-    // without a partition filter still see the global total via tag sum.
-    // Zero out gauges for partitions we emitted last cycle but no longer own.
+    // State of activations, tagged per topic/partition/application. Dashboards
+    // aggregating without those filters still see the global total via tag sum.
+    // Zero out gauges for keys we emitted last cycle but no longer have.
     if let Ok(depths) = depth_counts {
-        let current: HashSet<TopicPartition> = depths.keys().cloned().collect();
+        let current: HashSet<DepthKey> = depths.keys().cloned().collect();
 
-        for tp in emitted_partitions.difference(&current) {
-            let topic = tp.topic.clone();
-            let partition = tp.partition.to_string();
-            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+        for key in emitted_depth_keys.difference(&current) {
+            let topic = key.topic.clone();
+            let partition = key.partition.to_string();
+            let application = key.application.clone();
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
                 .set(0.0);
-            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition).set(0.0);
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition, "application" => application)
+                .set(0.0);
         }
 
-        for (tp, counts) in &depths {
-            let topic = tp.topic.clone();
-            let partition = tp.partition.to_string();
-            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+        for (key, counts) in &depths {
+            let topic = key.topic.clone();
+            let partition = key.partition.to_string();
+            let application = key.application.clone();
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
                 .set(counts.pending as f64);
-            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
                 .set(counts.claimed as f64);
-            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone(), "application" => application.clone())
                 .set(counts.processing as f64);
-            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition)
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition, "application" => application)
                 .set(counts.delay as f64);
         }
 
-        *emitted_partitions = current;
+        *emitted_depth_keys = current;
     }
+
+    // Global max lag remains untagged for existing dashboards; per-application
+    // series let us attribute backlog by task application.
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
+    let current_apps: HashSet<String> = max_lag_by_application.keys().cloned().collect();
+    for application in emitted_lag_applications.difference(&current_apps) {
+        metrics::gauge!(
+            "upkeep.pending_activation.max_lag.sec",
+            "application" => application.clone()
+        )
+        .set(0.0);
+    }
+    for (application, lag) in &max_lag_by_application {
+        metrics::gauge!(
+            "upkeep.pending_activation.max_lag.sec",
+            "application" => application.clone()
+        )
+        .set(*lag);
+    }
+    *emitted_lag_applications = current_apps;
 
     if let Ok(db_file_meta) = db_file_meta {
         metrics::gauge!("upkeep.db_file_size.bytes").set(db_file_meta.len() as f64);
@@ -777,6 +803,7 @@ mod tests {
             runtime_config.clone(),
             &mut last_vacuum,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
 
@@ -839,6 +866,7 @@ mod tests {
             runtime_config.clone(),
             &mut last_vacuum,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
 
@@ -890,6 +918,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;
@@ -951,6 +980,7 @@ mod tests {
             runtime_config.clone(),
             &mut last_vacuum,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1005,6 +1035,7 @@ mod tests {
             runtime_config.clone(),
             &mut last_vacuum,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1051,6 +1082,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;
@@ -1119,6 +1151,7 @@ mod tests {
             runtime_config.clone(),
             &mut last_vacuum,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1165,6 +1198,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;
@@ -1216,6 +1250,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;
@@ -1300,6 +1335,7 @@ mod tests {
             runtime_config.clone(),
             &mut last_vacuum,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
@@ -1332,6 +1368,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;
@@ -1388,6 +1425,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;
@@ -1450,6 +1488,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;
@@ -1522,6 +1561,7 @@ demoted_namespaces: []"#;
             runtime_config.clone(),
             &mut last_vacuum,
             &mut HashSet::new(),
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1565,6 +1605,7 @@ demoted_namespaces: []"#;
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
             &mut HashSet::new(),
         )
         .await;

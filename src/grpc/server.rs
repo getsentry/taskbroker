@@ -59,6 +59,7 @@ impl ConsumerService for TaskbrokerServer {
                     if received_to_gettask_latency > 0 {
                         metrics::histogram!(
                             "grpc_server.received_to_gettask.latency",
+                            "application" => inflight.application.clone(),
                             "namespace" => inflight.namespace.clone(),
                             "taskname" => inflight.taskname.clone(),
                         )
@@ -203,6 +204,7 @@ impl ConsumerService for TaskbrokerServer {
                     if received_to_gettask_latency > 0 {
                         metrics::histogram!(
                             "grpc_server.received_to_gettask.latency",
+                            "application" => inflight.application.clone(),
                             "namespace" => inflight.namespace.clone(),
                             "taskname" => inflight.taskname.clone(),
                         )

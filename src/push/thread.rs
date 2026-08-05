@@ -114,6 +114,7 @@ impl PushThread {
 
             metrics::histogram!(
                 "push.received_to_push.latency",
+                "application" => activation.application,
                 "namespace" => activation.namespace,
                 "taskname" => activation.taskname,
             )

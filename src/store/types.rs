@@ -30,6 +30,37 @@ impl From<&(String, i32)> for TopicPartition {
     }
 }
 
+/// Queue-depth gauge key. Grouping includes `application` so delayed/pending
+/// backlog can be attributed per task application while still retaining topic
+/// and partition for ownership/rebalance views.
+///
+/// Empty partitions (assigned but with no rows) use an empty `application` so
+/// zero-fill still works without inventing fake applications.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DepthKey {
+    pub topic: String,
+    pub partition: i32,
+    pub application: String,
+}
+
+impl DepthKey {
+    pub fn new(
+        topic: impl Into<String>,
+        partition: i32,
+        application: impl Into<String>,
+    ) -> Self {
+        Self {
+            topic: topic.into(),
+            partition,
+            application: application.into(),
+        }
+    }
+
+    pub fn topic_partition(&self) -> TopicPartition {
+        TopicPartition::new(self.topic.clone(), self.partition)
+    }
+}
+
 pub struct FailedTasksForwarder {
     pub to_discard: Vec<(String, Vec<u8>)>,
     pub to_deadletter: Vec<(String, Vec<u8>)>,

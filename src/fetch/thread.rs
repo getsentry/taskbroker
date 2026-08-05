@@ -99,6 +99,7 @@ impl FetchThread {
 
                         metrics::histogram!(
                             "push.received_to_claimed.latency",
+                            "application" => activation.application.clone(),
                             "namespace" => activation.namespace.clone(),
                             "taskname" => activation.taskname.clone(),
                             "owned_partition" => owned_partition.to_string(),

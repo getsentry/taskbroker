@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::RwLock;
 use std::time::Instant;
@@ -24,7 +24,7 @@ use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, DepthCounts, DepthKey, FailedTasksForwarder, TopicPartition};
 
 /// Run migrations.
 pub async fn migrate(config: &StoreConfig) -> Result<()> {
@@ -702,12 +702,15 @@ impl ActivationStore for PostgresStore {
     /// Get the age of the oldest pending/claimed activation in seconds.
     /// Only activations with status=pending/claimed and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
-    /// Tasks with delay_until set, will have their age adjusted based on their
-    /// delay time. No tasks = 0 lag
+    /// Lag is measured from when a task became runnable (COALESCE(delay_until, received_at)),
+    /// so a long-delayed task cannot hide an older runnable one. No tasks = 0 lag.
     #[framed]
-    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
+    async fn pending_activation_max_lag(
+        &self,
+        now: &DateTime<Utc>,
+    ) -> (f64, HashMap<String, f64>) {
         let mut query_builder = QueryBuilder::new(
-            "SELECT received_at, delay_until
+            "SELECT DISTINCT ON (application) application, received_at, delay_until
             FROM inflight_taskactivations
             WHERE status IN (",
         );
@@ -719,34 +722,39 @@ impl ActivationStore for PostgresStore {
 
         self.add_partition_condition(&mut query_builder, false);
 
-        query_builder.push(" ORDER BY received_at ASC LIMIT 1");
+        // Order by effective runnable time so lag selection matches the lag formula.
+        query_builder.push(
+            " ORDER BY application, COALESCE(delay_until, received_at) ASC",
+        );
 
         let result = match query_builder
-            .build_query_as::<(DateTime<Utc>, Option<DateTime<Utc>>)>()
-            .fetch_optional(&self.read_pool)
+            .build_query_as::<(String, DateTime<Utc>, Option<DateTime<Utc>>)>()
+            .fetch_all(&self.read_pool)
             .await
         {
-            Ok(row) => row,
+            Ok(rows) => rows,
             Err(e) => {
                 warn!("pending_activation_max_lag query failed: {e}");
-                return 0.0;
+                return (0.0, HashMap::new());
             }
         };
 
-        if let Some(row) = result {
-            let received_at: DateTime<Utc> = row.0;
-            let delay_until: Option<DateTime<Utc>> = row.1;
+        let mut by_application = HashMap::new();
+        let mut max_lag = 0.0_f64;
+
+        for (application, received_at, delay_until) in result {
             let millis = now.signed_duration_since(received_at).num_milliseconds()
                 - delay_until.map_or(0, |delay_time| {
                     delay_time
                         .signed_duration_since(received_at)
                         .num_milliseconds()
                 });
-            millis as f64 / 1000.0
-        } else {
-            // No pending activations means no latency
-            0.0
+            let lag = millis as f64 / 1000.0;
+            max_lag = max_lag.max(lag);
+            by_application.insert(application, lag);
         }
+
+        (max_lag, by_application)
     }
 
     #[instrument(skip_all)]
@@ -814,13 +822,11 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn count_depths_per_partition(
-        &self,
-    ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
-        // Per-owned-(topic, partition) gauge: scoped to owned pairs only (no drain
-        // escape) — depths for partitions this broker doesn't own would be
-        // meaningless. Grouping by (topic, partition) keeps same-index partitions
-        // from different topics distinct.
+    async fn count_depths_per_partition(&self) -> Result<HashMap<DepthKey, DepthCounts>, Error> {
+        // Per-owned-(topic, partition, application) gauge: scoped to owned pairs
+        // only (no drain escape) — depths for partitions this broker doesn't own
+        // would be meaningless. Grouping by application attributes backlog while
+        // retaining topic/partition for ownership views.
         let assigned: Vec<TopicPartition> =
             self.partitions.read().unwrap().iter().cloned().collect();
         if assigned.is_empty() {
@@ -828,7 +834,7 @@ impl ActivationStore for PostgresStore {
         }
 
         let mut query_builder = QueryBuilder::new(
-            "SELECT topic, partition,
+            "SELECT topic, partition, application,
                     COUNT(*) FILTER (WHERE status = 'Pending'),
                     COUNT(*) FILTER (WHERE status = 'Delay'),
                     COUNT(*) FILTER (WHERE status = 'Claimed'),
@@ -847,35 +853,47 @@ impl ActivationStore for PostgresStore {
             query_builder.push_bind(tp.partition);
             query_builder.push(")");
         }
-        query_builder.push(") GROUP BY topic, partition");
+        query_builder.push(") GROUP BY topic, partition, application");
 
-        let rows: Vec<(String, i32, i64, i64, i64, i64)> = query_builder
+        let rows: Vec<(String, i32, String, i64, i64, i64, i64)> = query_builder
             .build_query_as()
             .fetch_all(&self.read_pool)
             .await?;
 
-        let mut counts: HashMap<TopicPartition, DepthCounts> = rows
+        let mut counts: HashMap<DepthKey, DepthCounts> = rows
             .into_iter()
-            .map(|(topic, partition, pending, delay, claimed, processing)| {
-                (
-                    TopicPartition::new(topic, partition),
-                    DepthCounts {
-                        pending: pending as usize,
-                        delay: delay as usize,
-                        claimed: claimed as usize,
-                        processing: processing as usize,
-                    },
-                )
-            })
+            .map(
+                |(topic, partition, application, pending, delay, claimed, processing)| {
+                    (
+                        DepthKey::new(topic, partition, application),
+                        DepthCounts {
+                            pending: pending as usize,
+                            delay: delay as usize,
+                            claimed: claimed as usize,
+                            processing: processing as usize,
+                        },
+                    )
+                },
+            )
             .collect();
 
-        for key in &assigned {
-            counts.entry(key.clone()).or_insert(DepthCounts {
-                pending: 0,
-                delay: 0,
-                claimed: 0,
-                processing: 0,
-            });
+        // Zero-fill assigned partitions with no rows so gauges clear after drain.
+        let seen_partitions: HashSet<TopicPartition> = counts
+            .keys()
+            .map(|key| key.topic_partition())
+            .collect();
+        for tp in &assigned {
+            if !seen_partitions.contains(tp) {
+                counts.insert(
+                    DepthKey::new(tp.topic.clone(), tp.partition, ""),
+                    DepthCounts {
+                        pending: 0,
+                        delay: 0,
+                        claimed: 0,
+                        processing: 0,
+                    },
+                );
+            }
         }
 
         Ok(counts)

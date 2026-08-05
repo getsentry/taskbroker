@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -31,7 +32,7 @@ use crate::killswitch::KillswitchSelector;
 use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, DepthCounts, DepthKey, FailedTasksForwarder, TopicPartition};
 
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
@@ -717,31 +718,44 @@ impl ActivationStore for SqliteStore {
     /// Get the age of the oldest pending/claimed activation in seconds.
     /// Only activations with status=pending/claimed and processing_attempts=0 are considered
     /// as we are interested in latency to the *first* attempt.
-    /// Tasks with delay_until set, will have their age adjusted based on their
-    /// delay time. No tasks = 0 lag
-    async fn pending_activation_max_lag(&self, now: &DateTime<Utc>) -> f64 {
+    /// Lag is measured from when a task became runnable (COALESCE(delay_until, received_at)),
+    /// so a long-delayed task cannot hide an older runnable one. No tasks = 0 lag.
+    async fn pending_activation_max_lag(
+        &self,
+        now: &DateTime<Utc>,
+    ) -> (f64, HashMap<String, f64>) {
+        // One row per application: the oldest runnable activation for that app.
+        // SQLite has no DISTINCT ON, so use a correlated min over effective start.
         let result = match sqlx::query(
-            "SELECT received_at, delay_until
-            FROM inflight_taskactivations
-            WHERE (status = $1 or status = $2)
-            AND processing_attempts = 0
-            ORDER BY received_at ASC
-            LIMIT 1
-            ",
+            "SELECT a.application, a.received_at, a.delay_until
+            FROM inflight_taskactivations a
+            WHERE (a.status = $1 OR a.status = $2)
+              AND a.processing_attempts = 0
+              AND COALESCE(a.delay_until, a.received_at) = (
+                  SELECT MIN(COALESCE(b.delay_until, b.received_at))
+                  FROM inflight_taskactivations b
+                  WHERE (b.status = $1 OR b.status = $2)
+                    AND b.processing_attempts = 0
+                    AND b.application = a.application
+              )",
         )
         .bind(ActivationStatus::Pending)
         .bind(ActivationStatus::Claimed)
-        .fetch_optional(&self.read_pool)
+        .fetch_all(&self.read_pool)
         .await
         {
-            Ok(row) => row,
+            Ok(rows) => rows,
             Err(e) => {
                 warn!("pending_activation_max_lag query failed: {e}");
-                return 0.0;
+                return (0.0, HashMap::new());
             }
         };
 
-        if let Some(row) = result {
+        let mut by_application = HashMap::new();
+        let mut max_lag = 0.0_f64;
+
+        for row in result {
+            let application: String = row.get("application");
             let received_at: DateTime<Utc> = row.get("received_at");
             let delay_until: Option<DateTime<Utc>> = row.get("delay_until");
             let millis = now.signed_duration_since(received_at).num_milliseconds()
@@ -750,11 +764,63 @@ impl ActivationStore for SqliteStore {
                         .signed_duration_since(received_at)
                         .num_milliseconds()
                 });
-            millis as f64 / 1000.0
-        } else {
-            // No pending activations means no latency
-            0.0
+            let lag = millis as f64 / 1000.0;
+            max_lag = max_lag.max(lag);
+            by_application
+                .entry(application)
+                .and_modify(|existing: &mut f64| *existing = existing.max(lag))
+                .or_insert(lag);
         }
+
+        (max_lag, by_application)
+    }
+
+    async fn count_depths_per_partition(&self) -> Result<HashMap<DepthKey, DepthCounts>, Error> {
+        // SQLite is single-broker / not partition-aware for ownership. Group by
+        // application so upkeep gauges can still break backlog down by app.
+        let rows = sqlx::query(
+            "SELECT application,
+                    SUM(CASE WHEN status = $1 THEN 1 ELSE 0 END) as pending,
+                    SUM(CASE WHEN status = $2 THEN 1 ELSE 0 END) as delay,
+                    SUM(CASE WHEN status = $3 THEN 1 ELSE 0 END) as claimed,
+                    SUM(CASE WHEN status = $4 THEN 1 ELSE 0 END) as processing
+             FROM inflight_taskactivations
+             GROUP BY application",
+        )
+        .bind(ActivationStatus::Pending)
+        .bind(ActivationStatus::Delay)
+        .bind(ActivationStatus::Claimed)
+        .bind(ActivationStatus::Processing)
+        .fetch_all(&self.read_pool)
+        .await?;
+
+        if rows.is_empty() {
+            return Ok(HashMap::from([(
+                DepthKey::new(crate::config::DEFAULT_TOPIC, -1, ""),
+                DepthCounts {
+                    pending: 0,
+                    delay: 0,
+                    claimed: 0,
+                    processing: 0,
+                },
+            )]));
+        }
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let application: String = row.get("application");
+                (
+                    DepthKey::new(crate::config::DEFAULT_TOPIC, -1, application),
+                    DepthCounts {
+                        pending: row.get::<i64, _>("pending") as usize,
+                        delay: row.get::<i64, _>("delay") as usize,
+                        claimed: row.get::<i64, _>("claimed") as usize,
+                        processing: row.get::<i64, _>("processing") as usize,
+                    },
+                )
+            })
+            .collect())
     }
 
     #[instrument(skip_all)]

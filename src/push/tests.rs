@@ -84,8 +84,11 @@ impl ActivationStore for MockStore {
         Ok(0)
     }
 
-    async fn pending_activation_max_lag(&self, _now: &DateTime<Utc>) -> f64 {
-        0.0
+    async fn pending_activation_max_lag(
+        &self,
+        _now: &DateTime<Utc>,
+    ) -> (f64, std::collections::HashMap<String, f64>) {
+        (0.0, std::collections::HashMap::new())
     }
 
     async fn count_by_status(&self, _status: ActivationStatus) -> Result<usize> {
