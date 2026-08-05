@@ -160,6 +160,40 @@ class TrackedChild:
     busy_since: float | None = None  # monotonic timestamp of the currently-open busy segment
     busy_accumulated: float = 0.0  # the busy seconds banked since the last occupancy flush
 
+    def mark_busy(self, now: float) -> None:
+        """Open a busy segment when the child starts a task.
+
+        `busy`/`idle` strictly alternate per child today, so a segment should
+        never already be open; the guard is defensive and keeps the original
+        start time if that invariant ever drifts.
+        """
+        if self.busy_since is None:
+            self.busy_since = now
+
+    def mark_idle(self, now: float) -> None:
+        """Close the open busy segment and bank its elapsed seconds.
+
+        Guarded so an unexpected `idle` with no open segment is a no-op rather
+        than a crash.
+        """
+        if self.busy_since is not None:
+            self.busy_accumulated += now - self.busy_since
+            self.busy_since = None
+
+    def drain_busy(self, now: float) -> float:
+        """Return busy seconds since the last drain and reset the counter.
+
+        Any segment still open is folded in up to `now` and left open (its
+        start advanced to `now`) so a task spanning multiple intervals keeps
+        contributing to each one.
+        """
+        if self.busy_since is not None:
+            self.busy_accumulated += now - self.busy_since
+            self.busy_since = now
+        banked = self.busy_accumulated
+        self.busy_accumulated = 0.0
+        return banked
+
 
 class PushTaskWorker:
     _mp_context: ForkContext | SpawnContext | ForkServerContext
@@ -841,12 +875,7 @@ class TaskWorkerProcessingPool:
             busy_time = 0.0
             for child in self._children.values():
                 state_counts[child.state] += 1
-
-                if child.busy_since is not None:
-                    child.busy_accumulated += now - child.busy_since
-                    child.busy_since = now
-                busy_time += child.busy_accumulated
-                child.busy_accumulated = 0.0
+                busy_time += child.drain_busy(now)
 
             exiting_children = len(self._exiting_children)
 
@@ -856,7 +885,7 @@ class TaskWorkerProcessingPool:
         running_count = state_counts["running"]
         if running_count > 0 and elapsed > 0:
             occupancy = busy_time / (elapsed * running_count)
-            occupancy = max(0.0, min(occupancy, 1.0))
+            occupancy = min(occupancy, 1.0)
             self._metrics.gauge(
                 "taskworker.worker.occupancy",
                 occupancy,
@@ -1041,18 +1070,13 @@ class TaskWorkerProcessingPool:
                             self._exiting_children.append(message.child_id)
 
                         # This child started executing a task: open a busy segment.
-                        # Guard against duplicate "busy" so we don't lose the
-                        # original start time.
                         elif message.event == "busy":
-                            if child.busy_since is None:
-                                child.busy_since = time.monotonic()
+                            child.mark_busy(time.monotonic())
 
                         # This child finished a task: close the open busy segment
-                        # and bank the elapsed time. Guard against a stray "idle".
+                        # and bank the elapsed time.
                         elif message.event == "idle":
-                            if child.busy_since is not None:
-                                child.busy_accumulated += time.monotonic() - child.busy_since
-                                child.busy_since = None
+                            child.mark_idle(time.monotonic())
 
                     while True:
                         # Compute how many children are still running
