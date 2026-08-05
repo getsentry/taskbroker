@@ -863,9 +863,8 @@ class TaskWorkerProcessingPool:
                 extra={"error": e, "processing_pool": self._processing_pool_name},
             )
 
-        # Calculate time-weighted occupancy.
-        now = time.monotonic()
         with self._children_lock:
+            now = time.monotonic()
             state_counts: dict[ChildState, int] = {
                 "pending": 0,
                 "running": 0,
