@@ -81,7 +81,7 @@ pub async fn upkeep(
 
 /// Tracks metric series emitted on the previous upkeep cycle so we can zero
 /// gauges that no longer have rows.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct EmittedGauges {
     depth_keys: HashSet<DepthKey>,
     lag_applications: HashSet<String>,
@@ -129,7 +129,7 @@ impl UpkeepResults {
 
 #[instrument(
     name = "upkeep::do_upkeep",
-    skip(store, config, producer, runtime_config_manager)
+    skip(store, config, producer, runtime_config_manager, emitted_gauges)
 )]
 pub async fn do_upkeep(
     config: Arc<Config>,
@@ -639,7 +639,6 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
     use std::io::Write;
     use std::sync::Arc;
     use std::time::Duration;
@@ -653,6 +652,7 @@ mod tests {
     use tempfile::NamedTempFile;
     use tokio::time::sleep;
 
+    use super::{EmittedGauges, create_retry_activation, do_upkeep};
     use crate::config::Config;
     use crate::config::deprecated::DeprecatedConfig;
     use crate::runtime_config::RuntimeConfigManager;
@@ -662,7 +662,6 @@ mod tests {
         create_integration_config_from_base, create_producer, create_test_store, make_activations,
         replace_retry_state, reset_topic,
     };
-    use super::{EmittedGauges, create_retry_activation, do_upkeep};
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
