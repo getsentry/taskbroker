@@ -1,4 +1,15 @@
 # Changelog
+## 0.20.19
+
+### New Features ✨
+
+- (client) Add is_raw_mode flag to namespaces by @untitaker in [#777](https://github.com/getsentry/taskbroker/pull/777)
+- (worker) Remove TaskProducer by @bmckerry in [#748](https://github.com/getsentry/taskbroker/pull/748)
+
+### Internal Changes 🔧
+
+- (o11y) Remove custom origin in the streaming trace lifecycle by @alexander-alderman-webb in [#771](https://github.com/getsentry/taskbroker/pull/771)
+
 ## 0.20.18
 
 ### Internal Changes 🔧
