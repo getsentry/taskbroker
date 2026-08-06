@@ -398,3 +398,120 @@ def test_registry_create_namespace_duplicate() -> None:
     registry.create_namespace(name="tests")
     with pytest.raises(ValueError, match="tests already exists"):
         registry.create_namespace(name="tests")
+
+
+def raw_namespace(retry: Retry | None = None, **kwargs: Any) -> TaskNamespace:
+    return TaskNamespace(
+        name="tests.raw",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=retry,
+        is_raw_mode=True,
+        **kwargs,
+    )
+
+
+def test_raw_mode_namespace_allows_plain_task() -> None:
+    namespace = raw_namespace()
+
+    @namespace.register(name="tests.raw.consume", retry=Retry(times=3, delay=5))
+    def consume(message_bytes: bytes) -> None:
+        raise NotImplementedError
+
+    assert namespace.is_raw_mode
+    assert namespace.contains("tests.raw.consume")
+
+
+def test_raw_mode_namespace_rejects_second_task() -> None:
+    namespace = raw_namespace()
+
+    @namespace.register(name="tests.raw.consume")
+    def consume(message_bytes: bytes) -> None:
+        raise NotImplementedError
+
+    with pytest.raises(ValueError, match="would never run"):
+
+        @namespace.register(name="tests.raw.other")
+        def other(message_bytes: bytes) -> None:
+            raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"expires": 60}, id="expires"),
+        pytest.param({"processing_deadline_duration": 90}, id="processing_deadline_duration"),
+        pytest.param({"compression_type": CompressionType.ZSTD}, id="compression_type"),
+    ],
+)
+def test_raw_mode_namespace_rejects_topic_config_params(kwargs: dict[str, Any]) -> None:
+    namespace = raw_namespace()
+
+    with pytest.raises(ValueError, match="takes these from the topic's `raw:` block"):
+
+        @namespace.register(name="tests.raw.consume", **kwargs)
+        def consume(message_bytes: bytes) -> None:
+            raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    "namespace_kwargs",
+    [
+        pytest.param({"expires": 60}, id="expires"),
+        pytest.param({"processing_deadline_duration": 90}, id="processing_deadline_duration"),
+    ],
+)
+def test_raw_mode_namespace_rejects_topic_config_defaults(namespace_kwargs: dict[str, Any]) -> None:
+    namespace = raw_namespace(**namespace_kwargs)
+
+    with pytest.raises(ValueError, match="takes these from the topic's `raw:` block"):
+
+        @namespace.register(name="tests.raw.consume")
+        def consume(message_bytes: bytes) -> None:
+            raise NotImplementedError
+
+
+def test_raw_mode_namespace_rejects_at_most_once() -> None:
+    namespace = raw_namespace()
+
+    with pytest.raises(ValueError, match="hardcodes at_most_once=false"):
+
+        @namespace.register(name="tests.raw.consume", at_most_once=True)
+        def consume(message_bytes: bytes) -> None:
+            raise NotImplementedError
+
+
+def test_raw_mode_namespace_rejects_deadletter() -> None:
+    namespace = raw_namespace()
+
+    with pytest.raises(ValueError, match="hardcodes Discard"):
+
+        @namespace.register(
+            name="tests.raw.consume",
+            retry=Retry(times=3, times_exceeded=LastAction.Deadletter),
+        )
+        def consume(message_bytes: bytes) -> None:
+            raise NotImplementedError
+
+
+def test_raw_mode_namespace_rejects_deadletter_from_namespace_default() -> None:
+    namespace = raw_namespace(retry=Retry(times=3, times_exceeded=LastAction.Deadletter))
+
+    with pytest.raises(ValueError, match="hardcodes Discard"):
+
+        @namespace.register(name="tests.raw.consume")
+        def consume(message_bytes: bytes) -> None:
+            raise NotImplementedError
+
+
+def test_registry_create_namespace_is_raw_mode() -> None:
+    registry = TaskRegistry(
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+    )
+    assert not registry.create_namespace("tests").is_raw_mode
+    assert registry.create_namespace("tests.raw", is_raw_mode=True).is_raw_mode
