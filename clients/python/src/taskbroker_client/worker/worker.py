@@ -156,7 +156,43 @@ class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
-    busy: bool = False
+    # Time-weighted busy tracking
+    busy_since: float | None = None  # monotonic timestamp of the currently-open busy segment
+    busy_accumulated: float = 0.0  # the busy seconds banked since the last occupancy flush
+
+    def mark_busy(self, now: float) -> None:
+        """Open a busy segment when the child starts a task.
+
+        `busy`/`idle` strictly alternate per child today, so a segment should
+        never already be open; the guard is defensive and keeps the original
+        start time if that invariant ever drifts.
+        """
+        if self.busy_since is None:
+            self.busy_since = now
+
+    def mark_idle(self, now: float) -> None:
+        """Close the open busy segment and bank its elapsed seconds.
+
+        Guarded so an unexpected `idle` with no open segment is a no-op rather
+        than a crash.
+        """
+        if self.busy_since is not None:
+            self.busy_accumulated += now - self.busy_since
+            self.busy_since = None
+
+    def drain_busy(self, now: float) -> float:
+        """Return busy seconds since the last drain and reset the counter.
+
+        Any segment still open is folded in up to `now` and left open (its
+        start advanced to `now`) so a task spanning multiple intervals keeps
+        contributing to each one.
+        """
+        if self.busy_since is not None:
+            self.busy_accumulated += now - self.busy_since
+            self.busy_since = now
+        banked = self.busy_accumulated
+        self.busy_accumulated = 0.0
+        return banked
 
 
 class PushTaskWorker:
@@ -787,6 +823,7 @@ class TaskWorkerProcessingPool:
         self._children: Dict[UUID, TrackedChild] = {}
         self._exiting_children: Deque[UUID] = deque()
         self._children_lock = threading.Lock()
+        self._last_occupancy_flush_at = time.monotonic()
         self._shutdown_event = self._mp_context.Event()
         self._prometheus_port = prometheus_port
         self._prom: WorkerPrometheusMetrics | None = None
@@ -826,29 +863,43 @@ class TaskWorkerProcessingPool:
                 extra={"error": e, "processing_pool": self._processing_pool_name},
             )
 
-        # Count the number of children in each state and waiting for exit
         with self._children_lock:
+            now = time.monotonic()
             state_counts: dict[ChildState, int] = {
                 "pending": 0,
                 "running": 0,
                 "exiting": 0,
             }
 
+            busy_time = 0.0
             for child in self._children.values():
                 state_counts[child.state] += 1
+                busy_time += child.drain_busy(now)
 
-            busy = sum(1 for child in self._children.values() if child.busy)
             exiting_children = len(self._exiting_children)
 
-        bounded_busy = max(0, min(busy, self._concurrency))
-        occupancy = bounded_busy / self._concurrency if self._concurrency else 0.0
+        elapsed = now - self._last_occupancy_flush_at
+        self._last_occupancy_flush_at = now
+
+        running_count = state_counts["running"]
+        if running_count > 0 and elapsed > 0:
+            occupancy = busy_time / (elapsed * running_count)
+            occupancy = min(occupancy, 1.0)
+            self._metrics.gauge(
+                "taskworker.worker.occupancy",
+                occupancy,
+                tags=tags,
+            )
+            if self._prom is not None:
+                self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
+                    occupancy
+                )
+
         self._metrics.gauge(
-            "taskworker.worker.occupancy",
-            occupancy,
+            "taskworker.worker.concurrency",
+            float(self._concurrency),
             tags=tags,
         )
-        if self._prom is not None:
-            self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(occupancy)
 
         # Emit number of children in each state
         for state, count in state_counts.items():
@@ -1017,13 +1068,14 @@ class TaskWorkerProcessingPool:
                         elif message.event == "exiting":
                             self._exiting_children.append(message.child_id)
 
-                        # This child is executing a task
+                        # This child started executing a task: open a busy segment.
                         elif message.event == "busy":
-                            child.busy = True
+                            child.mark_busy(time.monotonic())
 
-                        # This child isn't doing anything right now
+                        # This child finished a task: close the open busy segment
+                        # and bank the elapsed time.
                         elif message.event == "idle":
-                            child.busy = False
+                            child.mark_idle(time.monotonic())
 
                     while True:
                         # Compute how many children are still running
