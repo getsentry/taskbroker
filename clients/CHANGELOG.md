@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.20
+
+### Bug Fixes 🐛
+
+- (python) Make worker occupancy time-weighted and warm-aware by @enochtangg in [#774](https://github.com/getsentry/taskbroker/pull/774)
+
 ## 0.20.19
 
 ### New Features ✨
