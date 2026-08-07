@@ -633,11 +633,17 @@ impl ActivationStore for PostgresStore {
                     .await?;
 
                 let result = sqlx::query(&format!(
-                    "UPDATE inflight_taskactivations SET
+                    "WITH selected AS (
+                        SELECT id FROM inflight_taskactivations
+                        WHERE id = $2 AND status = $3
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE inflight_taskactivations SET
                         status = $1,
                         processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
                         claim_expires_at = NULL
-                    WHERE id = $2 AND status = $3",
+                    FROM selected
+                    WHERE inflight_taskactivations.id = selected.id",
                 ))
                 .bind(ActivationStatus::Processing.to_string())
                 .bind(id)
@@ -681,11 +687,17 @@ impl ActivationStore for PostgresStore {
                     .await?;
 
                 let result = sqlx::query(&format!(
-                    "UPDATE inflight_taskactivations SET
+                    "WITH selected AS (
+                        SELECT id FROM inflight_taskactivations
+                        WHERE id = ANY($2) AND status = $3
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE inflight_taskactivations SET
                         status = $1,
                         processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
                         claim_expires_at = NULL
-                    WHERE id = ANY($2) AND status = $3",
+                    FROM selected
+                    WHERE inflight_taskactivations.id = selected.id",
                 ))
                 .bind(ActivationStatus::Processing.to_string())
                 .bind(ids)
