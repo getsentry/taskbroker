@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.21
+
+### Bug Fixes 🐛
+
+- (taskworker) Widen taskworker busy segment to cover the full task cycle by @enochtangg in [#780](https://github.com/getsentry/taskbroker/pull/780)
+
 ## 0.20.20
 
 ### Bug Fixes 🐛
