@@ -239,6 +239,7 @@ def child_process(
     ) -> None:
         processed_task_count = 0
         pending_task_futures: list[ActivationWithPendingFutures] = []
+        is_busy = False
 
         def handle_alarm(signum: int, frame: FrameType | None) -> None:
             """
@@ -372,6 +373,13 @@ def child_process(
         exit_initiated: float | None = None
 
         while not shutdown_event.is_set() and not local_shutdown.is_set():
+            # Close the busy segment opened by the previous iteration. Everything
+            # the child did since its last dequeue has finished, and what follows
+            # is waiting for the next task.
+            if is_busy:
+                messages.put_nowait(ChildMessage(child_id, "idle"))
+                is_busy = False
+
             if max_task_count and processed_task_count >= max_task_count:
                 if exit_initiated is None:
                     metrics.incr(
@@ -408,6 +416,11 @@ def child_process(
                     tags={"processing_pool": processing_pool_name},
                 )
                 continue
+
+            # Open the busy segment as soon as we have a task. The slot is now
+            # unavailable for new work, whatever stage of handling it is in.
+            messages.put_nowait(ChildMessage(child_id, "busy"))
+            is_busy = True
 
             task_func = _get_known_task(inflight.activation)
             if not task_func:
@@ -465,7 +478,6 @@ def child_process(
             next_state = TASK_ACTIVATION_STATUS_FAILURE
             # Use time.time() so we can measure against activation.received_at
             execution_start_time = time.time()
-            messages.put_nowait(ChildMessage(child_id, "busy"))
             try:
                 with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
                     _execute_activation(task_func, inflight.activation, app.context_hooks)
@@ -539,8 +551,6 @@ def child_process(
                     and next_state != TASK_ACTIVATION_STATUS_RETRY
                 ):
                     _log_task_failed(inflight.activation, err, processing_pool_name)
-            finally:
-                messages.put_nowait(ChildMessage(child_id, "idle"))
 
             clear_current_task()
             processed_task_count += 1
@@ -592,6 +602,13 @@ def child_process(
                     task_func=task_func,
                 )
                 pending_task_futures.append(pending_task)
+
+        # The loop condition is only re-checked between iterations, so a shutdown
+        # signal can land while a segment is still open. Close it so a child that
+        # is going away doesn't keep contributing busy time to the pool's occupancy.
+        if is_busy:
+            messages.put_nowait(ChildMessage(child_id, "idle"))
+            is_busy = False
 
         # Once we get the shutdown signal, drain any pending futures
         _future_completion_thread.join()
