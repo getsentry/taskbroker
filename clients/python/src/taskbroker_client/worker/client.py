@@ -328,6 +328,9 @@ class TaskbrokerClient:
             )
             self._timestamp_since_touch = cur_time
 
+    def emit_health_check(self) -> None:
+        self._emit_health_check()
+
     def _connect_to_host(self, host: str) -> ConsumerServiceStub:
         logger.info("taskworker.client.connect", extra={"host": host})
         channel = grpc.insecure_channel(host, options=self._grpc_options)

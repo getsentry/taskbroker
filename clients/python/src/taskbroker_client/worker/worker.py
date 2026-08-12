@@ -656,6 +656,7 @@ class TaskWorker:
 
     def run_once(self) -> None:
         """Access point for tests to run a single worker loop"""
+        self.client.emit_health_check()
         self._add_task()
 
     def _add_task(self) -> bool:
