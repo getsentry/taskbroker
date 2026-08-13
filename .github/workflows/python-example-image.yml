@@ -24,7 +24,7 @@ jobs:
           image_name: 'taskbroker-python-example'
           platforms: linux/amd64
           dockerfile_path: './clients/python/Dockerfile.example'
-          dockerfile_context: './clients/python'
+          build_context: './clients/python'
           ghcr: true
           publish_on_pr: true
           google_ar: false
