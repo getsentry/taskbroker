@@ -26,7 +26,7 @@ jobs:
           dockerfile_path: './clients/python/Dockerfile.example'
           build_context: './clients/python'
           ghcr: true
-          publish_on_pr: true
+          publish_on_pr: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           google_ar: false
           tag_nightly: false
           tag_latest: false
