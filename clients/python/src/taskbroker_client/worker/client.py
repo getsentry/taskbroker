@@ -309,7 +309,7 @@ class TaskbrokerClient:
         self._timestamp_since_touch_lock = threading.Lock()
         self._timestamp_since_touch = 0.0
 
-    def _emit_health_check(self) -> None:
+    def emit_health_check(self) -> None:
         if self._health_check_settings is None:
             return
 
@@ -327,9 +327,6 @@ class TaskbrokerClient:
                 tags={"processing_pool": self._processing_pool_name},
             )
             self._timestamp_since_touch = cur_time
-
-    def emit_health_check(self) -> None:
-        self._emit_health_check()
 
     def _connect_to_host(self, host: str) -> ConsumerServiceStub:
         logger.info("taskworker.client.connect", extra={"host": host})
@@ -406,7 +403,7 @@ class TaskbrokerClient:
         If a namespace is provided, only tasks for that namespace will be fetched.
         This will return None if there are no tasks to fetch.
         """
-        self._emit_health_check()
+        self.emit_health_check()
 
         request = GetTaskRequest(application=self._application, namespace=namespace)
         try:
@@ -458,7 +455,7 @@ class TaskbrokerClient:
 
         The return value is the next task that should be executed.
         """
-        self._emit_health_check()
+        self.emit_health_check()
         if fetch_next_task is not None:
             fetch_next_task.application = self._application
 
