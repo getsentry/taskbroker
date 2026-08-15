@@ -1,4 +1,13 @@
 # Changelog
+## 26.8.0
+
+### Bug Fixes 🐛
+
+#### Ci
+
+- Do not publish PR docker image on forks by @aminvakil in [#781](https://github.com/getsentry/taskbroker/pull/781)
+- Fix build_context arg by @aminvakil in [#782](https://github.com/getsentry/taskbroker/pull/782)
+
 ## 26.7.1
 
 ### New Features ✨
