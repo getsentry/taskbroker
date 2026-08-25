@@ -446,12 +446,34 @@ def test_shutdown_signal_wait_returns_immediately_when_requested() -> None:
     assert time.monotonic() - start < 1
 
 
+def test_shutdown_signal_request_does_not_touch_the_event() -> None:
+    """
+    `request()` must not take a lock, so it must not touch the event.
+
+    This is the entire reason the class exists: it is the only method a signal
+    handler may call, and `Event.set()` takes a non-reentrant lock that can
+    deadlock against whatever the handler interrupted. A refactor that "helpfully"
+    sets the event here would be silently unsafe, and the wakeup timings asserted
+    below are too loose to notice.
+    """
+    shutdown_signal = ShutdownSignal()
+    shutdown_signal.request()
+
+    assert shutdown_signal.is_set() is True
+    assert shutdown_signal._event.is_set() is False
+
+    # ...whereas set() is allowed to, and does.
+    shutdown_signal.set()
+    assert shutdown_signal._event.is_set() is True
+
+
 def test_shutdown_signal_wait_wakes_on_request_from_another_thread() -> None:
     shutdown_signal = ShutdownSignal()
     threading.Timer(0.1, shutdown_signal.request).start()
 
     start = time.monotonic()
     assert shutdown_signal.wait(30) is True
+    # request() cannot wake the event, so this is the poll interval, not instant.
     assert time.monotonic() - start < 5
 
 
