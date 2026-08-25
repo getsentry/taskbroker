@@ -583,16 +583,20 @@ class PushTaskWorker:
             logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
             self._start_health_check_thread()
 
-            # Poll so a signal handler that only flipped a bool still gets us out.
+            # Poll so a signal handler that only flipped a bool still gets us
+            # out, while also noticing a server that terminated on its own.
             #
-            # Deliberately not `server.wait_for_termination(timeout=...)`: that
-            # returns True when the *timeout* was reached, i.e. while the server
-            # is healthy, and False once it has terminated. That is the inverse
-            # of `Event.wait()`, and reading it as "has terminated" is what made
-            # a previous version of this patch exit half a second after startup.
-            # The shutdown signal is the only thing allowed to end this loop.
-            while not self._shutdown_signal.wait(SHUTDOWN_POLL_INTERVAL_SEC):
-                pass
+            # Mind the return value of `wait_for_termination(timeout=...)`: it
+            # is True when the *timeout* elapsed, i.e. while the server is still
+            # healthy, and False once the server has terminated. That is the
+            # inverse of `Event.wait()`, and reading it as "has terminated" is
+            # what made a previous version of this patch exit half a second
+            # after startup and take down every worker.
+            while not self._shutdown_signal.is_set():
+                still_running = server.wait_for_termination(timeout=SHUTDOWN_POLL_INTERVAL_SEC)
+                if not still_running:
+                    logger.warning("taskworker.grpc_server.terminated_unexpectedly")
+                    break
 
         finally:
             if health_servicer is not None:
@@ -835,6 +839,25 @@ class TaskWorker:
             return None
 
         self._gettask_backoff_seconds = 0
+
+        # get_task() blocks with no deadline, so a SIGTERM can arrive while it
+        # is in flight. Re-check before handing the activation to a child:
+        # claiming work we are not going to run means waiting for it to expire
+        # on the broker before anyone else picks it up.
+        if self._shutdown_signal.is_set():
+            self._metrics.incr(
+                "taskworker.worker.fetch_task.dropped_during_shutdown",
+                tags={"processing_pool": self._processing_pool_name},
+            )
+            logger.info(
+                "taskworker.fetch_task.dropped_during_shutdown",
+                extra={
+                    "task_id": activation.activation.id,
+                    "processing_pool": self._processing_pool_name,
+                },
+            )
+            return None
+
         return activation
 
     def shutdown(self) -> None:

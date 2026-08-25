@@ -536,6 +536,31 @@ class TestTaskWorker(TestCase):
         assert task is None
         mock_get.assert_not_called()
 
+    def test_fetch_task_drops_task_claimed_during_shutdown(self) -> None:
+        """
+        get_task() blocks with no deadline, so SIGTERM can land mid-RPC.
+
+        Handing the activation to a child anyway claims work we will not run,
+        which then has to expire on the broker before anyone else picks it up.
+        """
+        taskworker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=["127.0.0.1:50051"],
+            max_child_task_count=100,
+            process_type="fork",
+        )
+
+        def get_task(namespace: str | None = None) -> InflightTaskActivation:
+            # Shutdown requested while the RPC was in flight.
+            taskworker._shutdown_signal.request()
+            return SIMPLE_TASK
+
+        with mock.patch.object(taskworker.client, "get_task", side_effect=get_task) as mock_get:
+            task = taskworker.fetch_task()
+
+        mock_get.assert_called_once()
+        assert task is None
+
     def test_send_update_task_does_not_fetch_next_during_shutdown(self) -> None:
         taskworker = TaskWorker(
             app_module="examples.app:app",
@@ -1018,24 +1043,24 @@ def test_push_start_exits_cleanly_on_sigterm() -> None:
     fake_health = mock.MagicMock()
     fake_server = mock.MagicMock()
 
-    # Deliver the signal from inside the poll sleep, which is where a real
-    # SIGTERM would land once the server is up and serving.
-    real_wait = taskworker._shutdown_signal.wait
+    # Deliver the signal from inside the poll, which is where a real SIGTERM
+    # would land once the server is up and serving. True keeps the server
+    # "healthy", so only the flipped bool can end the loop.
     calls = 0
 
-    def wait(timeout: float) -> bool:
+    def wait_for_termination(timeout: float | None = None) -> bool:
         nonlocal calls
         calls += 1
-        if calls == 1:
-            handlers[signal.SIGTERM](signal.SIGTERM, None)
-        return real_wait(timeout)
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return True
+
+    fake_server.wait_for_termination.side_effect = wait_for_termination
 
     with (
         _push_worker_grpc_mocks(taskworker, fake_server, fake_health, handlers) as pool_shutdown,
         mock.patch.object(
             TaskWorkerProcessingPool, "ready_count", new_callable=mock.PropertyMock, return_value=2
         ),
-        mock.patch.object(taskworker._shutdown_signal, "wait", side_effect=wait),
     ):
         exitcode = taskworker.start()
 
@@ -1064,35 +1089,61 @@ def test_push_start_keeps_serving_while_server_is_healthy() -> None:
 
     fake_health = mock.MagicMock()
     fake_server = mock.MagicMock()
-    # Healthy server: the timeout is always what elapses.
-    fake_server.wait_for_termination.return_value = True
 
     polls = 0
 
-    def wait(timeout: float) -> bool:
+    def wait_for_termination(timeout: float | None = None) -> bool:
         nonlocal polls
         polls += 1
-        # Survive several polls, then ask to stop so the test terminates.
-        if polls < 5:
-            return False
-        taskworker._shutdown_signal.request()
+        # Survive several polls, then SIGTERM so the test terminates.
+        if polls >= 5:
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
+        # Healthy server: the timeout is always what elapses.
         return True
+
+    fake_server.wait_for_termination.side_effect = wait_for_termination
 
     with (
         _push_worker_grpc_mocks(taskworker, fake_server, fake_health, handlers) as pool_shutdown,
         mock.patch.object(
             TaskWorkerProcessingPool, "ready_count", new_callable=mock.PropertyMock, return_value=2
         ),
-        mock.patch.object(taskworker._shutdown_signal, "wait", side_effect=wait),
     ):
         exitcode = taskworker.start()
 
     assert exitcode == 0
     # We kept looping instead of bailing out on the first poll.
     assert polls == 5
-    # The serve loop must not consult the server's return value at all.
-    fake_server.wait_for_termination.assert_not_called()
     fake_server.stop.assert_called_once_with(grace=5)
+    pool_shutdown.assert_called_once_with()
+
+
+def test_push_start_exits_when_server_terminates_unexpectedly() -> None:
+    """
+    A server that goes away on its own must end the serve loop.
+
+    Otherwise the parent keeps its children alive and keeps touching the health
+    check file while no longer accepting tasks.
+    """
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
+    handlers: dict[int, Callable[..., None]] = {}
+
+    fake_health = mock.MagicMock()
+    fake_server = mock.MagicMock()
+    # False means the server terminated, without anyone asking it to.
+    fake_server.wait_for_termination.return_value = False
+
+    with (
+        _push_worker_grpc_mocks(taskworker, fake_server, fake_health, handlers) as pool_shutdown,
+        mock.patch.object(
+            TaskWorkerProcessingPool, "ready_count", new_callable=mock.PropertyMock, return_value=2
+        ),
+    ):
+        exitcode = taskworker.start()
+
+    assert exitcode == 0
+    # Noticed on the first poll, rather than spinning forever.
+    assert fake_server.wait_for_termination.call_count == 1
     pool_shutdown.assert_called_once_with()
 
 
