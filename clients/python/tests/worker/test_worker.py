@@ -900,6 +900,35 @@ class TestTaskWorker(TestCase):
         self.assertEqual(taskworker._grpc_port, 50099)
 
 
+def test_pull_worker_health_check_touches_while_full(tmp_path: Path) -> None:
+    health_check_path = tmp_path / "health"
+    taskworker = TaskWorker(
+        app_module="examples.app:app",
+        broker_hosts=["127.0.0.1:50051"],
+        max_child_task_count=100,
+        process_type="fork",
+        health_check_file_path=str(health_check_path),
+        health_check_sec_per_touch=1,
+    )
+
+    with (
+        mock.patch.object(taskworker.worker_pool, "is_worker_full", return_value=True),
+        mock.patch.object(taskworker.client, "get_task") as mock_get_task,
+        mock.patch("taskbroker_client.worker.worker.time.sleep"),
+        mock.patch("taskbroker_client.worker.client.time") as mock_time,
+    ):
+        mock_time.time.return_value = 1
+        taskworker.run_once()
+        assert health_check_path.exists()
+
+        health_check_path.unlink()
+        mock_time.time.return_value = 3
+        taskworker.run_once()
+
+    assert health_check_path.exists()
+    mock_get_task.assert_not_called()
+
+
 def test_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
     taskworker = PushTaskWorker(
         app_module="examples.app:app",

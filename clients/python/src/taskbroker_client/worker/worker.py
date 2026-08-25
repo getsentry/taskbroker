@@ -737,6 +737,7 @@ class TaskWorker:
         Add a task to child tasks queue. Returns False if no new task was fetched.
         """
         if self.worker_pool.is_worker_full():
+            self.client.emit_health_check()
             self._metrics.incr(
                 "taskworker.worker.add_tasks.child_tasks_full",
                 tags={"processing_pool": self._processing_pool_name},
