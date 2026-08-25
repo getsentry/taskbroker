@@ -1046,12 +1046,18 @@ def test_push_start_exits_cleanly_on_sigterm() -> None:
     # Deliver the signal from inside the poll, which is where a real SIGTERM
     # would land once the server is up and serving. True keeps the server
     # "healthy", so only the flipped bool can end the loop.
+    #
+    # Deliberately not on the first poll: a loop that exits after one iteration
+    # no matter what its condition says would pass either way, which is exactly
+    # how the inverted-boolean bug got through review. Surviving to poll 3 means
+    # the exit condition is actually being exercised.
     calls = 0
 
     def wait_for_termination(timeout: float | None = None) -> bool:
         nonlocal calls
         calls += 1
-        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        if calls == 3:
+            handlers[signal.SIGTERM](signal.SIGTERM, None)
         return True
 
     fake_server.wait_for_termination.side_effect = wait_for_termination
@@ -1067,8 +1073,9 @@ def test_push_start_exits_cleanly_on_sigterm() -> None:
     assert exitcode == 0
     assert taskworker._shutdown_signal.is_set()
     # The handler only flipped a bool, so we polled our way out rather than
-    # relying on the server being stopped from inside the handler.
-    assert calls == 1
+    # relying on the server being stopped from inside the handler. Three polls
+    # means we kept serving until the signal, then left promptly.
+    assert calls == 3
     fake_server.stop.assert_called_once_with(grace=5)
     pool_shutdown.assert_called_once_with()
 
@@ -1130,8 +1137,20 @@ def test_push_start_exits_when_server_terminates_unexpectedly() -> None:
 
     fake_health = mock.MagicMock()
     fake_server = mock.MagicMock()
-    # False means the server terminated, without anyone asking it to.
-    fake_server.wait_for_termination.return_value = False
+
+    # False means the server terminated, without anyone asking it to. Bail out
+    # after a few polls so a loop that ignores this fails the assertion below
+    # instead of hanging until CI times out.
+    polls = 0
+
+    def wait_for_termination(timeout: float | None = None) -> bool:
+        nonlocal polls
+        polls += 1
+        if polls > 3:
+            raise AssertionError("serve loop ignored a terminated server")
+        return False
+
+    fake_server.wait_for_termination.side_effect = wait_for_termination
 
     with (
         _push_worker_grpc_mocks(taskworker, fake_server, fake_health, handlers) as pool_shutdown,
@@ -1143,7 +1162,7 @@ def test_push_start_exits_when_server_terminates_unexpectedly() -> None:
 
     assert exitcode == 0
     # Noticed on the first poll, rather than spinning forever.
-    assert fake_server.wait_for_termination.call_count == 1
+    assert polls == 1
     pool_shutdown.assert_called_once_with()
 
 
