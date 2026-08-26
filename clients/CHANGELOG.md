@@ -1,4 +1,11 @@
 # Changelog
+## 0.20.22
+
+### Bug Fixes 🐛
+
+- (python) Shut workers down without raising from signal handlers by @untitaker in [#784](https://github.com/getsentry/taskbroker/pull/784)
+- (worker) Keep pull worker healthy while queue is full by @aminvakil in [#779](https://github.com/getsentry/taskbroker/pull/779)
+
 ## 0.20.21
 
 ### Bug Fixes 🐛
