@@ -206,7 +206,7 @@ async fn main() -> Result<(), Error> {
             let topic_refs = [task_topic.as_str()];
             start_consumer(
                 &topic_refs,
-                &consumer_config.kafka_consumer_config_for(&task_topic),
+                consumer_config.arroyo_kafka_consumer_config_for(&task_topic),
                 consumer_store.clone(),
                 processing_strategy!({
                     err:
