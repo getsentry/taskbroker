@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.23
+
+### New Features ✨
+
+- (taskworker) Add child fetch wait duration metric by @enochtangg in [#787](https://github.com/getsentry/taskbroker/pull/787)
+
 ## 0.20.22
 
 ### Bug Fixes 🐛
