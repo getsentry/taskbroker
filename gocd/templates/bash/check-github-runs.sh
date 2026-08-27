@@ -1,6 +1,6 @@
 #!/bin/bash
 
-checks-githubactions-checkruns \
+checks-githubactions-checkruns2 \
 	"getsentry/taskbroker" \
 	"${GO_REVISION_TASKBROKER_REPO}" \
 	"Build and push production images to single-region registry" \
