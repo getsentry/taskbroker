@@ -47,8 +47,9 @@ services:
       TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__CONSUMER_GROUP: "taskworker"
       TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__PRODUCE_ONLY: "true"
       TASKBROKER_CREATE_MISSING_TOPICS: "true"
+      TASKBROKER_GRPC_PORT: "50055"
     ports:
-      - 127.0.0.1:50051:50051
+      - 127.0.0.1:50055:50055
     networks:
       - devservices
     labels:
