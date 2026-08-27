@@ -408,14 +408,32 @@ def child_process(
                     local_shutdown.set()
                     break
 
+            fetch_wait_start = time.monotonic()
             try:
                 inflight = child_tasks.get(timeout=1.0)
             except queue.Empty:
+                metrics.distribution(
+                    "taskworker.worker.child.fetch_wait_duration",
+                    time.monotonic() - fetch_wait_start,
+                    tags={
+                        "processing_pool": processing_pool_name,
+                        "outcome": "empty",
+                    },
+                )
                 metrics.incr(
                     "taskworker.worker.child_task_queue_empty",
                     tags={"processing_pool": processing_pool_name},
                 )
                 continue
+
+            metrics.distribution(
+                "taskworker.worker.child.fetch_wait_duration",
+                time.monotonic() - fetch_wait_start,
+                tags={
+                    "processing_pool": processing_pool_name,
+                    "outcome": "task",
+                },
+            )
 
             # Open the busy segment as soon as we have a task. The slot is now
             # unavailable for new work, whatever stage of handling it is in.
