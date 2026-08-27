@@ -10,16 +10,10 @@ use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::DepthCounts;
 
-use super::consumer::{
-    ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
-    ReducerWhenFullBehaviour,
-};
-
 pub struct ActivationWriterConfig {
     /// The consumed topic this writer belongs to, used as a metric tag. Each
     /// consumer has its own writer, so writer metrics are per-topic.
     pub topic: String,
-    pub max_buf_len: usize,
     pub max_pending_activations: usize,
     pub max_processing_activations: usize,
     pub max_delay_activations: usize,
@@ -34,7 +28,6 @@ impl ActivationWriterConfig {
         Self {
             topic: topic.to_owned(),
             db_max_size: config.store.max_size,
-            max_buf_len: config.store.insert_batch_max_length,
             max_pending_activations: config.store.max_pending_count,
             max_processing_activations: config.store.max_processing_count,
             max_delay_activations: config.store.max_delay_count,
@@ -46,40 +39,19 @@ impl ActivationWriterConfig {
 pub struct ActivationWriter {
     config: ActivationWriterConfig,
     store: Arc<dyn ActivationStore>,
-    batch: Option<Vec<Activation>>,
 }
 
 impl ActivationWriter {
     pub fn new(store: Arc<dyn ActivationStore>, config: ActivationWriterConfig) -> Self {
-        Self {
-            config,
-            store,
-            batch: None,
-        }
-    }
-}
-
-impl Reducer for ActivationWriter {
-    type Input = Vec<Activation>;
-
-    type Output = ();
-
-    async fn reduce(&mut self, batch: Self::Input) -> Result<(), anyhow::Error> {
-        assert!(self.batch.is_none());
-        self.batch = Some(batch);
-        Ok(())
+        Self { config, store }
     }
 
+    /// Returns `false` when store pressure or a transient write failure means
+    /// the caller should retry this same batch later.
     #[instrument(skip_all)]
-    async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
-        let Some(ref batch) = self.batch else {
-            return Ok(None);
-        };
-
-        // If batch is empty (all tasks were forwarded), just mark as complete
+    pub async fn write_batch(&self, batch: &[Activation]) -> Result<bool, anyhow::Error> {
         if batch.is_empty() {
-            self.batch.take();
-            return Ok(Some(()));
+            return Ok(true);
         }
 
         // Check if writing the batch would exceed the limits
@@ -142,7 +114,7 @@ impl Reducer for ActivationWriter {
                 "reason" => reason,
             )
             .increment(1);
-            return Ok(None);
+            return Ok(false);
         }
 
         let write_to_store_start = Instant::now();
@@ -150,7 +122,6 @@ impl Reducer for ActivationWriter {
 
         match res {
             Ok(entries) => {
-                let batch = self.batch.take().unwrap();
                 let lag = Utc::now()
                     - batch
                         .iter()
@@ -178,33 +149,18 @@ impl Reducer for ActivationWriter {
                     entries,
                     lag.num_seconds()
                 );
-                Ok(Some(()))
+                Ok(true)
             }
             Err(err) => {
-                error!("Unable to write to sqlite: {}", err);
+                error!("Unable to write activations: {}", err);
                 metrics::counter!(
                     "consumer.inflight_activation_writer.write_failed",
                     "topic" => self.config.topic.clone(),
                 )
                 .increment(1);
                 sleep(Duration::from_millis(self.config.write_failure_backoff_ms)).await;
-                Ok(None)
+                Ok(false)
             }
-        }
-    }
-
-    fn reset(&mut self) {}
-
-    async fn is_full(&self) -> bool {
-        self.batch.is_some()
-    }
-
-    fn get_reduce_config(&self) -> ReduceConfig {
-        ReduceConfig {
-            when_full_behaviour: ReducerWhenFullBehaviour::Flush,
-            shutdown_behaviour: ReduceShutdownBehaviour::Flush,
-            shutdown_condition: ReduceShutdownCondition::Signal,
-            flush_interval: None,
         }
     }
 }
@@ -219,7 +175,7 @@ mod tests {
         TaskActivationBuilder, create_test_store, generate_unique_namespace, make_activations,
     };
 
-    use super::{ActivationWriter, ActivationWriterConfig, Reducer};
+    use super::{ActivationWriter, ActivationWriterConfig};
 
     #[tokio::test]
     #[rstest]
@@ -230,13 +186,12 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             topic: "test-topic".to_string(),
             db_max_size: None,
-            max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = ActivationWriter::new(store, writer_config);
+        let writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -256,8 +211,7 @@ mod tests {
                 .build(TaskActivationBuilder::new()),
         ];
 
-        writer.reduce(batch).await.unwrap();
-        writer.flush().await.unwrap();
+        writer.write_batch(&batch).await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         let count_delay = writer
             .store
@@ -277,13 +231,12 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             topic: "test-topic".to_string(),
             db_max_size: None,
-            max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = ActivationWriter::new(store, writer_config);
+        let writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -297,8 +250,7 @@ mod tests {
                 .build(TaskActivationBuilder::new()),
         ];
 
-        writer.reduce(batch).await.unwrap();
-        writer.flush().await.unwrap();
+        writer.write_batch(&batch).await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 1);
         writer.store.remove_db().await.unwrap();
@@ -313,13 +265,12 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             topic: "test-topic".to_string(),
             db_max_size: None,
-            max_buf_len: 100,
             max_pending_activations: 0,
             max_processing_activations: 10,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = ActivationWriter::new(store, writer_config);
+        let writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -334,8 +285,7 @@ mod tests {
                 .build(TaskActivationBuilder::new()),
         ];
 
-        writer.reduce(batch).await.unwrap();
-        writer.flush().await.unwrap();
+        writer.write_batch(&batch).await.unwrap();
         let count_delay = writer
             .store
             .count_by_status(ActivationStatus::Delay)
@@ -354,13 +304,12 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             topic: "test-topic".to_string(),
             db_max_size: None,
-            max_buf_len: 100,
             max_pending_activations: 0,
             max_processing_activations: 10,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = ActivationWriter::new(store, writer_config);
+        let writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -380,8 +329,7 @@ mod tests {
                 .build(TaskActivationBuilder::new()),
         ];
 
-        writer.reduce(batch).await.unwrap();
-        writer.flush().await.unwrap();
+        writer.write_batch(&batch).await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 0);
         let count_delay = writer
@@ -404,13 +352,12 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             topic: "test-topic".to_string(),
             db_max_size: None,
-            max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = ActivationWriter::new(store, writer_config);
+        let writer = ActivationWriter::new(store, writer_config);
 
         let received_at = DateTime::from_timestamp_nanos(0);
         let namespace = generate_unique_namespace();
@@ -430,8 +377,7 @@ mod tests {
                 .build(TaskActivationBuilder::new()),
         ];
 
-        writer.reduce(batch).await.unwrap();
-        writer.flush().await.unwrap();
+        writer.write_batch(&batch).await.unwrap();
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 2);
         let count_delay = writer
@@ -452,7 +398,6 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             topic: "test-topic".to_string(),
             db_max_size: None,
-            max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 1,
             max_delay_activations: 0,
@@ -472,7 +417,7 @@ mod tests {
 
         store.store(&[existing_activation]).await.unwrap();
 
-        let mut writer = ActivationWriter::new(store.clone(), writer_config);
+        let writer = ActivationWriter::new(store.clone(), writer_config);
         let batch = vec![
             ActivationBuilder::new()
                 .id("0")
@@ -488,10 +433,9 @@ mod tests {
                 .build(TaskActivationBuilder::new()),
         ];
 
-        writer.reduce(batch).await.unwrap();
-        let flush_result = writer.flush().await.unwrap();
+        let flush_result = writer.write_batch(&batch).await.unwrap();
 
-        assert!(flush_result.is_none());
+        assert!(!flush_result);
 
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 0);
@@ -523,7 +467,6 @@ mod tests {
             topic: "test-topic".to_string(),
             // 200 rows is ~50KB
             db_max_size: Some(50_000),
-            max_buf_len: 100,
             max_pending_activations: 5000,
             max_processing_activations: 5000,
             max_delay_activations: 0,
@@ -536,10 +479,9 @@ mod tests {
         // Make more activations that won't be stored.
         let second_round = make_activations(10);
 
-        let mut writer = ActivationWriter::new(store.clone(), writer_config);
-        writer.reduce(second_round).await.unwrap();
-        let flush_result = writer.flush().await.unwrap();
-        assert!(flush_result.is_none());
+        let writer = ActivationWriter::new(store.clone(), writer_config);
+        let flush_result = writer.write_batch(&second_round).await.unwrap();
+        assert!(!flush_result);
 
         let count_pending = writer.store.count_pending_activations().await.unwrap();
         assert_eq!(count_pending, 200);
@@ -555,16 +497,14 @@ mod tests {
         let writer_config = ActivationWriterConfig {
             topic: "test-topic".to_string(),
             db_max_size: None,
-            max_buf_len: 100,
             max_pending_activations: 10,
             max_processing_activations: 10,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
-        let mut writer = ActivationWriter::new(store.clone(), writer_config);
-        writer.reduce(vec![]).await.unwrap();
-        let flush_result = writer.flush().await.unwrap();
-        assert!(flush_result.is_some());
+        let writer = ActivationWriter::new(store.clone(), writer_config);
+        let flush_result = writer.write_batch(&[]).await.unwrap();
+        assert!(flush_result);
         writer.store.remove_db().await.unwrap();
     }
 }
