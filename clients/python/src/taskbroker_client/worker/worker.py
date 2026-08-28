@@ -132,6 +132,41 @@ class WorkerPrometheusMetrics:
             registry=self.registry,
         )
 
+        # Counters, not a ratio gauge. The gauge above is sampled per pod and
+        # then averaged across pods by the scaler, which is an unweighted mean of
+        # ratios and is not the pool's occupancy. These two are additive, so a
+        # scaler can sum them across pods first and divide once:
+        #
+        #   busy_rate / (busy_rate + wait_rate)
+        #
+        # They are also unclamped, which matters more than it sounds. Occupancy
+        # is clipped to 1.0 per interval, so an interval that over-counts loses
+        # the excess while one that under-counts keeps the deficit. Work landing
+        # in a neighbouring interval therefore drags the average down instead of
+        # cancelling out. Summing counters over the scaler's rate window has no
+        # such ceiling, so the same misattribution cancels.
+        #
+        # And a missed scrape shows up as a flat rate rather than as a
+        # plausible-looking low occupancy that triggers a scale down.
+        self.child_busy_seconds = prometheus_client.Counter(
+            "taskworker_worker_child_busy_seconds",
+            "Cumulative child-seconds spent executing tasks.",
+            ["processing_pool"],
+            registry=self.registry,
+        )
+
+        # The signal occupancy cannot express on its own: child slots that are
+        # available and have nothing to do. If this is near zero while a backlog
+        # exists, the pod is saturated no matter what occupancy reports, and more
+        # pods will help. If it is large, the pod is starved and more pods will
+        # only add idle children.
+        self.child_wait_seconds = prometheus_client.Counter(
+            "taskworker_worker_child_wait_seconds",
+            "Cumulative child-seconds spent blocked waiting for a task to arrive.",
+            ["processing_pool"],
+            registry=self.registry,
+        )
+
         prometheus_client.start_http_server(port, registry=self.registry)
         logger.info("taskworker.worker.prometheus_server_started", extra={"port": port})
 
@@ -214,26 +249,65 @@ class TrackedChild:
     # Time-weighted busy tracking
     busy_since: float | None = None  # monotonic timestamp of the currently-open busy segment
     busy_accumulated: float = 0.0  # the busy seconds banked since the last occupancy flush
+    # Time-weighted wait tracking, the mirror of the two fields above. A running
+    # child is always in exactly one of the two states: executing a task, or
+    # blocked in `child_tasks.get()` with nothing to execute.
+    #
+    # Wait is tracked separately rather than inferred as `elapsed - busy` because
+    # the inference is only valid for children that were running for the whole
+    # interval. Children spawn, warm up, and exit mid-interval, and those
+    # transitions are exactly when a pool is scaling, which is when the signal
+    # has to be trustworthy.
+    wait_since: float | None = None  # monotonic timestamp of the currently-open wait segment
+    wait_accumulated: float = 0.0  # the waiting seconds banked since the last flush
+
+    def mark_running(self, now: float) -> None:
+        """Start counting wait time once the child has finished warming up.
+
+        A `pending` child is importing the app, not starving for work, so it
+        accrues neither busy nor wait until it reports in.
+        """
+        if self.busy_since is None and self.wait_since is None:
+            self.wait_since = now
 
     def mark_busy(self, now: float) -> None:
-        """Open a busy segment when the child starts a task.
+        """Close the open wait segment and open a busy one.
 
-        `busy`/`idle` strictly alternate per child today, so a segment should
-        never already be open; the guard is defensive and keeps the original
-        start time if that invariant ever drifts.
+        `busy`/`idle` strictly alternate per child today, so a busy segment
+        should never already be open; the guard is defensive and keeps the
+        original start time if that invariant ever drifts.
         """
+        if self.wait_since is not None:
+            self.wait_accumulated += max(0.0, now - self.wait_since)
+            self.wait_since = None
         if self.busy_since is None:
             self.busy_since = now
 
     def mark_idle(self, now: float) -> None:
-        """Close the open busy segment and bank its elapsed seconds.
+        """Close the open busy segment and open a wait one.
 
         Guarded so an unexpected `idle` with no open segment is a no-op rather
         than a crash.
         """
         if self.busy_since is not None:
-            self.busy_accumulated += now - self.busy_since
+            self.busy_accumulated += max(0.0, now - self.busy_since)
             self.busy_since = None
+        if self.wait_since is None:
+            self.wait_since = now
+
+    def mark_stopped(self, now: float) -> None:
+        """Close both segments when the child is released to shut down.
+
+        Without this a released child keeps an open wait segment that folds
+        forward on every drain, so a pool that is recycling children would look
+        starved for work when it is not.
+        """
+        if self.busy_since is not None:
+            self.busy_accumulated += max(0.0, now - self.busy_since)
+            self.busy_since = None
+        if self.wait_since is not None:
+            self.wait_accumulated += max(0.0, now - self.wait_since)
+            self.wait_since = None
 
     def drain_busy(self, now: float) -> float:
         """Return busy seconds since the last drain and reset the counter.
@@ -243,10 +317,25 @@ class TrackedChild:
         contributing to each one.
         """
         if self.busy_since is not None:
-            self.busy_accumulated += now - self.busy_since
+            self.busy_accumulated += max(0.0, now - self.busy_since)
             self.busy_since = now
         banked = self.busy_accumulated
         self.busy_accumulated = 0.0
+        return banked
+
+    def drain_wait(self, now: float) -> float:
+        """Return waiting seconds since the last drain and reset the counter.
+
+        Mirrors `drain_busy`: an open wait segment is folded in up to `now` and
+        left open, so a child blocked across several intervals contributes to
+        each of them rather than dumping the whole wait into the interval it
+        finally gets a task in.
+        """
+        if self.wait_since is not None:
+            self.wait_accumulated += max(0.0, now - self.wait_since)
+            self.wait_since = now
+        banked = self.wait_accumulated
+        self.wait_accumulated = 0.0
         return banked
 
 
@@ -970,14 +1059,44 @@ class TaskWorkerProcessingPool:
             }
 
             busy_time = 0.0
+            wait_time = 0.0
             for child in self._children.values():
                 state_counts[child.state] += 1
                 busy_time += child.drain_busy(now)
+                wait_time += child.drain_wait(now)
 
             exiting_children = len(self._exiting_children)
 
         elapsed = now - self._last_occupancy_flush_at
         self._last_occupancy_flush_at = now
+
+        # Emitted unconditionally, including during warmup, because they are
+        # counters: an interval with no running children contributes zero to
+        # both and is indistinguishable from not being scraped, which is the
+        # correct behaviour. The occupancy gauge below still has to skip warmup,
+        # since a zero there is a real value that drags the fleet average down.
+        self._metrics.distribution(
+            "taskworker.worker.child_busy_seconds",
+            busy_time,
+            tags=tags,
+        )
+        self._metrics.distribution(
+            "taskworker.worker.child_wait_seconds",
+            wait_time,
+            tags=tags,
+        )
+        if self._prom is not None:
+            # inc(0.0) is deliberate rather than guarded. It registers the
+            # labelled series on the first flush, so a pod that has not done any
+            # work yet still exposes both counters at zero. Without that the
+            # scaler sees the series appear only once a pod gets busy, and a
+            # brand new pod reads as missing rather than as idle.
+            self._prom.child_busy_seconds.labels(processing_pool=self._processing_pool_name).inc(
+                max(0.0, busy_time)
+            )
+            self._prom.child_wait_seconds.labels(processing_pool=self._processing_pool_name).inc(
+                max(0.0, wait_time)
+            )
 
         running_count = state_counts["running"]
         if running_count > 0 and elapsed > 0:
@@ -1161,19 +1280,27 @@ class TaskWorkerProcessingPool:
                         # This child is now running
                         if message.event == "running":
                             child.state = "running"
+                            child.mark_running(message.timestamp)
 
                         # This child wants to exit, but we may not have enough running children to shut down right away
                         elif message.event == "exiting":
                             self._exiting_children.append(message.child_id)
 
-                        # This child started executing a task: open a busy segment.
+                        # This child started executing a task: close the wait
+                        # segment and open a busy one.
+                        #
+                        # These use the child's own timestamp, not the time
+                        # this loop happens to drain the queue. This thread
+                        # sleeps 100ms per iteration, so stamping here rounded
+                        # every boundary up to the next drain tick and credited
+                        # the work to the wrong flush interval.
                         elif message.event == "busy":
-                            child.mark_busy(time.monotonic())
+                            child.mark_busy(message.timestamp)
 
                         # This child finished a task: close the open busy segment
                         # and bank the elapsed time.
                         elif message.event == "idle":
-                            child.mark_idle(time.monotonic())
+                            child.mark_idle(message.timestamp)
 
                     while True:
                         # Compute how many children are still running
@@ -1195,6 +1322,7 @@ class TaskWorkerProcessingPool:
                             continue
 
                         child.state = "exiting"
+                        child.mark_stopped(time.monotonic())
                         child.release.set()
 
                     spawned = sum(1 for c in self._children.values() if c.state != "exiting")

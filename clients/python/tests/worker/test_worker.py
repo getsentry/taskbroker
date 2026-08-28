@@ -1280,6 +1280,8 @@ def _make_tracked_child(
     *,
     busy_since: float | None = None,
     busy_accumulated: float = 0.0,
+    wait_since: float | None = None,
+    wait_accumulated: float = 0.0,
 ) -> TrackedChild:
     return TrackedChild(
         process=mock.Mock(),
@@ -1287,7 +1289,13 @@ def _make_tracked_child(
         release=mock.Mock(),
         busy_since=busy_since,
         busy_accumulated=busy_accumulated,
+        wait_since=wait_since,
+        wait_accumulated=wait_accumulated,
     )
+
+
+def _distribution_calls(metrics: mock.Mock, name: str) -> list[Any]:
+    return [c for c in metrics.distribution.call_args_list if c.args[0] == name]
 
 
 def _gauge_calls(metrics: mock.Mock, name: str) -> list[Any]:
@@ -1412,6 +1420,187 @@ def test_spawn_children_tracks_busy_and_idle_transitions() -> None:
             lambda: pool._children[child_id].busy_since is None
             and pool._children[child_id].busy_accumulated > 0
         )
+    finally:
+        pool.shutdown()
+
+
+def test_tracked_child_records_real_widths_for_events_in_one_batch() -> None:
+    # The regression this change exists for.
+    #
+    # spawn_children_thread drains the child message queue on a 100ms sleep, so
+    # a child running 50ms tasks delivers several busy/idle pairs per drain. The
+    # parent used to stamp all of them with the drain time, which collapsed
+    # every segment inside the batch to zero width and left the whole interval
+    # credited to whichever segment happened to span the drain boundary. Total
+    # busy time survived that, but the per-interval split did not, and occupancy
+    # is computed per interval and clipped at 1.0.
+    #
+    # Two 50ms tasks with a 10ms gap, all delivered at once:
+    child = _make_tracked_child("running", wait_since=100.00)
+
+    child.mark_busy(100.00)
+    child.mark_idle(100.05)
+    child.mark_busy(100.06)
+    child.mark_idle(100.11)
+
+    # 0.05 + 0.05 of work, and the 0.01 gap between them counted as waiting.
+    assert child.busy_accumulated == pytest.approx(0.10)
+    assert child.wait_accumulated == pytest.approx(0.01)
+
+
+def test_tracked_child_busy_and_wait_partition_the_interval() -> None:
+    # A running child is always in exactly one of the two states, so over an
+    # interval with no state changes the two drains must sum to its width.
+    child = _make_tracked_child("running", wait_since=10.0)
+
+    child.mark_busy(10.4)
+    busy = child.drain_busy(11.0)
+    wait = child.drain_wait(11.0)
+
+    assert busy == pytest.approx(0.6)
+    assert wait == pytest.approx(0.4)
+    assert busy + wait == pytest.approx(1.0)
+
+    # Both open segments are carried forward rather than restarted at zero.
+    assert child.busy_since == pytest.approx(11.0)
+    assert child.wait_since is None
+
+
+def test_tracked_child_ignores_events_older_than_the_last_drain() -> None:
+    # Child timestamps and the parent's drain clock can cross: drain_busy folds
+    # an open segment forward to the parent's `now`, and a message stamped just
+    # before that can be processed just after. The delta is then negative and
+    # would silently subtract already-credited time.
+    child = _make_tracked_child("running", busy_since=10.0)
+
+    child.drain_busy(11.0)  # credits 1.0s, advances busy_since to 11.0
+    child.mark_idle(10.95)  # stamped before the drain, delivered after
+
+    assert child.busy_accumulated == pytest.approx(0.0)
+
+
+def test_tracked_child_stops_accruing_wait_once_released() -> None:
+    # A child released to shut down stops sending messages, so an open wait
+    # segment would fold forward on every drain forever and make a pool that is
+    # recycling children look starved for work.
+    child = _make_tracked_child("running", wait_since=10.0)
+
+    child.mark_stopped(10.5)
+    assert child.drain_wait(20.0) == pytest.approx(0.5)
+    assert child.drain_wait(30.0) == pytest.approx(0.0)
+
+
+def test_tracked_child_pending_accrues_neither_busy_nor_wait() -> None:
+    # Warmup is not starvation. A child importing the app has no slot to fill.
+    child = _make_tracked_child("pending")
+
+    assert child.drain_busy(11.0) == pytest.approx(0.0)
+    assert child.drain_wait(11.0) == pytest.approx(0.0)
+
+    child.mark_running(11.0)
+    assert child.drain_wait(12.0) == pytest.approx(1.0)
+
+
+def test_emit_periodic_metrics_emits_busy_and_wait_seconds() -> None:
+    # Interval [10.0, 11.0], two running children: one busy throughout, one that
+    # spent 0.25s of it waiting for a task that never arrived.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", busy_accumulated=0.75, wait_since=10.75
+        )
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    busy = _distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")
+    wait = _distribution_calls(pool._metrics, "taskworker.worker.child_wait_seconds")
+    assert len(busy) == 1 and len(wait) == 1
+    assert busy[0].args[1] == pytest.approx(1.75)
+    assert wait[0].args[1] == pytest.approx(0.25)
+
+    # The pair is what the scaler divides, and it recovers the same answer the
+    # occupancy gauge reports without depending on the flush interval or on the
+    # running-child count.
+    assert busy[0].args[1] / (busy[0].args[1] + wait[0].args[1]) == pytest.approx(0.875)
+    occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
+    assert occupancy_calls[0].args[1] == pytest.approx(1.75 / 2)
+
+
+def test_emit_periodic_metrics_emits_counters_during_warmup() -> None:
+    # Unlike occupancy, these are emitted even with no running children. A zero
+    # contribution from a warming pod is correct for a counter and is what lets
+    # the scaler tell "idle" apart from "not reporting".
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("pending")
+
+    pool._emit_periodic_metrics()
+
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
+    assert len(_distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")) == 1
+    assert len(_distribution_calls(pool._metrics, "taskworker.worker.child_wait_seconds")) == 1
+
+
+def test_spawn_children_uses_the_child_timestamp_not_the_drain_time() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=1)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 1)
+        messages = fake_context.queues[-1]
+        child_id = fake_context.processes[0].args[0]
+
+        messages.put(ChildMessage(child_id, "running"))
+        _wait_for(lambda: pool.ready_count == 1)
+
+        stamped_at = time.monotonic() - 5.0
+        messages.put(ChildMessage(child_id, "busy", timestamp=stamped_at))
+        _wait_for(lambda: pool._children[child_id].busy_since is not None)
+
+        # The drain happens up to 100ms later and on a different thread; the
+        # segment has to start when the child said it did.
+        assert pool._children[child_id].busy_since == pytest.approx(stamped_at)
+    finally:
+        pool.shutdown()
+
+
+def test_spawn_children_tracks_wait_between_tasks() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=1)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 1)
+        messages = fake_context.queues[-1]
+        child_id = fake_context.processes[0].args[0]
+
+        base = time.monotonic() - 10.0
+
+        # Reporting in opens a wait segment: the child is available and blocked
+        # in child_tasks.get().
+        messages.put(ChildMessage(child_id, "running", timestamp=base))
+        _wait_for(lambda: pool._children[child_id].wait_since == pytest.approx(base))
+
+        # 2s of waiting, then 1s of work, then waiting again.
+        messages.put(ChildMessage(child_id, "busy", timestamp=base + 2.0))
+        messages.put(ChildMessage(child_id, "idle", timestamp=base + 3.0))
+        # `wait_since` is already set by the "running" message above, so wait on
+        # the banked busy time, which only lands once "idle" is processed.
+        _wait_for(lambda: pool._children[child_id].busy_accumulated > 0)
+
+        child = pool._children[child_id]
+        assert child.wait_accumulated == pytest.approx(2.0)
+        assert child.busy_accumulated == pytest.approx(1.0)
+        assert child.busy_since is None
+        assert child.wait_since == pytest.approx(base + 3.0)
     finally:
         pool.shutdown()
 

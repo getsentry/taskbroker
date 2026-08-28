@@ -8,7 +8,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable, Generator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from multiprocessing.synchronize import Event
 from types import FrameType
@@ -170,6 +170,29 @@ def _log_task_retry_exhausted(
 class ChildMessage:
     child_id: UUID
     event: Literal["running", "exiting", "busy", "idle"]
+    # Stamped here, in the child, at the moment the event happens.
+    #
+    # The parent used to stamp these when it drained the queue, which it does
+    # from spawn_children_thread on a 100ms sleep, competing for the GIL with
+    # the gRPC servicer and the result thread. Every segment boundary therefore
+    # landed on a drain tick rather than on the event, and the work was credited
+    # to whichever flush interval the parent happened to read the message in
+    # rather than the one it happened in.
+    #
+    # That misattribution is not symmetric in its effect on occupancy, because
+    # occupancy is a per-interval ratio clamped to 1.0: an interval credited too
+    # much work is clipped, an interval credited too little is not floored. So
+    # anything that makes attribution bursty biases occupancy down, and drain
+    # lag gets burstier the more loaded the pod is.
+    #
+    # time.monotonic() is CLOCK_MONOTONIC, which is system-wide on Linux and
+    # macOS rather than per-process, so a value stamped in a forked child is
+    # directly comparable to one read in the parent.
+    #
+    # compare=False so two messages describing the same event stay equal. The
+    # timestamp is payload, not identity, and callers match on child_id and
+    # event.
+    timestamp: float = field(default_factory=time.monotonic, compare=False)
 
 
 def child_process(
