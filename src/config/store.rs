@@ -173,10 +173,6 @@ pub struct StoreConfig {
     /// in the ActivationStore (sqlite)
     pub max_processing_count: usize,
 
-    /// A dictionary of topic-specific maximum number of processing records that can be
-    /// in the ActivationStore
-    pub max_processing_count_per_topic: HashMap<String, usize>,
-
     /// The maximum number of times a task can be reset from
     /// processing back to pending. When this limit is reached,
     /// the activation will be discarded/deadlettered.
@@ -209,7 +205,6 @@ impl Default for StoreConfig {
             max_pending_count: 2048,
             max_delay_count: 8192,
             max_processing_count: 2048,
-            max_processing_count_per_topic: HashMap::new(),
             max_processing_attempts: 5,
             processing_deadline_grace_sec: 3,
             contention_drain_age_sec: 60,
