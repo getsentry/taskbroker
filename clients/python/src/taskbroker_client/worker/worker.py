@@ -236,9 +236,28 @@ class TrackedChild:
     # `elapsed - busy`, which only holds for children running the whole interval.
     wait_since: float | None = None  # monotonic timestamp of the currently-open wait segment
     wait_accumulated: float = 0.0  # the waiting seconds banked since the last flush
+    # Everything up to here has already been drained and emitted. Segment
+    # boundaries stamped earlier than this are clamped forward to it. 0.0 means
+    # "never drained"; time.monotonic() is always well above it, so a child that
+    # has not been flushed yet accepts its events verbatim.
+    last_drained_at: float = 0.0
+
+    def _clamp(self, now: float) -> float:
+        """Never let a segment boundary land inside an already-emitted interval.
+
+        The parent reads child events on a 100ms loop while the metrics thread
+        drains on a 1s cadence, so an event routinely arrives stamped *before*
+        the drain that already accounted for that time. Honouring the stale
+        stamp would re-bill those seconds: `mark_busy` would clip the wait
+        closure to zero, leaving the emitted wait in place, and then open a
+        busy segment starting back inside it. Both counters then bill the same
+        wall clock, which is unbounded when the event backlog grows.
+        """
+        return max(now, self.last_drained_at)
 
     def mark_running(self, now: float) -> None:
         """Start the wait clock: a `pending` child is importing, not starving."""
+        now = self._clamp(now)
         if self.busy_since is None and self.wait_since is None:
             self.wait_since = now
 
@@ -249,6 +268,7 @@ class TrackedChild:
         should never already be open; the guard is defensive and keeps the
         original start time if that invariant ever drifts.
         """
+        now = self._clamp(now)
         if self.wait_since is not None:
             self.wait_accumulated += max(0.0, now - self.wait_since)
             self.wait_since = None
@@ -261,6 +281,7 @@ class TrackedChild:
         Guarded so an unexpected `idle` with no open segment is a no-op rather
         than a crash.
         """
+        now = self._clamp(now)
         if self.busy_since is not None:
             self.busy_accumulated += max(0.0, now - self.busy_since)
             self.busy_since = None
@@ -269,6 +290,7 @@ class TrackedChild:
 
     def mark_stopped(self, now: float) -> None:
         """Close both segments so a released child stops folding wait forward."""
+        now = self._clamp(now)
         if self.busy_since is not None:
             self.busy_accumulated += max(0.0, now - self.busy_since)
             self.busy_since = None
@@ -286,6 +308,7 @@ class TrackedChild:
         if self.busy_since is not None:
             self.busy_accumulated += max(0.0, now - self.busy_since)
             self.busy_since = now
+        self.last_drained_at = now
         banked = self.busy_accumulated
         self.busy_accumulated = 0.0
         return banked
@@ -295,6 +318,7 @@ class TrackedChild:
         if self.wait_since is not None:
             self.wait_accumulated += max(0.0, now - self.wait_since)
             self.wait_since = now
+        self.last_drained_at = now
         banked = self.wait_accumulated
         self.wait_accumulated = 0.0
         return banked
@@ -1023,6 +1047,16 @@ class TaskWorkerProcessingPool:
             wait_time = 0.0
             for child in self._children.values():
                 state_counts[child.state] += 1
+
+                # Running children only: occupancy divides by `running_count`,
+                # so folding a `pending` or `exiting` child into the numerator
+                # measures one population against another. Neither has time to
+                # lose here. A `pending` child has not opened a segment yet,
+                # and `mark_stopped` deliberately closes an `exiting` child's
+                # segments so its tail stops counting against the live pool.
+                if child.state != "running":
+                    continue
+
                 busy_time += child.drain_busy(now)
                 wait_time += child.drain_wait(now)
 
@@ -1055,7 +1089,30 @@ class TaskWorkerProcessingPool:
 
         running_count = state_counts["running"]
         if running_count > 0 and elapsed > 0:
-            occupancy = busy_time / (elapsed * running_count)
+            # A child cannot be busy for longer than the interval, so this is a
+            # hard physical bound on both counters. Exceeding it means the
+            # accounting is double billing, and the clamp below would hide that
+            # behind a healthy-looking 1.0. Emit it so the metric cannot lie
+            # silently again.
+            ceiling = elapsed * running_count
+            if busy_time > ceiling or wait_time > ceiling:
+                self._metrics.incr(
+                    "taskworker.worker.occupancy.accounting_overflow",
+                    tags=tags,
+                )
+                logger.warning(
+                    "taskworker.worker.occupancy.accounting_overflow",
+                    extra={
+                        "busy_time": busy_time,
+                        "wait_time": wait_time,
+                        "ceiling": ceiling,
+                        "running_count": running_count,
+                        "elapsed": elapsed,
+                        "processing_pool": self._processing_pool_name,
+                    },
+                )
+
+            occupancy = busy_time / ceiling
             occupancy = min(occupancy, 1.0)
             self._metrics.gauge(
                 "taskworker.worker.occupancy",
@@ -1194,6 +1251,23 @@ class TaskWorkerProcessingPool:
                         received.append(message)
                     except queue.Empty:
                         break
+
+                # How stale the events we are about to apply are. The clamp in
+                # `TrackedChild._clamp` keeps busy + wait conserved when this
+                # loop falls behind, but it cannot recover *when* the work
+                # happened, so occupancy lags by roughly this age. Flat and
+                # sub-second is healthy; a rising line means this thread is not
+                # keeping up with the children and the signal is going stale.
+                if received:
+                    drain_at = time.monotonic()
+                    self._metrics.distribution(
+                        "taskworker.worker.child_message.age",
+                        drain_at - min(m.timestamp for m in received),
+                        tags={
+                            "processing_pool": self._processing_pool_name,
+                            "pod_name": self._pod_name,
+                        },
+                    )
 
                 with self._children_lock:
                     children = list(self._children.items())

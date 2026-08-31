@@ -1298,6 +1298,10 @@ def _distribution_calls(metrics: mock.Mock, name: str) -> list[Any]:
     return [c for c in metrics.distribution.call_args_list if c.args[0] == name]
 
 
+def _incr_calls(metrics: mock.Mock, name: str) -> list[Any]:
+    return [c for c in metrics.incr.call_args_list if c.args[0] == name]
+
+
 def _gauge_calls(metrics: mock.Mock, name: str) -> list[Any]:
     return [c for c in metrics.gauge.call_args_list if c.args[0] == name]
 
@@ -1378,16 +1382,18 @@ def test_emit_periodic_metrics_divides_by_running_children() -> None:
     assert occupancy_calls[0].args[1] == pytest.approx(2 / 3)
 
 
-def test_emit_periodic_metrics_clamps_occupancy_to_one() -> None:
-    # A draining child can still be mid-task, so busy-time can exceed the running
-    # capacity for the interval; occupancy must clamp to 1.0.
+def test_emit_periodic_metrics_clamps_occupancy_and_flags_the_overflow() -> None:
+    # A child cannot be busy for longer than the interval, so 1.5s of busy over
+    # a 1s interval is an accounting fault, not a busy pool. Occupancy still has
+    # to clamp for KEDA, but the fault must be visible: reading a healthy 1.0
+    # while the numerator is nonsense is how the double-billing bug hid.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
     pool._last_occupancy_flush_at = 10.0
 
     with pool._children_lock:
-        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
-        pool._children[uuid4()] = _make_tracked_child("exiting", busy_accumulated=1.0)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.5)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.5)
 
     with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
         pool._emit_periodic_metrics()
@@ -1395,6 +1401,49 @@ def test_emit_periodic_metrics_clamps_occupancy_to_one() -> None:
     occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
     assert len(occupancy_calls) == 1
     assert occupancy_calls[0].args[1] == pytest.approx(1.0)
+    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow")) == 1
+
+
+def test_emit_periodic_metrics_does_not_flag_a_legitimately_full_pool() -> None:
+    # The guard must not fire on a pool that is simply saturated, or it is noise.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
+
+
+def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:
+    # occupancy divides by running_count, so the counters have to sum over the
+    # same population. An exiting child folded into the numerator inflates both
+    # the counters and the gauge against slots that are no longer taking work.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child("exiting", busy_accumulated=1.0)
+        pool._children[uuid4()] = _make_tracked_child("pending")
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    busy = _distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")
+    assert busy[0].args[1] == pytest.approx(1.0)
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
 
 
 def test_spawn_children_tracks_busy_and_idle_transitions() -> None:
@@ -1466,6 +1515,40 @@ def test_tracked_child_ignores_events_older_than_the_last_drain() -> None:
     child.mark_idle(10.95)  # stamped before the drain, delivered after
 
     assert child.busy_accumulated == pytest.approx(0.0)
+
+
+def test_tracked_child_stale_event_cannot_bill_an_interval_twice() -> None:
+    # The regression found in the sandbox sweep. The parent reads child events
+    # on a 100ms loop while the metrics thread drains on a 1s cadence, so a
+    # `busy` stamped at 10.2 can arrive after the 11.0 drain has already billed
+    # 10.2-11.0 as wait. Backdating busy_since to 10.2 then bills those same
+    # 0.8s again as busy, and the error grows with the event backlog: the sweep
+    # measured 580 busy-seconds per 1s flush across 24 children, 24x the
+    # physical ceiling, which the occupancy clamp turned into a healthy 1.0.
+    child = _make_tracked_child("running", wait_since=10.0)
+
+    assert child.drain_wait(11.0) == pytest.approx(1.0)
+    assert child.drain_busy(11.0) == pytest.approx(0.0)
+
+    child.mark_busy(10.2)  # stamped before the drain, delivered after it
+
+    busy = child.drain_busy(12.0)
+    wait = child.drain_wait(12.0)
+
+    # The second interval is 1s wide and cannot yield more than 1s of credit.
+    assert busy == pytest.approx(1.0)
+    assert wait == pytest.approx(0.0)
+
+
+def test_tracked_child_accepts_events_predating_its_first_drain() -> None:
+    # The watermark starts at 0.0 so a child that has never been flushed still
+    # records real segment widths rather than collapsing them to the drain time.
+    child = _make_tracked_child("running", wait_since=10.0)
+
+    child.mark_busy(10.4)
+
+    assert child.drain_wait(11.0) == pytest.approx(0.4)
+    assert child.drain_busy(11.0) == pytest.approx(0.6)
 
 
 def test_tracked_child_stops_accruing_wait_once_released() -> None:
