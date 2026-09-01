@@ -44,10 +44,12 @@ from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.worker import (
+    ChildTimeAccounting,
     PushTaskWorker,
     ShutdownSignal,
     TaskWorker,
     TaskWorkerProcessingPool,
+    TimeSegment,
     TrackedChild,
     WorkerServicer,
 )
@@ -1287,10 +1289,10 @@ def _make_tracked_child(
         process=mock.Mock(),
         state=state,  # type: ignore[arg-type]
         release=mock.Mock(),
-        busy_since=busy_since,
-        busy_accumulated=busy_accumulated,
-        wait_since=wait_since,
-        wait_accumulated=wait_accumulated,
+        timing=ChildTimeAccounting(
+            busy=TimeSegment(since=busy_since, accumulated=busy_accumulated),
+            wait=TimeSegment(since=wait_since, accumulated=wait_accumulated),
+        ),
     )
 
 
@@ -1354,9 +1356,9 @@ def test_emit_periodic_metrics_time_weights_busy_over_the_interval() -> None:
     assert occupancy_calls[0].args[1] == pytest.approx(1.24 / 3)
 
     # The open segment is carried into the next interval; banks are drained.
-    assert pool._children[child_b].busy_since == pytest.approx(11.0)
+    assert pool._children[child_b].timing.busy.since == pytest.approx(11.0)
     for child in pool._children.values():
-        assert child.busy_accumulated == 0.0
+        assert child.timing.busy.accumulated == 0.0
     assert pool._last_occupancy_flush_at == pytest.approx(11.0)
 
 
@@ -1461,13 +1463,13 @@ def test_spawn_children_tracks_busy_and_idle_transitions() -> None:
 
         # "busy" opens a segment.
         messages.put(ChildMessage(child_id, "busy"))
-        _wait_for(lambda: pool._children[child_id].busy_since is not None)
+        _wait_for(lambda: pool._children[child_id].timing.busy.since is not None)
 
         # "idle" closes it and banks a positive amount of busy-time.
         messages.put(ChildMessage(child_id, "idle"))
         _wait_for(
-            lambda: pool._children[child_id].busy_since is None
-            and pool._children[child_id].busy_accumulated > 0
+            lambda: pool._children[child_id].timing.busy.since is None
+            and pool._children[child_id].timing.busy.accumulated > 0
         )
     finally:
         pool.shutdown()
@@ -1478,14 +1480,14 @@ def test_tracked_child_records_real_widths_for_events_in_one_batch() -> None:
     # every segment in a batch to zero width. Two 50ms tasks, 10ms apart:
     child = _make_tracked_child("running", wait_since=100.00)
 
-    child.mark_busy(100.00)
-    child.mark_idle(100.05)
-    child.mark_busy(100.06)
-    child.mark_idle(100.11)
+    child.timing.mark_busy(100.00)
+    child.timing.mark_idle(100.05)
+    child.timing.mark_busy(100.06)
+    child.timing.mark_idle(100.11)
 
     # 0.05 + 0.05 of work, and the 0.01 gap between them counted as waiting.
-    assert child.busy_accumulated == pytest.approx(0.10)
-    assert child.wait_accumulated == pytest.approx(0.01)
+    assert child.timing.busy.accumulated == pytest.approx(0.10)
+    assert child.timing.wait.accumulated == pytest.approx(0.01)
 
 
 def test_tracked_child_busy_and_wait_partition_the_interval() -> None:
@@ -1493,17 +1495,17 @@ def test_tracked_child_busy_and_wait_partition_the_interval() -> None:
     # to the interval width.
     child = _make_tracked_child("running", wait_since=10.0)
 
-    child.mark_busy(10.4)
-    busy = child.drain_busy(11.0)
-    wait = child.drain_wait(11.0)
+    child.timing.mark_busy(10.4)
+    busy = child.timing.drain_busy(11.0)
+    wait = child.timing.drain_wait(11.0)
 
     assert busy == pytest.approx(0.6)
     assert wait == pytest.approx(0.4)
     assert busy + wait == pytest.approx(1.0)
 
     # Both open segments are carried forward rather than restarted at zero.
-    assert child.busy_since == pytest.approx(11.0)
-    assert child.wait_since is None
+    assert child.timing.busy.since == pytest.approx(11.0)
+    assert child.timing.wait.since is None
 
 
 def test_tracked_child_ignores_events_older_than_the_last_drain() -> None:
@@ -1511,10 +1513,10 @@ def test_tracked_child_ignores_events_older_than_the_last_drain() -> None:
     # before that and processed just after must not subtract credited time.
     child = _make_tracked_child("running", busy_since=10.0)
 
-    child.drain_busy(11.0)  # credits 1.0s, advances busy_since to 11.0
-    child.mark_idle(10.95)  # stamped before the drain, delivered after
+    child.timing.drain_busy(11.0)  # credits 1.0s, advances busy_since to 11.0
+    child.timing.mark_idle(10.95)  # stamped before the drain, delivered after
 
-    assert child.busy_accumulated == pytest.approx(0.0)
+    assert child.timing.busy.accumulated == pytest.approx(0.0)
 
 
 def test_tracked_child_stale_event_cannot_bill_an_interval_twice() -> None:
@@ -1527,13 +1529,13 @@ def test_tracked_child_stale_event_cannot_bill_an_interval_twice() -> None:
     # physical ceiling, which the occupancy clamp turned into a healthy 1.0.
     child = _make_tracked_child("running", wait_since=10.0)
 
-    assert child.drain_wait(11.0) == pytest.approx(1.0)
-    assert child.drain_busy(11.0) == pytest.approx(0.0)
+    assert child.timing.drain_wait(11.0) == pytest.approx(1.0)
+    assert child.timing.drain_busy(11.0) == pytest.approx(0.0)
 
-    child.mark_busy(10.2)  # stamped before the drain, delivered after it
+    child.timing.mark_busy(10.2)  # stamped before the drain, delivered after it
 
-    busy = child.drain_busy(12.0)
-    wait = child.drain_wait(12.0)
+    busy = child.timing.drain_busy(12.0)
+    wait = child.timing.drain_wait(12.0)
 
     # The second interval is 1s wide and cannot yield more than 1s of credit.
     assert busy == pytest.approx(1.0)
@@ -1545,10 +1547,10 @@ def test_tracked_child_accepts_events_predating_its_first_drain() -> None:
     # records real segment widths rather than collapsing them to the drain time.
     child = _make_tracked_child("running", wait_since=10.0)
 
-    child.mark_busy(10.4)
+    child.timing.mark_busy(10.4)
 
-    assert child.drain_wait(11.0) == pytest.approx(0.4)
-    assert child.drain_busy(11.0) == pytest.approx(0.6)
+    assert child.timing.drain_wait(11.0) == pytest.approx(0.4)
+    assert child.timing.drain_busy(11.0) == pytest.approx(0.6)
 
 
 def test_tracked_child_stops_accruing_wait_once_released() -> None:
@@ -1556,20 +1558,20 @@ def test_tracked_child_stops_accruing_wait_once_released() -> None:
     # fold forward forever and make a recycling pool look starved.
     child = _make_tracked_child("running", wait_since=10.0)
 
-    child.mark_stopped(10.5)
-    assert child.drain_wait(20.0) == pytest.approx(0.5)
-    assert child.drain_wait(30.0) == pytest.approx(0.0)
+    child.timing.mark_stopped(10.5)
+    assert child.timing.drain_wait(20.0) == pytest.approx(0.5)
+    assert child.timing.drain_wait(30.0) == pytest.approx(0.0)
 
 
 def test_tracked_child_pending_accrues_neither_busy_nor_wait() -> None:
     # Warmup is not starvation: a child importing the app has no slot to fill.
     child = _make_tracked_child("pending")
 
-    assert child.drain_busy(11.0) == pytest.approx(0.0)
-    assert child.drain_wait(11.0) == pytest.approx(0.0)
+    assert child.timing.drain_busy(11.0) == pytest.approx(0.0)
+    assert child.timing.drain_wait(11.0) == pytest.approx(0.0)
 
-    child.mark_running(11.0)
-    assert child.drain_wait(12.0) == pytest.approx(1.0)
+    child.timing.mark_running(11.0)
+    assert child.timing.drain_wait(12.0) == pytest.approx(1.0)
 
 
 def test_emit_periodic_metrics_emits_busy_and_wait_seconds() -> None:
@@ -1631,11 +1633,11 @@ def test_spawn_children_uses_the_child_timestamp_not_the_drain_time() -> None:
 
         stamped_at = time.monotonic() - 5.0
         messages.put(ChildMessage(child_id, "busy", timestamp=stamped_at))
-        _wait_for(lambda: pool._children[child_id].busy_since is not None)
+        _wait_for(lambda: pool._children[child_id].timing.busy.since is not None)
 
         # The drain lands up to 100ms later on another thread; the segment has
         # to start when the child said it did.
-        assert pool._children[child_id].busy_since == pytest.approx(stamped_at)
+        assert pool._children[child_id].timing.busy.since == pytest.approx(stamped_at)
     finally:
         pool.shutdown()
 
@@ -1654,19 +1656,19 @@ def test_spawn_children_tracks_wait_between_tasks() -> None:
 
         # Reporting in opens a wait segment: available, blocked in get().
         messages.put(ChildMessage(child_id, "running", timestamp=base))
-        _wait_for(lambda: pool._children[child_id].wait_since == pytest.approx(base))
+        _wait_for(lambda: pool._children[child_id].timing.wait.since == pytest.approx(base))
 
         # 2s of waiting, then 1s of work, then waiting again.
         messages.put(ChildMessage(child_id, "busy", timestamp=base + 2.0))
         messages.put(ChildMessage(child_id, "idle", timestamp=base + 3.0))
         # `wait_since` is already set by "running" above, so wait on banked busy.
-        _wait_for(lambda: pool._children[child_id].busy_accumulated > 0)
+        _wait_for(lambda: pool._children[child_id].timing.busy.accumulated > 0)
 
         child = pool._children[child_id]
-        assert child.wait_accumulated == pytest.approx(2.0)
-        assert child.busy_accumulated == pytest.approx(1.0)
-        assert child.busy_since is None
-        assert child.wait_since == pytest.approx(base + 3.0)
+        assert child.timing.wait.accumulated == pytest.approx(2.0)
+        assert child.timing.busy.accumulated == pytest.approx(1.0)
+        assert child.timing.busy.since is None
+        assert child.timing.wait.since == pytest.approx(base + 3.0)
     finally:
         pool.shutdown()
 

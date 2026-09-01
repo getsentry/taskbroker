@@ -9,7 +9,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
@@ -225,103 +225,107 @@ ChildState = Literal["pending", "running", "exiting"]
 
 
 @dataclass
-class TrackedChild:
-    process: BaseProcess
-    state: ChildState
-    release: Event
-    # Time-weighted busy tracking
-    busy_since: float | None = None  # monotonic timestamp of the currently-open busy segment
-    busy_accumulated: float = 0.0  # the busy seconds banked since the last occupancy flush
-    # Mirror of the two fields above. Measured rather than inferred as
-    # `elapsed - busy`, which only holds for children running the whole interval.
-    wait_since: float | None = None  # monotonic timestamp of the currently-open wait segment
-    wait_accumulated: float = 0.0  # the waiting seconds banked since the last flush
-    # Everything up to here has already been drained and emitted. Segment
-    # boundaries stamped earlier than this are clamped forward to it. 0.0 means
-    # "never drained"; time.monotonic() is always well above it, so a child that
-    # has not been flushed yet accepts its events verbatim.
+class TimeSegment:
+    """Used to track a child proceses' time: either its busy clock or its wait clock.
+
+    `since` is the monotonic start of the currently-open time segment, or None when
+    the time segment is closed. `accumulated` holds seconds banked but not yet
+    emitted.
+    """
+
+    since: float | None = None
+    accumulated: float = 0.0
+
+    def open(self, now: float) -> None:
+        """Start a segment, keeping the earlier start if one is already open."""
+        if self.since is None:
+            self.since = now
+
+    def close(self, now: float) -> None:
+        """Bank the open segment up to `now` and close it. No-op if closed."""
+        if self.since is not None:
+            self.accumulated += max(0.0, now - self.since)
+            self.since = None
+
+    def drain(self, now: float) -> float:
+        """Return banked seconds and reset, leaving an open time segment open.
+
+        A still-open time segment is folded in up to `now` and restarted there, so a
+        task spanning several intervals contributes to each one.
+        """
+        if self.since is not None:
+            self.accumulated += max(0.0, now - self.since)
+            self.since = now
+        banked = self.accumulated
+        self.accumulated = 0.0
+        return banked
+
+
+@dataclass
+class ChildTimeAccounting:
+    """Time-weighted busy/wait accounting for one child.
+
+    A running child is always in exactly one of the two states, so over any
+    interval `drain_busy` + `drain_wait` must sum to that interval's width.
+
+    Wait time is measured rather than inferred as `elapsed - busy`, which only holds
+    for children that ran for the whole interval.
+    """
+
+    busy: TimeSegment = field(default_factory=TimeSegment)
+    wait: TimeSegment = field(default_factory=TimeSegment)
     last_drained_at: float = 0.0
 
     def _clamp(self, now: float) -> float:
         """Never let a segment boundary land inside an already-emitted interval.
 
-        The parent reads child events on a 100ms loop while the metrics thread
-        drains on a 1s cadence, so an event routinely arrives stamped *before*
-        the drain that already accounted for that time. Honouring the stale
-        stamp would re-bill those seconds: `mark_busy` would clip the wait
-        closure to zero, leaving the emitted wait in place, and then open a
-        busy segment starting back inside it. Both counters then bill the same
-        wall clock, which is unbounded when the event backlog grows.
+        Only child-supplied timestamps need this. The time segment drains are driven by the
+        metrics thread's own monotonic clock, which never runs backwards.
         """
         return max(now, self.last_drained_at)
 
     def mark_running(self, now: float) -> None:
         """Start the wait clock: a `pending` child is importing, not starving."""
-        now = self._clamp(now)
-        if self.busy_since is None and self.wait_since is None:
-            self.wait_since = now
+        if self.busy.since is None and self.wait.since is None:
+            self.wait.open(self._clamp(now))
 
     def mark_busy(self, now: float) -> None:
-        """Close the open wait segment and open a busy one.
-
-        `busy`/`idle` strictly alternate per child today, so a busy segment
-        should never already be open; the guard is defensive and keeps the
-        original start time if that invariant ever drifts.
-        """
+        """Close the open wait segment and open a busy one."""
         now = self._clamp(now)
-        if self.wait_since is not None:
-            self.wait_accumulated += max(0.0, now - self.wait_since)
-            self.wait_since = None
-        if self.busy_since is None:
-            self.busy_since = now
+        self.wait.close(now)
+        self.busy.open(now)
 
     def mark_idle(self, now: float) -> None:
-        """Close the open busy segment and open a wait one.
-
-        Guarded so an unexpected `idle` with no open segment is a no-op rather
-        than a crash.
-        """
+        """Close the open busy segment and open a wait one."""
         now = self._clamp(now)
-        if self.busy_since is not None:
-            self.busy_accumulated += max(0.0, now - self.busy_since)
-            self.busy_since = None
-        if self.wait_since is None:
-            self.wait_since = now
+        self.busy.close(now)
+        self.wait.open(now)
 
     def mark_stopped(self, now: float) -> None:
         """Close both segments so a released child stops folding wait forward."""
         now = self._clamp(now)
-        if self.busy_since is not None:
-            self.busy_accumulated += max(0.0, now - self.busy_since)
-            self.busy_since = None
-        if self.wait_since is not None:
-            self.wait_accumulated += max(0.0, now - self.wait_since)
-            self.wait_since = None
+        self.busy.close(now)
+        self.wait.close(now)
 
     def drain_busy(self, now: float) -> float:
-        """Return busy seconds since the last drain and reset the counter.
-
-        Any segment still open is folded in up to `now` and left open (its
-        start advanced to `now`) so a task spanning multiple intervals keeps
-        contributing to each one.
-        """
-        if self.busy_since is not None:
-            self.busy_accumulated += max(0.0, now - self.busy_since)
-            self.busy_since = now
+        """Return busy seconds since the last drain and reset the counter."""
+        banked = self.busy.drain(now)
         self.last_drained_at = now
-        banked = self.busy_accumulated
-        self.busy_accumulated = 0.0
         return banked
 
     def drain_wait(self, now: float) -> float:
         """Mirror of `drain_busy`, so a long block counts in every interval it spans."""
-        if self.wait_since is not None:
-            self.wait_accumulated += max(0.0, now - self.wait_since)
-            self.wait_since = now
+        banked = self.wait.drain(now)
         self.last_drained_at = now
-        banked = self.wait_accumulated
-        self.wait_accumulated = 0.0
         return banked
+
+
+@dataclass
+class TrackedChild:
+    process: BaseProcess
+    state: ChildState
+    release: Event
+    timing: ChildTimeAccounting = field(default_factory=ChildTimeAccounting)
 
 
 class PushTaskWorker:
@@ -1057,8 +1061,8 @@ class TaskWorkerProcessingPool:
                 if child.state != "running":
                     continue
 
-                busy_time += child.drain_busy(now)
-                wait_time += child.drain_wait(now)
+                busy_time += child.timing.drain_busy(now)
+                wait_time += child.timing.drain_wait(now)
 
             exiting_children = len(self._exiting_children)
 
@@ -1309,7 +1313,7 @@ class TaskWorkerProcessingPool:
                         # This child is now running
                         if message.event == "running":
                             child.state = "running"
-                            child.mark_running(message.timestamp)
+                            child.timing.mark_running(message.timestamp)
 
                         # This child wants to exit, but we may not have enough running children to shut down right away
                         elif message.event == "exiting":
@@ -1319,12 +1323,12 @@ class TaskWorkerProcessingPool:
                         # child's timestamp: this loop drains on a 100ms sleep,
                         # so stamping here credits work to the wrong interval.
                         elif message.event == "busy":
-                            child.mark_busy(message.timestamp)
+                            child.timing.mark_busy(message.timestamp)
 
                         # This child finished a task: close the open busy segment
                         # and bank the elapsed time.
                         elif message.event == "idle":
-                            child.mark_idle(message.timestamp)
+                            child.timing.mark_idle(message.timestamp)
 
                     while True:
                         # Compute how many children are still running
@@ -1346,7 +1350,7 @@ class TaskWorkerProcessingPool:
                             continue
 
                         child.state = "exiting"
-                        child.mark_stopped(time.monotonic())
+                        child.timing.mark_stopped(time.monotonic())
                         child.release.set()
 
                     spawned = sum(1 for c in self._children.values() if c.state != "exiting")
