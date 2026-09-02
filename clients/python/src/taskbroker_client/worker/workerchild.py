@@ -172,8 +172,6 @@ def _log_task_retry_exhausted(
 class ChildMessage:
     child_id: UUID
     event: Literal["running", "exiting"]
-    # Stamped at the event, not when the parent drains it 100ms later.
-    # CLOCK_MONOTONIC is system-wide, so a child's stamp is valid in the parent.
     # compare=False: the timestamp is payload, not identity.
     timestamp: float = field(default_factory=time.monotonic, compare=False)
 
@@ -205,11 +203,7 @@ def child_process(
     app.load_modules()
     metrics = app.metrics
 
-    # Busy/wait accounting goes straight into shared memory rather than over
-    # `messages`. The parent's drain thread competes for CPU with the children
-    # it measures, so at two events per task it falls behind under saturation
-    # and occupancy goes stale. This costs the parent one read per child per
-    # second instead.
+    # Straight to shared memory: `messages` cannot keep up at two events per task.
     timing = ChildTimeWriter(timing_shm, timing_slot)
     # Signals when the parent worker pool terminates the child
     local_shutdown = threading.Event()
@@ -687,8 +681,7 @@ def child_process(
                 transaction.set_data("taskworker-task.args", args)
                 transaction.set_data("taskworker-task.kwargs", kwargs)
 
-            # See the note in record_task_execution: ToDatetime().timestamp()
-            # misreads a naive UTC datetime as local time.
+            # ToDatetime().timestamp() misreads a naive UTC datetime as local.
             task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
@@ -741,27 +734,11 @@ def child_process(
         taskbroker_host: str,
         futures_enqueued_time: float | None = None,
     ) -> None:
-        # seconds+nanos rather than ToDatetime().timestamp(): ToDatetime()
-        # returns a NAIVE datetime holding UTC, and .timestamp() then reads it
-        # as local time, so the value is wrong by the host's UTC offset
-        # anywhere TZ is not UTC. Containers run UTC so this was latent, but it
-        # silently skewed every latency reading off-cluster.
+        # ToDatetime().timestamp() reads a naive UTC datetime as local time.
         task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
         execution_duration = completion_time - start_time
         execution_latency = completion_time - task_added_time
-        # `execution_latency` minus the part that is the task's own cost, i.e.
-        # how long the activation sat between the broker receiving it and a
-        # child picking it up.
-        #
-        # This is the term that does NOT scale with task duration, which is
-        # what makes a single threshold meaningful across pools running very
-        # different work: a backed-up 4ms pool and a backed-up 4s pool read the
-        # same wait, where total latency would read 4s apart while both are
-        # healthy.
-        #
-        # Clamped because `received_at` is stamped on the broker and
-        # `start_time` here, so clock skew between pods can otherwise emit a
-        # negative sample and distort the percentiles this is read on.
+        # Latency minus the task's own cost, so it does not scale with duration.
         queue_wait = max(0.0, start_time - task_added_time)
         futures_duration = time.time() - futures_enqueued_time if futures_enqueued_time else 0
 

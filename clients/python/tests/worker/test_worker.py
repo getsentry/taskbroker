@@ -1297,8 +1297,7 @@ def test_push_start_does_not_serve_when_shutdown_during_warmup() -> None:
     pool_shutdown.assert_called_once_with()
 
 
-# Slots for children built by `_make_tracked_child`. Independent of any pool:
-# the flush reads through `child.timing.shm`, not the pool's array.
+# Independent of any pool: the flush reads through `child.timing.shm`.
 _TEST_SLOTS = 512
 _TEST_TIMING_SHM = get_context("fork").RawArray("d", SLOT_WIDTH * _TEST_SLOTS)
 _TEST_SLOT_SEQ = itertools.count()
@@ -1325,8 +1324,7 @@ def _make_tracked_child(
         _TEST_TIMING_SHM[base + offset] = 0.0
 
     timing = ChildTimeAccounting(shm=_TEST_TIMING_SHM, slot=slot)
-    # Baseline against the zeroed slot, so everything seeded below lands in
-    # the first sample.
+    # Baseline against the zeroed slot, so the seeding below lands in sample 1.
     timing.mark_running(0.0)
 
     if busy_since is not None:
@@ -1409,8 +1407,7 @@ def test_emit_periodic_metrics_time_weights_busy_over_the_interval() -> None:
     assert len(occupancy_calls) == 1
     assert occupancy_calls[0].args[1] == pytest.approx(1.24 / 3)
 
-    # B's segment is still open, so the next interval picks up where this one
-    # stopped rather than re-reporting the 0.60 already credited.
+    # B's segment is still open, so the next interval resumes, not re-reports.
     assert pool._children[child_b].timing.sample(12.0) == pytest.approx((1.0, 0.0))
     for child in pool._children.values():
         if child.state == "running":
@@ -1441,10 +1438,7 @@ def test_emit_periodic_metrics_divides_by_running_children() -> None:
 
 
 def test_emit_periodic_metrics_clamps_occupancy_and_flags_the_overflow() -> None:
-    # A child cannot be busy for longer than the interval, so 1.5s of busy over
-    # a 1s interval is an accounting fault, not a busy pool. Occupancy still has
-    # to clamp for KEDA, but the fault must be visible: reading a healthy 1.0
-    # while the numerator is nonsense is how the double-billing bug hid.
+    # 1.5s of busy in a 1s interval is a fault; the clamp must not hide it.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
     pool._last_occupancy_flush_at = 10.0
@@ -1482,10 +1476,7 @@ def test_emit_periodic_metrics_does_not_flag_a_legitimately_full_pool() -> None:
 
 
 def test_emit_periodic_metrics_excludes_slotless_children_from_occupancy() -> None:
-    # A child the pool could not give a slot to reports nothing. Leaving it in
-    # the denominator would read as a genuinely idle child and halve occupancy,
-    # which is the sort of quiet undercount this whole change exists to remove.
-    # It still belongs in the `children` gauge: the pod really does have it.
+    # A slotless child in the denominator would read as idle and halve occupancy.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
     pool._last_occupancy_flush_at = 10.0
@@ -1515,9 +1506,7 @@ def test_emit_periodic_metrics_excludes_slotless_children_from_occupancy() -> No
 
 
 def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:
-    # occupancy divides by running_count, so the counters have to sum over the
-    # same population. An exiting child folded into the numerator inflates both
-    # the counters and the gauge against slots that are no longer taking work.
+    # The counters must sum over the same population occupancy divides by.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
     pool._last_occupancy_flush_at = 10.0
@@ -1538,8 +1527,7 @@ def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:
 
 
 def test_spawn_children_binds_each_child_to_its_own_timing_slot() -> None:
-    # The parent hands the slot to the child at spawn and reads the same slot
-    # at flush. If those ever disagree the pool measures nothing.
+    # If spawn and flush disagree on the slot, the pool measures nothing.
     fake_context = _FakeContext()
     pool = _make_fake_context_pool(fake_context, concurrency=2)
 
@@ -1555,8 +1543,7 @@ def test_spawn_children_binds_each_child_to_its_own_timing_slot() -> None:
             slots.add(slot)
 
             messages.put(ChildMessage(child_id, "running"))
-            # _wait_for blocks here, so the closure is resolved inside the
-            # iteration and does not need a default-argument capture.
+            # _wait_for blocks, so the closure resolves inside the iteration.
             _wait_for(lambda: pool._children[child_id].state == "running")
             assert pool._children[child_id].timing.slot == slot
             assert shm is pool._timing_shm
@@ -1573,8 +1560,7 @@ def _writer_and_reader(slot: int = 0) -> tuple[ChildTimeWriter, ChildTimeAccount
 
 
 def test_child_timing_round_trips_through_shared_memory() -> None:
-    # The whole point of the slot: the child records the transition itself, so
-    # nothing has to survive a queue to be counted correctly.
+    # The child records the transition itself; nothing crosses a queue.
     writer, reader = _writer_and_reader()
 
     writer.mark_running(0.0)
@@ -1585,9 +1571,7 @@ def test_child_timing_round_trips_through_shared_memory() -> None:
 
 
 def test_child_timing_credits_a_long_task_to_every_interval_it_spans() -> None:
-    # A child only knows a segment's width when it ends. Folding the open
-    # segment forward at read time is what stops a 60s task reporting zero for
-    # 60 flushes and then 60s at once.
+    # Without this a 60s task reports zero for 60 flushes, then 60s at once.
     writer, reader = _writer_and_reader()
 
     writer.mark_running(0.0)
@@ -1602,9 +1586,7 @@ def test_child_timing_credits_a_long_task_to_every_interval_it_spans() -> None:
 
 
 def test_child_timing_busy_and_wait_partition_every_interval() -> None:
-    # A running child is always in exactly one state, so busy + wait over any
-    # sequence of samples has to equal the wall time. This is the invariant
-    # `occupancy.accounting_overflow` guards in production.
+    # The invariant `occupancy.accounting_overflow` guards in production.
     writer, reader = _writer_and_reader()
     writer.mark_running(0.0)
     reader.mark_running(0.0)
@@ -1632,9 +1614,7 @@ def test_child_timing_busy_and_wait_partition_every_interval() -> None:
 
 
 def test_child_timing_defers_rather_than_drops_a_torn_read() -> None:
-    # An odd version means the child was mid-publish. Returning zero without
-    # advancing the baseline means the next sample covers both intervals, so a
-    # torn read delays attribution instead of losing it.
+    # Leaving the baseline alone delays attribution instead of losing it.
     writer, reader = _writer_and_reader()
     writer.mark_running(0.0)
     reader.mark_running(0.0)
@@ -1650,8 +1630,7 @@ def test_child_timing_defers_rather_than_drops_a_torn_read() -> None:
 
 
 def test_child_timing_stops_accruing_once_the_child_is_released() -> None:
-    # A released child keeps its wait segment open until it dies. Without this
-    # the segment folds forward forever and a recycling pool looks starved.
+    # Otherwise the segment folds forward forever and a recycling pool looks starved.
     writer, reader = _writer_and_reader()
     writer.mark_running(0.0)
     reader.mark_running(0.0)
@@ -1663,8 +1642,7 @@ def test_child_timing_stops_accruing_once_the_child_is_released() -> None:
 
 
 def test_child_timing_ignores_a_child_with_no_slot() -> None:
-    # Degraded mode when the pool runs out of slots. It must report nothing
-    # rather than raise, since the parent also leaves it out of running_count.
+    # Degraded mode: report nothing rather than raise.
     shm = get_context("fork").RawArray("d", SLOT_WIDTH)
     writer = ChildTimeWriter(shm, NO_SLOT)
     reader = ChildTimeAccounting(shm=shm, slot=NO_SLOT)
@@ -1678,9 +1656,7 @@ def test_child_timing_ignores_a_child_with_no_slot() -> None:
 
 
 def test_child_timing_excludes_time_banked_before_the_parent_saw_running() -> None:
-    # The child opens its wait clock at warmup, but the parent only counts it in
-    # running_count once the `running` message lands. Baselining at that moment
-    # keeps the numerator and the denominator starting together.
+    # Numerator and denominator must start together, at the `running` message.
     writer, reader = _writer_and_reader()
 
     writer.mark_running(0.0)
@@ -1690,13 +1666,10 @@ def test_child_timing_excludes_time_banked_before_the_parent_saw_running() -> No
 
 
 def test_acquire_timing_slot_zeroes_a_recycled_slot() -> None:
-    # Slots outlive children. A replacement must not inherit its predecessor's
-    # totals, or its first sample reports the dead child's whole lifetime.
+    # A replacement must not inherit its predecessor's totals.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=1)
 
-    # Drain the free list so the release below is the only slot available. Reuse
-    # is FIFO, which deliberately leaves the longest possible gap between a slot
-    # being returned and handed out again.
+    # Drain the free list: reuse is FIFO, so a release is not reused next.
     slot = pool._acquire_timing_slot()
     rest = [pool._acquire_timing_slot() for _ in range(slot_count(1) - 1)]
     assert NO_SLOT not in rest
@@ -1716,8 +1689,7 @@ def test_acquire_timing_slot_zeroes_a_recycled_slot() -> None:
 
 
 def test_acquire_timing_slot_reports_exhaustion_instead_of_raising() -> None:
-    # Sizing should make this unreachable, so if it ever fires the metric is how
-    # we find out. The pool has to keep spawning either way.
+    # Should be unreachable; the pool has to keep spawning either way.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=1)
     pool._metrics = mock.Mock()
 
@@ -1749,16 +1721,14 @@ def test_emit_periodic_metrics_emits_busy_and_wait_seconds() -> None:
     assert busy[0].args[1] == pytest.approx(1.75)
     assert wait[0].args[1] == pytest.approx(0.25)
 
-    # The scaler divides the pair, recovering occupancy without needing the
-    # flush interval or the running-child count.
+    # The scaler divides the pair, needing neither interval nor child count.
     assert busy[0].args[1] / (busy[0].args[1] + wait[0].args[1]) == pytest.approx(0.875)
     occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
     assert occupancy_calls[0].args[1] == pytest.approx(1.75 / 2)
 
 
 def test_emit_periodic_metrics_emits_counters_during_warmup() -> None:
-    # Emitted with no running children, unlike occupancy: zero is correct for a
-    # counter and separates "idle" from "not reporting".
+    # Unlike occupancy: zero separates "idle" from "not reporting".
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
 
@@ -1773,9 +1743,7 @@ def test_emit_periodic_metrics_emits_counters_during_warmup() -> None:
 
 
 def test_spawn_children_reads_transitions_the_child_wrote() -> None:
-    # End to end through the real handoff: the child publishes into the slot
-    # it was given, and the parent's accountant reports that split without a
-    # single message crossing the queue.
+    # End to end through the real handoff, with no message crossing the queue.
     fake_context = _FakeContext()
     pool = _make_fake_context_pool(fake_context, concurrency=1)
 
@@ -1792,8 +1760,7 @@ def test_spawn_children_reads_transitions_the_child_wrote() -> None:
         _wait_for(lambda: pool.ready_count == 1)
 
         child = pool._children[child_id]
-        # Rebaseline onto the child's clock; the parent normally does this the
-        # moment it drains `running`, against its own monotonic reading.
+        # Rebaseline onto the child's clock; normally done when draining `running`.
         child.timing.mark_running(0.0)
 
         # 2s waiting, 1s of work, then waiting again.
@@ -2075,8 +2042,7 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
     )
     process.start()
     try:
-        # Only lifecycle events cross the queue now, two per child rather than
-        # two per task. That reduction is the whole point of the slot.
+        # Lifecycle only now: two per child rather than two per task.
         assert messages.get(timeout=5) == ChildMessage(child_id, "running")
         assert messages.get(timeout=5) == ChildMessage(child_id, "exiting")
         assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
@@ -2131,8 +2097,7 @@ def test_child_process_records_busy_and_idle_in_its_slot() -> None:
     assert messages.get(timeout=1) == ChildMessage(child_id, "running")
     assert processed.get(timeout=1).task_id == SIMPLE_TASK.activation.id
 
-    # One task ran to completion, so the child closed a busy segment into its
-    # slot and reopened the wait clock behind it.
+    # One task completed, so a busy segment closed and the wait clock reopened.
     assert timing_shm[SLOT_BUSY_TOTAL] > 0.0
     assert timing_shm[SLOT_SEGMENT_KIND] == KIND_WAIT
     assert timing_shm[SLOT_VERSION] % 2 == 0
@@ -2163,8 +2128,7 @@ def _run_one_task_capturing_metrics(received_at_offset: float) -> mock.Mock:
         InflightTaskActivation(host="localhost:50051", receive_timestamp=0, activation=activation)
     )
 
-    # MagicMock, not Mock: the child uses metrics.timer() and
-    # metrics.track_memory_usage() as context managers.
+    # MagicMock: the child uses metrics.timer() as a context manager.
     metrics = mock.MagicMock()
     with mock.patch.object(example_app, "metrics", metrics):
         child_process(
@@ -2184,9 +2148,7 @@ def _run_one_task_capturing_metrics(received_at_offset: float) -> mock.Mock:
 
 
 def test_child_process_emits_queue_wait_excluding_execution_time() -> None:
-    # queue_wait is execution_latency minus the task's own cost. That is the term
-    # that does not scale with task duration, which is what lets one alert
-    # threshold cover pools running very different work.
+    # Latency minus the task's own cost, so one threshold covers every pool.
     metrics = _run_one_task_capturing_metrics(received_at_offset=-2.0)
 
     wait = _distribution_calls(metrics, "taskworker.worker.queue_wait")
@@ -2204,9 +2166,7 @@ def test_child_process_emits_queue_wait_excluding_execution_time() -> None:
 
 
 def test_child_process_queue_wait_clamps_negative_clock_skew() -> None:
-    # `received_at` is stamped on the broker and the start time here, so an
-    # NTP-skewed pod can make the difference negative. A negative sample would
-    # distort the percentiles this metric is read on.
+    # An NTP-skewed pod would otherwise emit a negative sample.
     metrics = _run_one_task_capturing_metrics(received_at_offset=+5.0)
 
     wait = _distribution_calls(metrics, "taskworker.worker.queue_wait")

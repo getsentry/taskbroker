@@ -139,8 +139,7 @@ class WorkerPrometheusMetrics:
             registry=self.registry,
         )
 
-        # Additive and unclamped, unlike the gauge above: the scaler sums across
-        # pods and divides once, and no interval clips at 1.0.
+        # Additive and unclamped: the scaler sums across pods and divides once.
         self.child_busy_seconds = prometheus_client.Counter(
             "taskworker_worker_child_busy_seconds",
             "Cumulative child-seconds spent executing tasks.",
@@ -148,8 +147,7 @@ class WorkerPrometheusMetrics:
             registry=self.registry,
         )
 
-        # What occupancy cannot express: slots that are free with nothing to do.
-        # Near zero under a backlog means saturated, so more pods help.
+        # What occupancy cannot express: free slots with nothing to do.
         self.child_wait_seconds = prometheus_client.Counter(
             "taskworker_worker_child_wait_seconds",
             "Cumulative child-seconds spent blocked waiting for a task to arrive.",
@@ -236,8 +234,7 @@ class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
-    # Bound to this child's shared-memory slot at spawn time, so there is no
-    # sensible default: an accountant with no slot silently measures nothing.
+    # No default: an accountant with no slot silently measures nothing.
     timing: ChildTimeAccounting
 
 
@@ -912,12 +909,7 @@ class TaskWorkerProcessingPool:
         self._children: Dict[UUID, TrackedChild] = {}
         self._exiting_children: Deque[UUID] = deque()
 
-        # Children write their own busy/wait totals here and the parent diffs
-        # them once a second. Sized for two generations because
-        # `spawn_children_thread` ignores exiting children when deciding how
-        # many to spawn, so a full set of unreaped children can briefly overlap
-        # a full set of replacements. Slots are handed out and returned under
-        # `_children_lock`.
+        # Two generations: unreaped exiting children overlap their replacements.
         self._timing_slots: int = slot_count(concurrency)
         self._timing_shm: ctypes.Array[ctypes.c_double] = self._mp_context.RawArray(
             "d", SLOT_WIDTH * self._timing_slots
@@ -1022,19 +1014,11 @@ class TaskWorkerProcessingPool:
             for child in self._children.values():
                 state_counts[child.state] += 1
 
-                # Running children only: occupancy divides by `running_count`,
-                # so folding a `pending` or `exiting` child into the numerator
-                # measures one population against another. Neither has time to
-                # lose here. A `pending` child is not being accounted yet, and
-                # `mark_stopped` deliberately stops accounting an `exiting`
-                # child so its tail does not count against the live pool.
+                # Running only: the numerator must match occupancy's divisor.
                 if child.state != "running":
                     continue
 
-                # A child with no slot reports nothing, so leaving it in the
-                # denominator would read as an idle child rather than as a
-                # missing measurement. `timing_slot_exhausted` is what
-                # surfaces it instead.
+                # A slotless child reports nothing; counting it would read as idle.
                 if child.timing.slot == NO_SLOT:
                     continue
 
@@ -1048,8 +1032,7 @@ class TaskWorkerProcessingPool:
         elapsed = now - self._last_occupancy_flush_at
         self._last_occupancy_flush_at = now
 
-        # Emitted during warmup too: zero is correct for a counter, unlike for
-        # the occupancy gauge below where it drags the fleet average down.
+        # Emitted during warmup too: zero is correct for a counter.
         self._metrics.distribution(
             "taskworker.worker.child_busy_seconds",
             busy_time,
@@ -1061,8 +1044,7 @@ class TaskWorkerProcessingPool:
             tags=tags,
         )
         if self._prom is not None:
-            # inc(0.0) registers the series on the first flush, so a new pod
-            # reads as idle rather than as missing.
+            # inc(0.0) registers the series, so a new pod reads idle not missing.
             self._prom.child_busy_seconds.labels(processing_pool=self._processing_pool_name).inc(
                 max(0.0, busy_time)
             )
@@ -1070,17 +1052,10 @@ class TaskWorkerProcessingPool:
                 max(0.0, wait_time)
             )
 
-        # Children the pool could not give a slot to are excluded on both
-        # sides, so occupancy stays a consistent ratio over the children that
-        # are actually accounted for. `state_counts` still reports every
-        # running child to the `children` gauge.
+        # Slotless children are out of both sides; the gauge still counts them.
         running_count = accounted_running
         if running_count > 0 and elapsed > 0:
-            # A child cannot be busy for longer than the interval, so this is a
-            # hard physical bound on both counters. Exceeding it means the
-            # accounting is double billing, and the clamp below would hide that
-            # behind a healthy-looking 1.0. Emit it so the metric cannot lie
-            # silently again.
+            # Physical bound. Exceeding it means the clamp below is hiding a bug.
             ceiling = elapsed * running_count
             if busy_time > ceiling or wait_time > ceiling:
                 self._metrics.incr(
@@ -1239,12 +1214,7 @@ class TaskWorkerProcessingPool:
                     except queue.Empty:
                         break
 
-                # How stale the events we are about to apply are. The clamp in
-                # `TrackedChild._clamp` keeps busy + wait conserved when this
-                # loop falls behind, but it cannot recover *when* the work
-                # happened, so occupancy lags by roughly this age. Flat and
-                # sub-second is healthy; a rising line means this thread is not
-                # keeping up with the children and the signal is going stale.
+                # Lifecycle-queue lag. A rising line means this thread is behind.
                 if received:
                     drain_at = time.monotonic()
                     self._metrics.distribution(
@@ -1266,10 +1236,7 @@ class TaskWorkerProcessingPool:
                         c.process.join(timeout=0)
                         self._children.pop(cid)
 
-                        # Reclaim here rather than on the `exiting` transition:
-                        # a released child can still publish once before it
-                        # breaks out of its loop, and handing that slot to a
-                        # replacement would mix two children's totals.
+                        # Not at `exiting`: a released child can still publish once.
                         if c.timing.slot != NO_SLOT:
                             self._free_timing_slots.append(c.timing.slot)
 
@@ -1300,10 +1267,7 @@ class TaskWorkerProcessingPool:
 
                             continue
 
-                        # This child is now running. Baseline against the slot
-                        # as it stands rather than the child's timestamp: the
-                        # child only enters `running_count` here, so starting
-                        # the numerator here keeps the ratio consistent.
+                        # Baseline here, where it also enters `running_count`.
                         if message.event == "running":
                             child.state = "running"
                             child.timing.mark_running(time.monotonic())
@@ -1379,8 +1343,7 @@ class TaskWorkerProcessingPool:
 
                             self._children[child_id] = child
                     except Exception as e:
-                        # The child never came up, so nothing will ever write
-                        # to its slot.
+                        # Never came up, so nothing will write to its slot.
                         self._release_timing_slot(timing_slot)
 
                         logger.exception(

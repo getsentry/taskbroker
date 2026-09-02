@@ -1,30 +1,20 @@
 """Shared-memory busy/wait accounting for worker children.
 
-Once a second the parent needs to know how many seconds each child spent
-executing versus waiting for work. To accomplish that each child owns a slot
-in a ``RawArray`` of doubles and writes its own cumulative totals there. The
-parent reads and diffs the slots at flush time.
+Children write their own cumulative totals into a slot; the parent diffs them at
+flush. Costs O(children) per second rather than O(tasks) per second, and there is
+no queue to fall behind.
 
 Slot layout, five doubles per child::
 
     0  version         seqlock; odd means a write is in progress
     1  busy_total      cumulative seconds closed into busy
     2  wait_total      cumulative seconds closed into wait
-    3  segment_start   time.monotonic() when the currently-open segment began
+    3  segment_start   time.monotonic() when the open segment began
     4  segment_kind    KIND_NONE, KIND_WAIT or KIND_BUSY
 
-Two properties carry the design.
-
-Every value is absolute and cumulative rather than a delta, which is what makes
-a torn read survivable: a bad sample is transient and the next one re-derives
-the truth from the slot, so error cannot accumulate.
-
-``KIND_NONE`` is zero, so a freshly zeroed slot reads as "this child has not
-accounted for anything yet" rather than as an open segment starting at time
-zero.
-
-``time.monotonic()`` is CLOCK_MONOTONIC, which is system-wide, so a child's
-timestamps are directly comparable in the parent.
+Values are absolute and cumulative, so a torn read costs one transient sample
+that the next flush re-derives. time.monotonic() is CLOCK_MONOTONIC, which is
+system-wide, so a child's timestamps are valid in the parent.
 """
 
 from __future__ import annotations
@@ -32,7 +22,6 @@ from __future__ import annotations
 import ctypes
 from dataclasses import dataclass
 
-# Offsets within a slot, and the slot stride.
 SLOT_VERSION = 0
 SLOT_BUSY_TOTAL = 1
 SLOT_WAIT_TOTAL = 2
@@ -40,36 +29,28 @@ SLOT_SEGMENT_START = 3
 SLOT_SEGMENT_KIND = 4
 SLOT_WIDTH = 5
 
-# Kind values. NONE must be 0.0 so that a zeroed slot means "nothing open".
+# NONE must be 0.0 so a zeroed slot reads as "nothing open".
 KIND_NONE = 0.0
 KIND_WAIT = 1.0
 KIND_BUSY = 2.0
 
-# Slot index handed to a child when the pool has none left. Every read and
-# write becomes a no-op and the parent leaves that child out of occupancy.
+# Handed to a child when the pool has no slot left. Reads and writes are no-ops.
 NO_SLOT = -1
 
-# A writer holds the seqlock for four stores, so a reader that loses three
-# races in a row is seeing something other than ordinary contention.
 SEQLOCK_READ_ATTEMPTS = 3
 
 
 def slot_count(concurrency: int) -> int:
-    """How many slots a pool of `concurrency` children needs.
-
-    Twice concurrency. `spawn_children_thread` counts only non-exiting children
-    when deciding how many to spawn, so a full generation of exiting-but-unreaped
-    children can briefly coexist with a full generation of replacements.
-    """
+    """Twice concurrency, so a generation of unreaped exiting children can
+    overlap a generation of replacements."""
     return max(1, concurrency * 2)
 
 
 class ChildTimeWriter:
     """Child-side writer for one slot.
 
-    The child is the only writer for its slot, so it keeps the authoritative
-    totals as plain Python floats and republishes the whole slot on each
-    transition. That avoids a read-modify-write against shared memory.
+    Sole writer, so it keeps authoritative totals as plain floats and
+    republishes the whole slot on each transition.
     """
 
     __slots__ = ("_shm", "_slot", "_base", "_busy_total", "_wait_total", "_start", "_kind")
@@ -91,7 +72,7 @@ class ChildTimeWriter:
         base = self._base
 
         version = shm[base + SLOT_VERSION]
-        # Odd version: a reader that sees this discards what it read.
+        # Odd: a reader that sees this discards what it read.
         shm[base + SLOT_VERSION] = version + 1.0
         shm[base + SLOT_BUSY_TOTAL] = self._busy_total
         shm[base + SLOT_WAIT_TOTAL] = self._wait_total
@@ -139,9 +120,8 @@ class ChildTimeWriter:
 class ChildTimeAccounting:
     """Parent-side reader for one child's slot.
 
-    Holds the previous absolute reading and returns deltas. A child sitting in a
-    long task therefore contributes to every interval it spans, instead of
-    dumping its whole duration into the interval it happens to finish in.
+    Holds the previous absolute reading and returns deltas, so a child in a long
+    task contributes to every interval it spans.
     """
 
     shm: ctypes.Array[ctypes.c_double] | None
@@ -153,15 +133,12 @@ class ChildTimeAccounting:
     def mark_running(self, now: float) -> None:
         """Start counting this child, baselining against the slot as it stands.
 
-        Baselining rather than zeroing means whatever the child banked between
-        spawning and the parent seeing its `running` message is not credited
-        retroactively. The child is excluded from `running_count` over that same
-        window, so the numerator and the denominator start together.
+        Baselining rather than zeroing drops whatever the child banked before the
+        parent saw its `running` message, which is the same window over which it
+        is absent from `running_count`.
         """
         reading = self._read(now)
         if reading is None:
-            # Slots are zeroed at allocation, so a failed first read costs at
-            # most the few microseconds since the child came up.
             self._prev_busy = 0.0
             self._prev_wait = 0.0
         else:
@@ -170,8 +147,7 @@ class ChildTimeAccounting:
         self._accounted = True
 
     def mark_stopped(self) -> None:
-        """Stop counting this child, so an exiting child's tail does not land on
-        the live pool's occupancy."""
+        """Stop counting, so an exiting child's tail misses the live pool."""
         self._accounted = False
 
     def sample(self, now: float) -> tuple[float, float]:
@@ -181,8 +157,7 @@ class ChildTimeAccounting:
 
         reading = self._read(now)
         if reading is None:
-            # Leave the baseline alone: the next sample then covers both
-            # intervals. Deferring the attribution beats dropping it.
+            # Baseline untouched, so the next sample covers both intervals.
             return (0.0, 0.0)
 
         busy_now, wait_now = reading
@@ -195,8 +170,7 @@ class ChildTimeAccounting:
     def _read(self, now: float) -> tuple[float, float] | None:
         """Seqlock read of absolute busy/wait, including the segment still open.
 
-        None means the read could not be taken cleanly and the caller should
-        keep whatever baseline it already has.
+        None means the read could not be taken cleanly.
         """
         if self.slot == NO_SLOT or self.shm is None:
             return None
