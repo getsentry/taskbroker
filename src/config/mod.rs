@@ -625,6 +625,8 @@ impl Config {
                     session_timeout_ms: None,
                     auto_commit_interval_ms: None,
                     auto_offset_reset: None,
+                    max_processing_activations: None,
+                    max_pending_activations: None,
                 },
             );
             assert!(prev.is_none(), "internal: duplicate topic '{topic_name}'");
@@ -643,6 +645,8 @@ impl Config {
                     session_timeout_ms: None,
                     auto_commit_interval_ms: None,
                     auto_offset_reset: None,
+                    max_processing_activations: None,
+                    max_pending_activations: None,
                 },
             );
             if prev.is_some() {
@@ -675,6 +679,8 @@ impl Config {
                         session_timeout_ms: None,
                         auto_commit_interval_ms: None,
                         auto_offset_reset: None,
+                        max_processing_activations: None,
+                        max_pending_activations: None,
                     });
             }
         }
