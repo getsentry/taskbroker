@@ -18,6 +18,7 @@ permissions:
 
 jobs:
   release:
+    if: ${{ github.repository == 'getsentry/taskbroker' }}
     runs-on: ubuntu-latest
     steps:
       - name: Get auth token

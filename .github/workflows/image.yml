@@ -28,7 +28,7 @@ jobs:
           platforms: linux/${{ matrix.platform }}
           dockerfile_path: './Dockerfile'
           build_args: TASKBROKER_GIT_REVISION=${{ github.sha }}
-          ghcr: true
+          ghcr: ${{ github.repository == 'getsentry/taskbroker' }}
           tag_suffix: -${{ matrix.platform }}
           publish_on_pr: ${{ github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' }}
           google_ar: false
@@ -38,7 +38,7 @@ jobs:
   assemble-taskbroker-image:
     runs-on: ubuntu-latest
     needs: [build]
-    if: ${{ (github.ref_name == 'main' || startsWith(github.ref_name, 'release/')) && github.event_name != 'pull_request' }}
+    if: ${{ github.repository == 'getsentry/taskbroker' && (github.ref_name == 'main' || startsWith(github.ref_name, 'release/')) && github.event_name != 'pull_request' }}
     permissions:
       contents: read
       packages: write
@@ -62,7 +62,7 @@ jobs:
 
   build-production:
     runs-on: ubuntu-24.04
-    if: github.ref_name == github.event.repository.default_branch
+    if: ${{ github.repository == 'getsentry/taskbroker' && github.ref_name == github.event.repository.default_branch }}
     name: Build and push production images to ${{ matrix.registry }} registry
     strategy:
       matrix:
@@ -93,6 +93,7 @@ jobs:
           google_service_account: gha-gcr-push@sac-prod-sa.iam.gserviceaccount.com
 
   self-hosted-end-to-end:
+    if: ${{ github.repository == 'getsentry/taskbroker' }}
     needs: [assemble-taskbroker-image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
