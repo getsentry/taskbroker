@@ -1033,6 +1033,21 @@ class TaskWorkerProcessingPool:
             if not is_draining:
                 for result in results:
                     self.put_result(result)
+            else:
+                # Draining drops the batch instead of requeueing it, so the broker will
+                # not hear about these tasks until their processing deadline lapses.
+                self._metrics.incr(
+                    "taskworker.worker.shutdown.results_dropped",
+                    value=len(results),
+                    tags={"processing_pool": self._processing_pool_name},
+                )
+                logger.warning(
+                    "taskworker.worker.shutdown.results_dropped",
+                    extra={
+                        "results": [result.task_id for result in results],
+                        "processing_pool": self._processing_pool_name,
+                    },
+                )
 
     def start_metrics_thread(self) -> None:
         """
@@ -1318,41 +1333,147 @@ class TaskWorkerProcessingPool:
     def put_result(self, result: ProcessingResult) -> None:
         self._processed_tasks.put(result)
 
+    def _record_shutdown_stage(self, stage: str, started_at: float) -> None:
+        """
+        Emit one stage's duration as it finishes, so a pod SIGKILLed part way
+        through shutdown still reports how far it got.
+        """
+        self._metrics.distribution(
+            "taskworker.worker.shutdown.stage_duration",
+            time.monotonic() - started_at,
+            tags={"processing_pool": self._processing_pool_name, "stage": stage},
+        )
+
+    def _drain_child_tasks(self) -> None:
+        """
+        Empty the child tasks queue, counting what shutdown discards. Nothing consumes
+        it once the children are gone, so these tasks were being dropped silently.
+        """
+        discarded = 0
+        while True:
+            try:
+                inflight = self._child_tasks.get_nowait()
+            except queue.Empty:
+                # Undercounts: `Empty` also means items are unflushed in the pipe.
+                break
+
+            discarded += 1
+            logger.info(
+                "taskworker.worker.shutdown.child_task_discarded",
+                extra={
+                    "task_id": inflight.activation.id,
+                    "namespace": inflight.activation.namespace,
+                    "taskname": inflight.activation.taskname,
+                    "processing_pool": self._processing_pool_name,
+                },
+            )
+
+        self._metrics.incr(
+            "taskworker.worker.shutdown.child_tasks_discarded",
+            value=discarded,
+            tags={"processing_pool": self._processing_pool_name},
+        )
+
     def shutdown(self) -> None:
         """
         Shutdown cleanly
         Activate the shutdown event and drain results before terminating children.
         """
         logger.info("taskworker.worker.shutdown.start")
+        shutdown_start = time.monotonic()
         self._shutdown_event.set()
 
         logger.info("taskworker.worker.shutdown.spawn_children")
         if self._spawn_children_thread:
             self._spawn_children_thread.join()
+        self._record_shutdown_stage("spawn_children", shutdown_start)
 
         logger.info("taskworker.worker.shutdown.children")
+        children_start = time.monotonic()
         with self._children_lock:
             children = [tracked_child.process for tracked_child in self._children.values()]
 
         for child in children:
             child.terminate()
+        killed = 0
         for child in children:
             child.join(WORKER_CHILD_JOIN_TIMEOUT_SEC)
             if child.is_alive():
                 child.kill()
                 child.join()
+                killed += 1
+
+        # A child that needed SIGKILL was still running; if it held a task, that task
+        # produces no result and waits out its processing deadline on the broker.
+        self._metrics.incr(
+            "taskworker.worker.shutdown.children_killed",
+            value=killed,
+            tags={"processing_pool": self._processing_pool_name},
+        )
+        if killed:
+            logger.warning(
+                "taskworker.worker.shutdown.children_killed",
+                extra={
+                    "killed": killed,
+                    "children": len(children),
+                    "processing_pool": self._processing_pool_name,
+                },
+            )
+        self._record_shutdown_stage("children", children_start)
 
         logger.info("taskworker.worker.shutdown.result")
+        result_thread_start = time.monotonic()
         if self._result_thread:
             # Use a timeout as sometimes this thread can deadlock on the Event.
             self._result_thread.join(timeout=5)
 
+        # A result thread that did not join is abandoned at process exit, along with
+        # any status updates its executor still had in flight.
+        self._metrics.incr(
+            "taskworker.worker.shutdown.result_thread",
+            tags={
+                "processing_pool": self._processing_pool_name,
+                "outcome": (
+                    "timeout"
+                    if self._result_thread is not None and self._result_thread.is_alive()
+                    else "joined"
+                ),
+            },
+        )
+        self._record_shutdown_stage("result_thread", result_thread_start)
+
         # Drain any remaining results synchronously
+        drain_start = time.monotonic()
+        drained = 0
         while True:
             try:
                 result = self._processed_tasks.get_nowait()
-                self.send_results([result], True)
             except queue.Empty:
                 break
 
-        logger.info("taskworker.worker.shutdown.complete")
+            drained += 1
+            self.send_results([result], True)
+
+        self._metrics.incr(
+            "taskworker.worker.shutdown.results_drained",
+            value=drained,
+            tags={"processing_pool": self._processing_pool_name},
+        )
+        self._record_shutdown_stage("drain_results", drain_start)
+
+        child_tasks_start = time.monotonic()
+        self._drain_child_tasks()
+        self._record_shutdown_stage("drain_child_tasks", child_tasks_start)
+
+        self._metrics.distribution(
+            "taskworker.worker.shutdown.duration",
+            time.monotonic() - shutdown_start,
+            tags={"processing_pool": self._processing_pool_name},
+        )
+        logger.info(
+            "taskworker.worker.shutdown.complete",
+            extra={
+                "duration": time.monotonic() - shutdown_start,
+                "processing_pool": self._processing_pool_name,
+            },
+        )
