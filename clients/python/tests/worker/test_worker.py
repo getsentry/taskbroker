@@ -1310,6 +1310,7 @@ def _make_tracked_child(
     busy_accumulated: float = 0.0,
     wait_since: float | None = None,
     wait_accumulated: float = 0.0,
+    baselined_at: float | None = None,
 ) -> TrackedChild:
     """Seed a child's slot so its next sample reports the given time.
 
@@ -1325,7 +1326,7 @@ def _make_tracked_child(
 
     timing = ChildTimeAccounting(shm=_TEST_TIMING_SHM, slot=slot)
     # Baseline against the zeroed slot, so the seeding below lands in sample 1.
-    timing.mark_running(0.0)
+    timing.mark_running(0.0 if baselined_at is None else baselined_at)
 
     if busy_since is not None:
         kind, start = KIND_BUSY, busy_since
@@ -1346,6 +1347,11 @@ def _make_tracked_child(
         release=mock.Mock(),
         timing=timing,
     )
+
+
+def _bw(result: Any) -> tuple[float, float]:
+    """The (busy, wait) pair from a SampleResult, dropping the diagnostics."""
+    return (result.busy, result.wait)
 
 
 def _distribution_calls(metrics: mock.Mock, name: str) -> list[Any]:
@@ -1408,10 +1414,10 @@ def test_emit_periodic_metrics_time_weights_busy_over_the_interval() -> None:
     assert occupancy_calls[0].args[1] == pytest.approx(1.24 / 3)
 
     # B's segment is still open, so the next interval resumes, not re-reports.
-    assert pool._children[child_b].timing.sample(12.0) == pytest.approx((1.0, 0.0))
+    assert _bw(pool._children[child_b].timing.sample(12.0)) == pytest.approx((1.0, 0.0))
     for child in pool._children.values():
         if child.state == "running":
-            assert child.timing.sample(12.0)[0] == pytest.approx(0.0)
+            assert child.timing.sample(12.0).busy == pytest.approx(0.0)
     assert pool._last_occupancy_flush_at == pytest.approx(11.0)
 
 
@@ -1473,6 +1479,103 @@ def test_emit_periodic_metrics_does_not_flag_a_legitimately_full_pool() -> None:
         1.0
     )
     assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
+
+
+def test_emit_periodic_metrics_separates_a_short_sample_from_a_short_interval() -> None:
+    # The discriminator for the cell-6 deficit. A child baselined mid-interval can
+    # only accrue over part of it, but `elapsed * running_count` counts it whole,
+    # so occupancy reads low with no time actually missing. eligible_ratio near 1.0
+    # while accounting_ratio reads low means the denominator is at fault.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.5, baselined_at=10.5)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    # 1.0 + 0.5 busy-seconds against a ceiling of 2.0.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.accounting_ratio")[0].args[
+        1
+    ] == pytest.approx(0.75)
+    # But only 1.5 child-seconds were ever available.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.eligible_ratio")[0].args[
+        1
+    ] == pytest.approx(1.0)
+    # Nothing went missing, so every sample is clean.
+    reasons = {
+        c.kwargs["tags"]["reason"]
+        for c in _incr_calls(pool._metrics, "taskworker.worker.occupancy.sample_outcome")
+    }
+    assert reasons == {"ok"}
+
+
+def test_emit_periodic_metrics_flags_a_deficit_and_names_the_reason() -> None:
+    # The mirror of accounting_overflow. Occupancy reading low because time went
+    # missing is the exact failure this project started from, and the overflow
+    # guard is blind to it.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    stalled = _make_tracked_child("running", busy_since=10.0)
+    stalled.timing.mark_stopped()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = stalled
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit")) == 1
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.accounting_ratio")[0].args[
+        1
+    ] == pytest.approx(0.5)
+    reasons = {
+        c.kwargs["tags"]["reason"]
+        for c in _incr_calls(pool._metrics, "taskworker.worker.occupancy.sample_outcome")
+    }
+    assert reasons == {"ok", "not_accounted"}
+
+
+def test_emit_periodic_metrics_does_not_flag_a_deficit_when_time_is_all_there() -> None:
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child("running", wait_since=10.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit") == []
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.accounting_ratio")[0].args[
+        1
+    ] == pytest.approx(1.0)
+
+
+def test_sample_reports_a_clamped_read_rather_than_hiding_it() -> None:
+    # A total going backwards means a torn read or a reused slot. The clamp keeps
+    # the number sane but drops real time, so the drop has to be visible.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+    assert reader.sample(1.0).reason == "ok"
+
+    # Rewind the slot underneath the reader, as slot reuse would.
+    reader.shm[SLOT_BUSY_TOTAL] = 0.0  # type: ignore[index]
+    reader.shm[SLOT_SEGMENT_START] = 2.0  # type: ignore[index]
+
+    result = reader.sample(2.0)
+    assert result.reason == "clamped"
+    assert result.busy == 0.0
 
 
 def test_emit_periodic_metrics_excludes_slotless_children_from_occupancy() -> None:
@@ -1567,7 +1670,7 @@ def test_child_timing_round_trips_through_shared_memory() -> None:
     reader.mark_running(0.0)
     writer.mark_busy(1.0)
 
-    assert reader.sample(2.0) == pytest.approx((1.0, 1.0))
+    assert _bw(reader.sample(2.0)) == pytest.approx((1.0, 1.0))
 
 
 def test_child_timing_credits_a_long_task_to_every_interval_it_spans() -> None:
@@ -1578,11 +1681,11 @@ def test_child_timing_credits_a_long_task_to_every_interval_it_spans() -> None:
     reader.mark_running(0.0)
     writer.mark_busy(0.0)
 
-    assert reader.sample(1.0) == pytest.approx((1.0, 0.0))
-    assert reader.sample(2.0) == pytest.approx((1.0, 0.0))
+    assert _bw(reader.sample(1.0)) == pytest.approx((1.0, 0.0))
+    assert _bw(reader.sample(2.0)) == pytest.approx((1.0, 0.0))
 
     writer.mark_idle(2.5)
-    assert reader.sample(3.0) == pytest.approx((0.5, 0.5))
+    assert _bw(reader.sample(3.0)) == pytest.approx((0.5, 0.5))
 
 
 def test_child_timing_busy_and_wait_partition_every_interval() -> None:
@@ -1602,11 +1705,11 @@ def test_child_timing_busy_and_wait_partition_every_interval() -> None:
         (writer.mark_busy if busy else writer.mark_idle)(now)
 
         if i % 7 == 0:
-            b, w = reader.sample(now)
+            b, w = _bw(reader.sample(now))
             total_busy += b
             total_wait += w
 
-    b, w = reader.sample(now)
+    b, w = _bw(reader.sample(now))
     total_busy += b
     total_wait += w
 
@@ -1620,13 +1723,13 @@ def test_child_timing_defers_rather_than_drops_a_torn_read() -> None:
     reader.mark_running(0.0)
     writer.mark_busy(0.0)
 
-    assert reader.sample(1.0) == pytest.approx((1.0, 0.0))
+    assert _bw(reader.sample(1.0)) == pytest.approx((1.0, 0.0))
 
     reader.shm[SLOT_VERSION] += 1.0  # type: ignore[index]
-    assert reader.sample(2.0) == pytest.approx((0.0, 0.0))
+    assert _bw(reader.sample(2.0)) == pytest.approx((0.0, 0.0))
 
     reader.shm[SLOT_VERSION] += 1.0  # type: ignore[index]
-    assert reader.sample(3.0) == pytest.approx((2.0, 0.0))
+    assert _bw(reader.sample(3.0)) == pytest.approx((2.0, 0.0))
 
 
 def test_child_timing_stops_accruing_once_the_child_is_released() -> None:
@@ -1635,10 +1738,10 @@ def test_child_timing_stops_accruing_once_the_child_is_released() -> None:
     writer.mark_running(0.0)
     reader.mark_running(0.0)
 
-    assert reader.sample(0.5)[1] == pytest.approx(0.5)
+    assert reader.sample(0.5).wait == pytest.approx(0.5)
 
     reader.mark_stopped()
-    assert reader.sample(20.0) == pytest.approx((0.0, 0.0))
+    assert _bw(reader.sample(20.0)) == pytest.approx((0.0, 0.0))
 
 
 def test_child_timing_ignores_a_child_with_no_slot() -> None:
@@ -1651,7 +1754,7 @@ def test_child_timing_ignores_a_child_with_no_slot() -> None:
     writer.mark_busy(1.0)
     reader.mark_running(0.0)
 
-    assert reader.sample(10.0) == pytest.approx((0.0, 0.0))
+    assert _bw(reader.sample(10.0)) == pytest.approx((0.0, 0.0))
     assert shm[SLOT_SEGMENT_KIND] == KIND_NONE
 
 
@@ -1662,7 +1765,7 @@ def test_child_timing_excludes_time_banked_before_the_parent_saw_running() -> No
     writer.mark_running(0.0)
     reader.mark_running(5.0)  # parent drained the message 5s later
 
-    assert reader.sample(6.0) == pytest.approx((0.0, 1.0))
+    assert _bw(reader.sample(6.0)) == pytest.approx((0.0, 1.0))
 
 
 def test_acquire_timing_slot_zeroes_a_recycled_slot() -> None:
@@ -1685,7 +1788,7 @@ def test_acquire_timing_slot_zeroes_a_recycled_slot() -> None:
 
     reader = ChildTimeAccounting(shm=pool._timing_shm, slot=recycled)
     reader.mark_running(0.0)
-    assert reader.sample(1.0) == pytest.approx((0.0, 0.0))
+    assert _bw(reader.sample(1.0)) == pytest.approx((0.0, 0.0))
 
 
 def test_acquire_timing_slot_reports_exhaustion_instead_of_raising() -> None:
@@ -1767,7 +1870,7 @@ def test_spawn_children_reads_transitions_the_child_wrote() -> None:
         writer.mark_busy(2.0)
         writer.mark_idle(3.0)
 
-        assert child.timing.sample(4.0) == pytest.approx((1.0, 3.0))
+        assert _bw(child.timing.sample(4.0)) == pytest.approx((1.0, 3.0))
     finally:
         pool.shutdown()
 

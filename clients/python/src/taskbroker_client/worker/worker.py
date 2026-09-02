@@ -1011,6 +1011,9 @@ class TaskWorkerProcessingPool:
             busy_time = 0.0
             wait_time = 0.0
             accounted_running = 0
+            eligible_time = 0.0
+            outcomes: dict[str, int] = {}
+            interval_start = self._last_occupancy_flush_at
             for child in self._children.values():
                 state_counts[child.state] += 1
 
@@ -1023,9 +1026,11 @@ class TaskWorkerProcessingPool:
                     continue
 
                 accounted_running += 1
-                busy, wait = child.timing.sample(now)
-                busy_time += busy
-                wait_time += wait
+                result = child.timing.sample(now, interval_start)
+                busy_time += result.busy
+                wait_time += result.wait
+                eligible_time += result.eligible
+                outcomes[result.reason] = outcomes.get(result.reason, 0) + 1
 
             exiting_children = len(self._exiting_children)
 
@@ -1070,6 +1075,49 @@ class TaskWorkerProcessingPool:
                         "ceiling": ceiling,
                         "running_count": running_count,
                         "elapsed": elapsed,
+                        "processing_pool": self._processing_pool_name,
+                    },
+                )
+
+            # How much of the ceiling the counters actually account for. The
+            # overflow guard above is one-sided; this is the other direction,
+            # where occupancy reads low because time went missing rather than
+            # because the pool was idle.
+            self._metrics.gauge(
+                "taskworker.worker.occupancy.accounting_ratio",
+                (busy_time + wait_time) / ceiling,
+                tags=tags,
+            )
+            # Same numerator against the time children were actually eligible
+            # for. A child baselined mid-interval counts whole in `ceiling` but
+            # only partly here, so if this reads ~1.0 while the ratio above
+            # reads low, the denominator is the fault, not the accounting.
+            if eligible_time > 0:
+                self._metrics.gauge(
+                    "taskworker.worker.occupancy.eligible_ratio",
+                    (busy_time + wait_time) / eligible_time,
+                    tags=tags,
+                )
+            for reason, count in outcomes.items():
+                self._metrics.incr(
+                    "taskworker.worker.occupancy.sample_outcome",
+                    count,
+                    tags={**tags, "reason": reason},
+                )
+            if busy_time + wait_time < ceiling * 0.9:
+                self._metrics.incr(
+                    "taskworker.worker.occupancy.accounting_deficit",
+                    tags=tags,
+                )
+                logger.warning(
+                    "taskworker.worker.occupancy.accounting_deficit",
+                    extra={
+                        "busy_time": busy_time,
+                        "wait_time": wait_time,
+                        "eligible_time": eligible_time,
+                        "running_count": running_count,
+                        "elapsed": elapsed,
+                        "outcomes": outcomes,
                         "processing_pool": self._processing_pool_name,
                     },
                 )

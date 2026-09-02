@@ -40,6 +40,21 @@ NO_SLOT = -1
 SEQLOCK_READ_ATTEMPTS = 3
 
 
+@dataclass(frozen=True)
+class SampleResult:
+    """One child's contribution to a flush, plus why it may be short.
+
+    `eligible` is how much of the interval this child could have accrued in at
+    all. It differs from the interval width for a child baselined part-way
+    through, which the `elapsed * running_count` ceiling treats as whole.
+    """
+
+    busy: float = 0.0
+    wait: float = 0.0
+    eligible: float = 0.0
+    reason: str = "ok"
+
+
 def slot_count(concurrency: int) -> int:
     """Twice concurrency, so a generation of unreaped exiting children can
     overlap a generation of replacements."""
@@ -129,6 +144,9 @@ class ChildTimeAccounting:
     _prev_busy: float = 0.0
     _prev_wait: float = 0.0
     _accounted: bool = False
+    # When this child started being counted, so a flush can tell a short
+    # sample apart from a child that was only eligible for part of it.
+    _baselined_at: float = 0.0
 
     def mark_running(self, now: float) -> None:
         """Start counting this child, baselining against the slot as it stands.
@@ -145,27 +163,34 @@ class ChildTimeAccounting:
             self._prev_busy, self._prev_wait = reading
 
         self._accounted = True
+        self._baselined_at = now
 
     def mark_stopped(self) -> None:
         """Stop counting, so an exiting child's tail misses the live pool."""
         self._accounted = False
 
-    def sample(self, now: float) -> tuple[float, float]:
-        """Return (busy, wait) seconds accrued since the previous sample."""
+    def sample(self, now: float, interval_start: float = 0.0) -> SampleResult:
+        """Return this child's busy/wait since the previous sample."""
         if not self._accounted:
-            return (0.0, 0.0)
+            return SampleResult(reason="not_accounted")
+
+        eligible = max(0.0, now - max(interval_start, self._baselined_at))
 
         reading = self._read(now)
         if reading is None:
             # Baseline untouched, so the next sample covers both intervals.
-            return (0.0, 0.0)
+            return SampleResult(eligible=eligible, reason="read_failed")
 
         busy_now, wait_now = reading
-        busy = max(0.0, busy_now - self._prev_busy)
-        wait = max(0.0, wait_now - self._prev_wait)
+        raw_busy = busy_now - self._prev_busy
+        raw_wait = wait_now - self._prev_wait
+        # A total going backwards means a torn read or a reused slot, and the
+        # clamp below silently drops that time.
+        reason = "clamped" if raw_busy < 0.0 or raw_wait < 0.0 else "ok"
+
         self._prev_busy = busy_now
         self._prev_wait = wait_now
-        return (busy, wait)
+        return SampleResult(max(0.0, raw_busy), max(0.0, raw_wait), eligible, reason)
 
     def _read(self, now: float) -> tuple[float, float] | None:
         """Seqlock read of absolute busy/wait, including the segment still open.
