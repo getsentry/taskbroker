@@ -1018,6 +1018,7 @@ class TaskWorkerProcessingPool:
 
             busy_time = 0.0
             wait_time = 0.0
+            accounted_running = 0
             for child in self._children.values():
                 state_counts[child.state] += 1
 
@@ -1030,6 +1031,14 @@ class TaskWorkerProcessingPool:
                 if child.state != "running":
                     continue
 
+                # A child with no slot reports nothing, so leaving it in the
+                # denominator would read as an idle child rather than as a
+                # missing measurement. `timing_slot_exhausted` is what
+                # surfaces it instead.
+                if child.timing.slot == NO_SLOT:
+                    continue
+
+                accounted_running += 1
                 busy, wait = child.timing.sample(now)
                 busy_time += busy
                 wait_time += wait
@@ -1061,7 +1070,11 @@ class TaskWorkerProcessingPool:
                 max(0.0, wait_time)
             )
 
-        running_count = state_counts["running"]
+        # Children the pool could not give a slot to are excluded on both
+        # sides, so occupancy stays a consistent ratio over the children that
+        # are actually accounted for. `state_counts` still reports every
+        # running child to the `children` gauge.
+        running_count = accounted_running
         if running_count > 0 and elapsed > 0:
             # A child cannot be busy for longer than the interval, so this is a
             # hard physical bound on both counters. Exceeding it means the
