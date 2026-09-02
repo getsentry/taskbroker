@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Iterator, MutableMapping
 from concurrent.futures import Future
-from datetime import datetime
+from datetime import datetime, timezone
 from multiprocessing import Event, get_context
 from multiprocessing.synchronize import Event as MultiprocessingEvent
 from pathlib import Path
@@ -2137,6 +2137,81 @@ def test_child_process_records_busy_and_idle_in_its_slot() -> None:
     assert timing_shm[SLOT_SEGMENT_KIND] == KIND_WAIT
     assert timing_shm[SLOT_VERSION] % 2 == 0
     assert timing_shm[SLOT_SEGMENT_START] > 0.0
+
+
+def _run_one_task_capturing_metrics(received_at_offset: float) -> mock.Mock:
+    """Run a single task through a child, with `received_at` set relative to now.
+
+    Returns the mocked metrics backend so callers can assert on what was emitted.
+    """
+    from examples.app import app as example_app
+
+    activation = TaskActivation(
+        id="queue-wait",
+        taskname="examples.simple_task",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+    )
+    activation.received_at.FromDatetime(
+        datetime.fromtimestamp(time.time() + received_at_offset, tz=timezone.utc)
+    )
+
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    todo.put(
+        InflightTaskActivation(host="localhost:50051", receive_timestamp=0, activation=activation)
+    )
+
+    # MagicMock, not Mock: the child uses metrics.timer() and
+    # metrics.track_memory_usage() as context managers.
+    metrics = mock.MagicMock()
+    with mock.patch.object(example_app, "metrics", metrics):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            Event(),
+            1,
+            "test",
+            "fork",
+            False,
+            0.1,
+        )
+
+    assert processed.get(timeout=1).task_id == "queue-wait"
+    return metrics
+
+
+def test_child_process_emits_queue_wait_excluding_execution_time() -> None:
+    # queue_wait is execution_latency minus the task's own cost. That is the term
+    # that does not scale with task duration, which is what lets one alert
+    # threshold cover pools running very different work.
+    metrics = _run_one_task_capturing_metrics(received_at_offset=-2.0)
+
+    wait = _distribution_calls(metrics, "taskworker.worker.queue_wait")
+    latency = _distribution_calls(metrics, "taskworker.worker.execution_latency")
+    duration = _distribution_calls(metrics, "taskworker.worker.execution_duration")
+    assert len(wait) == 1 and len(latency) == 1 and len(duration) == 1
+
+    # The activation was stamped 2s ago and picked up immediately.
+    assert wait[0].args[1] == pytest.approx(2.0, abs=0.5)
+    # And it partitions the end-to-end latency with the execution itself.
+    assert wait[0].args[1] + duration[0].args[1] == pytest.approx(latency[0].args[1], abs=0.01)
+
+    assert wait[0].kwargs["tags"]["processing_pool"] == "test"
+    assert wait[0].kwargs["tags"]["taskname"] == "examples.simple_task"
+
+
+def test_child_process_queue_wait_clamps_negative_clock_skew() -> None:
+    # `received_at` is stamped on the broker and the start time here, so an
+    # NTP-skewed pod can make the difference negative. A negative sample would
+    # distort the percentiles this metric is read on.
+    metrics = _run_one_task_capturing_metrics(received_at_offset=+5.0)
+
+    wait = _distribution_calls(metrics, "taskworker.worker.queue_wait")
+    assert len(wait) == 1
+    assert wait[0].args[1] == 0.0
 
 
 def test_child_process_remove_start_time_kwargs() -> None:

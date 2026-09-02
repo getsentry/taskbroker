@@ -687,7 +687,9 @@ def child_process(
                 transaction.set_data("taskworker-task.args", args)
                 transaction.set_data("taskworker-task.kwargs", kwargs)
 
-            task_added_time = activation.received_at.ToDatetime().timestamp()
+            # See the note in record_task_execution: ToDatetime().timestamp()
+            # misreads a naive UTC datetime as local time.
+            task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
 
@@ -739,9 +741,28 @@ def child_process(
         taskbroker_host: str,
         futures_enqueued_time: float | None = None,
     ) -> None:
-        task_added_time = activation.received_at.ToDatetime().timestamp()
+        # seconds+nanos rather than ToDatetime().timestamp(): ToDatetime()
+        # returns a NAIVE datetime holding UTC, and .timestamp() then reads it
+        # as local time, so the value is wrong by the host's UTC offset
+        # anywhere TZ is not UTC. Containers run UTC so this was latent, but it
+        # silently skewed every latency reading off-cluster.
+        task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
         execution_duration = completion_time - start_time
         execution_latency = completion_time - task_added_time
+        # `execution_latency` minus the part that is the task's own cost, i.e.
+        # how long the activation sat between the broker receiving it and a
+        # child picking it up.
+        #
+        # This is the term that does NOT scale with task duration, which is
+        # what makes a single threshold meaningful across pools running very
+        # different work: a backed-up 4ms pool and a backed-up 4s pool read the
+        # same wait, where total latency would read 4s apart while both are
+        # healthy.
+        #
+        # Clamped because `received_at` is stamped on the broker and
+        # `start_time` here, so clock skew between pods can otherwise emit a
+        # negative sample and distort the percentiles this is read on.
+        queue_wait = max(0.0, start_time - task_added_time)
         futures_duration = time.time() - futures_enqueued_time if futures_enqueued_time else 0
 
         logger.debug(
@@ -776,6 +797,16 @@ def child_process(
         metrics.distribution(
             "taskworker.worker.execution_latency",
             execution_latency,
+            tags={
+                "namespace": activation.namespace,
+                "taskname": activation.taskname,
+                "processing_pool": processing_pool_name,
+                "taskbroker_host": taskbroker_host,
+            },
+        )
+        metrics.distribution(
+            "taskworker.worker.queue_wait",
+            queue_wait,
             tags={
                 "namespace": activation.namespace,
                 "taskname": activation.taskname,
