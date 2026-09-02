@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import multiprocessing
 import os
@@ -9,7 +10,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 from multiprocessing.process import BaseProcess
 from multiprocessing.synchronize import Event
@@ -40,6 +41,12 @@ from taskbroker_client.constants import (
 )
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.childtiming import (
+    NO_SLOT,
+    SLOT_WIDTH,
+    ChildTimeAccounting,
+    slot_count,
+)
 from taskbroker_client.worker.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
@@ -225,107 +232,13 @@ ChildState = Literal["pending", "running", "exiting"]
 
 
 @dataclass
-class TimeSegment:
-    """Used to track a child proceses' time: either its busy clock or its wait clock.
-
-    `since` is the monotonic start of the currently-open time segment, or None when
-    the time segment is closed. `accumulated` holds seconds banked but not yet
-    emitted.
-    """
-
-    since: float | None = None
-    accumulated: float = 0.0
-
-    def open(self, now: float) -> None:
-        """Start a segment, keeping the earlier start if one is already open."""
-        if self.since is None:
-            self.since = now
-
-    def close(self, now: float) -> None:
-        """Bank the open segment up to `now` and close it. No-op if closed."""
-        if self.since is not None:
-            self.accumulated += max(0.0, now - self.since)
-            self.since = None
-
-    def drain(self, now: float) -> float:
-        """Return banked seconds and reset, leaving an open time segment open.
-
-        A still-open time segment is folded in up to `now` and restarted there, so a
-        task spanning several intervals contributes to each one.
-        """
-        if self.since is not None:
-            self.accumulated += max(0.0, now - self.since)
-            self.since = now
-        banked = self.accumulated
-        self.accumulated = 0.0
-        return banked
-
-
-@dataclass
-class ChildTimeAccounting:
-    """Time-weighted busy/wait accounting for one child.
-
-    A running child is always in exactly one of the two states, so over any
-    interval `drain_busy` + `drain_wait` must sum to that interval's width.
-
-    Wait time is measured rather than inferred as `elapsed - busy`, which only holds
-    for children that ran for the whole interval.
-    """
-
-    busy: TimeSegment = field(default_factory=TimeSegment)
-    wait: TimeSegment = field(default_factory=TimeSegment)
-    last_drained_at: float = 0.0
-
-    def _clamp(self, now: float) -> float:
-        """Never let a segment boundary land inside an already-emitted interval.
-
-        Only child-supplied timestamps need this. The time segment drains are driven by the
-        metrics thread's own monotonic clock, which never runs backwards.
-        """
-        return max(now, self.last_drained_at)
-
-    def mark_running(self, now: float) -> None:
-        """Start the wait clock: a `pending` child is importing, not starving."""
-        if self.busy.since is None and self.wait.since is None:
-            self.wait.open(self._clamp(now))
-
-    def mark_busy(self, now: float) -> None:
-        """Close the open wait segment and open a busy one."""
-        now = self._clamp(now)
-        self.wait.close(now)
-        self.busy.open(now)
-
-    def mark_idle(self, now: float) -> None:
-        """Close the open busy segment and open a wait one."""
-        now = self._clamp(now)
-        self.busy.close(now)
-        self.wait.open(now)
-
-    def mark_stopped(self, now: float) -> None:
-        """Close both segments so a released child stops folding wait forward."""
-        now = self._clamp(now)
-        self.busy.close(now)
-        self.wait.close(now)
-
-    def drain_busy(self, now: float) -> float:
-        """Return busy seconds since the last drain and reset the counter."""
-        banked = self.busy.drain(now)
-        self.last_drained_at = now
-        return banked
-
-    def drain_wait(self, now: float) -> float:
-        """Mirror of `drain_busy`, so a long block counts in every interval it spans."""
-        banked = self.wait.drain(now)
-        self.last_drained_at = now
-        return banked
-
-
-@dataclass
 class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
-    timing: ChildTimeAccounting = field(default_factory=ChildTimeAccounting)
+    # Bound to this child's shared-memory slot at spawn time, so there is no
+    # sensible default: an accountant with no slot silently measures nothing.
+    timing: ChildTimeAccounting
 
 
 class PushTaskWorker:
@@ -998,6 +911,18 @@ class TaskWorkerProcessingPool:
         )
         self._children: Dict[UUID, TrackedChild] = {}
         self._exiting_children: Deque[UUID] = deque()
+
+        # Children write their own busy/wait totals here and the parent diffs
+        # them once a second. Sized for two generations because
+        # `spawn_children_thread` ignores exiting children when deciding how
+        # many to spawn, so a full set of unreaped children can briefly overlap
+        # a full set of replacements. Slots are handed out and returned under
+        # `_children_lock`.
+        self._timing_slots: int = slot_count(concurrency)
+        self._timing_shm: ctypes.Array[ctypes.c_double] = self._mp_context.RawArray(
+            "d", SLOT_WIDTH * self._timing_slots
+        )
+        self._free_timing_slots: Deque[int] = deque(range(self._timing_slots))
         self._children_lock = threading.Lock()
         self._last_occupancy_flush_at = time.monotonic()
         self._shutdown_event = self._mp_context.Event()
@@ -1006,6 +931,50 @@ class TaskWorkerProcessingPool:
         self._result_thread: threading.Thread | None = None
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
+
+    def _acquire_timing_slot(self) -> int:
+        """Take a zeroed shared-memory slot for a new child.
+
+        `NO_SLOT` means the pool ran out, which the two-generation sizing is
+        meant to make impossible. That child then contributes to neither the
+        occupancy numerator nor `running_count`, so the ratio stays consistent
+        across the children that are accounted for, and the metric below says
+        the sizing was wrong.
+        """
+        with self._children_lock:
+            if not self._free_timing_slots:
+                slot = NO_SLOT
+            else:
+                slot = self._free_timing_slots.popleft()
+
+        if slot == NO_SLOT:
+            logger.error(
+                "taskworker.child.timing_slot_exhausted",
+                extra={
+                    "slots": self._timing_slots,
+                    "processing_pool": self._processing_pool_name,
+                },
+            )
+            self._metrics.incr(
+                "taskworker.worker.child.timing_slot_exhausted",
+                tags={"processing_pool": self._processing_pool_name},
+            )
+            return NO_SLOT
+
+        base = slot * SLOT_WIDTH
+        for offset in range(SLOT_WIDTH):
+            self._timing_shm[base + offset] = 0.0
+
+        return slot
+
+    def _release_timing_slot(self, slot: int) -> None:
+        """Return a slot whose child never started. The reap path returns slots
+        inline because it already holds `_children_lock`."""
+        if slot == NO_SLOT:
+            return
+
+        with self._children_lock:
+            self._free_timing_slots.append(slot)
 
     @property
     def ready_count(self) -> int:
@@ -1055,14 +1024,15 @@ class TaskWorkerProcessingPool:
                 # Running children only: occupancy divides by `running_count`,
                 # so folding a `pending` or `exiting` child into the numerator
                 # measures one population against another. Neither has time to
-                # lose here. A `pending` child has not opened a segment yet,
-                # and `mark_stopped` deliberately closes an `exiting` child's
-                # segments so its tail stops counting against the live pool.
+                # lose here. A `pending` child is not being accounted yet, and
+                # `mark_stopped` deliberately stops accounting an `exiting`
+                # child so its tail does not count against the live pool.
                 if child.state != "running":
                     continue
 
-                busy_time += child.timing.drain_busy(now)
-                wait_time += child.timing.drain_wait(now)
+                busy, wait = child.timing.sample(now)
+                busy_time += busy
+                wait_time += wait
 
             exiting_children = len(self._exiting_children)
 
@@ -1283,6 +1253,13 @@ class TaskWorkerProcessingPool:
                         c.process.join(timeout=0)
                         self._children.pop(cid)
 
+                        # Reclaim here rather than on the `exiting` transition:
+                        # a released child can still publish once before it
+                        # breaks out of its loop, and handing that slot to a
+                        # replacement would mix two children's totals.
+                        if c.timing.slot != NO_SLOT:
+                            self._free_timing_slots.append(c.timing.slot)
+
                         logger.info(
                             "taskworker.child.exited",
                             extra={
@@ -1310,25 +1287,17 @@ class TaskWorkerProcessingPool:
 
                             continue
 
-                        # This child is now running
+                        # This child is now running. Baseline against the slot
+                        # as it stands rather than the child's timestamp: the
+                        # child only enters `running_count` here, so starting
+                        # the numerator here keeps the ratio consistent.
                         if message.event == "running":
                             child.state = "running"
-                            child.timing.mark_running(message.timestamp)
+                            child.timing.mark_running(time.monotonic())
 
                         # This child wants to exit, but we may not have enough running children to shut down right away
                         elif message.event == "exiting":
                             self._exiting_children.append(message.child_id)
-
-                        # Close the wait segment and open a busy one, at the
-                        # child's timestamp: this loop drains on a 100ms sleep,
-                        # so stamping here credits work to the wrong interval.
-                        elif message.event == "busy":
-                            child.timing.mark_busy(message.timestamp)
-
-                        # This child finished a task: close the open busy segment
-                        # and bank the elapsed time.
-                        elif message.event == "idle":
-                            child.timing.mark_idle(message.timestamp)
 
                     while True:
                         # Compute how many children are still running
@@ -1350,7 +1319,7 @@ class TaskWorkerProcessingPool:
                             continue
 
                         child.state = "exiting"
-                        child.timing.mark_stopped(time.monotonic())
+                        child.timing.mark_stopped()
                         child.release.set()
 
                     spawned = sum(1 for c in self._children.values() if c.state != "exiting")
@@ -1361,6 +1330,7 @@ class TaskWorkerProcessingPool:
                 for _ in range(needed):
                     child_id = uuid4()
                     release = self._mp_context.Event()
+                    timing_slot = self._acquire_timing_slot()
 
                     process = self._mp_context.Process(
                         name=f"taskworker-child-{child_id}",
@@ -1378,6 +1348,8 @@ class TaskWorkerProcessingPool:
                             self._future_checking_frequency,
                             messages,
                             release,
+                            self._timing_shm,
+                            timing_slot,
                         ),
                     )
 
@@ -1389,10 +1361,15 @@ class TaskWorkerProcessingPool:
                                 process=process,
                                 state="pending",
                                 release=release,
+                                timing=ChildTimeAccounting(shm=self._timing_shm, slot=timing_slot),
                             )
 
                             self._children[child_id] = child
                     except Exception as e:
+                        # The child never came up, so nothing will ever write
+                        # to its slot.
+                        self._release_timing_slot(timing_slot)
+
                         logger.exception(
                             "taskworker.child.spawn.failed",
                             extra={
