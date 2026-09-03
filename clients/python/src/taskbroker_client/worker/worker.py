@@ -1009,7 +1009,6 @@ class TaskWorkerProcessingPool:
             )
 
         with self._children_lock:
-            now = time.monotonic()
             state_counts: dict[ChildState, int] = {
                 "pending": 0,
                 "running": 0,
@@ -1032,7 +1031,7 @@ class TaskWorkerProcessingPool:
                     continue
 
                 accounted_running += 1
-                result = child.timing.sample(now)
+                result = child.timing.sample(time.monotonic())
                 busy_time += result.busy
                 wait_time += result.wait
                 eligible_time += result.eligible
