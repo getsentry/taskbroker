@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import logging
 import multiprocessing
 import queue
@@ -8,7 +9,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable, Generator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from multiprocessing.synchronize import Event
 from types import FrameType
@@ -40,6 +41,7 @@ from taskbroker_client.sdk import start_span, start_transaction
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
 from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.childtiming import ChildTimeWriter
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +171,9 @@ def _log_task_retry_exhausted(
 @dataclass(frozen=True)
 class ChildMessage:
     child_id: UUID
-    event: Literal["running", "exiting", "busy", "idle"]
+    event: Literal["running", "exiting"]
+    # compare=False: the timestamp is payload, not identity.
+    timestamp: float = field(default_factory=time.monotonic, compare=False)
 
 
 def child_process(
@@ -185,6 +189,8 @@ def child_process(
     future_checking_frequency: float,
     messages: multiprocessing.Queue[ChildMessage],
     parent_release: Event,
+    timing_shm: ctypes.Array[ctypes.c_double] | None,
+    timing_slot: int,
 ) -> None:
     """
     The entrypoint for spawned worker children.
@@ -196,6 +202,9 @@ def child_process(
     app = import_app(app_module)
     app.load_modules()
     metrics = app.metrics
+
+    # Straight to shared memory: `messages` cannot keep up at two events per task.
+    timing = ChildTimeWriter(timing_shm, timing_slot)
     # Signals when the parent worker pool terminates the child
     local_shutdown = threading.Event()
 
@@ -377,7 +386,7 @@ def child_process(
             # the child did since its last dequeue has finished, and what follows
             # is waiting for the next task.
             if is_busy:
-                messages.put_nowait(ChildMessage(child_id, "idle"))
+                timing.mark_idle(time.monotonic())
                 is_busy = False
 
             if max_task_count and processed_task_count >= max_task_count:
@@ -437,7 +446,7 @@ def child_process(
 
             # Open the busy segment as soon as we have a task. The slot is now
             # unavailable for new work, whatever stage of handling it is in.
-            messages.put_nowait(ChildMessage(child_id, "busy"))
+            timing.mark_busy(time.monotonic())
             is_busy = True
 
             task_func = _get_known_task(inflight.activation)
@@ -625,7 +634,7 @@ def child_process(
         # signal can land while a segment is still open. Close it so a child that
         # is going away doesn't keep contributing busy time to the pool's occupancy.
         if is_busy:
-            messages.put_nowait(ChildMessage(child_id, "idle"))
+            timing.close(time.monotonic())
             is_busy = False
 
         # Once we get the shutdown signal, drain any pending futures
@@ -672,7 +681,8 @@ def child_process(
                 transaction.set_data("taskworker-task.args", args)
                 transaction.set_data("taskworker-task.kwargs", kwargs)
 
-            task_added_time = activation.received_at.ToDatetime().timestamp()
+            # ToDatetime().timestamp() reads a naive UTC datetime as local time.
+            task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
 
@@ -724,9 +734,12 @@ def child_process(
         taskbroker_host: str,
         futures_enqueued_time: float | None = None,
     ) -> None:
-        task_added_time = activation.received_at.ToDatetime().timestamp()
+        # ToDatetime().timestamp() reads a naive UTC datetime as local time.
+        task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
         execution_duration = completion_time - start_time
         execution_latency = completion_time - task_added_time
+        # Latency minus the task's own cost, so it does not scale with duration.
+        queue_wait = max(0.0, start_time - task_added_time)
         futures_duration = time.time() - futures_enqueued_time if futures_enqueued_time else 0
 
         logger.debug(
@@ -761,6 +774,16 @@ def child_process(
         metrics.distribution(
             "taskworker.worker.execution_latency",
             execution_latency,
+            tags={
+                "namespace": activation.namespace,
+                "taskname": activation.taskname,
+                "processing_pool": processing_pool_name,
+                "taskbroker_host": taskbroker_host,
+            },
+        )
+        metrics.distribution(
+            "taskworker.worker.queue_wait",
+            queue_wait,
             tags={
                 "namespace": activation.namespace,
                 "taskname": activation.taskname,
@@ -885,6 +908,7 @@ def child_process(
         )
 
     # Tell the parent that this child has warmed up and is ready to consume tasks
+    timing.mark_running(time.monotonic())
     messages.put_nowait(ChildMessage(child_id, "running"))
 
     # Run the worker loop
