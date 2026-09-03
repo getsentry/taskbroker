@@ -1310,7 +1310,7 @@ def _make_tracked_child(
     busy_accumulated: float = 0.0,
     wait_since: float | None = None,
     wait_accumulated: float = 0.0,
-    baselined_at: float | None = None,
+    measured_from: float = 10.0,
 ) -> TrackedChild:
     """Seed a child's slot so its next sample reports the given time.
 
@@ -1326,7 +1326,10 @@ def _make_tracked_child(
 
     timing = ChildTimeAccounting(shm=_TEST_TIMING_SHM, slot=slot)
     # Baseline against the zeroed slot, so the seeding below lands in sample 1.
-    timing.mark_running(0.0 if baselined_at is None else baselined_at)
+    # The default matches the `_last_occupancy_flush_at = 10.0` every occupancy
+    # test sets, so a child is measurable for the whole interval unless told
+    # otherwise.
+    timing.mark_running(measured_from)
 
     if busy_since is not None:
         kind, start = KIND_BUSY, busy_since
@@ -1481,30 +1484,35 @@ def test_emit_periodic_metrics_does_not_flag_a_legitimately_full_pool() -> None:
     assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
 
 
-def test_emit_periodic_metrics_separates_a_short_sample_from_a_short_interval() -> None:
-    # The discriminator for the cell-6 deficit. A child baselined mid-interval can
-    # only accrue over part of it, but `elapsed * running_count` counts it whole,
-    # so occupancy reads low with no time actually missing. eligible_ratio near 1.0
-    # while accounting_ratio reads low means the denominator is at fault.
+def test_emit_periodic_metrics_bills_a_mid_interval_child_only_for_its_own_window() -> None:
+    # Interval [10.0, 11.0]. One child measurable throughout, one baselined at
+    # 10.5 and busy from then. Both were busy every second they were counted, so
+    # occupancy is 1.0. A headcount ceiling would have read 1.5/2.0 = 0.75 and
+    # invented half a second of idle that never existed.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
     pool._last_occupancy_flush_at = 10.0
 
     with pool._children_lock:
         pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
-        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.5, baselined_at=10.5)
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", busy_since=10.5, measured_from=10.5
+        )
 
     with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
         pool._emit_periodic_metrics()
 
-    # 1.0 + 0.5 busy-seconds against a ceiling of 2.0.
+    # 1.5 busy-seconds over the 1.5 child-seconds that were available.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
     assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.accounting_ratio")[0].args[
         1
-    ] == pytest.approx(0.75)
-    # But only 1.5 child-seconds were ever available.
+    ] == pytest.approx(1.0)
+    # 1.5 available against the 2.0 a headcount would have claimed.
     assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.eligible_ratio")[0].args[
         1
-    ] == pytest.approx(1.0)
+    ] == pytest.approx(0.75)
     # Nothing went missing, so every sample is clean.
     reasons = {
         c.kwargs["tags"]["reason"]
@@ -1514,9 +1522,46 @@ def test_emit_periodic_metrics_separates_a_short_sample_from_a_short_interval() 
 
 
 def test_emit_periodic_metrics_flags_a_deficit_and_names_the_reason() -> None:
-    # The mirror of accounting_overflow. Occupancy reading low because time went
-    # missing is the exact failure this project started from, and the overflow
-    # guard is blind to it.
+    # The mirror of accounting_overflow. Now that the ceiling is the summed
+    # eligible window, a deficit can only mean a measurable child reported less
+    # than its own window, which is time genuinely lost rather than a
+    # denominator artifact.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+    pool._last_occupancy_flush_at = 10.0
+
+    # Baseline at 5.0, then drop the slot's total: a reused slot or a torn read.
+    lost = _make_tracked_child("running", busy_accumulated=5.0)
+    lost.timing.sample(10.0)
+    _TEST_TIMING_SHM[lost.timing.slot * SLOT_WIDTH + SLOT_BUSY_TOTAL] = 0.2
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = lost
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit")) == 1
+    # 1.0 busy-second reported against the 2.0 both children were eligible for.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.accounting_ratio")[0].args[
+        1
+    ] == pytest.approx(0.5)
+    # The denominator is honest, so this stays at 1.0 and does not mask the loss.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.eligible_ratio")[0].args[
+        1
+    ] == pytest.approx(1.0)
+    reasons = {
+        c.kwargs["tags"]["reason"]
+        for c in _incr_calls(pool._metrics, "taskworker.worker.occupancy.sample_outcome")
+    }
+    assert reasons == {"ok", "clamped"}
+
+
+def test_emit_periodic_metrics_reports_an_unmeasurable_child_through_eligible_ratio() -> None:
+    # A running child whose accounting is switched off supplies no window, so it
+    # cannot drag occupancy down the way a headcount denominator would have made
+    # it. eligible_ratio is what says the headcount exceeded the measured set.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
     pool._last_occupancy_flush_at = 10.0
@@ -1531,8 +1576,13 @@ def test_emit_periodic_metrics_flags_a_deficit_and_names_the_reason() -> None:
     with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
         pool._emit_periodic_metrics()
 
-    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit")) == 1
-    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.accounting_ratio")[0].args[
+    # The one child that could be measured was busy throughout.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit") == []
+    # Half the counted children supplied no window at all.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy.eligible_ratio")[0].args[
         1
     ] == pytest.approx(0.5)
     reasons = {
@@ -1730,6 +1780,28 @@ def test_child_timing_defers_rather_than_drops_a_torn_read() -> None:
 
     reader.shm[SLOT_VERSION] += 1.0  # type: ignore[index]
     assert _bw(reader.sample(3.0)) == pytest.approx((2.0, 0.0))
+
+
+def test_child_timing_carries_eligibility_across_a_deferred_sample() -> None:
+    # The recovering sample reports two intervals of busy, so it must report two
+    # intervals of eligible with it. Otherwise 2.0 busy lands against a 1.0
+    # ceiling and the pool trips accounting_overflow every time a read retries.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+
+    assert reader.sample(1.0).eligible == pytest.approx(1.0)
+
+    reader.shm[SLOT_VERSION] += 1.0  # type: ignore[index]
+    deferred = reader.sample(2.0)
+    assert deferred.reason == "read_failed"
+
+    reader.shm[SLOT_VERSION] += 1.0  # type: ignore[index]
+    recovered = reader.sample(3.0)
+    assert recovered.busy == pytest.approx(2.0)
+    assert recovered.eligible == pytest.approx(2.0)
+    assert recovered.busy <= recovered.eligible
 
 
 def test_child_timing_stops_accruing_once_the_child_is_released() -> None:

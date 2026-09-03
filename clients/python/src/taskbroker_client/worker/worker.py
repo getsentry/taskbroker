@@ -1013,7 +1013,6 @@ class TaskWorkerProcessingPool:
             accounted_running = 0
             eligible_time = 0.0
             outcomes: dict[str, int] = {}
-            interval_start = self._last_occupancy_flush_at
             for child in self._children.values():
                 state_counts[child.state] += 1
 
@@ -1026,7 +1025,7 @@ class TaskWorkerProcessingPool:
                     continue
 
                 accounted_running += 1
-                result = child.timing.sample(now, interval_start)
+                result = child.timing.sample(now)
                 busy_time += result.busy
                 wait_time += result.wait
                 eligible_time += result.eligible
@@ -1059,9 +1058,12 @@ class TaskWorkerProcessingPool:
 
         # Slotless children are out of both sides; the gauge still counts them.
         running_count = accounted_running
-        if running_count > 0 and elapsed > 0:
-            # Physical bound. Exceeding it means the clamp below is hiding a bug.
-            ceiling = elapsed * running_count
+        if running_count > 0 and eligible_time > 0:
+            # Sum of the windows the children were each measured over, not a
+            # headcount times the interval: one baselined part-way through a
+            # flush could never have filled it, and billing it whole reads as
+            # idle time the pool never had.
+            ceiling = eligible_time
             if busy_time > ceiling or wait_time > ceiling:
                 self._metrics.incr(
                     "taskworker.worker.occupancy.accounting_overflow",
@@ -1082,20 +1084,19 @@ class TaskWorkerProcessingPool:
             # How much of the ceiling the counters actually account for. The
             # overflow guard above is one-sided; this is the other direction,
             # where occupancy reads low because time went missing rather than
-            # because the pool was idle.
+            # because the pool was idle. Should sit at 1.0.
             self._metrics.gauge(
                 "taskworker.worker.occupancy.accounting_ratio",
                 (busy_time + wait_time) / ceiling,
                 tags=tags,
             )
-            # Same numerator against the time children were actually eligible
-            # for. A child baselined mid-interval counts whole in `ceiling` but
-            # only partly here, so if this reads ~1.0 while the ratio above
-            # reads low, the denominator is the fault, not the accounting.
-            if eligible_time > 0:
+            # Size of the correction the ceiling above applies. Below 1.0 means
+            # children were baselined part-way through this flush, which is what
+            # a headcount denominator would have mistaken for idle time.
+            if elapsed > 0:
                 self._metrics.gauge(
                     "taskworker.worker.occupancy.eligible_ratio",
-                    (busy_time + wait_time) / eligible_time,
+                    eligible_time / (elapsed * running_count),
                     tags=tags,
                 )
             for reason, count in outcomes.items():

@@ -44,9 +44,9 @@ SEQLOCK_READ_ATTEMPTS = 3
 class SampleResult:
     """One child's contribution to a flush, plus why it may be short.
 
-    `eligible` is how much of the interval this child could have accrued in at
-    all. It differs from the interval width for a child baselined part-way
-    through, which the `elapsed * running_count` ceiling treats as whole.
+    `eligible` is the window this child's busy and wait were measured over, and
+    the pool sums it to get occupancy's denominator. A headcount times the flush
+    interval would instead bill a child baselined part-way through as whole.
     """
 
     busy: float = 0.0
@@ -144,9 +144,10 @@ class ChildTimeAccounting:
     _prev_busy: float = 0.0
     _prev_wait: float = 0.0
     _accounted: bool = False
-    # When this child started being counted, so a flush can tell a short
-    # sample apart from a child that was only eligible for part of it.
-    _baselined_at: float = 0.0
+    # Start of the window the next delta will cover. Advances only on a
+    # successful read, so a deferred sample carries its eligibility forward with
+    # it and `busy + wait <= eligible` survives a seqlock retry.
+    _measured_from: float = 0.0
 
     def mark_running(self, now: float) -> None:
         """Start counting this child, baselining against the slot as it stands.
@@ -163,22 +164,27 @@ class ChildTimeAccounting:
             self._prev_busy, self._prev_wait = reading
 
         self._accounted = True
-        self._baselined_at = now
+        self._measured_from = now
 
     def mark_stopped(self) -> None:
         """Stop counting, so an exiting child's tail misses the live pool."""
         self._accounted = False
 
-    def sample(self, now: float, interval_start: float = 0.0) -> SampleResult:
-        """Return this child's busy/wait since the previous sample."""
+    def sample(self, now: float) -> SampleResult:
+        """Return this child's busy/wait since the previous sample.
+
+        `eligible` is the width of that same window, so it is the honest ceiling
+        on what this child could have contributed. It is shorter than the flush
+        interval for a child baselined part-way through one.
+        """
         if not self._accounted:
             return SampleResult(reason="not_accounted")
 
-        eligible = max(0.0, now - max(interval_start, self._baselined_at))
+        eligible = max(0.0, now - self._measured_from)
 
         reading = self._read(now)
         if reading is None:
-            # Baseline untouched, so the next sample covers both intervals.
+            # Neither baseline advances, so the next sample covers both windows.
             return SampleResult(eligible=eligible, reason="read_failed")
 
         busy_now, wait_now = reading
@@ -190,6 +196,7 @@ class ChildTimeAccounting:
 
         self._prev_busy = busy_now
         self._prev_wait = wait_now
+        self._measured_from = now
         return SampleResult(max(0.0, raw_busy), max(0.0, raw_wait), eligible, reason)
 
     def _read(self, now: float) -> tuple[float, float] | None:
