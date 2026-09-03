@@ -916,7 +916,6 @@ class TaskWorkerProcessingPool:
         )
         self._free_timing_slots: Deque[int] = deque(range(self._timing_slots))
         self._children_lock = threading.Lock()
-        self._last_occupancy_flush_at = time.monotonic()
         self._shutdown_event = self._mp_context.Event()
         self._prometheus_port = prometheus_port
         self._prom: WorkerPrometheusMetrics | None = None
@@ -927,21 +926,17 @@ class TaskWorkerProcessingPool:
     def _acquire_timing_slot(self) -> int:
         """Take a zeroed shared-memory slot for a new child.
 
-        `NO_SLOT` means the pool ran out, which the two-generation sizing is
-        meant to make impossible. That child then contributes to neither the
-        occupancy numerator nor `running_count`, so the ratio stays consistent
-        across the children that are accounted for, and the metric below says
-        the sizing was wrong.
+        `NO_SLOT` means the pool ran out, which the two-generation sizing should
+        make impossible. That child is then left out of both the occupancy
+        numerator and its divisor, so occupancy stays honest over the children
+        that are measured and the metric says the sizing was wrong.
         """
         with self._children_lock:
-            if not self._free_timing_slots:
-                slot = NO_SLOT
-            else:
-                slot = self._free_timing_slots.popleft()
+            slot = self._free_timing_slots.popleft() if self._free_timing_slots else NO_SLOT
 
         if slot == NO_SLOT:
             logger.error(
-                "taskworker.child.timing_slot_exhausted",
+                "taskworker.worker.child.timing_slot_exhausted",
                 extra={
                     "slots": self._timing_slots,
                     "processing_pool": self._processing_pool_name,
@@ -953,6 +948,8 @@ class TaskWorkerProcessingPool:
             )
             return NO_SLOT
 
+        # Zero on the way out, not on release: a released child can still write
+        # once before it breaks out of its loop.
         base = slot * SLOT_WIDTH
         for offset in range(SLOT_WIDTH):
             self._timing_shm[base + offset] = 0.0
@@ -960,8 +957,8 @@ class TaskWorkerProcessingPool:
         return slot
 
     def _release_timing_slot(self, slot: int) -> None:
-        """Return a slot whose child never started. The reap path returns slots
-        inline because it already holds `_children_lock`."""
+        """Return a slot whose child never started. The reap path appends
+        directly, since it already holds `_children_lock`."""
         if slot == NO_SLOT:
             return
 
@@ -973,6 +970,17 @@ class TaskWorkerProcessingPool:
         """Number of children that have finished warming up and are consuming."""
         with self._children_lock:
             return sum(1 for c in self._children.values() if c.state == "running")
+
+    def _accounting_log(
+        self, busy_time: float, wait_time: float, ceiling: float, running_count: int
+    ) -> dict[str, float | int | str]:
+        return {
+            "busy_time": busy_time,
+            "wait_time": wait_time,
+            "ceiling": ceiling,
+            "running_count": running_count,
+            "processing_pool": self._processing_pool_name,
+        }
 
     def _emit_periodic_metrics(self) -> None:
         tags = {
@@ -1010,9 +1018,8 @@ class TaskWorkerProcessingPool:
 
             busy_time = 0.0
             wait_time = 0.0
-            accounted_running = 0
             eligible_time = 0.0
-            outcomes: dict[str, int] = {}
+            accounted_running = 0
             for child in self._children.values():
                 state_counts[child.state] += 1
 
@@ -1029,12 +1036,8 @@ class TaskWorkerProcessingPool:
                 busy_time += result.busy
                 wait_time += result.wait
                 eligible_time += result.eligible
-                outcomes[result.reason] = outcomes.get(result.reason, 0) + 1
 
             exiting_children = len(self._exiting_children)
-
-        elapsed = now - self._last_occupancy_flush_at
-        self._last_occupancy_flush_at = now
 
         # Emitted during warmup too: zero is correct for a counter.
         self._metrics.distribution(
@@ -1056,14 +1059,20 @@ class TaskWorkerProcessingPool:
                 max(0.0, wait_time)
             )
 
-        # Slotless children are out of both sides; the gauge still counts them.
+        # Children the loop above skipped are absent here too, so occupancy is a
+        # ratio over the measured set. The `children` gauge still counts them all.
         running_count = accounted_running
         if running_count > 0 and eligible_time > 0:
-            # Sum of the windows the children were each measured over, not a
-            # headcount times the interval: one baselined part-way through a
-            # flush could never have filled it, and billing it whole reads as
-            # idle time the pool never had.
+            # Sum of the windows each child was measured over. `elapsed *
+            # running_count` would instead bill a child baselined part-way
+            # through this flush as if it had been here all along, which reads
+            # as idle time the pool never had.
             ceiling = eligible_time
+            # busy and wait partition every measured window, so the pair must
+            # land on the ceiling. Over means time was counted twice; under
+            # means a child's totals went backwards and time was dropped. Both
+            # should stay at zero, and occupancy is not trustworthy while either
+            # is firing.
             if busy_time > ceiling or wait_time > ceiling:
                 self._metrics.incr(
                     "taskworker.worker.occupancy.accounting_overflow",
@@ -1071,60 +1080,19 @@ class TaskWorkerProcessingPool:
                 )
                 logger.warning(
                     "taskworker.worker.occupancy.accounting_overflow",
-                    extra={
-                        "busy_time": busy_time,
-                        "wait_time": wait_time,
-                        "ceiling": ceiling,
-                        "running_count": running_count,
-                        "elapsed": elapsed,
-                        "processing_pool": self._processing_pool_name,
-                    },
+                    extra=self._accounting_log(busy_time, wait_time, ceiling, running_count),
                 )
-
-            # How much of the ceiling the counters actually account for. The
-            # overflow guard above is one-sided; this is the other direction,
-            # where occupancy reads low because time went missing rather than
-            # because the pool was idle. Should sit at 1.0.
-            self._metrics.gauge(
-                "taskworker.worker.occupancy.accounting_ratio",
-                (busy_time + wait_time) / ceiling,
-                tags=tags,
-            )
-            # Size of the correction the ceiling above applies. Below 1.0 means
-            # children were baselined part-way through this flush, which is what
-            # a headcount denominator would have mistaken for idle time.
-            if elapsed > 0:
-                self._metrics.gauge(
-                    "taskworker.worker.occupancy.eligible_ratio",
-                    eligible_time / (elapsed * running_count),
-                    tags=tags,
-                )
-            for reason, count in outcomes.items():
-                self._metrics.incr(
-                    "taskworker.worker.occupancy.sample_outcome",
-                    count,
-                    tags={**tags, "reason": reason},
-                )
-            if busy_time + wait_time < ceiling * 0.9:
+            elif busy_time + wait_time < ceiling * 0.9:
                 self._metrics.incr(
                     "taskworker.worker.occupancy.accounting_deficit",
                     tags=tags,
                 )
                 logger.warning(
                     "taskworker.worker.occupancy.accounting_deficit",
-                    extra={
-                        "busy_time": busy_time,
-                        "wait_time": wait_time,
-                        "eligible_time": eligible_time,
-                        "running_count": running_count,
-                        "elapsed": elapsed,
-                        "outcomes": outcomes,
-                        "processing_pool": self._processing_pool_name,
-                    },
+                    extra=self._accounting_log(busy_time, wait_time, ceiling, running_count),
                 )
 
-            occupancy = busy_time / ceiling
-            occupancy = min(occupancy, 1.0)
+            occupancy = min(busy_time / ceiling, 1.0)
             self._metrics.gauge(
                 "taskworker.worker.occupancy",
                 occupancy,

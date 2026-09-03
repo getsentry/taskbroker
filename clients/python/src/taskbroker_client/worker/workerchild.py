@@ -681,7 +681,7 @@ def child_process(
                 transaction.set_data("taskworker-task.args", args)
                 transaction.set_data("taskworker-task.kwargs", kwargs)
 
-            # ToDatetime().timestamp() misreads a naive UTC datetime as local.
+            # ToDatetime().timestamp() reads a naive UTC datetime as local time.
             task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
             # latency attribute needs to be in milliseconds
             latency = (time.time() - task_added_time) * 1000
