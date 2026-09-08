@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.24
+
+### New Features ✨
+
+- (worker) Add metrics for tasks lost during shutdown by @evanh in [#791](https://github.com/getsentry/taskbroker/pull/791)
+
 ## 0.20.23
 
 ### New Features ✨
