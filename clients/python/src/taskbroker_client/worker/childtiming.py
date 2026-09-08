@@ -186,12 +186,14 @@ class ChildTimeAccounting:
             return SampleResult()
 
         busy_now, wait_now = reading
-        eligible = max(0.0, now - self._measured_from)
-        # A total going backwards means a torn read. Clamping drops that time,
-        # which the pool then sees as a deficit against `eligible`.
-        busy = max(0.0, busy_now - self._prev_busy)
-        wait = max(0.0, wait_now - self._prev_wait)
+        busy = busy_now - self._prev_busy
+        wait = wait_now - self._prev_wait
+        if busy < 0.0 or wait < 0.0:
+            # Totals only ever grow, so a fall means a stale read got past the
+            # seqlock.
+            return SampleResult()
 
+        eligible = max(0.0, now - self._measured_from)
         self._prev_busy = busy_now
         self._prev_wait = wait_now
         self._measured_from = now

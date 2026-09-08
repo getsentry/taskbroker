@@ -1454,6 +1454,28 @@ def test_emit_periodic_metrics_clamps_occupancy_and_flags_the_overflow() -> None
     assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow")) == 1
 
 
+def test_emit_periodic_metrics_flags_an_overflow_split_across_busy_and_wait() -> None:
+    # 2.4 accounted seconds inside a 2.0 second window. Neither counter alone
+    # clears the ceiling, so testing them one at a time misses it entirely.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        for _ in range(2):
+            pool._children[uuid4()] = _make_tracked_child(
+                "running", busy_accumulated=0.6, wait_accumulated=0.6
+            )
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow")) == 1
+    # A per-counter test read this pool as healthy at 0.6 occupancy.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        0.6
+    )
+
+
 def test_emit_periodic_metrics_does_not_flag_a_legitimately_full_pool() -> None:
     # The guard must not fire on a pool that is simply saturated, or it is noise.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
@@ -1505,14 +1527,14 @@ def test_emit_periodic_metrics_flags_a_deficit_when_a_child_loses_time() -> None
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
 
-    # Baseline at 5.0, then drop the slot's total: a reused slot or a torn read.
-    lost = _make_tracked_child("running", busy_accumulated=5.0)
-    lost.timing.sample(10.0)
-    lost.timing.shm[SLOT_BUSY_TOTAL] = 0.2
+    # A child whose slot stopped accruing, as it does between closing its last
+    # segment and the parent seeing `exiting`. Neither counter moves, but the
+    # window the pool measured it over still does.
+    stalled = _make_tracked_child("running")
 
     with pool._children_lock:
         pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
-        pool._children[uuid4()] = lost
+        pool._children[uuid4()] = stalled
 
     with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
         pool._emit_periodic_metrics()
@@ -1563,23 +1585,29 @@ def test_emit_periodic_metrics_does_not_flag_a_deficit_when_time_is_all_there() 
     assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
 
 
-def test_sample_clamps_a_backwards_total_and_leaves_the_window_intact() -> None:
-    # A total going backwards means a torn read or a reused slot. Clamping keeps
-    # the number sane but drops real time, and `eligible` must still report the
-    # full window so the pool sees the shortfall as a deficit.
+def test_sample_defers_a_backwards_total_rather_than_baselining_on_it() -> None:
+    # Totals only grow, so a fall is a stale read. Taking the smaller value as
+    # the new baseline would bill the span between it and the real total a
+    # second time once the real total came back.
     writer, reader = _writer_and_reader()
     writer.mark_running(0.0)
     reader.mark_running(0.0)
     writer.mark_busy(0.0)
     assert reader.sample(1.0).busy == pytest.approx(1.0)
 
-    # Rewind the slot underneath the reader, as slot reuse would.
-    reader.shm[SLOT_BUSY_TOTAL] = 0.0
-    reader.shm[SLOT_SEGMENT_START] = 2.0
+    # Rewind the slot underneath the reader, as a stale read would.
+    reader.shm[SLOT_BUSY_TOTAL] = 0.5
+    reader.shm[SLOT_SEGMENT_KIND] = KIND_NONE
 
-    result = reader.sample(2.0)
-    assert result.busy == 0.0
-    assert result.eligible == pytest.approx(1.0)
+    deferred = reader.sample(2.0)
+    assert (deferred.busy, deferred.wait, deferred.eligible) == (0.0, 0.0, 0.0)
+
+    # The real total is visible again. One second of busy happened across the
+    # two windows, and the 1.0 already reported at t=1 is not billed again.
+    reader.shm[SLOT_BUSY_TOTAL] = 2.0
+    recovered = reader.sample(3.0)
+    assert recovered.busy == pytest.approx(1.0)
+    assert recovered.eligible == pytest.approx(2.0)
 
 
 def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:

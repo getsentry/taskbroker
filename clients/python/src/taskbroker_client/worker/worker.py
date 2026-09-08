@@ -1007,11 +1007,9 @@ class TaskWorkerProcessingPool:
             # as idle time the pool never had.
             ceiling = eligible_time
             # busy and wait partition every measured window, so the pair must
-            # land on the ceiling. Over means time was counted twice; under
-            # means a child's totals went backwards and time was dropped. Both
-            # should stay at zero, and occupancy is not trustworthy while either
-            # is firing.
-            if busy_time > ceiling or wait_time > ceiling:
+            # land on the ceiling.
+            accounted = busy_time + wait_time
+            if accounted > ceiling:
                 self._metrics.incr(
                     "taskworker.worker.occupancy.accounting_overflow",
                     tags=tags,
@@ -1020,7 +1018,7 @@ class TaskWorkerProcessingPool:
                     "taskworker.worker.occupancy.accounting_overflow",
                     extra=self._accounting_log(busy_time, wait_time, ceiling, running_count),
                 )
-            elif busy_time + wait_time < ceiling * 0.9:
+            elif accounted < ceiling * 0.9:
                 self._metrics.incr(
                     "taskworker.worker.occupancy.accounting_deficit",
                     tags=tags,
