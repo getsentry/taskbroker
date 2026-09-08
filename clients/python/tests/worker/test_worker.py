@@ -62,6 +62,7 @@ from taskbroker_client.worker.childtiming import (
 )
 from taskbroker_client.worker.worker import (
     PushTaskWorker,
+    RequeueException,
     ShutdownSignal,
     TaskWorker,
     TaskWorkerProcessingPool,
@@ -1307,6 +1308,8 @@ def _make_tracked_child(
     wait_since: float | None = None,
     wait_accumulated: float = 0.0,
     measured_from: float = 10.0,
+    process: Any = None,
+    release: Any = None,
 ) -> TrackedChild:
     """Seed a child's slot so its next sample reports the given time.
 
@@ -1335,9 +1338,9 @@ def _make_tracked_child(
     shm[SLOT_SEGMENT_KIND] = kind
 
     return TrackedChild(
-        process=mock.Mock(),
+        process=mock.Mock() if process is None else process,
         state=state,  # type: ignore[arg-type]
-        release=mock.Mock(),
+        release=mock.Mock() if release is None else release,
         timing=timing,
     )
 
@@ -1653,22 +1656,28 @@ def test_spawn_children_give_each_generation_a_clean_slot() -> None:
         pool.shutdown()
 
 
-def test_new_slot_does_not_inherit_a_recycled_block() -> None:
+def test_new_slot_never_inherits_a_recycled_block() -> None:
     # Dropping a slot returns its block to multiprocessing's heap, which hands
-    # the same bytes straight back to the next child. `new_slot` has to give
-    # that child a clean slate anyway.
+    # the same bytes back to the next child. Dirty each one and free it, so the
+    # blocks recirculate: every slot still has to come back clean.
     ctx = get_context("fork")
+    reused = 0
+    seen: set[int] = set()
 
-    first = new_slot(ctx)
-    ChildTimeWriter(first).mark_busy(1.0)
-    address = ctypes.addressof(first)
-    del first
-    gc.collect()
+    for _ in range(20):
+        shm = new_slot(ctx)
+        assert list(shm) == [0.0] * SLOT_WIDTH
 
-    second = new_slot(ctx)
-    if ctypes.addressof(second) != address:
-        pytest.skip("allocator did not reuse the block, so nothing to check")
-    assert list(second) == [0.0] * SLOT_WIDTH
+        address = ctypes.addressof(shm)
+        reused += address in seen
+        seen.add(address)
+
+        ChildTimeWriter(shm).mark_busy(1.0)
+        del shm
+        gc.collect()
+
+    # Otherwise the loop only ever saw fresh memory and proved nothing.
+    assert reused > 0
 
 
 def _writer_and_reader() -> tuple[ChildTimeWriter, ChildTimeAccounting]:
@@ -3355,3 +3364,193 @@ def test_child_process_uses_configured_future_checking_frequency(
     # frequency for every iteration.
     assert idle_sleeps, "future-checking thread never slept while idle"
     assert all(seconds == configured_frequency for seconds in idle_sleeps)
+
+
+def _stage_names(metrics: mock.Mock) -> list[str]:
+    return [
+        c.kwargs["tags"]["stage"]
+        for c in _distribution_calls(metrics, "taskworker.worker.shutdown.stage_duration")
+    ]
+
+
+class _SurvivingProcess(_FakeProcess):
+    """A child that ignores SIGTERM and only dies when killed."""
+
+    def terminate(self) -> None:
+        self.terminated = True
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_calls.append(timeout)
+
+
+def test_shutdown_counts_child_tasks_it_discards() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._metrics = mock.Mock()
+
+    # Tasks the broker already handed us that no child ever picked up.
+    pool._child_tasks.put(SIMPLE_TASK)
+    pool._child_tasks.put(RETRY_TASK)
+
+    pool.shutdown()
+
+    calls = _incr_calls(pool._metrics, "taskworker.worker.shutdown.child_tasks_discarded")
+    assert len(calls) == 1
+    assert calls[0].kwargs["value"] == 2
+    assert calls[0].kwargs["tags"] == {"processing_pool": "test"}
+    # The queue is emptied as a side effect of counting it.
+    assert pool._child_tasks.empty()
+
+
+def test_shutdown_reports_zero_when_no_child_tasks_are_lost() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._metrics = mock.Mock()
+
+    pool.shutdown()
+
+    # An explicit zero, so dashboards can tell "nothing lost" from "no data".
+    calls = _incr_calls(pool._metrics, "taskworker.worker.shutdown.child_tasks_discarded")
+    assert len(calls) == 1
+    assert calls[0].kwargs["value"] == 0
+
+
+def test_shutdown_counts_children_it_had_to_kill() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._metrics = mock.Mock()
+
+    stubborn = _SurvivingProcess(name="stubborn", target=lambda: None, args=())
+    stubborn.start()
+    compliant = _FakeProcess(name="compliant", target=lambda: None, args=())
+    compliant.start()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", process=stubborn, release=threading.Event()
+        )
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", process=compliant, release=threading.Event()
+        )
+
+    pool.shutdown()
+
+    assert stubborn.killed is True
+    assert compliant.killed is False
+
+    calls = _incr_calls(pool._metrics, "taskworker.worker.shutdown.children_killed")
+    assert len(calls) == 1
+    assert calls[0].kwargs["value"] == 1
+
+
+def test_shutdown_counts_results_it_drains() -> None:
+    capture = _SendResultCapture()
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._send_result_fn = capture
+    pool._metrics = mock.Mock()
+
+    for task_id in ("one", "two", "three"):
+        pool._processed_tasks.put(
+            ProcessingResult(
+                task_id=task_id,
+                status=TASK_ACTIVATION_STATUS_COMPLETE,
+                host="localhost:50051",
+                receive_timestamp=0,
+            )
+        )
+
+    pool.shutdown()
+
+    calls = _incr_calls(pool._metrics, "taskworker.worker.shutdown.results_drained")
+    assert len(calls) == 1
+    assert calls[0].kwargs["value"] == 3
+    # Every drained result is sent with is_draining=True so no new work is fetched.
+    assert len(capture.send_calls) == 3
+    assert all(is_draining for _, is_draining in capture.send_calls)
+
+
+def test_send_results_counts_results_dropped_while_draining() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._metrics = mock.Mock()
+
+    def explode(results: list[ProcessingResult], is_draining: bool) -> None:
+        raise RequeueException("broker is down")
+
+    pool._send_result_fn = explode
+
+    result = ProcessingResult(
+        task_id="lost",
+        status=TASK_ACTIVATION_STATUS_COMPLETE,
+        host="localhost:50051",
+        receive_timestamp=0,
+    )
+    pool.send_results([result], is_draining=True)
+
+    calls = _incr_calls(pool._metrics, "taskworker.worker.shutdown.results_dropped")
+    assert len(calls) == 1
+    assert calls[0].kwargs["value"] == 1
+    # Draining must not requeue, or shutdown would spin on the same failing batch.
+    assert pool._processed_tasks.empty()
+
+
+def test_send_results_requeues_rather_than_counting_a_drop_when_not_draining() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._metrics = mock.Mock()
+
+    def explode(results: list[ProcessingResult], is_draining: bool) -> None:
+        raise RequeueException("broker is down")
+
+    pool._send_result_fn = explode
+
+    result = ProcessingResult(
+        task_id="retried",
+        status=TASK_ACTIVATION_STATUS_COMPLETE,
+        host="localhost:50051",
+        receive_timestamp=0,
+    )
+    pool.send_results([result], is_draining=False)
+
+    assert _incr_calls(pool._metrics, "taskworker.worker.shutdown.results_dropped") == []
+    assert pool._processed_tasks.get_nowait().task_id == "retried"
+
+
+def test_shutdown_records_a_duration_for_every_stage() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._metrics = mock.Mock()
+
+    pool.shutdown()
+
+    # Stages are emitted in order as each completes, so a pod that is killed part
+    # way through still reports how far it got.
+    assert _stage_names(pool._metrics) == [
+        "spawn_children",
+        "children",
+        "result_thread",
+        "drain_results",
+        "drain_child_tasks",
+    ]
+    assert len(_distribution_calls(pool._metrics, "taskworker.worker.shutdown.duration")) == 1
+
+
+def test_shutdown_reports_whether_the_result_thread_joined() -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context)
+    pool._metrics = mock.Mock()
+
+    stuck = threading.Event()
+    pool._result_thread = threading.Thread(target=stuck.wait, daemon=True)
+    pool._result_thread.start()
+
+    try:
+        with mock.patch.object(pool._result_thread, "join"):
+            pool.shutdown()
+
+        calls = _incr_calls(pool._metrics, "taskworker.worker.shutdown.result_thread")
+        assert len(calls) == 1
+        assert calls[0].kwargs["tags"]["outcome"] == "timeout"
+    finally:
+        stuck.set()
