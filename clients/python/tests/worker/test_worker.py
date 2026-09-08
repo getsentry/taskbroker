@@ -875,8 +875,16 @@ class TestTaskWorker(TestCase):
             def update_task_response(*args: Any, **kwargs: Any) -> None:
                 return None
 
+            def get_task_response(*args: Any, **kwargs: Any) -> InflightTaskActivation | None:
+                # Exactly one task. `run_once` is called in a loop below, so a
+                # standing return_value hands out a second task whenever the
+                # result thread is slow, and update_task.call_count reaches 2.
+                if mock_client.get_task.call_count == 1:
+                    return RETRY_STATE_TASK
+                return None
+
             mock_client.update_task.side_effect = update_task_response
-            mock_client.get_task.return_value = RETRY_STATE_TASK
+            mock_client.get_task.side_effect = get_task_response
             taskworker.worker_pool.start_result_thread()
             taskworker.worker_pool.start_spawn_children_thread()
 
