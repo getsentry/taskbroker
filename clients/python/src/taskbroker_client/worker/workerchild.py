@@ -189,8 +189,7 @@ def child_process(
     future_checking_frequency: float,
     messages: multiprocessing.Queue[ChildMessage],
     parent_release: Event,
-    timing_shm: ctypes.Array[ctypes.c_double] | None,
-    timing_slot: int,
+    timing_shm: ctypes.Array[ctypes.c_double],
 ) -> None:
     """
     The entrypoint for spawned worker children.
@@ -204,7 +203,7 @@ def child_process(
     metrics = app.metrics
 
     # Straight to shared memory: `messages` cannot keep up at two events per task.
-    timing = ChildTimeWriter(timing_shm, timing_slot)
+    timing = ChildTimeWriter(timing_shm)
     # Signals when the parent worker pool terminates the child
     local_shutdown = threading.Event()
 

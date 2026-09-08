@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import logging
 import multiprocessing
 import os
@@ -41,12 +40,7 @@ from taskbroker_client.constants import (
 )
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
-from taskbroker_client.worker.childtiming import (
-    NO_SLOT,
-    SLOT_WIDTH,
-    ChildTimeAccounting,
-    slot_count,
-)
+from taskbroker_client.worker.childtiming import ChildTimeAccounting, new_slot
 from taskbroker_client.worker.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
@@ -234,7 +228,7 @@ class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
-    # No default: an accountant with no slot silently measures nothing.
+    # Holds the child's slot. Dropping this entry is what frees the memory.
     timing: ChildTimeAccounting
 
 
@@ -909,11 +903,6 @@ class TaskWorkerProcessingPool:
         self._children: Dict[UUID, TrackedChild] = {}
         self._exiting_children: Deque[UUID] = deque()
 
-        # Two generations: unreaped exiting children overlap their replacements.
-        self._timing_slots: int = slot_count(concurrency)
-        self._timing_shm: ctypes.Array[ctypes.c_double] = self._mp_context.RawArray(
-            "d", SLOT_WIDTH * self._timing_slots
-        )
         self._children_lock = threading.Lock()
         self._shutdown_event = self._mp_context.Event()
         self._prometheus_port = prometheus_port
@@ -921,46 +910,6 @@ class TaskWorkerProcessingPool:
         self._result_thread: threading.Thread | None = None
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
-
-    def _available_timing_slots(self) -> Deque[int]:
-        """Slots no tracked child holds, derived rather than kept in a free list.
-        Called with `_children_lock` held.
-        """
-        taken = {c.timing.slot for c in self._children.values()}
-        return deque(slot for slot in range(self._timing_slots) if slot not in taken)
-
-    def _take_timing_slot(self, available: Deque[int]) -> int:
-        """Claim and zero one slot out of this batch's available set.
-
-        Each child holds one slot, and the pool has twice as many slots as it
-        has children, so running out means a whole generation was told to shut
-        down and never exited. That child still spawns and runs tasks; occupancy
-        just leaves it out of both the busy total and the child count, so the
-        number stays right for the rest.
-        """
-        if not available:
-            logger.error(
-                "taskworker.worker.child.timing_slot_exhausted",
-                extra={
-                    "slots": self._timing_slots,
-                    "processing_pool": self._processing_pool_name,
-                },
-            )
-            self._metrics.incr(
-                "taskworker.worker.child.timing_slot_exhausted",
-                tags={"processing_pool": self._processing_pool_name},
-            )
-            return NO_SLOT
-
-        slot = available.popleft()
-
-        # Zero on acquire, not on release: a child released at `exiting` can
-        # still publish once before it breaks out of its loop.
-        base = slot * SLOT_WIDTH
-        for offset in range(SLOT_WIDTH):
-            self._timing_shm[base + offset] = 0.0
-
-        return slot
 
     @property
     def ready_count(self) -> int:
@@ -1015,7 +964,7 @@ class TaskWorkerProcessingPool:
             busy_time = 0.0
             wait_time = 0.0
             eligible_time = 0.0
-            accounted_running = 0
+            running_count = 0
             for child in self._children.values():
                 state_counts[child.state] += 1
 
@@ -1023,11 +972,7 @@ class TaskWorkerProcessingPool:
                 if child.state != "running":
                     continue
 
-                # A slotless child reports nothing; counting it would read as idle.
-                if child.timing.slot == NO_SLOT:
-                    continue
-
-                accounted_running += 1
+                running_count += 1
                 result = child.timing.sample(time.monotonic())
                 busy_time += result.busy
                 wait_time += result.wait
@@ -1055,9 +1000,6 @@ class TaskWorkerProcessingPool:
                 max(0.0, wait_time)
             )
 
-        # Children the loop above skipped are absent here too, so occupancy is a
-        # ratio over the measured set. The `children` gauge still counts them all.
-        running_count = accounted_running
         if running_count > 0 and eligible_time > 0:
             # Sum of the windows each child was measured over. `elapsed *
             # running_count` would instead bill a child baselined part-way
@@ -1305,13 +1247,13 @@ class TaskWorkerProcessingPool:
                             continue
 
                         child.state = "exiting"
+                        # Stop counting it, but keep the slot: the child writes
+                        # once more on its way out, and its replacement can be
+                        # handed the same memory the moment this one is freed.
                         child.timing.mark_stopped()
                         child.release.set()
 
                     spawned = sum(1 for c in self._children.values() if c.state != "exiting")
-
-                    # Same snapshot that sizes the batch, so the two agree.
-                    free_timing_slots = self._available_timing_slots()
 
                 # How many children do we need to spawn?
                 needed = max(self._concurrency - spawned, 0)
@@ -1319,30 +1261,31 @@ class TaskWorkerProcessingPool:
                 for _ in range(needed):
                     child_id = uuid4()
                     release = self._mp_context.Event()
-                    timing_slot = self._take_timing_slot(free_timing_slots)
-
-                    process = self._mp_context.Process(
-                        name=f"taskworker-child-{child_id}",
-                        target=child_process,
-                        args=(
-                            child_id,
-                            self._app_module,
-                            self._child_tasks,
-                            self._processed_tasks,
-                            self._shutdown_event,
-                            self._max_child_task_count,
-                            self._processing_pool_name,
-                            self._process_type,
-                            self._skip_awaiting_futures,
-                            self._future_checking_frequency,
-                            messages,
-                            release,
-                            self._timing_shm,
-                            timing_slot,
-                        ),
-                    )
 
                     try:
+                        # Inside the try so an allocation failure retries next
+                        # pass instead of killing the spawn thread.
+                        timing_shm = new_slot(self._mp_context)
+
+                        process = self._mp_context.Process(
+                            name=f"taskworker-child-{child_id}",
+                            target=child_process,
+                            args=(
+                                child_id,
+                                self._app_module,
+                                self._child_tasks,
+                                self._processed_tasks,
+                                self._shutdown_event,
+                                self._max_child_task_count,
+                                self._processing_pool_name,
+                                self._process_type,
+                                self._skip_awaiting_futures,
+                                self._future_checking_frequency,
+                                messages,
+                                release,
+                                timing_shm,
+                            ),
+                        )
                         process.start()
 
                         with self._children_lock:
@@ -1350,13 +1293,12 @@ class TaskWorkerProcessingPool:
                                 process=process,
                                 state="pending",
                                 release=release,
-                                timing=ChildTimeAccounting(shm=self._timing_shm, slot=timing_slot),
+                                timing=ChildTimeAccounting(shm=timing_shm),
                             )
 
                             self._children[child_id] = child
                     except Exception as e:
-                        # Nothing to give back: the child never entered
-                        # `_children`, so the next batch re-derives this slot.
+                        # `timing_shm` dies with this frame, so nothing leaks.
                         logger.exception(
                             "taskworker.child.spawn.failed",
                             extra={

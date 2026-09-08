@@ -1,8 +1,9 @@
 """Shared-memory busy/wait accounting for worker children.
 
-Each child owns a slot and writes its own cumulative totals into it. The parent
-reads every slot once per flush and diffs against its previous reading, so the
-cost is O(children) per second rather than O(tasks) per second.
+Each child owns its own small shared array and writes its cumulative totals
+into it. The parent reads every child's array once per flush and diffs against
+its previous reading, so the cost is O(children) per second rather than
+O(tasks) per second.
 
 The parent reads rather than having children emit their own metrics because a
 child only knows a segment's length once it ends: a child sitting in a 30s task
@@ -10,7 +11,7 @@ would report nothing for 30 flushes and then 30s at once. The parent folds the
 open segment forward at read time instead, so that child contributes to every
 interval it spans.
 
-Slot layout, five doubles per child::
+Slot layout, five doubles::
 
     0  version         seqlock; odd means a write is in progress
     1  busy_total      cumulative seconds closed into busy
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
+from multiprocessing.context import ForkContext, ForkServerContext, SpawnContext
 
 SLOT_VERSION = 0
 SLOT_BUSY_TOTAL = 1
@@ -42,10 +44,20 @@ KIND_NONE = 0.0
 KIND_WAIT = 1.0
 KIND_BUSY = 2.0
 
-# Handed to a child when the pool has no slot left. Reads and writes are no-ops.
-NO_SLOT = -1
-
 SEQLOCK_READ_ATTEMPTS = 3
+
+
+def new_slot(
+    mp_context: ForkContext | SpawnContext | ForkServerContext,
+) -> ctypes.Array[ctypes.c_double]:
+    """One child's slot, allocated at spawn and dropped when the child is reaped.
+
+    Giving each child its own array instead of an index into a pool means there
+    is no free list to hand a slot back to, so no exit path can lose one.
+    `RawArray` zeroes what it returns, so a recycled block never carries the
+    previous child's totals into its replacement.
+    """
+    return mp_context.RawArray("d", SLOT_WIDTH)
 
 
 @dataclass(frozen=True)
@@ -61,25 +73,17 @@ class SampleResult:
     eligible: float = 0.0
 
 
-def slot_count(concurrency: int) -> int:
-    """Twice concurrency, so a generation of unreaped exiting children can
-    overlap a generation of replacements."""
-    return max(1, concurrency * 2)
-
-
 class ChildTimeWriter:
-    """Child-side writer for one slot.
+    """Child-side writer for its slot.
 
     The child is the only writer, so it keeps authoritative totals as plain
     floats and republishes the whole slot on each transition.
     """
 
-    __slots__ = ("_shm", "_slot", "_base", "_busy_total", "_wait_total", "_start", "_kind")
+    __slots__ = ("_shm", "_busy_total", "_wait_total", "_start", "_kind")
 
-    def __init__(self, shm: ctypes.Array[ctypes.c_double] | None, slot: int) -> None:
+    def __init__(self, shm: ctypes.Array[ctypes.c_double]) -> None:
         self._shm = shm
-        self._slot = NO_SLOT if shm is None else slot
-        self._base = slot * SLOT_WIDTH
         self._busy_total = 0.0
         self._wait_total = 0.0
         self._start = 0.0
@@ -92,19 +96,14 @@ class ChildTimeWriter:
         `busy_total` beside a stale `segment_start` would count the same span
         twice. Bracketing them makes that detectable.
         """
-        if self._slot == NO_SLOT or self._shm is None:
-            return
-
         shm = self._shm
-        base = self._base
-
-        version = shm[base + SLOT_VERSION]
-        shm[base + SLOT_VERSION] = version + 1.0
-        shm[base + SLOT_BUSY_TOTAL] = self._busy_total
-        shm[base + SLOT_WAIT_TOTAL] = self._wait_total
-        shm[base + SLOT_SEGMENT_START] = self._start
-        shm[base + SLOT_SEGMENT_KIND] = self._kind
-        shm[base + SLOT_VERSION] = version + 2.0
+        version = shm[SLOT_VERSION]
+        shm[SLOT_VERSION] = version + 1.0
+        shm[SLOT_BUSY_TOTAL] = self._busy_total
+        shm[SLOT_WAIT_TOTAL] = self._wait_total
+        shm[SLOT_SEGMENT_START] = self._start
+        shm[SLOT_SEGMENT_KIND] = self._kind
+        shm[SLOT_VERSION] = version + 2.0
 
     def _close_open(self, now: float) -> None:
         if self._kind == KIND_BUSY:
@@ -146,8 +145,7 @@ class ChildTimeWriter:
 class ChildTimeAccounting:
     """Parent-side reader for one child's slot."""
 
-    shm: ctypes.Array[ctypes.c_double] | None
-    slot: int = NO_SLOT
+    shm: ctypes.Array[ctypes.c_double]
     _prev_busy: float = 0.0
     _prev_wait: float = 0.0
     _accounted: bool = False
@@ -162,6 +160,8 @@ class ChildTimeAccounting:
         """
         reading = self._read(now)
         if reading is None:
+            # A torn read at baseline time. Zero is the right guess: the child
+            # has only just started, so its totals are near enough to zero.
             self._prev_busy = 0.0
             self._prev_wait = 0.0
         else:
@@ -187,9 +187,8 @@ class ChildTimeAccounting:
 
         busy_now, wait_now = reading
         eligible = max(0.0, now - self._measured_from)
-        # A total going backwards means a torn read or a slot reused under a
-        # live writer. Clamping drops that time, which the pool then sees as a
-        # deficit against `eligible`.
+        # A total going backwards means a torn read. Clamping drops that time,
+        # which the pool then sees as a deficit against `eligible`.
         busy = max(0.0, busy_now - self._prev_busy)
         wait = max(0.0, wait_now - self._prev_wait)
 
@@ -205,23 +204,18 @@ class ChildTimeAccounting:
         write started and finished mid-read). Returns None if it never got a
         clean pass, which the caller treats as "defer", not "zero".
         """
-        if self.slot == NO_SLOT or self.shm is None:
-            return None
-
         shm = self.shm
-        base = self.slot * SLOT_WIDTH
-
         for _ in range(SEQLOCK_READ_ATTEMPTS):
-            version = shm[base + SLOT_VERSION]
+            version = shm[SLOT_VERSION]
             if version % 2.0:
                 continue
 
-            busy = shm[base + SLOT_BUSY_TOTAL]
-            wait = shm[base + SLOT_WAIT_TOTAL]
-            start = shm[base + SLOT_SEGMENT_START]
-            kind = shm[base + SLOT_SEGMENT_KIND]
+            busy = shm[SLOT_BUSY_TOTAL]
+            wait = shm[SLOT_WAIT_TOTAL]
+            start = shm[SLOT_SEGMENT_START]
+            kind = shm[SLOT_SEGMENT_KIND]
 
-            if shm[base + SLOT_VERSION] != version:
+            if shm[SLOT_VERSION] != version:
                 continue
 
             # Fold in the segment the child is in right now, so a long task
