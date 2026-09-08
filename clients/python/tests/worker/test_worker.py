@@ -1593,10 +1593,10 @@ def test_emit_periodic_metrics_does_not_flag_a_deficit_when_time_is_all_there() 
     assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
 
 
-def test_sample_defers_a_backwards_total_rather_than_baselining_on_it() -> None:
-    # Totals only grow, so a fall is a stale read. Taking the smaller value as
-    # the new baseline would bill the span between it and the real total a
-    # second time once the real total came back.
+def test_sample_holds_the_baseline_when_a_total_lands_below_it() -> None:
+    # The baseline is a high-water mark. A total that comes in under it reports
+    # nothing, and the baseline stays put so the next clean read is measured
+    # from it rather than from the low value.
     writer, reader = _writer_and_reader()
     writer.mark_running(0.0)
     reader.mark_running(0.0)
@@ -1606,16 +1606,37 @@ def test_sample_defers_a_backwards_total_rather_than_baselining_on_it() -> None:
     # Rewind the slot underneath the reader, as a stale read would.
     reader.shm[SLOT_BUSY_TOTAL] = 0.5
     reader.shm[SLOT_SEGMENT_KIND] = KIND_NONE
+    assert reader.sample(2.0).busy == 0.0
 
-    deferred = reader.sample(2.0)
-    assert (deferred.busy, deferred.wait, deferred.eligible) == (0.0, 0.0, 0.0)
-
-    # The real total is visible again. One second of busy happened across the
-    # two windows, and the 1.0 already reported at t=1 is not billed again.
+    # 1.0 was already reported at t=1, so only the second 1.0 is billed here.
     reader.shm[SLOT_BUSY_TOTAL] = 2.0
-    recovered = reader.sample(3.0)
-    assert recovered.busy == pytest.approx(1.0)
-    assert recovered.eligible == pytest.approx(2.0)
+    assert reader.sample(3.0).busy == pytest.approx(1.0)
+
+
+def test_sample_keeps_counting_wait_when_the_fold_overshoots_a_close() -> None:
+    # The parent folds an open segment to its own `now`, so its baseline can sit
+    # above the timestamp the child publishes microseconds later. Only busy is
+    # pinned by that; the child must keep reporting wait rather than dropping
+    # out of occupancy until its next task.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+
+    # Folded to 1.0, so the baseline is 1.0.
+    assert reader.sample(1.0).busy == pytest.approx(1.0)
+    # The child read its clock at 0.999 and only publishes now, under that.
+    writer.mark_idle(0.999)
+
+    first = reader.sample(2.0)
+    assert first.busy == 0.0
+    assert first.wait == pytest.approx(1.001)
+    assert first.eligible == pytest.approx(1.0)
+
+    second = reader.sample(3.0)
+    assert second.busy == 0.0
+    assert second.wait == pytest.approx(1.0)
+    assert second.eligible == pytest.approx(1.0)
 
 
 def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:

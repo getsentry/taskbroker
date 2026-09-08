@@ -186,16 +186,15 @@ class ChildTimeAccounting:
             return SampleResult()
 
         busy_now, wait_now = reading
-        busy = busy_now - self._prev_busy
-        wait = wait_now - self._prev_wait
-        if busy < 0.0 or wait < 0.0:
-            # Totals only ever grow, so a fall means a stale read got past the
-            # seqlock.
-            return SampleResult()
-
+        busy = max(0.0, busy_now - self._prev_busy)
+        wait = max(0.0, wait_now - self._prev_wait)
         eligible = max(0.0, now - self._measured_from)
-        self._prev_busy = busy_now
-        self._prev_wait = wait_now
+
+        # High-water, not the last value read. The fold above can overshoot the
+        # timestamp the child publishes for that segment, so a total can land
+        # under the baseline. Moving it down re-bills the span next sample.
+        self._prev_busy = max(self._prev_busy, busy_now)
+        self._prev_wait = max(self._prev_wait, wait_now)
         self._measured_from = now
         return SampleResult(busy, wait, eligible)
 
