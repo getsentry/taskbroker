@@ -1,12 +1,15 @@
 import contextlib
+import ctypes
+import gc
 import os
 import queue
+import random
 import signal
 import threading
 import time
 from collections.abc import Iterator, MutableMapping
 from concurrent.futures import Future
-from datetime import datetime
+from datetime import datetime, timezone
 from multiprocessing import Event, get_context
 from multiprocessing.synchronize import Event as MultiprocessingEvent
 from pathlib import Path
@@ -43,6 +46,20 @@ from taskbroker_client.constants import INTERNAL_NAMESPACE, CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.childtiming import (
+    KIND_BUSY,
+    KIND_NONE,
+    KIND_WAIT,
+    SLOT_BUSY_TOTAL,
+    SLOT_SEGMENT_KIND,
+    SLOT_SEGMENT_START,
+    SLOT_VERSION,
+    SLOT_WAIT_TOTAL,
+    SLOT_WIDTH,
+    ChildTimeAccounting,
+    ChildTimeWriter,
+    new_slot,
+)
 from taskbroker_client.worker.worker import (
     PushTaskWorker,
     RequeueException,
@@ -315,6 +332,7 @@ def child_process(
         future_checking_frequency,
         messages,
         parent_release,
+        ctx.RawArray("d", SLOT_WIDTH),
     )
 
 
@@ -410,6 +428,9 @@ class _FakeContext:
         process = _FakeProcess(*args, **kwargs)
         self.processes.append(process)
         return process
+
+    def RawArray(self, typecode: str, size: int) -> Any:
+        return get_context("fork").RawArray(typecode, size)
 
 
 def _make_fake_context_pool(
@@ -854,8 +875,16 @@ class TestTaskWorker(TestCase):
             def update_task_response(*args: Any, **kwargs: Any) -> None:
                 return None
 
+            def get_task_response(*args: Any, **kwargs: Any) -> InflightTaskActivation | None:
+                # Exactly one task. `run_once` is called in a loop below, so a
+                # standing return_value hands out a second task whenever the
+                # result thread is slow, and update_task.call_count reaches 2.
+                if mock_client.get_task.call_count == 1:
+                    return RETRY_STATE_TASK
+                return None
+
             mock_client.update_task.side_effect = update_task_response
-            mock_client.get_task.return_value = RETRY_STATE_TASK
+            mock_client.get_task.side_effect = get_task_response
             taskworker.worker_pool.start_result_thread()
             taskworker.worker_pool.start_spawn_children_thread()
 
@@ -1276,19 +1305,65 @@ def test_push_start_does_not_serve_when_shutdown_during_warmup() -> None:
     pool_shutdown.assert_called_once_with()
 
 
+_TEST_CONTEXT = get_context("fork")
+
+
 def _make_tracked_child(
     state: str,
     *,
     busy_since: float | None = None,
     busy_accumulated: float = 0.0,
+    wait_since: float | None = None,
+    wait_accumulated: float = 0.0,
+    measured_from: float = 10.0,
+    process: Any = None,
+    release: Any = None,
 ) -> TrackedChild:
+    """Seed a child's slot so its next sample reports the given time.
+
+    `*_accumulated` is time the child has already closed; `*_since` leaves a
+    segment open at that monotonic time, which the parent folds forward at
+    sample time exactly as it would for a task still running.
+    """
+    shm = new_slot(_TEST_CONTEXT)
+    timing = ChildTimeAccounting(shm=shm)
+    # Baseline against the zeroed slot, so the seeding below lands in sample 1.
+    # Defaults to the start of the [10.0, 11.0] interval the occupancy tests
+    # use, so a child is measurable throughout unless told otherwise.
+    timing.mark_running(measured_from)
+
+    if busy_since is not None:
+        kind, start = KIND_BUSY, busy_since
+    elif wait_since is not None:
+        kind, start = KIND_WAIT, wait_since
+    else:
+        kind, start = KIND_NONE, 0.0
+
+    shm[SLOT_VERSION] = 2.0
+    shm[SLOT_BUSY_TOTAL] = busy_accumulated
+    shm[SLOT_WAIT_TOTAL] = wait_accumulated
+    shm[SLOT_SEGMENT_START] = start
+    shm[SLOT_SEGMENT_KIND] = kind
+
     return TrackedChild(
-        process=mock.Mock(),
+        process=mock.Mock() if process is None else process,
         state=state,  # type: ignore[arg-type]
-        release=mock.Mock(),
-        busy_since=busy_since,
-        busy_accumulated=busy_accumulated,
+        release=mock.Mock() if release is None else release,
+        timing=timing,
     )
+
+
+def _bw(result: Any) -> tuple[float, float]:
+    """The (busy, wait) pair from a SampleResult, dropping the diagnostics."""
+    return (result.busy, result.wait)
+
+
+def _distribution_calls(metrics: mock.Mock, name: str) -> list[Any]:
+    return [c for c in metrics.distribution.call_args_list if c.args[0] == name]
+
+
+def _incr_calls(metrics: mock.Mock, name: str) -> list[Any]:
+    return [c for c in metrics.incr.call_args_list if c.args[0] == name]
 
 
 def _gauge_calls(metrics: mock.Mock, name: str) -> list[Any]:
@@ -1325,7 +1400,6 @@ def test_emit_periodic_metrics_time_weights_busy_over_the_interval() -> None:
     # busy_time = 0.19 + 0.60 + 0.45 = 1.24 -> occupancy = 1.24 / (1.0 * 3)
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=8)
     pool._metrics = mock.Mock()
-    pool._last_occupancy_flush_at = 10.0
 
     child_b = uuid4()
     with pool._children_lock:
@@ -1342,18 +1416,17 @@ def test_emit_periodic_metrics_time_weights_busy_over_the_interval() -> None:
     assert len(occupancy_calls) == 1
     assert occupancy_calls[0].args[1] == pytest.approx(1.24 / 3)
 
-    # The open segment is carried into the next interval; banks are drained.
-    assert pool._children[child_b].busy_since == pytest.approx(11.0)
+    # B's segment is still open, so the next interval resumes, not re-reports.
+    assert _bw(pool._children[child_b].timing.sample(12.0)) == pytest.approx((1.0, 0.0))
     for child in pool._children.values():
-        assert child.busy_accumulated == 0.0
-    assert pool._last_occupancy_flush_at == pytest.approx(11.0)
+        if child.state == "running":
+            assert child.timing.sample(12.0).busy == pytest.approx(0.0)
 
 
 def test_emit_periodic_metrics_divides_by_running_children() -> None:
     # Two children busy for the whole 1s interval, one idle, one still warming.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=8)
     pool._metrics = mock.Mock()
-    pool._last_occupancy_flush_at = 10.0
 
     with pool._children_lock:
         pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
@@ -1371,16 +1444,14 @@ def test_emit_periodic_metrics_divides_by_running_children() -> None:
     assert occupancy_calls[0].args[1] == pytest.approx(2 / 3)
 
 
-def test_emit_periodic_metrics_clamps_occupancy_to_one() -> None:
-    # A draining child can still be mid-task, so busy-time can exceed the running
-    # capacity for the interval; occupancy must clamp to 1.0.
+def test_emit_periodic_metrics_clamps_occupancy_and_flags_the_overflow() -> None:
+    # 1.5s of busy in a 1s interval is a fault; the clamp must not hide it.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
-    pool._last_occupancy_flush_at = 10.0
 
     with pool._children_lock:
-        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
-        pool._children[uuid4()] = _make_tracked_child("exiting", busy_accumulated=1.0)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.5)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.5)
 
     with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
         pool._emit_periodic_metrics()
@@ -1388,9 +1459,447 @@ def test_emit_periodic_metrics_clamps_occupancy_to_one() -> None:
     occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
     assert len(occupancy_calls) == 1
     assert occupancy_calls[0].args[1] == pytest.approx(1.0)
+    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow")) == 1
 
 
-def test_spawn_children_tracks_busy_and_idle_transitions() -> None:
+def test_emit_periodic_metrics_flags_an_overflow_split_across_busy_and_wait() -> None:
+    # 2.4 accounted seconds inside a 2.0 second window. Neither counter alone
+    # clears the ceiling, so testing them one at a time misses it entirely.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        for _ in range(2):
+            pool._children[uuid4()] = _make_tracked_child(
+                "running", busy_accumulated=0.6, wait_accumulated=0.6
+            )
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow")) == 1
+    # A per-counter test read this pool as healthy at 0.6 occupancy.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        0.6
+    )
+
+
+def test_emit_periodic_metrics_does_not_flag_a_legitimately_full_pool() -> None:
+    # The guard must not fire on a pool that is simply saturated, or it is noise.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
+
+
+def test_emit_periodic_metrics_bills_a_mid_interval_child_only_for_its_own_window() -> None:
+    # Interval [10.0, 11.0]. One child measurable throughout, one baselined at
+    # 10.5 and busy from then. Both were busy every second they were counted, so
+    # occupancy is 1.0. A headcount ceiling would have read 1.5/2.0 = 0.75 and
+    # invented half a second of idle that never existed.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", busy_since=10.5, measured_from=10.5
+        )
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    # 1.5 busy-seconds over the 1.5 child-seconds that were available.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
+    # Nothing was double-counted or dropped, so neither guard fires.
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit") == []
+
+
+def test_emit_periodic_metrics_flags_a_deficit_when_a_child_loses_time() -> None:
+    # The mirror of accounting_overflow. A deficit means a measurable child
+    # reported less than its own window, so time was dropped rather than the
+    # pool merely being idle.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    # A child whose slot stopped accruing, as it does between closing its last
+    # segment and the parent seeing `exiting`. Neither counter moves, but the
+    # window the pool measured it over still does.
+    stalled = _make_tracked_child("running")
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = stalled
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert len(_incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit")) == 1
+    # 1.0 busy-second reported against the 2.0 both children were eligible for.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        0.5
+    )
+
+
+def test_emit_periodic_metrics_ignores_a_running_child_that_is_not_accounted() -> None:
+    # A child whose accounting is switched off supplies no window, so it lands in
+    # neither the numerator nor the ceiling. A headcount denominator would have
+    # counted it whole and halved occupancy.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    stalled = _make_tracked_child("running", busy_since=10.0)
+    stalled.timing.mark_stopped()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = stalled
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    # The one child that could be measured was busy throughout.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit") == []
+
+
+def test_emit_periodic_metrics_does_not_flag_a_deficit_when_time_is_all_there() -> None:
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child("running", wait_since=10.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_deficit") == []
+    assert _incr_calls(pool._metrics, "taskworker.worker.occupancy.accounting_overflow") == []
+
+
+def test_sample_holds_the_baseline_when_a_total_lands_below_it() -> None:
+    # The baseline is a high-water mark. A total that comes in under it reports
+    # nothing, and the baseline stays put so the next clean read is measured
+    # from it rather than from the low value.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+    assert reader.sample(1.0).busy == pytest.approx(1.0)
+
+    # Rewind the slot underneath the reader, as a stale read would.
+    reader.shm[SLOT_BUSY_TOTAL] = 0.5
+    reader.shm[SLOT_SEGMENT_KIND] = KIND_NONE
+    assert reader.sample(2.0).busy == 0.0
+
+    # 1.0 was already reported at t=1, so only the second 1.0 is billed here.
+    reader.shm[SLOT_BUSY_TOTAL] = 2.0
+    assert reader.sample(3.0).busy == pytest.approx(1.0)
+
+
+def test_sample_keeps_counting_wait_when_the_fold_overshoots_a_close() -> None:
+    # The parent folds an open segment to its own `now`, so its baseline can sit
+    # above the timestamp the child publishes microseconds later. Only busy is
+    # pinned by that; the child must keep reporting wait rather than dropping
+    # out of occupancy until its next task.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+
+    # Folded to 1.0, so the baseline is 1.0.
+    assert reader.sample(1.0).busy == pytest.approx(1.0)
+    # The child read its clock at 0.999 and only publishes now, under that.
+    writer.mark_idle(0.999)
+
+    first = reader.sample(2.0)
+    assert first.busy == 0.0
+    assert first.wait == pytest.approx(1.001)
+    assert first.eligible == pytest.approx(1.0)
+
+    second = reader.sample(3.0)
+    assert second.busy == 0.0
+    assert second.wait == pytest.approx(1.0)
+    assert second.eligible == pytest.approx(1.0)
+
+
+def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:
+    # The counters must sum over the same population occupancy divides by.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child("exiting", busy_accumulated=1.0)
+        pool._children[uuid4()] = _make_tracked_child("pending")
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    busy = _distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")
+    assert busy[0].args[1] == pytest.approx(1.0)
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
+        1.0
+    )
+
+
+def test_spawn_children_binds_each_child_to_its_own_timing_slot() -> None:
+    # If spawn and flush disagree on the slot, the pool measures nothing.
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=2)
+
+    pool.start_spawn_children_thread()
+    try:
+        _wait_for(lambda: len(fake_context.processes) == 2)
+        messages = fake_context.queues[-1]
+
+        slots = []
+        for process in fake_context.processes:
+            child_id = process.args[0]
+            shm = process.args[-1]
+            slots.append(shm)
+
+            messages.put(ChildMessage(child_id, "running"))
+            # _wait_for blocks, so the closure resolves inside the iteration.
+            _wait_for(lambda: pool._children[child_id].state == "running")
+            assert pool._children[child_id].timing.shm is shm
+
+        # Two children, two slots, and not the same one twice.
+        assert len(slots) == 2
+        assert slots[0] is not slots[1]
+    finally:
+        pool.shutdown()
+
+
+def test_spawn_children_give_each_generation_a_clean_slot() -> None:
+    # Every generation gets its own slot, and a replacement never picks up the
+    # totals of the child it replaced.
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=2)
+
+    pool.start_spawn_children_thread()
+    try:
+        seen = 0
+        for _ in range(4):
+            _wait_for(lambda: len(fake_context.processes) == seen + 2)
+            generation = fake_context.processes[seen:]
+            seen += 2
+
+            for process in generation:
+                shm = process.args[-1]
+                assert list(shm) == [0.0] * SLOT_WIDTH
+
+                # Dirty it, then kill the child. Reaping is the only thing
+                # that hands the memory back; nothing releases it by name.
+                ChildTimeWriter(shm).mark_busy(1.0)
+                process.alive = False
+    finally:
+        pool.shutdown()
+
+
+def test_new_slot_never_inherits_a_recycled_block() -> None:
+    # Dropping a slot returns its block to multiprocessing's heap, which hands
+    # the same bytes back to the next child. Dirty each one and free it, so the
+    # blocks recirculate: every slot still has to come back clean.
+    ctx = get_context("fork")
+    reused = 0
+    seen: set[int] = set()
+
+    for _ in range(20):
+        shm = new_slot(ctx)
+        assert list(shm) == [0.0] * SLOT_WIDTH
+
+        address = ctypes.addressof(shm)
+        reused += address in seen
+        seen.add(address)
+
+        ChildTimeWriter(shm).mark_busy(1.0)
+        del shm
+        gc.collect()
+
+    # Otherwise the loop only ever saw fresh memory and proved nothing.
+    assert reused > 0
+
+
+def _writer_and_reader() -> tuple[ChildTimeWriter, ChildTimeAccounting]:
+    shm = new_slot(get_context("fork"))
+    return ChildTimeWriter(shm), ChildTimeAccounting(shm=shm)
+
+
+def test_child_timing_round_trips_through_shared_memory() -> None:
+    # The child records the transition itself; nothing crosses a queue.
+    writer, reader = _writer_and_reader()
+
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(1.0)
+
+    assert _bw(reader.sample(2.0)) == pytest.approx((1.0, 1.0))
+
+
+def test_child_timing_credits_a_long_task_to_every_interval_it_spans() -> None:
+    # Without this a 60s task reports zero for 60 flushes, then 60s at once.
+    writer, reader = _writer_and_reader()
+
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+
+    assert _bw(reader.sample(1.0)) == pytest.approx((1.0, 0.0))
+    assert _bw(reader.sample(2.0)) == pytest.approx((1.0, 0.0))
+
+    writer.mark_idle(2.5)
+    assert _bw(reader.sample(3.0)) == pytest.approx((0.5, 0.5))
+
+
+def test_child_timing_busy_and_wait_partition_every_interval() -> None:
+    # The invariant `occupancy.accounting_overflow` guards in production.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+
+    rng = random.Random(20260902)
+    now = 0.0
+    busy = False
+    total_busy = total_wait = 0.0
+
+    for i in range(500):
+        now += rng.uniform(0.001, 0.05)
+        busy = not busy
+        (writer.mark_busy if busy else writer.mark_idle)(now)
+
+        if i % 7 == 0:
+            b, w = _bw(reader.sample(now))
+            total_busy += b
+            total_wait += w
+
+    b, w = _bw(reader.sample(now))
+    total_busy += b
+    total_wait += w
+
+    assert total_busy + total_wait == pytest.approx(now)
+
+
+def test_child_timing_defers_rather_than_drops_a_torn_read() -> None:
+    # Leaving the baseline alone delays attribution instead of losing it.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+
+    assert _bw(reader.sample(1.0)) == pytest.approx((1.0, 0.0))
+
+    reader.shm[SLOT_VERSION] += 1.0
+    assert _bw(reader.sample(2.0)) == pytest.approx((0.0, 0.0))
+
+    reader.shm[SLOT_VERSION] += 1.0
+    assert _bw(reader.sample(3.0)) == pytest.approx((2.0, 0.0))
+
+
+def test_child_timing_carries_eligibility_across_a_deferred_sample() -> None:
+    # The recovering sample reports two intervals of busy, so it must report two
+    # intervals of eligible with it. Otherwise 2.0 busy lands against a 1.0
+    # ceiling and the pool trips accounting_overflow every time a read retries.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+    writer.mark_busy(0.0)
+
+    assert reader.sample(1.0).eligible == pytest.approx(1.0)
+
+    # A failed read reports nothing at all, not zero busy against a full window.
+    reader.shm[SLOT_VERSION] += 1.0
+    deferred = reader.sample(2.0)
+    assert (deferred.busy, deferred.wait, deferred.eligible) == (0.0, 0.0, 0.0)
+
+    reader.shm[SLOT_VERSION] += 1.0
+    recovered = reader.sample(3.0)
+    assert recovered.busy == pytest.approx(2.0)
+    assert recovered.eligible == pytest.approx(2.0)
+    assert recovered.busy <= recovered.eligible
+
+
+def test_child_timing_stops_accruing_once_the_child_is_released() -> None:
+    # Otherwise the segment folds forward forever and a recycling pool looks starved.
+    writer, reader = _writer_and_reader()
+    writer.mark_running(0.0)
+    reader.mark_running(0.0)
+
+    assert reader.sample(0.5).wait == pytest.approx(0.5)
+
+    reader.mark_stopped()
+    assert _bw(reader.sample(20.0)) == pytest.approx((0.0, 0.0))
+
+
+def test_child_timing_excludes_time_banked_before_the_parent_saw_running() -> None:
+    # Numerator and denominator must start together, at the `running` message.
+    writer, reader = _writer_and_reader()
+
+    writer.mark_running(0.0)
+    reader.mark_running(5.0)  # parent drained the message 5s later
+
+    assert _bw(reader.sample(6.0)) == pytest.approx((0.0, 1.0))
+
+
+def test_emit_periodic_metrics_emits_busy_and_wait_seconds() -> None:
+    # Interval [10.0, 11.0]: one child busy throughout, one waiting 0.25s.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", busy_accumulated=0.75, wait_since=10.75
+        )
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    busy = _distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")
+    wait = _distribution_calls(pool._metrics, "taskworker.worker.child_wait_seconds")
+    assert len(busy) == 1 and len(wait) == 1
+    assert busy[0].args[1] == pytest.approx(1.75)
+    assert wait[0].args[1] == pytest.approx(0.25)
+
+    # The scaler divides the pair, needing neither interval nor child count.
+    assert busy[0].args[1] / (busy[0].args[1] + wait[0].args[1]) == pytest.approx(0.875)
+    occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
+    assert occupancy_calls[0].args[1] == pytest.approx(1.75 / 2)
+
+
+def test_emit_periodic_metrics_emits_counters_during_warmup() -> None:
+    # Unlike occupancy: zero separates "idle" from "not reporting".
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool._metrics = mock.Mock()
+
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("pending")
+
+    pool._emit_periodic_metrics()
+
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
+    assert len(_distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")) == 1
+    assert len(_distribution_calls(pool._metrics, "taskworker.worker.child_wait_seconds")) == 1
+
+
+def test_spawn_children_reads_transitions_the_child_wrote() -> None:
+    # End to end through the real handoff, with no message crossing the queue.
     fake_context = _FakeContext()
     pool = _make_fake_context_pool(fake_context, concurrency=1)
 
@@ -1398,21 +1907,23 @@ def test_spawn_children_tracks_busy_and_idle_transitions() -> None:
     try:
         _wait_for(lambda: len(fake_context.processes) == 1)
         messages = fake_context.queues[-1]
-        child_id = fake_context.processes[0].args[0]
+        process = fake_context.processes[0]
+        child_id = process.args[0]
+        writer = ChildTimeWriter(process.args[-1])
 
+        writer.mark_running(0.0)
         messages.put(ChildMessage(child_id, "running"))
         _wait_for(lambda: pool.ready_count == 1)
 
-        # "busy" opens a segment.
-        messages.put(ChildMessage(child_id, "busy"))
-        _wait_for(lambda: pool._children[child_id].busy_since is not None)
+        child = pool._children[child_id]
+        # Rebaseline onto the child's clock; normally done when draining `running`.
+        child.timing.mark_running(0.0)
 
-        # "idle" closes it and banks a positive amount of busy-time.
-        messages.put(ChildMessage(child_id, "idle"))
-        _wait_for(
-            lambda: pool._children[child_id].busy_since is None
-            and pool._children[child_id].busy_accumulated > 0
-        )
+        # 2s waiting, 1s of work, then waiting again.
+        writer.mark_busy(2.0)
+        writer.mark_idle(3.0)
+
+        assert _bw(child.timing.sample(4.0)) == pytest.approx((1.0, 3.0))
     finally:
         pool.shutdown()
 
@@ -1442,7 +1953,7 @@ def test_spawn_children_releases_draining_child_above_min_concurrency() -> None:
         messages = fake_context.queues[-1]
         first_process = fake_context.processes[0]
         first_child_id = first_process.args[0]
-        first_release = first_process.args[-1]
+        first_release = first_process.args[-2]
 
         messages.put(ChildMessage(first_child_id, "running"))
         second_process = fake_context.processes[1]
@@ -1468,7 +1979,7 @@ def test_spawn_children_defers_draining_child_at_min_concurrency() -> None:
         messages = fake_context.queues[-1]
         first_process = fake_context.processes[0]
         first_child_id = first_process.args[0]
-        first_release = first_process.args[-1]
+        first_release = first_process.args[-2]
 
         second_process = fake_context.processes[1]
         second_child_id = second_process.args[0]
@@ -1625,6 +2136,7 @@ def test_child_process_emits_running_message() -> None:
     ctx = get_context("fork")
     child_id = uuid4()
     messages = ctx.Queue()
+    timing_shm = ctx.RawArray("d", SLOT_WIDTH)
     parent_release = ctx.Event()
     parent_release.set()
 
@@ -1642,6 +2154,7 @@ def test_child_process_emits_running_message() -> None:
         future_checking_frequency=0.1,
         messages=messages,
         parent_release=parent_release,
+        timing_shm=timing_shm,
     )
 
     # The child signals readiness once warmup is done, before consuming
@@ -1659,6 +2172,7 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
     todo = ctx.Queue()
     processed = ctx.Queue()
     messages = ctx.Queue()
+    timing_shm = ctx.RawArray("d", SLOT_WIDTH)
     parent_release = ctx.Event()
 
     todo.put(SIMPLE_TASK)
@@ -1677,25 +2191,18 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
             0.1,
             messages,
             parent_release,
+            timing_shm,
         ),
     )
     process.start()
     try:
-        running_message = messages.get(timeout=5)
-        busy_message = messages.get(timeout=5)
-        idle_message = messages.get(timeout=5)
-        exiting_message = messages.get(timeout=5)
-
-        assert running_message == ChildMessage(child_id, "running")
-        assert busy_message == ChildMessage(child_id, "busy")
-        assert idle_message == ChildMessage(child_id, "idle")
-        assert exiting_message == ChildMessage(child_id, "exiting")
+        # Lifecycle only now: two per child rather than two per task.
+        assert messages.get(timeout=5) == ChildMessage(child_id, "running")
+        assert messages.get(timeout=5) == ChildMessage(child_id, "exiting")
         assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
 
         todo.put(SIMPLE_TASK)
         assert processed.get(timeout=5).task_id == SIMPLE_TASK.activation.id
-        assert messages.get(timeout=5) == ChildMessage(child_id, "busy")
-        assert messages.get(timeout=5) == ChildMessage(child_id, "idle")
 
         time.sleep(0.2)
         assert process.is_alive()
@@ -1712,13 +2219,14 @@ def test_child_process_emits_exiting_once_and_continues_until_release(
     assert mock_capture_checkin.call_count == 0
 
 
-def test_child_process_emits_busy_and_idle_messages() -> None:
+def test_child_process_records_busy_and_idle_in_its_slot() -> None:
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
     processed: queue.Queue[ProcessingResult] = queue.Queue()
     shutdown = Event()
     ctx = get_context("fork")
     child_id = uuid4()
     messages = ctx.Queue()
+    timing_shm = ctx.RawArray("d", SLOT_WIDTH)
     parent_release = ctx.Event()
     parent_release.set()
 
@@ -1736,12 +2244,87 @@ def test_child_process_emits_busy_and_idle_messages() -> None:
         future_checking_frequency=0.1,
         messages=messages,
         parent_release=parent_release,
+        timing_shm=timing_shm,
     )
 
     assert messages.get(timeout=1) == ChildMessage(child_id, "running")
-    assert messages.get(timeout=1) == ChildMessage(child_id, "busy")
-    assert messages.get(timeout=1) == ChildMessage(child_id, "idle")
     assert processed.get(timeout=1).task_id == SIMPLE_TASK.activation.id
+
+    # One task completed, so a busy segment closed and the wait clock reopened.
+    assert timing_shm[SLOT_BUSY_TOTAL] > 0.0
+    assert timing_shm[SLOT_SEGMENT_KIND] == KIND_WAIT
+    assert timing_shm[SLOT_VERSION] % 2 == 0
+    assert timing_shm[SLOT_SEGMENT_START] > 0.0
+
+
+def _run_one_task_capturing_metrics(received_at_offset: float) -> mock.Mock:
+    """Run a single task through a child, with `received_at` set relative to now.
+
+    Returns the mocked metrics backend so callers can assert on what was emitted.
+    """
+    from examples.app import app as example_app
+
+    activation = TaskActivation(
+        id="queue-wait",
+        taskname="examples.simple_task",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=2,
+    )
+    activation.received_at.FromDatetime(
+        datetime.fromtimestamp(time.time() + received_at_offset, tz=timezone.utc)
+    )
+
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    todo.put(
+        InflightTaskActivation(host="localhost:50051", receive_timestamp=0, activation=activation)
+    )
+
+    # MagicMock: the child uses metrics.timer() as a context manager.
+    metrics = mock.MagicMock()
+    with mock.patch.object(example_app, "metrics", metrics):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            Event(),
+            1,
+            "test",
+            "fork",
+            False,
+            0.1,
+        )
+
+    assert processed.get(timeout=1).task_id == "queue-wait"
+    return metrics
+
+
+def test_child_process_emits_queue_wait_excluding_execution_time() -> None:
+    # Latency minus the task's own cost, so one threshold covers every pool.
+    metrics = _run_one_task_capturing_metrics(received_at_offset=-2.0)
+
+    wait = _distribution_calls(metrics, "taskworker.worker.queue_wait")
+    latency = _distribution_calls(metrics, "taskworker.worker.execution_latency")
+    duration = _distribution_calls(metrics, "taskworker.worker.execution_duration")
+    assert len(wait) == 1 and len(latency) == 1 and len(duration) == 1
+
+    # The activation was stamped 2s ago and picked up immediately.
+    assert wait[0].args[1] == pytest.approx(2.0, abs=0.5)
+    # And it partitions the end-to-end latency with the execution itself.
+    assert wait[0].args[1] + duration[0].args[1] == pytest.approx(latency[0].args[1], abs=0.01)
+
+    assert wait[0].kwargs["tags"]["processing_pool"] == "test"
+    assert wait[0].kwargs["tags"]["taskname"] == "examples.simple_task"
+
+
+def test_child_process_queue_wait_clamps_negative_clock_skew() -> None:
+    # An NTP-skewed pod would otherwise emit a negative sample.
+    metrics = _run_one_task_capturing_metrics(received_at_offset=+5.0)
+
+    wait = _distribution_calls(metrics, "taskworker.worker.queue_wait")
+    assert len(wait) == 1
+    assert wait[0].args[1] == 0.0
 
 
 def test_child_process_remove_start_time_kwargs() -> None:
@@ -2840,14 +3423,6 @@ def test_child_process_uses_configured_future_checking_frequency(
     assert all(seconds == configured_frequency for seconds in idle_sleeps)
 
 
-def _incr_calls(metrics: mock.Mock, name: str) -> list[Any]:
-    return [c for c in metrics.incr.call_args_list if c.args[0] == name]
-
-
-def _distribution_calls(metrics: mock.Mock, name: str) -> list[Any]:
-    return [c for c in metrics.distribution.call_args_list if c.args[0] == name]
-
-
 def _stage_names(metrics: mock.Mock) -> list[str]:
     return [
         c.kwargs["tags"]["stage"]
@@ -2908,11 +3483,11 @@ def test_shutdown_counts_children_it_had_to_kill() -> None:
     compliant.start()
 
     with pool._children_lock:
-        pool._children[uuid4()] = TrackedChild(
-            process=stubborn, state="running", release=threading.Event()  # type: ignore[arg-type]
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", process=stubborn, release=threading.Event()
         )
-        pool._children[uuid4()] = TrackedChild(
-            process=compliant, state="running", release=threading.Event()  # type: ignore[arg-type]
+        pool._children[uuid4()] = _make_tracked_child(
+            "running", process=compliant, release=threading.Event()
         )
 
     pool.shutdown()
