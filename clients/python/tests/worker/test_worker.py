@@ -6,6 +6,7 @@ import random
 import signal
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator, MutableMapping
 from concurrent.futures import Future
 from datetime import datetime, timezone
@@ -1665,6 +1666,37 @@ def test_spawn_children_binds_each_child_to_its_own_timing_slot() -> None:
         pool.shutdown()
 
 
+def test_spawn_children_recycles_slots_across_generations() -> None:
+    # The leak the derived set exists to prevent. concurrency=2 gives 4 slots,
+    # so a pool that failed to return them would hand out NO_SLOT by the third
+    # generation and stop measuring for the rest of its life.
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(fake_context, concurrency=2)
+
+    pool.start_spawn_children_thread()
+    try:
+        seen = 0
+        for _ in range(4):
+            _wait_for(lambda: len(fake_context.processes) == seen + 2)
+            generation = fake_context.processes[seen:]
+            seen += 2
+
+            slots = {process.args[-1] for process in generation}
+            assert NO_SLOT not in slots
+            assert len(slots) == 2
+
+            # Nothing hands the slots back. The next scan reaps these children
+            # out of `_children`, which is all it takes.
+            for process in generation:
+                process.alive = False
+
+        with pool._children_lock:
+            held = {c.timing.slot for c in pool._children.values()}
+        assert len(held) == len(pool._children)
+    finally:
+        pool.shutdown()
+
+
 def _writer_and_reader(slot: int = 0) -> tuple[ChildTimeWriter, ChildTimeAccounting]:
     shm = get_context("fork").RawArray("d", SLOT_WIDTH * (slot + 1))
     return ChildTimeWriter(shm, slot), ChildTimeAccounting(shm=shm, slot=slot)
@@ -1799,22 +1831,44 @@ def test_child_timing_excludes_time_banked_before_the_parent_saw_running() -> No
     assert _bw(reader.sample(6.0)) == pytest.approx((0.0, 1.0))
 
 
-def test_acquire_timing_slot_zeroes_a_recycled_slot() -> None:
+def test_available_timing_slots_follow_the_tracked_children() -> None:
+    # The property the derived set buys: a slot is in use exactly while its
+    # child is tracked, so no exit path can lose one by forgetting to give it
+    # back. Reaping the child is the only bookkeeping there is.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=2)
+    child_id = uuid4()
+
+    with pool._children_lock:
+        assert sorted(pool._available_timing_slots()) == list(range(slot_count(2)))
+
+        held = pool._take_timing_slot(pool._available_timing_slots())
+        child = _make_tracked_child("running")
+        child.timing = ChildTimeAccounting(shm=pool._timing_shm, slot=held)
+        pool._children[child_id] = child
+
+        assert held not in pool._available_timing_slots()
+
+    with pool._children_lock:
+        pool._children.pop(child_id)
+        assert held in pool._available_timing_slots()
+
+
+def test_take_timing_slot_zeroes_a_recycled_slot() -> None:
     # A replacement must not inherit its predecessor's totals.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=1)
 
-    # Drain the free list: reuse is FIFO, so a release is not reused next.
-    slot = pool._acquire_timing_slot()
-    rest = [pool._acquire_timing_slot() for _ in range(slot_count(1) - 1)]
-    assert NO_SLOT not in rest
+    with pool._children_lock:
+        slot = pool._take_timing_slot(pool._available_timing_slots())
 
     writer = ChildTimeWriter(pool._timing_shm, slot)
     writer.mark_running(0.0)
     writer.mark_busy(0.0)
     writer.mark_idle(30.0)
 
-    pool._release_timing_slot(slot)
-    recycled = pool._acquire_timing_slot()
+    # No child ever tracked it, so the next batch offers it straight back.
+    with pool._children_lock:
+        assert slot in pool._available_timing_slots()
+        recycled = pool._take_timing_slot(deque([slot]))
     assert recycled == slot
 
     reader = ChildTimeAccounting(shm=pool._timing_shm, slot=recycled)
@@ -1822,15 +1876,12 @@ def test_acquire_timing_slot_zeroes_a_recycled_slot() -> None:
     assert _bw(reader.sample(1.0)) == pytest.approx((0.0, 0.0))
 
 
-def test_acquire_timing_slot_reports_exhaustion_instead_of_raising() -> None:
+def test_take_timing_slot_reports_exhaustion_instead_of_raising() -> None:
     # Should be unreachable; the pool has to keep spawning either way.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=1)
     pool._metrics = mock.Mock()
 
-    taken = [pool._acquire_timing_slot() for _ in range(slot_count(1))]
-    assert NO_SLOT not in taken
-
-    assert pool._acquire_timing_slot() == NO_SLOT
+    assert pool._take_timing_slot(deque()) == NO_SLOT
     assert len(_incr_calls(pool._metrics, "taskworker.worker.child.timing_slot_exhausted")) == 1
 
 
