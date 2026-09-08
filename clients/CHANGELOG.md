@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.25
+
+### Bug Fixes 🐛
+
+- (taskworker) Measure child busy and wait time in shared memory by @enochtangg in [#788](https://github.com/getsentry/taskbroker/pull/788)
+
 ## 0.20.24
 
 ### New Features ✨
