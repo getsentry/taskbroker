@@ -91,6 +91,13 @@ async fn test_store(#[case] adapter: &str) {
 #[case::postgres("postgres")]
 async fn test_count_depths(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    store.assign_partitions(
+        &mut vec![
+            TopicPartition::new("taskworker-2", 0),
+            TopicPartition::new(DEFAULT_TOPIC, 0),
+        ]
+        .into_iter(),
+    );
 
     // Check counts for an empty store
     let pending = store
@@ -106,14 +113,17 @@ async fn test_count_depths(#[case] adapter: &str) {
         .await
         .unwrap();
 
-    let depths = store.count_depths().await.unwrap();
+    let depths = store.count_depths(None).await.unwrap();
 
     assert_eq!(depths.pending, pending);
     assert_eq!(depths.delay, delay);
     assert_eq!(depths.processing, processing);
+    assert_eq!(depths.claimed, 0);
 
     // Check counts for a store with four activations with varying statuses
-    let batch = make_activations(4);
+    let mut batch = make_activations(4);
+    batch[0].topic = "taskworker-2".into();
+    batch[1].topic = "taskworker-2".into();
     assert!(store.store(&batch).await.is_ok());
 
     store
@@ -142,14 +152,88 @@ async fn test_count_depths(#[case] adapter: &str) {
         .await
         .unwrap();
 
-    let depths = store.count_depths().await.unwrap();
+    let depths = store.count_depths(None).await.unwrap();
 
     assert_eq!(depths.pending, pending, "pending");
     assert_eq!(depths.delay, delay, "delay");
     assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(depths.claimed, 0, "claimed");
     assert_eq!(pending, 1);
     assert_eq!(delay, 1);
     assert_eq!(processing, 1);
+}
+
+#[tokio::test]
+#[rstest]
+#[case::postgres("postgres")]
+async fn test_count_depths_with_topic_filter(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    store.assign_partitions(
+        &mut vec![
+            TopicPartition::new("taskworker-2", 0),
+            TopicPartition::new(DEFAULT_TOPIC, 0),
+        ]
+        .into_iter(),
+    );
+
+    // Check counts for a store with activations with varying statuses
+    let mut batch = make_activations(5);
+    batch[0].topic = "taskworker-2".into();
+    batch[1].topic = "taskworker-2".into();
+    assert!(store.store(&batch).await.is_ok());
+
+    store
+        .set_status("id_0", ActivationStatus::Processing, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_1", ActivationStatus::Delay, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_2", ActivationStatus::Complete, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_3", ActivationStatus::Claimed, None, None)
+        .await
+        .unwrap();
+
+    let pending = store
+        .count_by_status(ActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(ActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(ActivationStatus::Processing)
+        .await
+        .unwrap();
+    let claimed = store
+        .count_by_status(ActivationStatus::Claimed)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths(None).await.unwrap();
+
+    assert_eq!(depths.pending, pending, "pending");
+    assert_eq!(depths.delay, delay, "delay");
+    assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(depths.claimed, claimed, "claimed");
+    assert_eq!(pending, 1);
+    assert_eq!(delay, 1);
+    assert_eq!(processing, 1);
+    assert_eq!(claimed, 1);
+
+    let topic_depths = store.count_depths(Some("taskworker-2")).await.unwrap();
+
+    // These activations were processing/delayed
+    assert_eq!(topic_depths.pending, 0, "pending");
+    assert_eq!(topic_depths.delay, 1, "delay");
+    assert_eq!(topic_depths.processing, 1, "processing");
+    assert_eq!(topic_depths.claimed, 0, "claimed");
 
     store.remove_db().await.unwrap();
 }

@@ -125,7 +125,7 @@ pub trait ActivationStore: Send + Sync {
 
     /// Queue depths for pending, delay, and processing (writer backpressure and upkeep gauges).
     /// Default implementation uses separate calls, but stores may override with a single query.
-    async fn count_depths(&self) -> Result<DepthCounts, Error> {
+    async fn count_depths(&self, _topic: Option<&str>) -> Result<DepthCounts, Error> {
         let (pending, delay, claimed, processing) = join!(
             self.count_by_status(ActivationStatus::Pending),
             self.count_by_status(ActivationStatus::Delay),
@@ -147,7 +147,7 @@ pub trait ActivationStore: Send + Sync {
     async fn count_depths_per_partition(
         &self,
     ) -> Result<HashMap<TopicPartition, DepthCounts>, Error> {
-        let total = self.count_depths().await?;
+        let total = self.count_depths(None).await?;
         Ok(HashMap::from([(
             TopicPartition::new(crate::config::DEFAULT_TOPIC, -1),
             total,
