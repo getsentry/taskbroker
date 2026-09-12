@@ -25,7 +25,7 @@ jobs:
           platforms: linux/amd64
           dockerfile_path: './clients/python/Dockerfile.example'
           build_context: './clients/python'
-          ghcr: true
+          ghcr: ${{ github.repository == 'getsentry/taskbroker' }}
           publish_on_pr: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           google_ar: false
           tag_nightly: false
