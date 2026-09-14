@@ -21,7 +21,9 @@ pub struct ActivationWriterConfig {
     pub topic: String,
     pub max_buf_len: usize,
     pub max_pending_activations: usize,
+    pub max_pending_activations_per_topic: Option<usize>,
     pub max_processing_activations: usize,
+    pub max_processing_activations_per_topic: Option<usize>,
     pub max_delay_activations: usize,
     pub db_max_size: Option<u64>,
     pub write_failure_backoff_ms: u64,
@@ -31,12 +33,18 @@ impl ActivationWriterConfig {
     /// Convert from application configuration into ActivationWriter config for a
     /// single consumed topic.
     pub fn from_topic(config: &Config, topic: &str) -> Self {
+        let topic_config = config
+            .kafka_topics
+            .get(topic)
+            .unwrap_or_else(|| panic!("unknown topic '{topic}' - was config validated?"));
         Self {
             topic: topic.to_owned(),
             db_max_size: config.store.max_size,
             max_buf_len: config.store.insert_batch_max_length,
             max_pending_activations: config.store.max_pending_count,
+            max_pending_activations_per_topic: topic_config.max_pending_activations,
             max_processing_activations: config.store.max_processing_count,
+            max_processing_activations_per_topic: topic_config.max_processing_activations,
             max_delay_activations: config.store.max_delay_count,
             write_failure_backoff_ms: config.store.insert_failure_backoff_ms,
         }
@@ -59,30 +67,27 @@ impl ActivationWriter {
     }
 }
 
-impl Reducer for ActivationWriter {
-    type Input = Vec<Activation>;
-
-    type Output = ();
-
-    async fn reduce(&mut self, batch: Self::Input) -> Result<(), anyhow::Error> {
-        assert!(self.batch.is_none());
-        self.batch = Some(batch);
-        Ok(())
+impl ActivationWriter {
+    async fn check_backpressure(
+        &self,
+        batch: &[Activation],
+    ) -> Result<Option<String>, anyhow::Error> {
+        if self.config.max_processing_activations_per_topic.is_some()
+            || self.config.max_pending_activations_per_topic.is_some()
+        {
+            let reason = self
+                .check_backpressure_for_topic(batch, Some(&self.config.topic))
+                .await?;
+            return Ok(reason);
+        }
+        self.check_backpressure_for_topic(batch, None).await
     }
 
-    #[instrument(skip_all)]
-    async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
-        let Some(ref batch) = self.batch else {
-            return Ok(None);
-        };
-
-        // If batch is empty (all tasks were forwarded), just mark as complete
-        if batch.is_empty() {
-            self.batch.take();
-            return Ok(Some(()));
-        }
-
-        // Check if writing the batch would exceed the limits
+    async fn check_backpressure_for_topic(
+        &self,
+        batch: &[Activation],
+        topic: Option<&str>,
+    ) -> Result<Option<String>, anyhow::Error> {
         let DepthCounts {
             pending,
             delay,
@@ -90,14 +95,20 @@ impl Reducer for ActivationWriter {
             processing,
         } = self
             .store
-            .count_depths()
+            .count_depths(topic)
             .await
             .expect("Error communicating with activation store");
 
-        let exceeded_pending_limit = pending + batch.len() > self.config.max_pending_activations;
+        let exceeded_pending_limit = match self.config.max_pending_activations_per_topic {
+            Some(limit) => pending + batch.len() > limit,
+            None => pending + batch.len() > self.config.max_pending_activations,
+        };
         let exceeded_delay_limit = delay + batch.len() > self.config.max_delay_activations;
-        let exceeded_processing_limit =
-            processing + claimed >= self.config.max_processing_activations;
+        let exceeded_processing_limit = match self.config.max_processing_activations_per_topic {
+            Some(limit) => processing + claimed >= limit,
+            None => processing + claimed >= self.config.max_processing_activations,
+        };
+
         let exceeded_db_size = if let Some(db_max_size) = self.config.db_max_size {
             self.store
                 .db_size()
@@ -107,7 +118,6 @@ impl Reducer for ActivationWriter {
         } else {
             false
         };
-
         // Check if the entire batch is either pending or delay
         let has_delay = batch
             .iter()
@@ -122,20 +132,55 @@ impl Reducer for ActivationWriter {
         //    a. There are delay activations in the batch, OR
         //    b. The pending limit is also exceeded
         // 3. The pending limit is exceeded AND there are pending activations
-        if exceeded_processing_limit
-            || exceeded_db_size
-            || exceeded_delay_limit && (has_delay || exceeded_pending_limit)
-            || exceeded_pending_limit && has_pending
-        {
-            let reason = if exceeded_processing_limit {
-                "processing_limit"
-            } else if exceeded_delay_limit {
-                "delay_limit"
-            } else if exceeded_db_size {
-                "db_size_limit"
-            } else {
-                "pending_limit"
-            };
+        let prefix = topic.unwrap_or("global");
+        let reason: Option<String> = match (
+            exceeded_processing_limit,
+            exceeded_db_size,
+            exceeded_pending_limit,
+            has_pending,
+            exceeded_delay_limit,
+            has_delay,
+        ) {
+            (true, _, _, _, _, _) => Some(format!("{prefix}.processing_limit")),
+            (_, true, _, _, _, _) => Some(format!("{prefix}.db_size_limit")),
+            (_, _, true, true, _, _) => Some(format!("{prefix}.pending_limit")),
+            (_, _, _, _, true, true) => Some(format!("{prefix}.delay_limit")),
+            (_, _, _, _, _, _) => None,
+        };
+
+        Ok(reason)
+    }
+}
+
+impl Reducer for ActivationWriter {
+    type Input = Vec<Activation>;
+
+    type Output = ();
+
+    async fn reduce(&mut self, batch: Self::Input) -> Result<(), anyhow::Error> {
+        assert!(self.batch.is_none());
+        self.batch = Some(batch);
+        Ok(())
+    }
+
+    #[instrument(skip_all)]
+    async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
+        if self.batch.is_none() {
+            return Ok(None);
+        }
+
+        // If batch is empty (all tasks were forwarded), just mark as complete
+        if self.batch.as_ref().is_some_and(|batch| batch.is_empty()) {
+            self.batch.take();
+            return Ok(Some(()));
+        }
+
+        let backpressure_reason = {
+            let batch = self.batch.as_ref().unwrap();
+            self.check_backpressure(batch).await?
+        };
+
+        if let Some(reason) = backpressure_reason {
             metrics::counter!(
                 "consumer.inflight_activation_writer.backpressure",
                 "topic" => self.config.topic.clone(),
@@ -146,7 +191,10 @@ impl Reducer for ActivationWriter {
         }
 
         let write_to_store_start = Instant::now();
-        let res = self.store.store(batch).await;
+        let res = {
+            let batch = self.batch.as_ref().unwrap();
+            self.store.store(batch).await
+        };
 
         match res {
             Ok(entries) => {
@@ -220,6 +268,8 @@ mod tests {
     };
 
     use super::{ActivationWriter, ActivationWriterConfig, Reducer};
+    use crate::config::DEFAULT_TOPIC;
+    use crate::store::types::TopicPartition;
 
     #[tokio::test]
     #[rstest]
@@ -232,7 +282,9 @@ mod tests {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 10,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
@@ -279,7 +331,9 @@ mod tests {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 10,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
@@ -315,7 +369,9 @@ mod tests {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 0,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 10,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };
@@ -356,7 +412,9 @@ mod tests {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 0,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 10,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
@@ -406,7 +464,9 @@ mod tests {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 10,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
@@ -454,7 +514,9 @@ mod tests {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 1,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
@@ -517,6 +579,259 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
+    async fn test_writer_backpressure_processing_limit_reached_for_topic(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
+        let writer_config = ActivationWriterConfig {
+            topic: "taskworker".to_string(),
+            db_max_size: None,
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
+            max_processing_activations: 10,
+            max_processing_activations_per_topic: Some(1),
+            max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
+        };
+
+        let received_at = DateTime::from_timestamp_nanos(0);
+        let namespace = generate_unique_namespace();
+
+        let existing_activation = ActivationBuilder::new()
+            .id("existing")
+            .taskname("existing_task")
+            .namespace(&namespace)
+            .received_at(received_at)
+            .status(ActivationStatus::Processing)
+            .build(TaskActivationBuilder::new());
+
+        store.store(&[existing_activation]).await.unwrap();
+
+        let mut writer = ActivationWriter::new(store.clone(), writer_config);
+        let batch = vec![
+            ActivationBuilder::new()
+                .id("0")
+                .taskname("pending_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .build(TaskActivationBuilder::new()),
+            ActivationBuilder::new()
+                .id("1")
+                .taskname("delay_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .build(TaskActivationBuilder::new()),
+        ];
+
+        writer.reduce(batch).await.unwrap();
+        let flush_result = writer.flush().await.unwrap();
+        assert!(flush_result.is_none());
+
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 0);
+        let count_delay = writer
+            .store
+            .count_by_status(ActivationStatus::Delay)
+            .await
+            .unwrap();
+        assert_eq!(count_delay, 0);
+        let count_processing = writer
+            .store
+            .count_by_status(ActivationStatus::Processing)
+            .await
+            .unwrap();
+        // Only the existing processing activation should remain, new ones should be blocked
+        assert_eq!(count_processing, 1);
+        // TODO: Because the store and the writer both access the DB, both need to be cleaned up.
+        // Uncomment this when we figure out how to do that cleanly.
+        // writer.store.remove_db().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_writer_backpressure_pending_limit_reached_for_topic(#[case] adapter: &str) {
+        let store = create_test_store(adapter).await;
+        let writer_config = ActivationWriterConfig {
+            topic: "taskworker".to_string(),
+            db_max_size: None,
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_pending_activations_per_topic: Some(1),
+            max_processing_activations: 10,
+            max_processing_activations_per_topic: None,
+            max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
+        };
+
+        let received_at = DateTime::from_timestamp_nanos(0);
+        let namespace = generate_unique_namespace();
+
+        let existing_activation = ActivationBuilder::new()
+            .id("existing")
+            .taskname("existing_task")
+            .namespace(&namespace)
+            .received_at(received_at)
+            .build(TaskActivationBuilder::new());
+
+        store.store(&[existing_activation]).await.unwrap();
+
+        let mut writer = ActivationWriter::new(store.clone(), writer_config);
+        let batch = vec![
+            ActivationBuilder::new()
+                .id("0")
+                .taskname("pending_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .build(TaskActivationBuilder::new()),
+            ActivationBuilder::new()
+                .id("1")
+                .taskname("delay_task")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .build(TaskActivationBuilder::new()),
+        ];
+
+        writer.reduce(batch).await.unwrap();
+        let flush_result = writer.flush().await.unwrap();
+        assert!(flush_result.is_none());
+
+        let count_pending = writer.store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 1);
+        let count_delay = writer
+            .store
+            .count_by_status(ActivationStatus::Delay)
+            .await
+            .unwrap();
+        assert_eq!(count_delay, 0);
+        let count_processing = writer
+            .store
+            .count_by_status(ActivationStatus::Processing)
+            .await
+            .unwrap();
+        // Only the existing processing activation should remain, new ones should be blocked
+        assert_eq!(count_processing, 0);
+        // TODO: Because the store and the writer both access the DB, both need to be cleaned up.
+        // Uncomment this when we figure out how to do that cleanly.
+        // writer.store.remove_db().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[rstest]
+    // #[case::sqlite("sqlite")] NOTE: SQLite doesn't implement per topic filtering
+    #[case::postgres("postgres")]
+    async fn test_writer_backpressure_processing_limit_reached_for_one_topic_but_not_another(
+        #[case] adapter: &str,
+    ) {
+        let store = create_test_store(adapter).await;
+        store.assign_partitions(
+            &mut vec![
+                TopicPartition::new("taskworker-2", 0),
+                TopicPartition::new(DEFAULT_TOPIC, 0),
+            ]
+            .into_iter(),
+        );
+
+        let received_at = DateTime::from_timestamp_nanos(0);
+        let namespace = generate_unique_namespace();
+
+        // Another topic has processing activations, but it should not block the default topic.
+        let existing_activation1 = ActivationBuilder::new()
+            .id("existing")
+            .topic("taskworker-2")
+            .taskname("existing_task")
+            .namespace(&namespace)
+            .received_at(received_at)
+            .status(ActivationStatus::Processing)
+            .build(TaskActivationBuilder::new());
+        let existing_activation2 = ActivationBuilder::new()
+            .id("existing2")
+            .topic("taskworker-2")
+            .taskname("existing_task")
+            .namespace(&namespace)
+            .received_at(received_at)
+            .status(ActivationStatus::Processing)
+            .build(TaskActivationBuilder::new());
+
+        store
+            .store(&[existing_activation1, existing_activation2])
+            .await
+            .unwrap();
+
+        // The writer on the other topic should block since its processing limit is reached.
+        let other_writer_config = ActivationWriterConfig {
+            topic: "taskworker-2".to_string(),
+            db_max_size: None,
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
+            max_processing_activations: 10,
+            max_processing_activations_per_topic: Some(1),
+            max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
+        };
+        let mut other_writer = ActivationWriter::new(store.clone(), other_writer_config);
+        let batch = vec![
+            ActivationBuilder::new()
+                .id("0")
+                .taskname("pending_task")
+                .topic("taskworker-2")
+                .namespace(&namespace)
+                .received_at(received_at)
+                .build(TaskActivationBuilder::new()),
+        ];
+
+        other_writer.reduce(batch).await.unwrap();
+        let flush_result = other_writer.flush().await.unwrap();
+        assert!(flush_result.is_none());
+
+        let count_pending = store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 0);
+        let count_processing = store
+            .count_by_status(ActivationStatus::Processing)
+            .await
+            .unwrap();
+        assert_eq!(count_processing, 2);
+
+        // The writer on the default topic should not block since its processing limit is not reached.
+        let writer_config = ActivationWriterConfig {
+            topic: DEFAULT_TOPIC.to_string(),
+            db_max_size: None,
+            max_buf_len: 100,
+            max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
+            max_processing_activations: 10,
+            max_processing_activations_per_topic: Some(1),
+            max_delay_activations: 0,
+            write_failure_backoff_ms: 4000,
+        };
+        let mut writer = ActivationWriter::new(store.clone(), writer_config);
+        let batch = vec![
+            ActivationBuilder::new()
+                .id("0")
+                .taskname("pending_task")
+                .topic(DEFAULT_TOPIC)
+                .namespace(&namespace)
+                .received_at(received_at)
+                .build(TaskActivationBuilder::new()),
+        ];
+
+        writer.reduce(batch).await.unwrap();
+        let flush_result = writer.flush().await.unwrap();
+        assert!(flush_result.is_some());
+
+        let count_pending = store.count_pending_activations().await.unwrap();
+        assert_eq!(count_pending, 1);
+
+        // TODO: Because the store and the writer both access the DB, both need to be cleaned up.
+        // Uncomment this when we figure out how to do that cleanly.
+        // writer.store.remove_db().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
     async fn test_writer_backpressure_db_size_limit_reached(#[case] adapter: &str) {
         let store = create_test_store(adapter).await;
         let writer_config = ActivationWriterConfig {
@@ -525,7 +840,9 @@ mod tests {
             db_max_size: Some(50_000),
             max_buf_len: 100,
             max_pending_activations: 5000,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 5000,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 0,
             write_failure_backoff_ms: 4000,
         };
@@ -557,7 +874,9 @@ mod tests {
             db_max_size: None,
             max_buf_len: 100,
             max_pending_activations: 10,
+            max_pending_activations_per_topic: None,
             max_processing_activations: 10,
+            max_processing_activations_per_topic: None,
             max_delay_activations: 10,
             write_failure_backoff_ms: 4000,
         };

@@ -796,7 +796,7 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn count_depths(&self) -> Result<DepthCounts, Error> {
+    async fn count_depths(&self, topic: Option<&str>) -> Result<DepthCounts, Error> {
         retry_query(&self.config.retry, "count_depths", || async {
             // Notice that statuses are embedded into the query for simplicity - if the enum is every changed, this must change too!
             let mut query_builder = QueryBuilder::new(
@@ -808,6 +808,10 @@ impl ActivationStore for PostgresStore {
             );
 
             self.add_partition_condition(&mut query_builder, true);
+            if let Some(topic) = topic {
+                query_builder.push(" AND topic = ");
+                query_builder.push_bind(topic);
+            }
 
             let row: (i64, i64, i64, i64) = query_builder
                 .build_query_as()
