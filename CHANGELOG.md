@@ -1,4 +1,14 @@
 # Changelog
+## 26.9.0
+
+### New Features ✨
+
+- Add a per topic pending/processing limit by @evanh in [#790](https://github.com/getsentry/taskbroker/pull/790)
+
+### Internal Changes 🔧
+
+- (ci) Use scoped image-push service account by @oioki in [#793](https://github.com/getsentry/taskbroker/pull/793)
+
 ## 26.8.0
 
 ### Bug Fixes 🐛
