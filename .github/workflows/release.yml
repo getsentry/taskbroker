@@ -21,6 +21,7 @@ permissions:
 
 jobs:
   release:
+    if: ${{ github.repository == 'getsentry/taskbroker' }}
     runs-on: ubuntu-latest
     name: "Release a new taskbroker version"
     steps:

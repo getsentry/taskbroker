@@ -14,7 +14,8 @@ jobs:
   revert:
     runs-on: ubuntu-latest
     if: |
-      github.event_name == 'workflow_dispatch' || github.event.label.name == 'Trigger: Revert'
+      github.repository == 'getsentry/taskbroker' &&
+      (github.event_name == 'workflow_dispatch' || github.event.label.name == 'Trigger: Revert')
     steps:
       - name: Get auth token
         id: token
