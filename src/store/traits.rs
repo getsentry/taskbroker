@@ -4,7 +4,7 @@ use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::join;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::killswitch::KillswitchSelector;
 use crate::store::activation::{Activation, ActivationStatus};
@@ -96,6 +96,29 @@ pub trait ActivationStore: Send + Sync {
         max_attempts: Option<u32>,
         delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>, Error>;
+
+    /// Release a claim on an activation, returning it to pending.
+    ///
+    /// Both the fetch and push pools need this when an activation was claimed
+    /// but could not be handed to a worker.
+    async fn undo_claim(&self, id: &str, metric: &'static str) {
+        if let Err(e) = self
+            .set_status(id, ActivationStatus::Pending, None, None)
+            .await
+        {
+            metrics::counter!(metric, "result" => "error").increment(1);
+
+            error!(
+                task_id = %id,
+                error = ?e,
+                "Failed to undo claim on an activation that was never pushed"
+            );
+
+            return;
+        }
+
+        metrics::counter!(metric, "result" => "ok").increment(1);
+    }
 
     /// Update the status of multiple activations in one batch.
     async fn set_status_batch(

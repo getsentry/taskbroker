@@ -52,7 +52,7 @@ impl FetchThread {
         }
     }
 
-    async fn fetch_once(&mut self, fetch_backoff: Duration) -> bool {
+    pub(super) async fn fetch_once(&mut self, fetch_backoff: Duration) -> bool {
         let start = Instant::now();
 
         debug!("Fetching next batch of pending activations...");
@@ -125,6 +125,9 @@ impl FetchThread {
                                 self.config.push.queue.timeout.as_millis()
                             );
 
+                            // Nothing else will push this activation, so release the claim
+                            self.store.undo_claim(&id, "fetch.undo_claim").await;
+
                             // Wait for push queue to empty
                             backoff = true;
                         }
@@ -136,6 +139,9 @@ impl FetchThread {
                                 task_id = %id,
                                 "Submit to push pool failed due to closed channel",
                             );
+
+                            // Nothing else will push this activation, so release the claim
+                            self.store.undo_claim(&id, "fetch.undo_claim").await;
 
                             // We cannot recover from a closed channel
                             return false;
