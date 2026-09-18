@@ -362,6 +362,55 @@ async fn fetch_once_undoes_claim_on_submit_timeout() {
     assert_eq!(1, receiver.len());
 }
 
+/// A slot opening mid-wait lets the submit through, so no claim is released.
+#[tokio::test]
+async fn fetch_once_submits_when_queue_drains() {
+    let mut activations = make_activations(2);
+    let filler = activations.remove(0);
+    let claimed = activations.remove(0);
+
+    let store = Arc::new(MockStore::one(claimed.clone()));
+
+    let config = Arc::new(Config {
+        push: PushConfig {
+            queue: PushQueueConfig {
+                size: 1,
+                timeout: Duration::from_millis(500),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+
+    // Occupy the only queue slot so the first submit attempt is refused
+    sender
+        .send_async((filler, Instant::now()))
+        .await
+        .expect("an empty queue should accept one activation");
+
+    // Free the slot partway through the submit window
+    let drain = tokio::spawn({
+        let receiver = receiver.clone();
+
+        async move {
+            sleep(Duration::from_millis(50)).await;
+            receiver.recv_async().await.expect("the filler is queued");
+        }
+    });
+
+    let mut thread = fetch_thread(store.clone(), sender, config);
+
+    assert!(thread.fetch_once(Duration::from_millis(0)).await);
+    drain.await.expect("drain task should finish");
+
+    // The activation reached the push pool, so its claim still stands
+    assert!(store.status_updates.lock().await.is_empty());
+
+    assert_eq!(claimed.id, receiver.recv_async().await.unwrap().0.id);
+}
+
 /// Same contract on the path where the push pool has gone away.
 #[tokio::test]
 async fn fetch_once_undoes_claim_on_closed_queue() {
