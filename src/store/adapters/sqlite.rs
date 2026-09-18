@@ -836,6 +836,31 @@ impl ActivationStore for SqliteStore {
         Ok(Some(row.into()))
     }
 
+    /// Return a claimed activation to pending and clear its claim lease.
+    ///
+    /// The `status` guard makes this a no-op once the activation has moved on,
+    /// so an undo that races a successful push cannot pull the row back out from
+    /// under a worker that is already running it.
+    #[instrument(skip_all)]
+    async fn release_claim(&self, id: &str) -> Result<bool, Error> {
+        let mut conn = self.acquire_write_conn_metric("release_claim").await?;
+
+        let released = sqlx::query(
+            "UPDATE inflight_taskactivations
+             SET claim_expires_at = null,
+                 status = $1
+             WHERE id = $2
+                 AND status = $3",
+        )
+        .bind(ActivationStatus::Pending)
+        .bind(id)
+        .bind(ActivationStatus::Claimed)
+        .execute(&mut *conn)
+        .await?;
+
+        Ok(released.rows_affected() > 0)
+    }
+
     #[instrument(skip_all)]
     async fn set_status_batch(
         &self,

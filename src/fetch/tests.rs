@@ -149,6 +149,19 @@ impl ActivationStore for MockStore {
         Ok(None)
     }
 
+    async fn release_claim(&self, id: &str) -> Result<bool, Error> {
+        if self.fail {
+            return Err(anyhow!("mock store error"));
+        }
+
+        self.status_updates
+            .lock()
+            .await
+            .push((id.to_owned(), ActivationStatus::Pending));
+
+        Ok(true)
+    }
+
     async fn set_status_batch(
         &self,
         _ids: &[String],

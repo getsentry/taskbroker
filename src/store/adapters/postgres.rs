@@ -965,6 +965,35 @@ impl ActivationStore for PostgresStore {
         .await
     }
 
+    /// Return a claimed activation to pending and clear its claim lease.
+    ///
+    /// The `status` guard makes this a no-op once the activation has moved on,
+    /// so an undo that races a successful push cannot pull the row back out from
+    /// under a worker that is already running it.
+    #[instrument(skip_all)]
+    #[framed]
+    async fn release_claim(&self, id: &str) -> Result<bool, Error> {
+        retry_query(&self.config.retry, "release_claim", || async {
+            let mut conn = self.acquire_write_conn_metric("release_claim").await?;
+
+            let released = sqlx::query(
+                "UPDATE inflight_taskactivations
+                 SET claim_expires_at = null,
+                     status = $1
+                 WHERE id = $2
+                     AND status = $3",
+            )
+            .bind(ActivationStatus::Pending.to_string())
+            .bind(id)
+            .bind(ActivationStatus::Claimed.to_string())
+            .execute(&mut *conn)
+            .await?;
+
+            Ok(released.rows_affected() > 0)
+        })
+        .await
+    }
+
     #[instrument(skip_all)]
     #[framed]
     async fn set_status_batch(
