@@ -1561,6 +1561,48 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
     store.remove_db().await.unwrap();
 }
 
+/// The fetch and push pools release their own claims rather than waiting on
+/// `handle_claim_expiration`, whose lease is sized for the worst case push.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claim_reverts_claimed_to_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+
+    assert!(store.release_claim(&batch[0].id).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Pending);
+    assert_eq!(task.claim_expires_at, None);
+    assert_eq!(task.processing_attempts, 0);
+    store.remove_db().await.unwrap();
+}
+
+/// Releasing a claim races a successful push. If the push won, the activation is
+/// already `Processing` and a worker is running it, so the release has to be a
+/// no-op instead of making the row claimable a second time.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claim_ignores_activations_that_moved_on(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Processing;
+    assert!(store.store(&batch).await.is_ok());
+
+    assert!(!store.release_claim(&batch[0].id).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Processing);
+    store.remove_db().await.unwrap();
+}
+
 #[tokio::test]
 #[rstest]
 #[case::sqlite("sqlite")]

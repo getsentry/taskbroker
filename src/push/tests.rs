@@ -80,6 +80,10 @@ impl ActivationStore for MockStore {
         Ok(None)
     }
 
+    async fn release_claim(&self, _id: &str) -> Result<bool> {
+        Ok(true)
+    }
+
     async fn set_status_batch(&self, _ids: &[String], _status: ActivationStatus) -> Result<u64> {
         Ok(0)
     }

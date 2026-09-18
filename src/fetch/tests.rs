@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
@@ -8,6 +9,7 @@ use tonic::async_trait;
 
 use crate::config::Config;
 use crate::config::fetch::FetchConfig;
+use crate::config::push::{PushConfig, PushQueueConfig};
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, FailedTasksForwarder, TopicPartition};
@@ -20,6 +22,9 @@ struct MockStore {
     /// A single (optional) pending activation.
     pending: Mutex<Option<Activation>>,
 
+    /// Every `set_status` call, in order.
+    status_updates: Mutex<Vec<(String, ActivationStatus)>>,
+
     /// Should operations fail?
     fail: bool,
 }
@@ -28,6 +33,7 @@ impl MockStore {
     fn empty() -> Self {
         Self {
             pending: Mutex::new(None),
+            status_updates: Mutex::new(Vec::new()),
             fail: false,
         }
     }
@@ -35,6 +41,7 @@ impl MockStore {
     fn one(activation: Activation) -> Self {
         Self {
             pending: Mutex::new(Some(activation)),
+            status_updates: Mutex::new(Vec::new()),
             fail: false,
         }
     }
@@ -42,6 +49,7 @@ impl MockStore {
     fn error() -> Self {
         Self {
             pending: Mutex::new(None),
+            status_updates: Mutex::new(Vec::new()),
             fail: true,
         }
     }
@@ -124,12 +132,34 @@ impl ActivationStore for MockStore {
 
     async fn set_status(
         &self,
-        _id: &str,
-        _status: ActivationStatus,
+        id: &str,
+        status: ActivationStatus,
         _max_attempts: Option<u32>,
         _delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>, Error> {
-        unimplemented!()
+        if self.fail {
+            return Err(anyhow!("mock store error"));
+        }
+
+        self.status_updates
+            .lock()
+            .await
+            .push((id.to_owned(), status));
+
+        Ok(None)
+    }
+
+    async fn release_claim(&self, id: &str) -> Result<bool, Error> {
+        if self.fail {
+            return Err(anyhow!("mock store error"));
+        }
+
+        self.status_updates
+            .lock()
+            .await
+            .push((id.to_owned(), ActivationStatus::Pending));
+
+        Ok(true)
     }
 
     async fn set_status_batch(
@@ -266,4 +296,140 @@ async fn fetch_pool_no_pending() {
     assert!(receiver.is_empty());
 
     handle.abort();
+}
+
+/// Build a single fetch thread covering every bucket.
+///
+/// The claim tests drive `fetch_once` directly rather than `FetchPool::start`,
+/// because `start` registers a process-wide `elegant_departure` shutdown guard.
+/// Any test that lets a fetch loop exit or aborts it trips that guard for the
+/// whole test binary, after which later fetch loops return without doing work.
+fn fetch_thread(
+    store: Arc<dyn ActivationStore>,
+    sender: Sender<(Activation, Instant)>,
+    config: Arc<Config>,
+) -> FetchThread {
+    FetchThread {
+        sender,
+        store,
+        config,
+        bucket: bucket_range_for_fetch_thread(0, 1),
+    }
+}
+
+/// A submit timeout leaves the activation claimed in the store with nothing
+/// holding it, so the fetch thread has to release it itself. Otherwise the row
+/// waits for `handle_claim_expiration`, whose lease is sized for the worst case
+/// push and can strand a single activation for minutes.
+#[tokio::test]
+async fn fetch_once_undoes_claim_on_submit_timeout() {
+    let mut activations = make_activations(2);
+    let filler = activations.remove(0);
+    let claimed = activations.remove(0);
+
+    let store = Arc::new(MockStore::one(claimed.clone()));
+
+    let config = Arc::new(Config {
+        push: PushConfig {
+            queue: PushQueueConfig {
+                size: 1,
+                timeout: Duration::from_millis(20),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+
+    // Occupy the only queue slot so the submit cannot complete
+    sender
+        .send_async((filler, Instant::now()))
+        .await
+        .expect("an empty queue should accept one activation");
+
+    let mut thread = fetch_thread(store.clone(), sender, config);
+
+    // A submit timeout is recoverable, so the loop keeps running
+    assert!(thread.fetch_once(Duration::from_millis(0)).await);
+
+    assert_eq!(
+        vec![(claimed.id.clone(), ActivationStatus::Pending)],
+        *store.status_updates.lock().await
+    );
+
+    // Only the filler ever reached the push pool
+    assert_eq!(1, receiver.len());
+}
+
+/// A slot opening mid-wait lets the submit through, so no claim is released.
+#[tokio::test]
+async fn fetch_once_submits_when_queue_drains() {
+    let mut activations = make_activations(2);
+    let filler = activations.remove(0);
+    let claimed = activations.remove(0);
+
+    let store = Arc::new(MockStore::one(claimed.clone()));
+
+    let config = Arc::new(Config {
+        push: PushConfig {
+            queue: PushQueueConfig {
+                size: 1,
+                timeout: Duration::from_millis(500),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+
+    // Occupy the only queue slot so the first submit attempt is refused
+    sender
+        .send_async((filler, Instant::now()))
+        .await
+        .expect("an empty queue should accept one activation");
+
+    // Free the slot partway through the submit window
+    let drain = tokio::spawn({
+        let receiver = receiver.clone();
+
+        async move {
+            sleep(Duration::from_millis(50)).await;
+            receiver.recv_async().await.expect("the filler is queued");
+        }
+    });
+
+    let mut thread = fetch_thread(store.clone(), sender, config);
+
+    assert!(thread.fetch_once(Duration::from_millis(0)).await);
+    drain.await.expect("drain task should finish");
+
+    // The activation reached the push pool, so its claim still stands
+    assert!(store.status_updates.lock().await.is_empty());
+
+    assert_eq!(claimed.id, receiver.recv_async().await.unwrap().0.id);
+}
+
+/// Same contract on the path where the push pool has gone away.
+#[tokio::test]
+async fn fetch_once_undoes_claim_on_closed_queue() {
+    let claimed = make_activations(1).remove(0);
+    let store = Arc::new(MockStore::one(claimed.clone()));
+
+    let config = test_config();
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+
+    // Dropping the receiving end makes the submit fail immediately
+    drop(receiver);
+
+    let mut thread = fetch_thread(store.clone(), sender, config);
+
+    // A closed queue is unrecoverable, so the loop stops
+    assert!(!thread.fetch_once(Duration::from_millis(0)).await);
+
+    assert_eq!(
+        vec![(claimed.id.clone(), ActivationStatus::Pending)],
+        *store.status_updates.lock().await
+    );
 }

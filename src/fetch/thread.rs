@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::Result;
 use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
-use flume::Sender;
+use flume::{Sender, TrySendError};
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
@@ -14,7 +14,9 @@ use crate::push::QueueError;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
 use crate::store::types::{BucketRange, TopicPartition};
-use crate::timed;
+
+/// How long to wait between attempts to submit into a full push queue.
+const QUEUE_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Abstraction for a single fetch thread.
 pub struct FetchThread {
@@ -52,7 +54,7 @@ impl FetchThread {
         }
     }
 
-    async fn fetch_once(&mut self, fetch_backoff: Duration) -> bool {
+    pub(super) async fn fetch_once(&mut self, fetch_backoff: Duration) -> bool {
         let start = Instant::now();
 
         debug!("Fetching next batch of pending activations...");
@@ -125,6 +127,9 @@ impl FetchThread {
                                 self.config.push.queue.timeout.as_millis()
                             );
 
+                            // Nothing else will push this activation, so release the claim
+                            self.store.undo_claim(&id, "fetch.undo_claim").await;
+
                             // Wait for push queue to empty
                             backoff = true;
                         }
@@ -136,6 +141,9 @@ impl FetchThread {
                                 task_id = %id,
                                 "Submit to push pool failed due to closed channel",
                             );
+
+                            // Nothing else will push this activation, so release the claim
+                            self.store.undo_claim(&id, "fetch.undo_claim").await;
 
                             // We cannot recover from a closed channel
                             return false;
@@ -165,22 +173,36 @@ impl FetchThread {
         true
     }
 
+    /// Submit one claimed activation to the push pool. An error proves it was never handed off.
     async fn push_task(&self, activation: Activation, time: Instant) -> Result<(), QueueError> {
         metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
 
-        let duration = self.config.push.queue.timeout;
-        let future = self.sender.send_async((activation, time));
-        let timeout = tokio::time::timeout(duration, future);
+        let start = Instant::now();
+        let deadline = start + self.config.push.queue.timeout;
+        let mut item = (activation, time);
 
-        match timed!(timeout, "push.queue.wait_duration") {
-            // The channel was full so the send timed out
-            Err(_) => Err(QueueError::Timeout),
+        let result = loop {
+            match self.sender.try_send(item) {
+                // Pushed to channel successfully
+                Ok(()) => break Ok(()),
 
-            // The channel may close early if the push pool encounters an error
-            Ok(Err(_)) => Err(QueueError::Closed),
+                // The channel may close early if the push pool encounters an error
+                Err(TrySendError::Disconnected(_)) => break Err(QueueError::Closed),
 
-            // Pushed to channel successfully
-            Ok(_) => Ok(()),
-        }
+                // The queue is full, so keep the activation here and try again
+                Err(TrySendError::Full(returned)) => {
+                    if Instant::now() >= deadline {
+                        break Err(QueueError::Timeout);
+                    }
+
+                    item = returned;
+                    sleep(QUEUE_RETRY_INTERVAL).await;
+                }
+            }
+        };
+
+        metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+
+        result
     }
 }

@@ -4,7 +4,7 @@ use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::join;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::killswitch::KillswitchSelector;
 use crate::store::activation::{Activation, ActivationStatus};
@@ -96,6 +96,46 @@ pub trait ActivationStore: Send + Sync {
         max_attempts: Option<u32>,
         delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>, Error>;
+
+    /// Return a claimed activation to pending and clear its claim lease.
+    ///
+    /// Only rows still in `Claimed` are touched. The bool reports whether a row
+    /// was updated, so callers can distinguish a released claim from one that
+    /// already moved on, such as a push thread marking it `Processing`.
+    async fn release_claim(&self, id: &str) -> Result<bool, Error>;
+
+    /// Release a claim on an activation, returning it to pending.
+    ///
+    /// Both the fetch and push pools need this when an activation was claimed
+    /// but could not be handed to a worker.
+    async fn undo_claim(&self, id: &str, metric: &'static str) {
+        match self.release_claim(id).await {
+            Ok(true) => {
+                metrics::counter!(metric, "result" => "ok").increment(1);
+            }
+
+            // Somebody else advanced the activation between the push attempt and
+            // this update, so it is no longer ours to return to pending.
+            Ok(false) => {
+                metrics::counter!(metric, "result" => "not_claimed").increment(1);
+
+                warn!(
+                    task_id = %id,
+                    "Skipped undoing a claim that was already released or advanced"
+                );
+            }
+
+            Err(e) => {
+                metrics::counter!(metric, "result" => "error").increment(1);
+
+                error!(
+                    task_id = %id,
+                    error = ?e,
+                    "Failed to undo claim on an activation that was never pushed"
+                );
+            }
+        }
+    }
 
     /// Update the status of multiple activations in one batch.
     async fn set_status_batch(
