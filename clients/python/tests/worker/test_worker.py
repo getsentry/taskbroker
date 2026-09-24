@@ -19,6 +19,7 @@ from uuid import uuid4
 
 import grpc
 import msgpack
+import prometheus_client
 import pytest
 import zstandard as zstd
 from arroyo.backends.kafka import KafkaPayload
@@ -360,8 +361,10 @@ def _make_result_thread_pool(
     concurrency: int = 3,
     result_queue_maxsize: int = 3,
     update_in_batches: bool = False,
+    received_task: bool = True,
+    drain_file_path: str | None = None,
 ) -> TaskWorkerProcessingPool:
-    return TaskWorkerProcessingPool(
+    pool = TaskWorkerProcessingPool(
         app_module="examples.app:app",
         send_result_fn=capture,
         mp_context=get_context("fork"),
@@ -371,7 +374,10 @@ def _make_result_thread_pool(
         processing_pool_name="test",
         update_in_batches=update_in_batches,
         process_type="fork",
+        drain_file_path=drain_file_path,
     )
+    pool._received_task = received_task
+    return pool
 
 
 class _FakeProcess:
@@ -983,6 +989,7 @@ def test_push_worker_health_check_touches_while_idle(tmp_path: Path) -> None:
 
 
 def _make_push_worker(**kwargs: Any) -> PushTaskWorker:
+    kwargs.setdefault("drain_file_path", None)
     return PushTaskWorker(
         app_module="examples.app:app",
         broker_service="127.0.0.1:50051",
@@ -3611,3 +3618,123 @@ def test_shutdown_reports_whether_the_result_thread_joined() -> None:
         assert calls[0].kwargs["tags"]["outcome"] == "timeout"
     finally:
         stuck.set()
+
+
+def _prom_with_registry() -> tuple[Any, prometheus_client.CollectorRegistry]:
+    """WorkerPrometheusMetrics' series on a private registry, without its HTTP server."""
+    registry = prometheus_client.CollectorRegistry()
+    prom = mock.Mock()
+    prom.occupancy = prometheus_client.Gauge(
+        "taskworker_worker_occupancy", "", ["processing_pool"], registry=registry
+    )
+    prom.child_busy_seconds = prometheus_client.Counter(
+        "taskworker_worker_child_busy_seconds", "", ["processing_pool"], registry=registry
+    )
+    prom.child_wait_seconds = prometheus_client.Counter(
+        "taskworker_worker_child_wait_seconds", "", ["processing_pool"], registry=registry
+    )
+    return prom, registry
+
+
+def _prom_occupancy(registry: prometheus_client.CollectorRegistry) -> float | None:
+    return registry.get_sample_value("taskworker_worker_occupancy", {"processing_pool": "test"})
+
+
+def test_occupancy_withheld_until_first_task() -> None:
+    # A warm pod brokers are not yet routing to: running children, no task yet.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=2, received_task=False)
+    pool._metrics = mock.Mock()
+    pool._prom, registry = _prom_with_registry()
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", wait_since=10.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
+    # Absent, not zero, so the scaler averages only pods doing real work.
+    assert _prom_occupancy(registry) is None
+    # The counters still report the idle time.
+    assert _distribution_calls(pool._metrics, "taskworker.worker.child_wait_seconds")
+
+
+def test_push_task_opens_the_occupancy_gate() -> None:
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=2, received_task=False)
+    assert pool.push_task(SIMPLE_TASK, timeout=1)
+    assert pool._should_publish_occupancy()
+
+
+def test_stop_occupancy_reporting_removes_the_series() -> None:
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=2)
+    pool._metrics = mock.Mock()
+    pool._prom, registry = _prom_with_registry()
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+    assert _prom_occupancy(registry) == pytest.approx(1.0)
+
+    pool.stop_occupancy_reporting()
+    # Only the metrics thread writes the gauge; it removes the series on its next flush.
+    assert _prom_occupancy(registry) == pytest.approx(1.0)
+
+    # Children already gone, as during shutdown, so the occupancy block is skipped.
+    with pool._children_lock:
+        pool._children.clear()
+    pool._emit_periodic_metrics()
+    # Gone rather than frozen at its last value, so the scraper marks it stale.
+    assert _prom_occupancy(registry) is None
+
+    pool._metrics.reset_mock()
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=11.0)
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=12.0):
+        pool._emit_periodic_metrics()
+    # Later flushes must not re-create the series.
+    assert _prom_occupancy(registry) is None
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
+
+
+def test_pool_shutdown_stops_occupancy() -> None:
+    # The single SIGTERM hook: push and pull workers both end in pool.shutdown().
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=2)
+    pool.shutdown()
+    assert pool._occupancy_stopped
+
+
+def test_drain_file_stops_occupancy(tmp_path: Path) -> None:
+    drain_file = tmp_path / "draining"
+    pool = _make_result_thread_pool(
+        _SendResultCapture(), concurrency=2, drain_file_path=str(drain_file)
+    )
+    pool._metrics = mock.Mock()
+    pool._prom, registry = _prom_with_registry()
+    with pool._children_lock:
+        pool._children[uuid4()] = _make_tracked_child("running", busy_since=10.0)
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
+        pool._emit_periodic_metrics()
+    assert _prom_occupancy(registry) == pytest.approx(1.0)
+
+    # preStop creates the file; SIGTERM is still preStop-sleep seconds away.
+    drain_file.touch()
+    pool._metrics.reset_mock()
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=12.0):
+        pool._emit_periodic_metrics()
+
+    assert _prom_occupancy(registry) is None
+    assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
+
+
+def test_stale_drain_file_cleared_on_startup(tmp_path: Path) -> None:
+    # preStop ran before a liveness restart and the file survived on /tmp.
+    drain_file = tmp_path / "draining"
+    drain_file.touch()
+
+    pool = _make_result_thread_pool(
+        _SendResultCapture(), concurrency=2, drain_file_path=str(drain_file)
+    )
+
+    assert not drain_file.exists()
+    assert pool._should_publish_occupancy()

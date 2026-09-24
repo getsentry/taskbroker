@@ -31,6 +31,7 @@ from taskbroker_client.app import import_app
 from taskbroker_client.constants import (
     DEFAULT_GRPC_MAX_MESSAGE_SIZE,
     DEFAULT_REBALANCE_AFTER,
+    DEFAULT_WORKER_DRAIN_FILE_PATH,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
     DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
@@ -258,6 +259,7 @@ class PushTaskWorker:
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
+        drain_file_path: str | None = DEFAULT_WORKER_DRAIN_FILE_PATH,
     ) -> None:
         app = import_app(app_module)
 
@@ -286,6 +288,7 @@ class PushTaskWorker:
             skip_awaiting_futures=skip_awaiting_futures,
             prometheus_port=prometheus_port,
             future_checking_frequency=future_checking_frequency,
+            drain_file_path=drain_file_path,
         )
 
         logger.info("Running in PUSH mode")
@@ -871,6 +874,7 @@ class TaskWorkerProcessingPool:
         skip_awaiting_futures: bool = True,
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
+        drain_file_path: str | None = None,
     ) -> None:
         self._concurrency = concurrency
 
@@ -911,6 +915,53 @@ class TaskWorkerProcessingPool:
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
 
+        self._received_task = False
+        self._occupancy_stopped = False
+        self._drain_file_path = drain_file_path
+        if drain_file_path is not None:
+            self._clear_stale_drain_file(drain_file_path)
+
+    def _clear_stale_drain_file(self, path: str) -> None:
+        """
+        preStop also runs before a liveness restart, and the file survives that
+        restart on an emptyDir /tmp. Left in place it would silence this process's
+        occupancy for its whole life.
+        """
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            logger.warning(
+                "taskworker.worker.drain_file.clear_failed",
+                extra={"path": path, "error": e, "processing_pool": self._processing_pool_name},
+            )
+            return
+        logger.info(
+            "taskworker.worker.drain_file.cleared",
+            extra={"path": path, "processing_pool": self._processing_pool_name},
+        )
+
+    def stop_occupancy_reporting(self) -> None:
+        """
+        Withdraw occupancy for the rest of this process's life.
+
+        Only flips a flag: the metrics thread is the sole writer of the gauge, and
+        on its next flush it removes the Prometheus series instead of leaving the
+        last value up, so the scraper marks it stale rather than averaging a
+        draining pod's idle slots into the pool. Idempotent.
+        """
+        if self._occupancy_stopped:
+            return
+        self._occupancy_stopped = True
+        logger.info(
+            "taskworker.worker.occupancy.stopped",
+            extra={"processing_pool": self._processing_pool_name, "pod_name": self._pod_name},
+        )
+
+    def _should_publish_occupancy(self) -> bool:
+        return self._received_task and not self._occupancy_stopped
+
     @property
     def ready_count(self) -> int:
         """Number of children that have finished warming up and are consuming."""
@@ -933,6 +984,26 @@ class TaskWorkerProcessingPool:
             "processing_pool": self._processing_pool_name,
             "pod_name": self._pod_name,
         }
+
+        if (
+            self._drain_file_path is not None
+            and not self._occupancy_stopped
+            and os.path.exists(self._drain_file_path)
+        ):
+            logger.info(
+                "taskworker.worker.drain_file.detected",
+                extra={
+                    "path": self._drain_file_path,
+                    "processing_pool": self._processing_pool_name,
+                },
+            )
+            self.stop_occupancy_reporting()
+
+        # Every flush, not just the first: this thread may have set the gauge
+        # between the flag flipping and now. Outside the occupancy block below,
+        # which is skipped once no children are running, as during shutdown.
+        if self._occupancy_stopped and self._prom is not None:
+            self._prom.occupancy.remove(self._processing_pool_name)
 
         # Emit queue size metrics
         try:
@@ -1029,15 +1100,16 @@ class TaskWorkerProcessingPool:
                 )
 
             occupancy = min(busy_time / ceiling, 1.0)
-            self._metrics.gauge(
-                "taskworker.worker.occupancy",
-                occupancy,
-                tags=tags,
-            )
-            if self._prom is not None:
-                self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
-                    occupancy
+            if self._should_publish_occupancy():
+                self._metrics.gauge(
+                    "taskworker.worker.occupancy",
+                    occupancy,
+                    tags=tags,
                 )
+                if self._prom is not None:
+                    self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
+                        occupancy
+                    )
 
         self._metrics.gauge(
             "taskworker.worker.concurrency",
@@ -1380,6 +1452,7 @@ class TaskWorkerProcessingPool:
             )
             return False
 
+        self._received_task = True
         self._metrics.distribution(
             "taskworker.worker.child_task.put.duration",
             time.monotonic() - start_time,
@@ -1441,6 +1514,7 @@ class TaskWorkerProcessingPool:
         """
         logger.info("taskworker.worker.shutdown.start")
         shutdown_start = time.monotonic()
+        self.stop_occupancy_reporting()
         self._shutdown_event.set()
 
         logger.info("taskworker.worker.shutdown.spawn_children")
