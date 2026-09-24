@@ -3696,6 +3696,22 @@ def test_stop_occupancy_reporting_removes_the_series() -> None:
     assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy") == []
 
 
+def test_occupancy_removal_error_does_not_abort_the_flush() -> None:
+    # prometheus_client < 0.22 raises KeyError when removing a missing series.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=2)
+    pool._metrics = mock.Mock()
+    pool._prom = mock.Mock()
+    pool._prom.occupancy.remove.side_effect = KeyError(("test",))
+    pool.stop_occupancy_reporting()
+
+    pool._emit_periodic_metrics()
+
+    pool._prom.occupancy.remove.assert_called_once_with("test")
+    # The rest of the flush still ran.
+    assert _gauge_calls(pool._metrics, "taskworker.worker.concurrency")
+    assert _distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")
+
+
 def test_pool_shutdown_stops_occupancy() -> None:
     # The single SIGTERM hook: push and pull workers both end in pool.shutdown().
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=2)

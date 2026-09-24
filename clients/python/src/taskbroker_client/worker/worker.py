@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import multiprocessing
 import os
@@ -999,11 +1000,9 @@ class TaskWorkerProcessingPool:
             )
             self.stop_occupancy_reporting()
 
-        # Every flush, not just the first: this thread may have set the gauge
-        # between the flag flipping and now. Outside the occupancy block below,
-        # which is skipped once no children are running, as during shutdown.
         if self._occupancy_stopped and self._prom is not None:
-            self._prom.occupancy.remove(self._processing_pool_name)
+            with contextlib.suppress(KeyError):
+                self._prom.occupancy.remove(self._processing_pool_name)
 
         # Emit queue size metrics
         try:
