@@ -31,7 +31,7 @@ use crate::killswitch::KillswitchSelector;
 use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, Claim, FailedTasksForwarder, TopicPartition};
 
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
@@ -836,29 +836,40 @@ impl ActivationStore for SqliteStore {
         Ok(Some(row.into()))
     }
 
-    /// Return a claimed activation to pending and clear its claim lease.
+    /// Return claimed activations to pending and clear their claim leases.
     ///
-    /// The `status` guard makes this a no-op once the activation has moved on,
-    /// so an undo that races a successful push cannot pull the row back out from
-    /// under a worker that is already running it.
+    /// Each row must still be `Claimed` with the expiry it was claimed under.
+    /// That makes this a no-op once the activation was pushed, or once its lease
+    /// expired and a later claim took the row, so a late release can never make
+    /// a row claimable while another claimant is delivering it.
     #[instrument(skip_all)]
-    async fn release_claim(&self, id: &str) -> Result<bool, Error> {
-        let mut conn = self.acquire_write_conn_metric("release_claim").await?;
+    async fn release_claims(&self, claims: &[Claim]) -> Result<u64, Error> {
+        if claims.is_empty() {
+            return Ok(0);
+        }
 
-        let released = sqlx::query(
-            "UPDATE inflight_taskactivations
-             SET claim_expires_at = null,
-                 status = $1
-             WHERE id = $2
-                 AND status = $3",
-        )
-        .bind(ActivationStatus::Pending)
-        .bind(id)
-        .bind(ActivationStatus::Claimed)
-        .execute(&mut *conn)
-        .await?;
+        let mut conn = self.acquire_write_conn_metric("release_claims").await?;
 
-        Ok(released.rows_affected() > 0)
+        let mut query_builder = QueryBuilder::new(
+            "UPDATE inflight_taskactivations SET claim_expires_at = null, status = ",
+        );
+        query_builder.push_bind(ActivationStatus::Pending);
+        query_builder.push(" WHERE status = ");
+        query_builder.push_bind(ActivationStatus::Claimed);
+        query_builder.push(" AND (");
+
+        let mut separated = query_builder.separated(" OR ");
+        for claim in claims {
+            separated.push("(id = ");
+            separated.push_bind_unseparated(&claim.id);
+            separated.push_unseparated(" AND claim_expires_at = ");
+            separated.push_bind_unseparated(claim.expires_at.timestamp());
+            separated.push_unseparated(")");
+        }
+        separated.push_unseparated(")");
+
+        let released = query_builder.build().execute(&mut *conn).await?;
+        Ok(released.rows_affected())
     }
 
     #[instrument(skip_all)]

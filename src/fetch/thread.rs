@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::push::QueueError;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, TopicPartition};
+use crate::store::types::{BucketRange, Claim, TopicPartition};
 
 /// How long to wait between attempts to submit into a full push queue.
 const QUEUE_RETRY_INTERVAL: Duration = Duration::from_millis(1);
@@ -86,8 +86,11 @@ impl FetchThread {
                 // Use this instant to track claimed → pushed latency
                 let start = Instant::now();
 
-                for activation in activations {
+                let mut activations = activations.into_iter();
+
+                while let Some(activation) = activations.next() {
                     let id = activation.id.clone();
+                    let claim = activation.claim();
 
                     if activation.processing_attempts < 1 {
                         let latency = cmp::max(0, activation.received_latency(Utc::now()));
@@ -115,35 +118,51 @@ impl FetchThread {
                         );
                     }
 
-                    match self.push_task(activation, start).await {
-                        Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
+                    let error = match self.push_task(activation, start).await {
+                        Ok(()) => {
+                            metrics::counter!("fetch.submit", "result" => "ok").increment(1);
+                            continue;
+                        }
 
-                        Err(QueueError::Timeout) => {
+                        Err(e) => e,
+                    };
+
+                    // Neither this activation nor the rest of the batch reached the
+                    // push pool, and nothing else will push them, so release every
+                    // claim now instead of waiting for the leases to expire
+                    let unsent: Vec<Claim> = claim
+                        .into_iter()
+                        .chain(activations.by_ref().filter_map(|a| a.claim()))
+                        .collect();
+
+                    match error {
+                        QueueError::Timeout => {
                             metrics::counter!("fetch.submit", "result" => "timeout").increment(1);
 
                             warn!(
                                 task_id = %id,
+                                unsent = unsent.len(),
                                 "Submit to push pool timed out after {} milliseconds",
                                 self.config.push.queue.timeout.as_millis()
                             );
 
-                            // Nothing else will push this activation, so release the claim
-                            self.store.undo_claim(&id, "fetch.undo_claim").await;
+                            self.store.undo_claims(&unsent, "fetch.undo_claim").await;
 
                             // Wait for push queue to empty
                             backoff = true;
+                            break;
                         }
 
-                        Err(QueueError::Closed) => {
+                        QueueError::Closed => {
                             metrics::counter!("fetch.submit", "result" => "closed").increment(1);
 
                             warn!(
                                 task_id = %id,
+                                unsent = unsent.len(),
                                 "Submit to push pool failed due to closed channel",
                             );
 
-                            // Nothing else will push this activation, so release the claim
-                            self.store.undo_claim(&id, "fetch.undo_claim").await;
+                            self.store.undo_claims(&unsent, "fetch.undo_claim").await;
 
                             // We cannot recover from a closed channel
                             return false;

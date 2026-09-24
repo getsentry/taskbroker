@@ -12,17 +12,17 @@ use crate::config::fetch::FetchConfig;
 use crate::config::push::{PushConfig, PushQueueConfig};
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, Claim, FailedTasksForwarder, TopicPartition};
 use crate::test_utils::make_activations;
 
 use super::*;
 
-/// Store stub that returns one activation once OR is always empty OR always fails.
+/// Store stub that returns one batch once OR is always empty OR always fails.
 struct MockStore {
-    /// A single (optional) pending activation.
-    pending: Mutex<Option<Activation>>,
+    /// Pending activations, all claimed by the first fetch.
+    pending: Mutex<Vec<Activation>>,
 
-    /// Every `set_status` call, in order.
+    /// Every `set_status` call and released claim, in order.
     status_updates: Mutex<Vec<(String, ActivationStatus)>>,
 
     /// Should operations fail?
@@ -32,15 +32,19 @@ struct MockStore {
 impl MockStore {
     fn empty() -> Self {
         Self {
-            pending: Mutex::new(None),
+            pending: Mutex::new(Vec::new()),
             status_updates: Mutex::new(Vec::new()),
             fail: false,
         }
     }
 
     fn one(activation: Activation) -> Self {
+        Self::many(vec![activation])
+    }
+
+    fn many(activations: Vec<Activation>) -> Self {
         Self {
-            pending: Mutex::new(Some(activation)),
+            pending: Mutex::new(activations),
             status_updates: Mutex::new(Vec::new()),
             fail: false,
         }
@@ -48,7 +52,7 @@ impl MockStore {
 
     fn error() -> Self {
         Self {
-            pending: Mutex::new(None),
+            pending: Mutex::new(Vec::new()),
             status_updates: Mutex::new(Vec::new()),
             fail: true,
         }
@@ -97,17 +101,23 @@ impl ActivationStore for MockStore {
             return Err(anyhow!("mock store error"));
         }
 
-        Ok(match self.pending.lock().await.take() {
-            Some(mut a) => {
-                a.status = if mark_processing {
-                    ActivationStatus::Processing
+        let claimed = self
+            .pending
+            .lock()
+            .await
+            .drain(..)
+            .map(|mut a| {
+                if mark_processing {
+                    a.status = ActivationStatus::Processing;
                 } else {
-                    ActivationStatus::Claimed
-                };
-                vec![a]
-            }
-            None => vec![],
-        })
+                    a.status = ActivationStatus::Claimed;
+                    a.claim_expires_at = Some(Utc::now() + chrono::Duration::minutes(1));
+                }
+                a
+            })
+            .collect();
+
+        Ok(claimed)
     }
 
     async fn mark_activation_processing(&self, _id: &str) -> Result<(), Error> {
@@ -149,17 +159,18 @@ impl ActivationStore for MockStore {
         Ok(None)
     }
 
-    async fn release_claim(&self, id: &str) -> Result<bool, Error> {
+    async fn release_claims(&self, claims: &[Claim]) -> Result<u64, Error> {
         if self.fail {
             return Err(anyhow!("mock store error"));
         }
 
-        self.status_updates
-            .lock()
-            .await
-            .push((id.to_owned(), ActivationStatus::Pending));
+        self.status_updates.lock().await.extend(
+            claims
+                .iter()
+                .map(|claim| (claim.id.clone(), ActivationStatus::Pending)),
+        );
 
-        Ok(true)
+        Ok(claims.len() as u64)
     }
 
     async fn set_status_batch(
@@ -432,4 +443,75 @@ async fn fetch_once_undoes_claim_on_closed_queue() {
         vec![(claimed.id.clone(), ActivationStatus::Pending)],
         *store.status_updates.lock().await
     );
+}
+
+/// A timeout means the queue stayed full for the whole window, so the rest of
+/// the batch would only wait out the same timeout one by one. Release the whole
+/// batch in one go and back off instead.
+#[tokio::test]
+async fn fetch_once_releases_rest_of_batch_on_submit_timeout() {
+    let mut activations = make_activations(4);
+    let filler = activations.remove(0);
+    let claimed = activations;
+
+    let store = Arc::new(MockStore::many(claimed.clone()));
+
+    let config = Arc::new(Config {
+        push: PushConfig {
+            queue: PushQueueConfig {
+                size: 1,
+                timeout: Duration::from_millis(20),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+
+    // Occupy the only queue slot so the first submit cannot complete
+    sender
+        .send_async((filler, Instant::now()))
+        .await
+        .expect("an empty queue should accept one activation");
+
+    let mut thread = fetch_thread(store.clone(), sender, config);
+
+    let start = Instant::now();
+    assert!(thread.fetch_once(Duration::from_millis(0)).await);
+
+    // Only the first activation waited out the timeout
+    assert!(start.elapsed() < Duration::from_millis(60));
+
+    let expected: Vec<_> = claimed
+        .iter()
+        .map(|a| (a.id.clone(), ActivationStatus::Pending))
+        .collect();
+    assert_eq!(expected, *store.status_updates.lock().await);
+
+    assert_eq!(1, receiver.len());
+}
+
+/// A closed queue stops the fetch loop, so every activation left in the batch
+/// has to be released on the way out rather than stranded until lease expiry.
+#[tokio::test]
+async fn fetch_once_releases_rest_of_batch_on_closed_queue() {
+    let claimed = make_activations(3);
+    let store = Arc::new(MockStore::many(claimed.clone()));
+
+    let config = test_config();
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+
+    // Dropping the receiving end makes the submit fail immediately
+    drop(receiver);
+
+    let mut thread = fetch_thread(store.clone(), sender, config);
+
+    assert!(!thread.fetch_once(Duration::from_millis(0)).await);
+
+    let expected: Vec<_> = claimed
+        .iter()
+        .map(|a| (a.id.clone(), ActivationStatus::Pending))
+        .collect();
+    assert_eq!(expected, *store.status_updates.lock().await);
 }

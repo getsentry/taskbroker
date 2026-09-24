@@ -8,7 +8,7 @@ use tracing::{error, warn};
 
 use crate::killswitch::KillswitchSelector;
 use crate::store::activation::{Activation, ActivationStatus};
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, Claim, DepthCounts, FailedTasksForwarder, TopicPartition};
 
 #[async_trait]
 pub trait ActivationStore: Send + Sync {
@@ -97,41 +97,49 @@ pub trait ActivationStore: Send + Sync {
         delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>, Error>;
 
-    /// Return a claimed activation to pending and clear its claim lease.
+    /// Return claimed activations to pending and clear their claim leases.
     ///
-    /// Only rows still in `Claimed` are touched. The bool reports whether a row
-    /// was updated, so callers can distinguish a released claim from one that
-    /// already moved on, such as a push thread marking it `Processing`.
-    async fn release_claim(&self, id: &str) -> Result<bool, Error>;
+    /// A row is only released while it still holds the given claim, meaning it
+    /// is `Claimed` with the same `claim_expires_at`. If the lease already
+    /// expired and another fetch thread claimed the row again, that claim has a
+    /// different expiry and is left alone. Returns the number of rows released.
+    async fn release_claims(&self, claims: &[Claim]) -> Result<u64, Error>;
 
-    /// Release a claim on an activation, returning it to pending.
+    /// Release claims on activations that were never handed to a worker.
     ///
     /// Both the fetch and push pools need this when an activation was claimed
-    /// but could not be handed to a worker.
-    async fn undo_claim(&self, id: &str, metric: &'static str) {
-        match self.release_claim(id).await {
-            Ok(true) => {
-                metrics::counter!(metric, "result" => "ok").increment(1);
-            }
+    /// but could not be delivered.
+    async fn undo_claims(&self, claims: &[Claim], metric: &'static str) {
+        if claims.is_empty() {
+            return;
+        }
 
-            // Somebody else advanced the activation between the push attempt and
-            // this update, so it is no longer ours to return to pending.
-            Ok(false) => {
-                metrics::counter!(metric, "result" => "not_claimed").increment(1);
+        match self.release_claims(claims).await {
+            Ok(released) => {
+                metrics::counter!(metric, "result" => "ok").increment(released);
 
-                warn!(
-                    task_id = %id,
-                    "Skipped undoing a claim that was already released or advanced"
-                );
+                // The rest were pushed, released, or reclaimed after their lease
+                // expired, so they are no longer ours to return to pending
+                let skipped = (claims.len() as u64).saturating_sub(released);
+
+                if skipped > 0 {
+                    metrics::counter!(metric, "result" => "not_claimed").increment(skipped);
+
+                    warn!(
+                        task_ids = ?claims.iter().map(|c| &c.id).collect::<Vec<_>>(),
+                        skipped,
+                        "Skipped undoing claims that were already released or reclaimed"
+                    );
+                }
             }
 
             Err(e) => {
-                metrics::counter!(metric, "result" => "error").increment(1);
+                metrics::counter!(metric, "result" => "error").increment(claims.len() as u64);
 
                 error!(
-                    task_id = %id,
+                    task_ids = ?claims.iter().map(|c| &c.id).collect::<Vec<_>>(),
                     error = ?e,
-                    "Failed to undo claim on an activation that was never pushed"
+                    "Failed to undo claims on activations that were never pushed"
                 );
             }
         }

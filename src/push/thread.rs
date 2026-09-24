@@ -84,7 +84,9 @@ impl PushThread {
             );
 
             // Revert claimed task back to pending
-            self.store.undo_claim(id, "push.undo_claim").await;
+            self.store
+                .undo_claims(activation.claim().as_slice(), "push.undo_claim")
+                .await;
 
             return;
         }
