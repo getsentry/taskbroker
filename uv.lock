@@ -850,7 +850,7 @@ requires-dist = [
     { name = "grpcio", specifier = ">=1.67.1" },
     { name = "grpcio-health-checking", specifier = ">=1.67.1" },
     { name = "msgpack", specifier = ">=1.2.1" },
-    { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "prometheus-client", specifier = ">=0.22" },
     { name = "protobuf", specifier = ">=5.28.3" },
     { name = "redis", specifier = ">=3.4.1" },
     { name = "redis-py-cluster", marker = "extra == 'cluster'", specifier = ">=2.1.0" },
