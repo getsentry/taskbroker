@@ -114,7 +114,12 @@ pub async fn start_consumer(
 
     handle_shutdown_signals(event_sender.clone());
     poll_consumer_client(consumer.clone(), client_shutdown_receiver);
-    metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
+    metrics::gauge!(
+        "arroyo.consumer.current_partitions",
+        "topic" => topics_tag.clone(),
+        "application" => "taskbroker",
+    )
+    .set(0);
     handle_events(
         consumer,
         event_receiver,
@@ -209,6 +214,7 @@ impl ConsumerContext for KafkaContext {
                 metrics::counter!(
                     "arroyo.consumer.partitions_assigned.count",
                     "topic" => self.topics_tag.clone(),
+                    "application" => "taskbroker",
                 )
                 .increment(tpl.count() as u64);
             }
@@ -231,6 +237,7 @@ impl ConsumerContext for KafkaContext {
                 metrics::counter!(
                     "arroyo.consumer.partitions_revoked.count",
                     "topic" => self.topics_tag.clone(),
+                    "application" => "taskbroker",
                 )
                 .increment(tpl.count() as u64);
             }
@@ -436,8 +443,12 @@ pub async fn handle_events(
                 info!("Received event: {:?}", event);
                 state = match (state, event) {
                     (ConsumerState::Ready, Event::Assign(tpl)) => {
-                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone())
-                            .set(tpl.len() as f64);
+                        metrics::gauge!(
+                            "arroyo.consumer.current_partitions",
+                            "topic" => topics_tag.clone(),
+                            "application" => "taskbroker",
+                        )
+                        .set(tpl.len() as f64);
                         activation_store.assign_partitions(&mut tpl.iter().map(TopicPartition::from));
                         ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
                     }
@@ -455,7 +466,12 @@ pub async fn handle_events(
                         );
                         activation_store.revoke_partitions(&mut revoked.iter().map(TopicPartition::from));
                         handles.shutdown(CALLBACK_DURATION).await;
-                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
+                        metrics::gauge!(
+                            "arroyo.consumer.current_partitions",
+                            "topic" => topics_tag.clone(),
+                            "application" => "taskbroker",
+                        )
+                        .set(0);
                         ConsumerState::Ready
                     }
                     (ConsumerState::Consuming(handles, tpl), Event::Shutdown) => {
@@ -463,7 +479,12 @@ pub async fn handle_events(
                         handles.shutdown(CALLBACK_DURATION).await;
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
-                        metrics::gauge!("arroyo.consumer.current_partitions", "topic" => topics_tag.clone()).set(0);
+                        metrics::gauge!(
+                            "arroyo.consumer.current_partitions",
+                            "topic" => topics_tag.clone(),
+                            "application" => "taskbroker",
+                        )
+                        .set(0);
                         ConsumerState::Stopped
                     }
                     (ConsumerState::Stopped, _) => {
