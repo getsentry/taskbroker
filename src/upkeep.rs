@@ -61,7 +61,14 @@ pub async fn upkeep(
                         Duration::from_millis(config.kafka_send_timeout_ms),
                     ) {
                         Ok(new_producer) => producer = Arc::new(new_producer),
-                        Err(err) => error!("Could not switch Kafka producer: {err}"),
+                        Err(err) => {
+                            let target = if use_arroyo_producer {
+                                "Arroyo"
+                            } else {
+                                "rdkafka"
+                            };
+                            error!("Could not switch kafka producer in upkeep to {target}: {err}");
+                        }
                     }
                 }
                 let _ = do_upkeep(
