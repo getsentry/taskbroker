@@ -6,6 +6,8 @@ use derive_builder::Builder;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivationStatus};
 use sqlx::Type;
 
+use crate::store::types::Claim;
+
 /// The members of this enum should be a superset of the members
 /// of `ActivationStatus` in `sentry_protos`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Type, Hash)]
@@ -170,6 +172,14 @@ pub struct Activation {
 }
 
 impl Activation {
+    /// The claim this activation was fetched under, if it holds one.
+    pub fn claim(&self) -> Option<Claim> {
+        self.claim_expires_at.map(|expires_at| Claim {
+            id: self.id.clone(),
+            expires_at,
+        })
+    }
+
     /// The number of milliseconds between an activation's received timestamp and the provided datetime.
     pub fn received_latency(&self, now: DateTime<Utc>) -> i64 {
         now.signed_duration_since(self.received_at)

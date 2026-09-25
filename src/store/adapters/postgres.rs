@@ -24,7 +24,7 @@ use crate::push::compute_claim_duration_ms;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::retry::retry_query;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, Claim, DepthCounts, FailedTasksForwarder, TopicPartition};
 
 /// Run migrations.
 pub async fn migrate(config: &StoreConfig) -> Result<()> {
@@ -961,6 +961,48 @@ impl ActivationStore for PostgresStore {
             tx.commit().await?;
 
             Ok(Some(row.into()))
+        })
+        .await
+    }
+
+    /// Return claimed activations to pending and clear their claim leases.
+    ///
+    /// Each row must still be `Claimed` with the expiry it was claimed under.
+    /// That makes this a no-op once the activation was pushed, or once its lease
+    /// expired and a later claim took the row, so a late release can never make
+    /// a row claimable while another claimant is delivering it.
+    #[instrument(skip_all)]
+    #[framed]
+    async fn release_claims(&self, claims: &[Claim]) -> Result<u64, Error> {
+        if claims.is_empty() {
+            return Ok(0);
+        }
+
+        let (ids, expirations): (Vec<String>, Vec<DateTime<Utc>>) = claims
+            .iter()
+            .map(|claim| (claim.id.clone(), claim.expires_at))
+            .unzip();
+
+        retry_query(&self.config.retry, "release_claims", || async {
+            let mut conn = self.acquire_write_conn_metric("release_claims").await?;
+
+            let released = sqlx::query(
+                "UPDATE inflight_taskactivations AS t
+                 SET claim_expires_at = null,
+                     status = $1
+                 FROM UNNEST($2::text[], $3::timestamptz[]) AS c(id, claim_expires_at)
+                 WHERE t.id = c.id
+                     AND t.status = $4
+                     AND t.claim_expires_at = c.claim_expires_at",
+            )
+            .bind(ActivationStatus::Pending.to_string())
+            .bind(&ids)
+            .bind(&expirations)
+            .bind(ActivationStatus::Claimed.to_string())
+            .execute(&mut *conn)
+            .await?;
+
+            Ok(released.rows_affected())
         })
         .await
     }
