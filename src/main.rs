@@ -66,6 +66,7 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
+    sentry_arroyo::metrics::configure_scope(|scope| scope.set_tag("application", "taskbroker"))?;
 
     info!(config = config.dump_redacted_yaml()?, "Configuration");
 
