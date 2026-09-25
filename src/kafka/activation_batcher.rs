@@ -5,10 +5,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use futures::future::join_all;
 use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::util::Timeout;
 
 use crate::config::Config;
+use crate::kafka::producer::ProducerBackend;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::activation::Activation;
 
@@ -50,7 +49,7 @@ pub struct ActivationBatcher {
     forward_batch: Vec<Vec<u8>>, // payload
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    producer: Arc<FutureProducer>,
+    producer: Arc<ProducerBackend>,
     producer_cluster: String,
 }
 
@@ -59,11 +58,13 @@ impl ActivationBatcher {
         config: ActivationBatcherConfig,
         runtime_config_manager: Arc<RuntimeConfigManager>,
     ) -> Self {
-        let producer: Arc<FutureProducer> = Arc::new(
-            config
-                .producer_config
-                .create()
-                .expect("Could not create kafka producer in activation batcher"),
+        let producer = Arc::new(
+            ProducerBackend::new(
+                config.producer_config.clone(),
+                false,
+                Duration::from_millis(config.send_timeout_ms),
+            )
+            .expect("Could not create kafka producer in activation batcher"),
         );
         let producer_cluster = config
             .producer_config
@@ -192,26 +193,26 @@ impl Reducer for ActivationBatcher {
                             .expect("producer config always sets bootstrap.servers")
                             .to_string()
                     });
-            if self.producer_cluster != forward_cluster {
+            if self.producer_cluster != forward_cluster
+                || self.producer.is_arroyo() != runtime_config.use_arroyo_producer
+            {
                 let mut new_config = self.config.producer_config.clone();
                 new_config.set("bootstrap.servers", &forward_cluster);
-                self.producer = Arc::new(
-                    new_config
-                        .create()
-                        .expect("Could not create kafka producer in activation batcher"),
-                );
+                self.producer = Arc::new(ProducerBackend::new(
+                    new_config,
+                    runtime_config.use_arroyo_producer,
+                    Duration::from_millis(self.config.send_timeout_ms),
+                )?);
                 self.producer_cluster = forward_cluster;
             }
             let forward_topic = runtime_config
                 .demoted_topic
                 .clone()
                 .unwrap_or(self.config.kafka_long_topic.clone());
-            let sends = self.forward_batch.iter().map(|payload| {
-                self.producer.send(
-                    FutureRecord::<(), Vec<u8>>::to(&forward_topic).payload(payload),
-                    Timeout::After(Duration::from_millis(self.config.send_timeout_ms)),
-                )
-            });
+            let sends = self
+                .forward_batch
+                .iter()
+                .map(|payload| self.producer.send(&forward_topic, payload));
 
             let results = join_all(sends).await;
             let success_count = results.iter().filter(|r| r.is_ok()).count();

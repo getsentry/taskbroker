@@ -7,9 +7,7 @@ use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use prost::Message;
 use prost_types::Timestamp;
-use rdkafka::error::KafkaError;
-use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::util::Timeout;
+use sentry_arroyo::backends::ProducerError;
 use sentry_protos::taskbroker::v1::TaskActivation;
 use tokio::{fs, join, select, time};
 use tonic_health::ServingStatus;
@@ -19,6 +17,7 @@ use uuid::Uuid;
 
 use crate::SERVICE_NAME;
 use crate::config::Config;
+use crate::kafka::producer::ProducerBackend;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::traits::ActivationStore;
 use crate::store::types::TopicPartition;
@@ -35,10 +34,13 @@ pub async fn upkeep(
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
     let kafka_config = config.kafka_producer_config();
-    let producer: Arc<FutureProducer> = Arc::new(
-        kafka_config
-            .create()
-            .expect("Could not create kafka producer in upkeep"),
+    let mut producer = Arc::new(
+        ProducerBackend::new(
+            kafka_config,
+            runtime_config_manager.read().await.use_arroyo_producer,
+            Duration::from_millis(config.kafka_send_timeout_ms),
+        )
+        .expect("Could not create kafka producer in upkeep"),
     );
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
@@ -51,6 +53,17 @@ pub async fn upkeep(
     loop {
         select! {
             _ = timer.tick() => {
+                let use_arroyo_producer = runtime_config_manager.read().await.use_arroyo_producer;
+                if producer.is_arroyo() != use_arroyo_producer {
+                    match ProducerBackend::new(
+                        config.kafka_producer_config(),
+                        use_arroyo_producer,
+                        Duration::from_millis(config.kafka_send_timeout_ms),
+                    ) {
+                        Ok(new_producer) => producer = Arc::new(new_producer),
+                        Err(err) => error!("Could not switch Kafka producer: {err}"),
+                    }
+                }
                 let _ = do_upkeep(
                     config.clone(),
                     store.clone(),
@@ -126,7 +139,7 @@ impl UpkeepResults {
 pub async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<dyn ActivationStore>,
-    producer: Arc<FutureProducer>,
+    producer: Arc<ProducerBackend>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
@@ -163,21 +176,15 @@ pub async fn do_upkeep(
             .into_iter()
             .map(|inflight| {
                 let producer = producer.clone();
-                let config = config.clone();
                 let target_topic = retry_target_topic.clone();
 
                 async move {
                     let activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
                     let serialized = create_retry_activation(activation).encode_to_vec();
-                    let delivery = producer
-                        .send(
-                            FutureRecord::<(), Vec<u8>>::to(&target_topic).payload(&serialized),
-                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                        )
-                        .await;
+                    let delivery = producer.send(&target_topic, &serialized).await;
                     match delivery {
-                        Ok(_) => Ok(inflight.id),
-                        Err((err, _msg)) => Err(err),
+                        Ok(()) => Ok(inflight.id),
+                        Err(err) => Err(err),
                     }
                 }
             })
@@ -187,7 +194,7 @@ pub async fn do_upkeep(
             .collect::<Vec<_>>()
             .await
             .into_iter()
-            .filter_map(|result: Result<String, KafkaError>| match result {
+            .filter_map(|result: Result<String, ProducerError>| match result {
                 Ok(id) => Some(id),
                 Err(err) => {
                     error!("retry.publish.failure {}", err);
@@ -268,14 +275,10 @@ pub async fn do_upkeep(
                     metrics::histogram!("upkeep.dlq.message_size")
                         .record(activation_data.len() as f64);
                     let delivery = producer
-                        .send(
-                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
-                                .payload(&activation_data),
-                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                        )
+                        .send(&config.kafka_deadletter_topic, &activation_data)
                         .await;
 
-                    if let Err((err, _msg)) = delivery {
+                    if let Err(err) = delivery {
                         error!(
                             "deadletter.publish.failure: {}, message: {:?}",
                             err, activation_data
@@ -373,10 +376,13 @@ pub async fn do_upkeep(
         }
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
-        let forward_producer: Arc<FutureProducer> = Arc::new(
-            forward_producer_config
-                .create()
-                .expect("Could not create kafka producer in upkeep"),
+        let forward_producer = Arc::new(
+            ProducerBackend::new(
+                forward_producer_config,
+                producer.is_arroyo(),
+                Duration::from_millis(config.kafka_send_timeout_ms),
+            )
+            .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
             .claim_activations(None, Some(&demoted_namespaces), None, None, false)
@@ -387,21 +393,14 @@ pub async fn do_upkeep(
                 .into_iter()
                 .map(|inflight| {
                     let forward_producer = forward_producer.clone();
-                    let config = config.clone();
                     let topic = forward_topic.clone();
                     async move {
                         metrics::counter!("upkeep.forward_task_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
 
-                        let delivery = forward_producer
-                            .send(
-                                FutureRecord::<(), Vec<u8>>::to(&topic)
-                                    .payload(&inflight.activation),
-                                Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                            )
-                            .await;
+                        let delivery = forward_producer.send(&topic, &inflight.activation).await;
                         match delivery {
-                            Ok(_) => Ok(inflight.id),
-                            Err((err, _msg)) => {
+                            Ok(()) => Ok(inflight.id),
+                            Err(err) => {
                                 metrics::counter!("upkeep.forward_task_demoted_namespace.publish_failure", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
                                 error!("forward_task_demoted_namespace.publish.failure: {}", err);
                                 Err(anyhow::anyhow!("failed to publish activation: {}", err))
@@ -631,8 +630,8 @@ mod tests {
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
-        create_integration_config_from_base, create_producer, create_test_store, make_activations,
-        replace_retry_state, reset_topic,
+        create_integration_config_from_base, create_producer, create_producer_with_flag,
+        create_test_store, make_activations, replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
 
@@ -721,13 +720,20 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
+    async fn test_retry_activation_is_appended_to_kafka(
+        #[case] adapter: &str,
+        #[values(false, true)] use_arroyo_producer: bool,
+    ) {
         let config = Arc::new(create_integration_config_from_base(Config {
             deprecated: DeprecatedConfig {
-                kafka_topic: Some(format!("taskbroker-test-{adapter}")),
+                kafka_topic: Some(format!(
+                    "taskbroker-test-retry-{adapter}-{use_arroyo_producer}"
+                )),
                 ..DeprecatedConfig::default()
             },
-            kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
+            kafka_deadletter_topic: format!(
+                "taskbroker-test-retry-{adapter}-{use_arroyo_producer}-dlq"
+            ),
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
@@ -735,7 +741,7 @@ mod tests {
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
         let store = create_test_store(adapter).await;
-        let producer = create_producer(config.clone());
+        let producer = create_producer_with_flag(config.clone(), use_arroyo_producer);
         let mut records = make_activations(2);
 
         let old = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();
@@ -1080,20 +1086,27 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
+    async fn test_remove_at_remove_failed_publish_to_kafka(
+        #[case] adapter: &str,
+        #[values(false, true)] use_arroyo_producer: bool,
+    ) {
         let config = Arc::new(create_integration_config_from_base(Config {
             deprecated: DeprecatedConfig {
-                kafka_topic: Some(format!("taskbroker-test-{adapter}")),
+                kafka_topic: Some(format!(
+                    "taskbroker-test-dlq-{adapter}-{use_arroyo_producer}"
+                )),
                 ..DeprecatedConfig::default()
             },
-            kafka_deadletter_topic: format!("taskbroker-test-{adapter}-dlq"),
+            kafka_deadletter_topic: format!(
+                "taskbroker-test-dlq-{adapter}-{use_arroyo_producer}-dlq"
+            ),
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
         let store = create_test_store(adapter).await;
-        let producer = create_producer(config.clone());
+        let producer = create_producer_with_flag(config.clone(), use_arroyo_producer);
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
         let mut records = make_activations(2);
@@ -1355,7 +1368,10 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_forward_demoted_namespaces(#[case] adapter: &str) {
+    async fn test_forward_demoted_namespaces(
+        #[case] adapter: &str,
+        #[values(false, true)] use_arroyo_producer: bool,
+    ) {
         // Create runtime config with demoted namespaces
         let config = create_config();
         let test_yaml = r#"
@@ -1370,7 +1386,7 @@ demoted_namespaces:
         let runtime_config = Arc::new(
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
-        let producer = create_producer(config.clone());
+        let producer = create_producer_with_flag(config.clone(), use_arroyo_producer);
         let store = create_test_store(adapter).await;
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
