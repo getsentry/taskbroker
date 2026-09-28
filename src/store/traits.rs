@@ -4,11 +4,11 @@ use anyhow::{Error, anyhow};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::join;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::killswitch::KillswitchSelector;
 use crate::store::activation::{Activation, ActivationStatus};
-use crate::store::types::{BucketRange, DepthCounts, FailedTasksForwarder, TopicPartition};
+use crate::store::types::{BucketRange, Claim, DepthCounts, FailedTasksForwarder, TopicPartition};
 
 #[async_trait]
 pub trait ActivationStore: Send + Sync {
@@ -96,6 +96,54 @@ pub trait ActivationStore: Send + Sync {
         max_attempts: Option<u32>,
         delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>, Error>;
+
+    /// Return claimed activations to pending and clear their claim leases.
+    ///
+    /// A row is only released while it still holds the given claim, meaning it
+    /// is `Claimed` with the same `claim_expires_at`. If the lease already
+    /// expired and another fetch thread claimed the row again, that claim has a
+    /// different expiry and is left alone. Returns the number of rows released.
+    async fn release_claims(&self, claims: &[Claim]) -> Result<u64, Error>;
+
+    /// Release claims on activations that were never handed to a worker.
+    ///
+    /// Both the fetch and push pools need this when an activation was claimed
+    /// but could not be delivered.
+    async fn undo_claims(&self, claims: &[Claim], metric: &'static str) {
+        if claims.is_empty() {
+            return;
+        }
+
+        match self.release_claims(claims).await {
+            Ok(released) => {
+                metrics::counter!(metric, "result" => "ok").increment(released);
+
+                // The rest were pushed, released, or reclaimed after their lease
+                // expired, so they are no longer ours to return to pending
+                let skipped = (claims.len() as u64).saturating_sub(released);
+
+                if skipped > 0 {
+                    metrics::counter!(metric, "result" => "not_claimed").increment(skipped);
+
+                    warn!(
+                        task_ids = ?claims.iter().map(|c| &c.id).collect::<Vec<_>>(),
+                        skipped,
+                        "Skipped undoing claims that were already released or reclaimed"
+                    );
+                }
+            }
+
+            Err(e) => {
+                metrics::counter!(metric, "result" => "error").increment(claims.len() as u64);
+
+                error!(
+                    task_ids = ?claims.iter().map(|c| &c.id).collect::<Vec<_>>(),
+                    error = ?e,
+                    "Failed to undo claims on activations that were never pushed"
+                );
+            }
+        }
+    }
 
     /// Update the status of multiple activations in one batch.
     async fn set_status_batch(

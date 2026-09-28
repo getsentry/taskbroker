@@ -12,7 +12,7 @@ use crate::config::push::{PushConfig, PushQueueConfig};
 use crate::push::updater::test_eager_updater;
 use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
-use crate::store::types::{FailedTasksForwarder, TopicPartition};
+use crate::store::types::{Claim, FailedTasksForwarder, TopicPartition};
 use crate::test_utils::make_activations;
 use crate::worker::test_worker_map;
 
@@ -78,6 +78,10 @@ impl ActivationStore for MockStore {
         _delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>> {
         Ok(None)
+    }
+
+    async fn release_claims(&self, claims: &[Claim]) -> Result<u64> {
+        Ok(claims.len() as u64)
     }
 
     async fn set_status_batch(&self, _ids: &[String], _status: ActivationStatus) -> Result<u64> {
