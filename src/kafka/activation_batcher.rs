@@ -344,11 +344,17 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::Utc;
+    use prost::Message;
+    use sentry_protos::taskbroker::v1::TaskActivation;
     use tempfile::NamedTempFile;
 
+    use crate::config::deprecated::DeprecatedConfig;
     use crate::config::store::StoreConfig;
     use crate::store::activation::ActivationBuilder;
-    use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
+    use crate::test_utils::{
+        TaskActivationBuilder, consume_topic, create_integration_config_from_base,
+        generate_unique_namespace, reset_topic,
+    };
 
     use super::{
         ActivationBatcher, ActivationBatcherConfig, Config, Reducer, RuntimeConfigManager,
@@ -507,6 +513,52 @@ demoted_namespaces: []"#;
         batcher.reduce(served).await.unwrap();
         assert_eq!(batcher.batch.len(), 1);
         assert_eq!(batcher.deadletter_batch.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_discarded_task_is_published_to_deadletter_topic() {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some("taskbroker-test-unknown-application".into()),
+                ..DeprecatedConfig::default()
+            },
+            kafka_deadletter_topic: "taskbroker-test-unknown-application-dlq".into(),
+            applications: ["sentry".to_owned()].into_iter().collect(),
+            ..Default::default()
+        }));
+        reset_topic(config.clone()).await;
+
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let unserved = ActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(generate_unique_namespace())
+            .application("launchpad")
+            .build(TaskActivationBuilder::new());
+        let expected = TaskActivation::decode(&unserved.activation as &[u8]).unwrap();
+
+        batcher.reduce(unserved).await.unwrap();
+        assert_eq!(batcher.deadletter_batch.len(), 1);
+
+        let flushed = batcher
+            .flush()
+            .await
+            .unwrap()
+            .expect("flush produced a batch");
+        assert!(flushed.is_empty());
+        assert_eq!(batcher.deadletter_batch.len(), 0);
+
+        let messages =
+            consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, expected.id);
+        assert_eq!(messages[0].application, Some("launchpad".to_owned()));
+        assert_eq!(messages[0].parameters_bytes, expected.parameters_bytes);
     }
 
     /// A pool that has not opted in keeps running every application it is sent.
