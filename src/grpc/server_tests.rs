@@ -203,6 +203,32 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
 }
 
 #[tokio::test]
+async fn test_get_task_unserved_application_returns_failed_precondition() {
+    let store = create_test_store("sqlite").await;
+    let mut config = Config {
+        applications: ["sentry".to_owned()].into_iter().collect(),
+        ..Config::default()
+    };
+    config.normalize_and_validate().unwrap();
+
+    let service = TaskbrokerServer {
+        store,
+        config: Arc::new(config),
+        update_tx: None,
+    };
+
+    let request = GetTaskRequest {
+        namespace: None,
+        application: Some("hammers".into()),
+    };
+
+    let response = service.get_task(Request::new(request)).await;
+
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), Code::FailedPrecondition);
+}
+
+#[tokio::test]
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]

@@ -43,6 +43,16 @@ impl ConsumerService for TaskbrokerServer {
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
 
+        // Without this a worker pointed at the wrong pool polls an empty queue
+        // forever instead of failing.
+        if let Some(application) = application
+            && !self.config.applications.admits(application)
+        {
+            return Err(Status::failed_precondition(format!(
+                "Broker does not serve application '{application}'"
+            )));
+        }
+
         let inflight = self
             .store
             .claim_activation_for_pull(application.as_deref(), namespace.as_deref())

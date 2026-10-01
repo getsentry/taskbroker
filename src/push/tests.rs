@@ -14,7 +14,7 @@ use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::store::types::{FailedTasksForwarder, TopicPartition};
 use crate::test_utils::make_activations;
-use crate::worker::test_worker_map;
+use crate::worker::{WorkerMap, test_worker_map};
 
 use super::*;
 
@@ -22,11 +22,16 @@ use super::*;
 #[derive(Default, Clone)]
 struct MockStore {
     marked_processing: Arc<Mutex<Vec<String>>>,
+    status_updates: Arc<Mutex<Vec<(String, ActivationStatus)>>>,
 }
 
 impl MockStore {
     fn marked_ids(&self) -> Vec<String> {
         self.marked_processing.lock().unwrap().clone()
+    }
+
+    fn recorded_statuses(&self) -> Vec<(String, ActivationStatus)> {
+        self.status_updates.lock().unwrap().clone()
     }
 }
 
@@ -72,11 +77,16 @@ impl ActivationStore for MockStore {
 
     async fn set_status(
         &self,
-        _id: &str,
-        _status: ActivationStatus,
+        id: &str,
+        status: ActivationStatus,
         _max_attempts: Option<u32>,
         _delay_on_retry: Option<u64>,
     ) -> Result<Option<Activation>> {
+        self.status_updates
+            .lock()
+            .unwrap()
+            .push((id.to_string(), status));
+
         Ok(None)
     }
 
@@ -334,4 +344,51 @@ async fn push_pool_start_does_not_mark_activation_processing_on_push_failure() {
         store.marked_ids().is_empty(),
         "mark_activation_processing should not be called when push fails"
     );
+}
+
+/// An activation the pool has no worker for must reach a terminal status, otherwise
+/// the claim expires and it is fetched again forever.
+#[tokio::test]
+async fn push_pool_start_fails_activation_without_worker_mapping() {
+    let config = Arc::new(Config {
+        worker_map: [("sentry".into(), "unused".into())].into(),
+        push: PushConfig {
+            threads: 1,
+            queue: PushQueueConfig {
+                size: 10,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let store = Arc::new(MockStore::default());
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+    let pool = Arc::new(PushPool::new(receiver, config));
+
+    let updater = test_eager_updater(store.clone());
+
+    tokio::spawn({
+        let store = store.clone();
+        async move {
+            pool.start(vec![WorkerMap::new()], updater, store.clone())
+                .await
+        }
+    });
+
+    let activation = make_activations(1).remove(0);
+    let id = activation.id.clone();
+
+    sender
+        .send_async((activation, Instant::now()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert_eq!(
+        store.recorded_statuses(),
+        vec![(id, ActivationStatus::Failure)]
+    );
+    assert!(store.marked_ids().is_empty());
 }
