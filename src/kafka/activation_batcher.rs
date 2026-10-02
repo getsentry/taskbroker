@@ -344,6 +344,8 @@ impl Reducer for ActivationBatcher {
 
     async fn is_full(&self) -> bool {
         self.batch.len() >= self.config.max_batch_len
+            || self.forward_batch.len() >= self.config.max_batch_len
+            || self.deadletter_batch.len() >= self.config.max_batch_len
             || self.batch_size >= self.config.max_batch_size
     }
 
@@ -598,6 +600,41 @@ use_arroyo_producer: {use_arroyo_producer}"#
         assert_eq!(messages[0].id, expected.id);
         assert_eq!(messages[0].application, Some("launchpad".to_owned()));
         assert_eq!(messages[0].parameters_bytes, expected.parameters_bytes);
+    }
+
+    /// Discards bypass `batch`, so without them `is_full` never trips and a misrouted
+    /// topic only flushes on the timer.
+    #[tokio::test]
+    async fn test_deadletter_batch_counts_towards_full() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut config = Config {
+            applications: ["sentry".to_owned()].into_iter().collect(),
+            store: StoreConfig {
+                insert_batch_max_length: 2,
+                ..StoreConfig::default()
+            },
+            ..Default::default()
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+        for id in 0..2 {
+            let unserved = ActivationBuilder::new()
+                .id(id.to_string())
+                .taskname("taskname")
+                .namespace(&namespace)
+                .application("launchpad")
+                .build(TaskActivationBuilder::new());
+            batcher.reduce(unserved).await.unwrap();
+        }
+
+        assert!(batcher.batch.is_empty());
+        assert!(batcher.is_full().await);
     }
 
     /// A pool that has not opted in keeps running every application it is sent.

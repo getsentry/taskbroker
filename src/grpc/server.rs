@@ -186,6 +186,14 @@ impl ConsumerService for TaskbrokerServer {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         };
 
+        // Same check as get_task. Returning an error here would make the worker
+        // re-send the status update, so an unserved application just gets no task.
+        if let Some(application) = application
+            && !self.config.applications.admits(application)
+        {
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        }
+
         let start_time = Instant::now();
 
         let res = match self

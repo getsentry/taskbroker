@@ -858,10 +858,11 @@ impl Config {
         }
     }
 
-    /// A `worker_map` entry outside `applications` is unreachable: its activations
-    /// are discarded before they are ever pushed to that worker.
+    /// A `worker_map` entry outside `applications` is unreachable in push mode. Pull
+    /// pools never deliver through `worker_map` and are given a default entry from
+    /// `from_args` that they never read, so the check does not apply to them.
     fn validate_applications(&self) -> Result<()> {
-        if self.applications.is_empty() {
+        if self.applications.is_empty() || self.delivery_mode != DeliveryMode::Push {
             return Ok(());
         }
 
@@ -1377,12 +1378,33 @@ mod tests {
         });
     }
 
+    /// `from_args` gives pull pools a default `worker_map` they never deliver through,
+    /// which must not block them from opting in to an unrelated application.
+    #[test]
+    fn test_pull_applications_ignore_default_worker_map() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", "applications:\n  - launchpad\n")?;
+
+            let args = Args {
+                run: Run::Broker,
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            assert!(config.applications.admits("launchpad"));
+            assert!(!config.applications.admits("sentry"));
+
+            Ok(())
+        });
+    }
+
     #[test]
     fn test_applications_rejects_unreachable_worker_map_entry() {
         Jail::expect_with(|jail| {
             jail.create_file(
                 "config.yaml",
                 r#"
+                delivery_mode: push
                 applications:
                     - launchpad
                 worker_map:
