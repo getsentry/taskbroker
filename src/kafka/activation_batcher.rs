@@ -191,8 +191,7 @@ impl Reducer for ActivationBatcher {
             return Ok(());
         }
 
-        // A pool can only run tasks for the applications its workers serve. Anything
-        // else would sit in the store until it paged someone, so discard it here.
+        // Discard tasks for applications this pool's workers do not serve.
         if !self.config.applications.admits(&t.application) {
             metrics::counter!(
                 "filter.unknown_application",

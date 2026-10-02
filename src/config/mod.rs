@@ -844,10 +844,8 @@ impl Config {
         Ok(())
     }
 
-    /// Push pools already declare every application they can deliver to in
-    /// `worker_map`, so they never have to repeat it. Pull pools have no such
-    /// list, and an empty `applications` admits everything, so a pool that
-    /// hasn't opted in keeps running rather than discarding all of its work.
+    /// Push pools derive the set from `worker_map`. Pull pools have no such list and
+    /// are left empty, which admits everything.
     fn normalize_applications(&mut self) {
         if !self.applications.is_empty() {
             return;

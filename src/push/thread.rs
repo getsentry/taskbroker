@@ -68,8 +68,7 @@ impl PushThread {
                 "Application has no worker mapping"
             );
 
-            // Leaving the claim in place would revert to pending and be fetched
-            // again forever, so fail the task and let upkeep discard it.
+            // Fail the task so upkeep discards it instead of the claim expiring.
             if let Err(e) = self
                 .store
                 .set_status(id, ActivationStatus::Failure, None, None)

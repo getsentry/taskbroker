@@ -43,8 +43,7 @@ impl ConsumerService for TaskbrokerServer {
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
 
-        // Without this a worker pointed at the wrong pool polls an empty queue
-        // forever instead of failing.
+        // Worker pointed at the wrong pool fails
         if let Some(application) = application
             && !self.config.applications.admits(application)
         {
