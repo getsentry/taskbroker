@@ -1,4 +1,16 @@
 # Changelog
+## 0.20.27
+
+### Bug Fixes 🐛
+
+- (worker) Only publish occupancy between first task and drain by @enochtangg in [#796](https://github.com/getsentry/taskbroker/pull/796)
+
+## 0.20.26
+
+### Bug Fixes 🐛
+
+- (worker) Send a portless :authority from the push client by @evanh in [#795](https://github.com/getsentry/taskbroker/pull/795)
+
 ## 0.20.25
 
 ### Bug Fixes 🐛

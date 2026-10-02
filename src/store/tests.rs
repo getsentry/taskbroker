@@ -16,7 +16,7 @@ use crate::config::{Config, DEFAULT_TOPIC};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
 use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
-use crate::store::types::TopicPartition;
+use crate::store::types::{Claim, TopicPartition};
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
     create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
@@ -1558,6 +1558,108 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
+}
+
+/// The fetch and push pools release their own claims rather than waiting on
+/// `handle_claim_expiration`, whose lease is sized for the worst case push.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_reverts_claimed_to_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+
+    let claim = batch[0].claim().unwrap();
+    assert_eq!(1, store.release_claims(&[claim]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Pending);
+    assert_eq!(task.claim_expires_at, None);
+    assert_eq!(task.processing_attempts, 0);
+    store.remove_db().await.unwrap();
+}
+
+/// Releasing a claim races a successful push. If the push won, the activation is
+/// already `Processing` and a worker is running it, so the release has to be a
+/// no-op instead of making the row claimable a second time.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_ignores_activations_that_moved_on(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Processing;
+    assert!(store.store(&batch).await.is_ok());
+
+    let claim = Claim {
+        id: batch[0].id.clone(),
+        expires_at: Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap(),
+    };
+    assert_eq!(0, store.release_claims(&[claim]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Processing);
+    store.remove_db().await.unwrap();
+}
+
+/// A release can arrive after its lease expired and another fetch thread claimed
+/// the row again. That claim carries a new expiry, so the stale release must
+/// leave it alone, or the row becomes claimable while it is being delivered.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_ignores_later_claims(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+
+    let stale = Claim {
+        id: batch[0].id.clone(),
+        expires_at: Utc.with_ymd_and_hms(2030, 1, 1, 1, 0, 0).unwrap(),
+    };
+    assert_eq!(0, store.release_claims(&[stale]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Claimed);
+    assert_eq!(task.claim_expires_at, batch[0].claim_expires_at);
+    store.remove_db().await.unwrap();
+}
+
+/// The claims come straight from the claim query, so the expiry it returns has
+/// to match the stored value exactly, at whatever precision the adapter keeps.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_matches_claims_from_the_claim_query(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let batch = make_activations(3);
+    assert!(store.store(&batch).await.is_ok());
+
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(3, claimed.len());
+
+    let claims: Vec<Claim> = claimed.iter().filter_map(|a| a.claim()).collect();
+    assert_eq!(3, claims.len());
+    assert_eq!(3, store.release_claims(&claims).await.unwrap());
+
+    for activation in &batch {
+        let task = store.get_by_id(&activation.id).await.unwrap().unwrap();
+        assert_eq!(task.status, ActivationStatus::Pending);
+        assert_eq!(task.claim_expires_at, None);
+    }
     store.remove_db().await.unwrap();
 }
 

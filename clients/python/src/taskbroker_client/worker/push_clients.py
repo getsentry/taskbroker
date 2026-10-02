@@ -27,6 +27,18 @@ else:
 logger = logging.getLogger(__name__)
 
 
+def service_authority(service: str) -> str:
+    """The ``:authority`` to send for a push broker service target.
+
+    grpc puts the whole ``host:port`` target in ``:authority``. The sidecar envoy matches
+    that against the mesh route's hostnames, which are RFC1123 names and cannot carry a
+    port, so leaving the port on it matches no route and the worker gets a 404 back as
+    UNIMPLEMENTED.
+    """
+    host, sep, port = service.rpartition(":")
+    return host if sep and port.isdigit() else service
+
+
 class PushTaskbrokerClient:
     """
     Taskworker RPC client wrapper
@@ -52,7 +64,8 @@ class PushTaskbrokerClient:
         self._processing_pool_name = processing_pool_name or "unknown"
 
         self._grpc_options: list[tuple[str, Any]] = [
-            ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE)
+            ("grpc.max_receive_message_length", MAX_ACTIVATION_SIZE),
+            ("grpc.default_authority", service_authority(service)),
         ]
         if grpc_config:
             self._grpc_options.append(("grpc.service_config", grpc_config))
