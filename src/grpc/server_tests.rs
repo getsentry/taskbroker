@@ -203,6 +203,73 @@ async fn test_get_task_with_application_success(#[case] adapter: &str) {
 }
 
 #[tokio::test]
+async fn test_get_task_unserved_application_returns_failed_precondition() {
+    let store = create_test_store("sqlite").await;
+    let mut config = Config {
+        applications: ["sentry".to_owned()].into_iter().collect(),
+        ..Config::default()
+    };
+    config.normalize_and_validate().unwrap();
+
+    let service = TaskbrokerServer {
+        store,
+        config: Arc::new(config),
+        update_tx: None,
+    };
+
+    let request = GetTaskRequest {
+        namespace: None,
+        application: Some("hammers".into()),
+    };
+
+    let response = service.get_task(Request::new(request)).await;
+
+    assert!(response.is_err());
+    assert_eq!(response.unwrap_err().code(), Code::FailedPrecondition);
+}
+
+/// A leftover activation for an unserved application must not be handed out on the
+/// fetch-next path either.
+#[tokio::test]
+#[allow(deprecated)]
+async fn test_fetch_next_task_skips_unserved_application() {
+    let store = create_test_store("sqlite").await;
+    let mut config = Config {
+        applications: ["sentry".to_owned()].into_iter().collect(),
+        ..Config::default()
+    };
+    config.normalize_and_validate().unwrap();
+
+    let mut activations = make_activations(2);
+    let mut payload = TaskActivation::decode(&activations[1].activation as &[u8]).unwrap();
+    payload.application = Some("launchpad".into());
+    activations[1].activation = payload.encode_to_vec();
+    activations[1].application = "launchpad".into();
+    store.store(&activations).await.unwrap();
+
+    let service = TaskbrokerServer {
+        store,
+        config: Arc::new(config),
+        update_tx: None,
+    };
+
+    let request = SetTaskStatusRequest {
+        id: "id_0".to_string(),
+        status: 5, // Complete
+        fetch_next_task: Some(FetchNextTask {
+            namespace: None,
+            application: Some("launchpad".into()),
+        }),
+        max_attempts: None,
+        delay_on_retry: None,
+    };
+
+    let response = service.set_task_status(Request::new(request)).await;
+    assert!(response.is_ok());
+    assert!(response.unwrap().get_ref().task.is_none());
+}
+
+#[tokio::test]
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
