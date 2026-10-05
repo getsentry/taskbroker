@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::SERVICE_NAME;
 use crate::config::Config;
-use crate::kafka::producer::ProducerBackend;
+use crate::kafka::producer::KafkaProducer;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::traits::ActivationStore;
 use crate::store::types::TopicPartition;
@@ -34,10 +34,9 @@ pub async fn upkeep(
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
     let kafka_config = config.kafka_producer_config();
-    let mut producer = Arc::new(
-        ProducerBackend::new(
+    let producer = Arc::new(
+        KafkaProducer::new(
             kafka_config,
-            runtime_config_manager.read().await.use_arroyo_producer,
             Duration::from_millis(config.kafka_send_timeout_ms),
         )
         .expect("Could not create kafka producer in upkeep"),
@@ -53,24 +52,6 @@ pub async fn upkeep(
     loop {
         select! {
             _ = timer.tick() => {
-                let use_arroyo_producer = runtime_config_manager.read().await.use_arroyo_producer;
-                if producer.is_arroyo() != use_arroyo_producer {
-                    match ProducerBackend::new(
-                        config.kafka_producer_config(),
-                        use_arroyo_producer,
-                        Duration::from_millis(config.kafka_send_timeout_ms),
-                    ) {
-                        Ok(new_producer) => producer = Arc::new(new_producer),
-                        Err(err) => {
-                            let target = if use_arroyo_producer {
-                                "Arroyo"
-                            } else {
-                                "rdkafka"
-                            };
-                            error!("Could not switch kafka producer in upkeep to {target}: {err}");
-                        }
-                    }
-                }
                 let _ = do_upkeep(
                     config.clone(),
                     store.clone(),
@@ -146,7 +127,7 @@ impl UpkeepResults {
 pub async fn do_upkeep(
     config: Arc<Config>,
     store: Arc<dyn ActivationStore>,
-    producer: Arc<ProducerBackend>,
+    producer: Arc<KafkaProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
@@ -384,9 +365,8 @@ pub async fn do_upkeep(
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
         let forward_producer = Arc::new(
-            ProducerBackend::new(
+            KafkaProducer::new(
                 forward_producer_config,
-                producer.is_arroyo(),
                 Duration::from_millis(config.kafka_send_timeout_ms),
             )
             .expect("Could not create kafka producer in upkeep"),
@@ -637,8 +617,8 @@ mod tests {
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
-        create_integration_config_from_base, create_producer, create_producer_with_flag,
-        create_test_store, make_activations, replace_retry_state, reset_topic,
+        create_integration_config_from_base, create_producer, create_test_store, make_activations,
+        replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
 
@@ -727,20 +707,13 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_retry_activation_is_appended_to_kafka(
-        #[case] adapter: &str,
-        #[values(false, true)] use_arroyo_producer: bool,
-    ) {
+    async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
         let config = Arc::new(create_integration_config_from_base(Config {
             deprecated: DeprecatedConfig {
-                kafka_topic: Some(format!(
-                    "taskbroker-test-retry-{adapter}-{use_arroyo_producer}"
-                )),
+                kafka_topic: Some(format!("taskbroker-test-retry-{adapter}")),
                 ..DeprecatedConfig::default()
             },
-            kafka_deadletter_topic: format!(
-                "taskbroker-test-retry-{adapter}-{use_arroyo_producer}-dlq"
-            ),
+            kafka_deadletter_topic: format!("taskbroker-test-retry-{adapter}-dlq"),
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
@@ -748,7 +721,7 @@ mod tests {
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
         let store = create_test_store(adapter).await;
-        let producer = create_producer_with_flag(config.clone(), use_arroyo_producer);
+        let producer = create_producer(config.clone());
         let mut records = make_activations(2);
 
         let old = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();
@@ -1093,27 +1066,20 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_remove_at_remove_failed_publish_to_kafka(
-        #[case] adapter: &str,
-        #[values(false, true)] use_arroyo_producer: bool,
-    ) {
+    async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
         let config = Arc::new(create_integration_config_from_base(Config {
             deprecated: DeprecatedConfig {
-                kafka_topic: Some(format!(
-                    "taskbroker-test-dlq-{adapter}-{use_arroyo_producer}"
-                )),
+                kafka_topic: Some(format!("taskbroker-test-dlq-{adapter}")),
                 ..DeprecatedConfig::default()
             },
-            kafka_deadletter_topic: format!(
-                "taskbroker-test-dlq-{adapter}-{use_arroyo_producer}-dlq"
-            ),
+            kafka_deadletter_topic: format!("taskbroker-test-dlq-{adapter}-dlq"),
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
         let store = create_test_store(adapter).await;
-        let producer = create_producer_with_flag(config.clone(), use_arroyo_producer);
+        let producer = create_producer(config.clone());
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
         let mut records = make_activations(2);
@@ -1375,10 +1341,7 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_forward_demoted_namespaces(
-        #[case] adapter: &str,
-        #[values(false, true)] use_arroyo_producer: bool,
-    ) {
+    async fn test_forward_demoted_namespaces(#[case] adapter: &str) {
         // Create runtime config with demoted namespaces
         let config = create_config();
         let test_yaml = r#"
@@ -1393,7 +1356,7 @@ demoted_namespaces:
         let runtime_config = Arc::new(
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
         );
-        let producer = create_producer_with_flag(config.clone(), use_arroyo_producer);
+        let producer = create_producer(config.clone());
         let store = create_test_store(adapter).await;
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
