@@ -9,7 +9,7 @@ use rdkafka::config::ClientConfig;
 use tracing::error;
 
 use crate::config::{Applications, Config};
-use crate::kafka::producer::ProducerBackend;
+use crate::kafka::producer::KafkaProducer;
 use crate::runtime_config::RuntimeConfigManager;
 use crate::store::activation::Activation;
 
@@ -56,7 +56,7 @@ pub struct ActivationBatcher {
     deadletter_batch: Vec<(String, Vec<u8>)>, // application, payload
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    producer: Arc<ProducerBackend>,
+    producer: Arc<KafkaProducer>,
     producer_cluster: String,
 }
 
@@ -66,9 +66,8 @@ impl ActivationBatcher {
         runtime_config_manager: Arc<RuntimeConfigManager>,
     ) -> Self {
         let producer = Arc::new(
-            ProducerBackend::new(
+            KafkaProducer::new(
                 config.producer_config.clone(),
-                false,
                 Duration::from_millis(config.send_timeout_ms),
             )
             .expect("Could not create kafka producer in activation batcher"),
@@ -100,39 +99,16 @@ impl ActivationBatcher {
             .to_string()
     }
 
-    /// The producer, recreated when the target cluster or the Arroyo flag changed.
-    fn producer_for(&mut self, cluster: String, use_arroyo: bool) -> Arc<ProducerBackend> {
+    /// The producer, recreated when the target cluster changed.
+    fn producer_for(&mut self, cluster: String) -> Arc<KafkaProducer> {
         if self.producer_cluster != cluster {
             let mut config = self.config.producer_config.clone();
             config.set("bootstrap.servers", &cluster);
             self.producer = Arc::new(
-                ProducerBackend::new(
-                    config,
-                    self.producer.is_arroyo(),
-                    Duration::from_millis(self.config.send_timeout_ms),
-                )
-                .expect("Could not create kafka producer in activation batcher"),
+                KafkaProducer::new(config, Duration::from_millis(self.config.send_timeout_ms))
+                    .expect("Could not create kafka producer in activation batcher"),
             );
             self.producer_cluster = cluster;
-        }
-
-        // A failed switch keeps the current backend rather than stopping the consumer.
-        if self.producer.is_arroyo() != use_arroyo {
-            let mut config = self.config.producer_config.clone();
-            config.set("bootstrap.servers", &self.producer_cluster);
-            match ProducerBackend::new(
-                config,
-                use_arroyo,
-                Duration::from_millis(self.config.send_timeout_ms),
-            ) {
-                Ok(new_producer) => self.producer = Arc::new(new_producer),
-                Err(err) => {
-                    let target = if use_arroyo { "Arroyo" } else { "rdkafka" };
-                    error!(
-                        "Could not switch kafka producer in activation batcher to {target}: {err}"
-                    );
-                }
-            }
         }
 
         self.producer.clone()
@@ -141,7 +117,7 @@ impl ActivationBatcher {
     /// Produce every payload to `topic`, returning (attempts, successes).
     async fn send_all<'a>(
         &self,
-        producer: &ProducerBackend,
+        producer: &KafkaProducer,
         topic: &str,
         payloads: impl Iterator<Item = &'a Vec<u8>>,
     ) -> (usize, usize) {
@@ -272,7 +248,7 @@ impl Reducer for ActivationBatcher {
                 .demoted_topic_cluster
                 .clone()
                 .unwrap_or_else(|| self.deadletter_cluster());
-            let producer = self.producer_for(forward_cluster, runtime_config.use_arroyo_producer);
+            let producer = self.producer_for(forward_cluster);
             let forward_topic = runtime_config
                 .demoted_topic
                 .clone()
@@ -305,8 +281,7 @@ impl Reducer for ActivationBatcher {
             );
 
             let deadletter_cluster = self.deadletter_cluster();
-            let producer =
-                self.producer_for(deadletter_cluster, runtime_config.use_arroyo_producer);
+            let producer = self.producer_for(deadletter_cluster);
             let deadletter_topic = self.config.kafka_deadletter_topic.clone();
             let (attempts, successes) = self
                 .send_all(
@@ -366,7 +341,6 @@ mod tests {
 
     use chrono::Utc;
     use prost::Message;
-    use rstest::rstest;
     use sentry_protos::taskbroker::v1::TaskActivation;
     use tempfile::NamedTempFile;
 
@@ -538,14 +512,11 @@ demoted_namespaces: []"#;
     }
 
     #[tokio::test]
-    #[rstest]
-    async fn test_discarded_task_is_published_to_deadletter_topic(
-        #[values(false, true)] use_arroyo_producer: bool,
-    ) {
-        let topic = format!("taskbroker-test-unknown-application-{use_arroyo_producer}");
+    async fn test_discarded_task_is_published_to_deadletter_topic() {
+        let topic = "taskbroker-test-unknown-application";
         let config = Arc::new(create_integration_config_from_base(Config {
             deprecated: DeprecatedConfig {
-                kafka_topic: Some(topic.clone()),
+                kafka_topic: Some(topic.to_owned()),
                 ..DeprecatedConfig::default()
             },
             kafka_deadletter_topic: format!("{topic}-dlq"),
@@ -554,20 +525,7 @@ demoted_namespaces: []"#;
         }));
         reset_topic(config.clone()).await;
 
-        // The other keys are required: a partial document fails to deserialize and the
-        // manager silently keeps its defaults.
-        let test_yaml = format!(
-            r#"
-drop_task_killswitch: []
-demoted_namespaces: []
-use_arroyo_producer: {use_arroyo_producer}"#
-        );
-        let mut config_file = NamedTempFile::new().unwrap();
-        writeln!(config_file, "{}", test_yaml).unwrap();
-        config_file.flush().unwrap();
-        let runtime_config = Arc::new(
-            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
-        );
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
 
         let mut batcher = ActivationBatcher::new(
             ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
@@ -592,7 +550,6 @@ use_arroyo_producer: {use_arroyo_producer}"#
             .expect("flush produced a batch");
         assert!(flushed.is_empty());
         assert_eq!(batcher.deadletter_batch.len(), 0);
-        assert_eq!(batcher.producer.is_arroyo(), use_arroyo_producer);
 
         let messages =
             consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;

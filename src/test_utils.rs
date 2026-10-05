@@ -17,7 +17,7 @@ use uuid::Uuid;
 use crate::config::deprecated::DeprecatedConfig;
 use crate::config::store::{PgConfig, StoreConfig};
 use crate::config::{Config, DEFAULT_TOPIC};
-use crate::kafka::producer::ProducerBackend;
+use crate::kafka::producer::KafkaProducer;
 use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
 use crate::store::adapters::postgres::{self, PostgresStore};
 use crate::store::adapters::sqlite::SqliteStore;
@@ -340,14 +340,9 @@ pub fn create_integration_config() -> Config {
 }
 
 /// Create a kafka producer for a given config
-pub fn create_producer(config: Arc<Config>) -> Arc<ProducerBackend> {
-    create_producer_with_flag(config, false)
-}
-
-pub fn create_producer_with_flag(config: Arc<Config>, use_arroyo: bool) -> Arc<ProducerBackend> {
-    let producer = ProducerBackend::new(
+pub fn create_producer(config: Arc<Config>) -> Arc<KafkaProducer> {
+    let producer = KafkaProducer::new(
         config.kafka_producer_config(),
-        use_arroyo,
         Duration::from_millis(config.kafka_send_timeout_ms),
     )
     .expect("Could not create kafka producer");
