@@ -47,6 +47,16 @@ impl ConsumerService for TaskbrokerServer {
         if let Some(application) = application
             && !self.config.applications.admits(application)
         {
+            metrics::counter!(
+                "grpc_server.unserved_application",
+                "method" => "get_task",
+            )
+            .increment(1);
+            error!(
+                application,
+                "Requested application is not served by this pool"
+            );
+
             return Err(Status::failed_precondition(format!(
                 "Broker does not serve application '{application}'"
             )));
@@ -191,6 +201,16 @@ impl ConsumerService for TaskbrokerServer {
         if let Some(application) = application
             && !self.config.applications.admits(application)
         {
+            metrics::counter!(
+                "grpc_server.unserved_application",
+                "method" => "fetch_next_task",
+            )
+            .increment(1);
+            error!(
+                application,
+                "Requested application is not served by this pool"
+            );
+
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         }
 
