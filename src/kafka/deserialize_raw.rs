@@ -1,16 +1,14 @@
 use std::collections::HashMap;
 
 use anyhow::Error;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use prost::Message as _;
-use rdkafka::Message;
-use rdkafka::message::Headers;
-use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, TaskActivation};
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::config::raw::RawModeConfig;
+use crate::kafka::message::MessageBackend;
 use crate::store::activation::{Activation, ActivationStatus};
 
 use super::deserialize_activation::bucket_from_id;
@@ -85,18 +83,13 @@ impl RawConfig {
     }
 }
 
-fn extract_headers(msg: &OwnedMessage) -> HashMap<String, String> {
-    let Some(headers) = msg.headers() else {
-        return HashMap::new();
-    };
-
+fn extract_headers(msg: &MessageBackend) -> HashMap<String, String> {
     let mut result = HashMap::new();
-    for i in 0..headers.count() {
-        let header = headers.get(i);
-        if let Some(value) = header.value
+    for (key, value) in msg.headers() {
+        if let Some(value) = value
             && let Ok(value_str) = std::str::from_utf8(value)
         {
-            result.insert(header.key.to_string(), value_str.to_string());
+            result.insert(key.to_string(), value_str.to_string());
         }
     }
     result
@@ -116,8 +109,8 @@ fn encode_raw_params(raw_bytes: &[u8]) -> Vec<u8> {
 
 /// Create a deserializer closure for raw mode.
 /// Wraps raw Kafka message bytes into a TaskActivation with msgpack-encoded parameters_bytes.
-pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Error> {
-    move |msg: &OwnedMessage| {
+pub fn new(config: RawConfig) -> impl Fn(&MessageBackend) -> Result<Activation, Error> {
+    move |msg: &MessageBackend| {
         // Whether a message without payload is valid is technically not up to taskbroker, and we
         // can't DLQ messages here. It's easier to convert it to an empty bytestring and let the
         // task fail. Failed tasks can be DLQed in upkeep.rs
@@ -141,11 +134,7 @@ pub fn new(config: RawConfig) -> impl Fn(&OwnedMessage) -> Result<Activation, Er
         };
         let stored_payload_size = parameters_bytes.len();
         let now = Utc::now();
-        let received_at_time = msg
-            .timestamp()
-            .to_millis()
-            .and_then(DateTime::from_timestamp_millis)
-            .unwrap_or(now);
+        let received_at_time = msg.timestamp().unwrap_or(now);
         let received_at = prost_types::Timestamp {
             seconds: received_at_time.timestamp(),
             nanos: received_at_time.timestamp_subsec_nanos() as i32,
@@ -299,7 +288,7 @@ mod tests {
             None,
         );
 
-        let result = deserializer(&message);
+        let result = deserializer(&message.into());
         assert!(result.is_ok());
 
         let inflight = result.unwrap();
@@ -344,7 +333,7 @@ mod tests {
             None,
         );
 
-        let inflight = deserializer(&message).unwrap();
+        let inflight = deserializer(&message.into()).unwrap();
         let activation = TaskActivation::decode(inflight.activation.as_slice()).unwrap();
 
         // Disabled compression stores plain msgpack with no compression header.
@@ -366,7 +355,7 @@ mod tests {
             None,
         );
 
-        let result = deserializer(&message);
+        let result = deserializer(&message.into());
         assert!(result.is_ok());
 
         let inflight = result.unwrap();
@@ -401,7 +390,7 @@ mod tests {
             Some(headers),
         );
 
-        let result = deserializer(&message);
+        let result = deserializer(&message.into());
         assert!(result.is_ok());
 
         let inflight = result.unwrap();

@@ -3,14 +3,13 @@ use std::time::Duration;
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message as _;
-use rdkafka::Message;
-use rdkafka::message::OwnedMessage;
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sentry_protos::taskbroker::v1::TaskActivation;
 use uuid::Uuid;
 
 use crate::config::Config;
 use crate::fetch::MAX_FETCH_THREADS;
+use crate::kafka::message::MessageBackend;
 use crate::store::activation::{Activation, ActivationStatus};
 
 pub struct DeserializeActivationConfig {
@@ -34,8 +33,8 @@ pub fn bucket_from_id(id: &str) -> i16 {
 
 pub fn new(
     config: DeserializeActivationConfig,
-) -> impl Fn(&OwnedMessage) -> Result<Activation, Error> {
-    move |msg: &OwnedMessage| {
+) -> impl Fn(&MessageBackend) -> Result<Activation, Error> {
+    move |msg: &MessageBackend| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
         };
@@ -160,7 +159,7 @@ mod tests {
             0,
             None,
         );
-        let inflight_opt = deserializer(&message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -199,7 +198,7 @@ mod tests {
             0,
             None,
         );
-        let inflight_opt = deserializer(&message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -239,7 +238,7 @@ mod tests {
             0,
             None,
         );
-        let inflight_opt = deserializer(&message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -279,7 +278,7 @@ mod tests {
             0,
             None,
         );
-        let inflight_opt = deserializer(&message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -320,7 +319,7 @@ mod tests {
             0,
             None,
         );
-        let inflight_opt = deserializer(&message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
