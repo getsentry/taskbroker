@@ -1,7 +1,7 @@
 # Build image
 # Note that it is important which debian image is used, because not all of them have a
 # recent enough version of protobuf-compiler
-FROM rust:1.96-bookworm AS build
+FROM rust:1.96-trixie AS build
 
 RUN apt-get update && apt-get upgrade -y
 RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
@@ -34,7 +34,7 @@ RUN cargo build --release
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
 # Runtime image
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN groupadd taskbroker --gid 1000 && useradd --gid taskbroker --uid 1000 taskbroker
 
