@@ -34,7 +34,7 @@ x-programs:
 
 services:
   taskbroker:
-    image: ghcr.io/getsentry/taskbroker:3626356af91b51fa1a3a698429f478f4cafc36a8-arm64
+    image: ghcr.io/getsentry/taskbroker:3626356af91b51fa1a3a698429f478f4cafc36a8-amd64
     environment:
       # Multi-topic/cluster config expressed via env vars. Nested keys use the
       # "__" separator; figment lowercases each key segment, so topic/cluster
@@ -54,7 +54,7 @@ services:
     labels:
       - orchestrator=devservices
     restart: unless-stopped
-    platform: linux/arm64
+    platform: linux/amd64
 
 networks:
   devservices:
