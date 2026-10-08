@@ -1,16 +1,3 @@
-"""
-Mark the worker as draining, then wait.
-
-Meant to run as the worker pod's preStop hook:
-
-    python3 -m taskbroker_client.drain 15
-
-Kubernetes only sends SIGTERM once preStop finishes, so creating the drain file
-first lets the worker stop publishing occupancy while brokers stop routing to
-the pod. Imports nothing beyond the constants, so it starts fast and needs no
-shell in the image.
-"""
-
 import argparse
 import time
 from pathlib import Path
@@ -19,6 +6,10 @@ from taskbroker_client.constants import DEFAULT_WORKER_DRAIN_FILE_PATH
 
 
 def drain(seconds: float, path: str = DEFAULT_WORKER_DRAIN_FILE_PATH) -> None:
+    """
+    Create the drain file, then sleep. Runs as the worker pod's preStop hook,
+    which must finish before Kubernetes sends SIGTERM.
+    """
     Path(path).touch()
     time.sleep(seconds)
 
