@@ -208,6 +208,7 @@ async fn main() -> Result<(), Error> {
             start_consumer(
                 &topic_refs,
                 &consumer_config.kafka_consumer_config_for(&task_topic),
+                consumer_config.use_arroyo_consumer,
                 consumer_store.clone(),
                 processing_strategy!({
                     err:

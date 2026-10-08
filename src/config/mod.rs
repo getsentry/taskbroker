@@ -151,6 +151,9 @@ pub struct Config {
     /// The path to the runtime config file
     pub runtime_config_path: Option<String>,
 
+    /// Consume with Arroyo's async Kafka consumer instead of rdkafka's stream consumer.
+    pub use_arroyo_consumer: bool,
+
     /// The frequency at which upkeep tasks
     /// (discarding, retrying activations, etc.) are executed.
     pub upkeep_task_interval_ms: u64,
@@ -297,6 +300,7 @@ impl Default for Config {
             kafka_send_timeout_ms: 500,
             store: StoreConfig::default(),
             runtime_config_path: None,
+            use_arroyo_consumer: false,
             upkeep_task_interval_ms: 1000,
             upkeep_unhealthy_interval_ms: 5000,
             health_check_killswitched: false,
@@ -1042,6 +1046,7 @@ mod tests {
         assert_eq!(config.store.sqlite.vacuum_page_count, None);
         assert_eq!(config.canary_tasks, 0);
         assert!(config.worker_map.is_empty());
+        assert!(!config.use_arroyo_consumer);
     }
 
     #[test]
@@ -1236,6 +1241,7 @@ mod tests {
             jail.set_env("TASKBROKER_DATABASE_ADAPTER", "postgres");
             jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
             jail.set_env("TASKBROKER_CANARY_TASKS", "2");
+            jail.set_env("TASKBROKER_USE_ARROYO_CONSUMER", "true");
 
             let args = Args {
                 run: Run::Broker,
@@ -1246,6 +1252,7 @@ mod tests {
             assert_eq!(config.store.adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.store.max_processing_attempts, 5);
             assert_eq!(config.canary_tasks, 2);
+            assert!(config.use_arroyo_consumer);
 
             Ok(())
         });
