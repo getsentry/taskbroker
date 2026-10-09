@@ -44,7 +44,7 @@ from sentry_sdk.crons import MonitorStatus
 
 from taskbroker_client.canary import CANARY_TASK_NAME
 from taskbroker_client.constants import INTERNAL_NAMESPACE, CompressionType
-from taskbroker_client.retry import NoRetriesRemainingError
+from taskbroker_client.retry import NoRetriesRemainingError, Retry, RetryTaskError, retry_task
 from taskbroker_client.state import current_task
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
 from taskbroker_client.worker.childtiming import (
@@ -2393,6 +2393,81 @@ def test_child_process_retry_task() -> None:
     result = processed.get()
     assert result.task_id == RETRY_TASK.activation.id
     assert result.status == TASK_ACTIVATION_STATUS_RETRY
+    assert result.max_attempts == 2
+
+
+@pytest.mark.parametrize(
+    "times,retry_state,retries_remaining",
+    [
+        pytest.param(3, RetryState(attempts=0, max_attempts=3), True, id="initial-attempt"),
+        pytest.param(3, RetryState(attempts=1, max_attempts=3), True, id="penultimate-attempt"),
+        pytest.param(3, RetryState(attempts=2, max_attempts=3), False, id="final-attempt"),
+        pytest.param(3, RetryState(attempts=2, max_attempts=4), False, id="inflated-limit"),
+        pytest.param(3, RetryState(attempts=1, max_attempts=2), True, id="stale-lower-limit"),
+        pytest.param(3, None, True, id="missing-retry-state"),
+        pytest.param(1, RetryState(attempts=0, max_attempts=3), False, id="single-attempt"),
+        pytest.param(None, RetryState(attempts=0, max_attempts=3), False, id="no-policy"),
+    ],
+)
+def test_child_process_retry_helper_uses_worker_policy(
+    times: int | None,
+    retry_state: RetryState | None,
+    retries_remaining: bool,
+    restore_signal_handlers: None,
+) -> None:
+    from examples.tasks import retry_task as example_task
+
+    observed_retries_remaining: list[bool] = []
+    observed_errors: list[type[RetryTaskError]] = []
+
+    def request_retry() -> None:
+        current = current_task()
+        assert current is not None
+        observed_retries_remaining.append(current.retries_remaining)
+        try:
+            retry_task()
+        except RetryTaskError as err:
+            observed_errors.append(type(err))
+            raise
+
+    activation = TaskActivation()
+    activation.CopyFrom(RETRY_TASK.activation)
+    if retry_state is not None:
+        activation.retry_state.CopyFrom(retry_state)
+
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    todo.put(
+        InflightTaskActivation(host="localhost:50051", receive_timestamp=0, activation=activation)
+    )
+
+    with (
+        mock.patch.object(
+            example_task, "_retry", Retry(times=times) if times is not None else None
+        ),
+        mock.patch.object(example_task, "_func", request_retry),
+    ):
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            Event(),
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
+        )
+
+    assert observed_retries_remaining == [retries_remaining]
+    assert observed_errors == [RetryTaskError if retries_remaining else NoRetriesRemainingError]
+    result = processed.get(timeout=1)
+    assert result.task_id == activation.id
+    assert result.status == (
+        TASK_ACTIVATION_STATUS_RETRY if retries_remaining else TASK_ACTIVATION_STATUS_FAILURE
+    )
+    assert result.max_attempts == (times if retries_remaining else None)
+    assert current_task() is None
 
 
 @mock.patch("taskbroker_client.worker.workerchild.logger")

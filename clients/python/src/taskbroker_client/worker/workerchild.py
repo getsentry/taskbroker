@@ -499,7 +499,14 @@ def child_process(
                     )
                     continue
 
-            set_current_task(inflight.activation)
+            retry = task_func.retry
+            set_current_task(
+                inflight.activation,
+                retries_remaining=(
+                    retry is not None
+                    and not retry.max_attempts_reached(inflight.activation.retry_state)
+                ),
+            )
 
             next_state = TASK_ACTIVATION_STATUS_FAILURE
             # Use time.time() so we can measure against activation.received_at
@@ -858,7 +865,7 @@ def child_process(
                         # Don't send it on every task as this codepath is relatively
                         # unoptimized on the broker side.
                         max_attempts=(
-                            task_func.retry._times + 1
+                            task_func.retry._times
                             if task_func.retry and next_state == TASK_ACTIVATION_STATUS_RETRY
                             else None
                         ),
