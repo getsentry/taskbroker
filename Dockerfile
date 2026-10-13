@@ -9,10 +9,6 @@ RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compi
 RUN USER=root cargo new --bin taskbroker
 WORKDIR /taskbroker
 
-# This is set by the cloudbuild.yaml file
-ARG TASKBROKER_GIT_REVISION
-ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
-
 # All these files are required to build or run the application
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
@@ -30,6 +26,11 @@ COPY ./src ./src
 # Build the main binary
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
+
+# Declared after the dependency build so a new revision on every commit
+# doesn't invalidate the cached dependency layers.
+ARG TASKBROKER_GIT_REVISION
+ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
 
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
