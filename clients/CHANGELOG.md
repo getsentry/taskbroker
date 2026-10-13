@@ -1,4 +1,13 @@
 # Changelog
+## 0.20.28
+
+### New Features ✨
+
+#### Client
+
+- Add healthcheck command for the worker liveness probe by @oioki in [#814](https://github.com/getsentry/taskbroker/pull/814)
+- Add drain command for the worker preStop hook by @oioki in [#810](https://github.com/getsentry/taskbroker/pull/810)
+
 ## 0.20.27
 
 ### Bug Fixes 🐛
