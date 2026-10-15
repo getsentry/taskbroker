@@ -1,4 +1,10 @@
 # Changelog
+## 26.10.0
+
+### Internal Changes 🔧
+
+- (image) Cache the dependency build across commits by @sentry-junior in [#817](https://github.com/getsentry/taskbroker/pull/817)
+
 ## 26.9.0
 
 ### New Features ✨
