@@ -34,8 +34,31 @@ ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
 
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
-# Runtime image
-FROM debian:trixie-slim
+# /opt for the distroless image. The base has no shell to mkdir or chown, and it
+# already has a root-owned /opt, so we prepare the tree here and copy it onto /.
+# The directories are owned by nonroot (uid 65532) so the default SQLite path,
+# relative to /opt, is writable.
+FROM build AS distroless-opt
+
+RUN mkdir -p /distroless/opt/sqlite \
+    && cp ./VERSION ./target/release/taskbroker /distroless/opt/ \
+    && chown 65532:65532 /distroless/opt /distroless/opt/sqlite
+
+# Distroless runtime: no shell or package manager. OpenSSL and zlib are linked
+# statically and SQLite is bundled, so the binary only needs glibc. The base
+# runs as nonroot (uid 65532) and ships the CA bundle.
+FROM us-docker.pkg.dev/sentryio/dhi-mirror/static:20250419-glibc-debian13 AS taskbroker-distroless
+
+EXPOSE 50051
+
+COPY --from=distroless-opt /distroless/ /
+
+WORKDIR /opt
+
+CMD ["/opt/taskbroker"]
+
+# Debian runtime. Keep it the last stage: builds without --target produce this image.
+FROM debian:trixie-slim AS taskbroker
 
 RUN groupadd taskbroker --gid 1000 && useradd --gid taskbroker --uid 1000 taskbroker
 
