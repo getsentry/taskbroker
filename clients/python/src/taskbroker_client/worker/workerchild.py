@@ -516,8 +516,7 @@ def child_process(
                             inflight.activation.namespace,
                             inflight.activation.taskname,
                         ]
-                        scope.set_transaction_name(inflight.activation.taskname)
-                        # The current scope takes precedence over the isolation scope on capture.
+                        # Override transaction names inherited from worker startup.
                         sentry_sdk.get_current_scope().set_transaction_name(
                             inflight.activation.taskname
                         )
@@ -564,7 +563,6 @@ def child_process(
                                     inflight.activation.namespace,
                                     inflight.activation.taskname,
                                 ]
-                                scope.set_transaction_name(inflight.activation.taskname)
                                 sentry_sdk.get_current_scope().set_transaction_name(
                                     inflight.activation.taskname
                                 )
