@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.29
+
+### Bug Fixes 🐛
+
+- (worker) Attribute captured task errors to the current task by @yuvmen in [#818](https://github.com/getsentry/taskbroker/pull/818)
+
 ## 0.20.28
 
 ### New Features ✨
