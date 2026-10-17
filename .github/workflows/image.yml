@@ -9,12 +9,27 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        platform: [amd64, arm64]
+        variant: [default, distroless]
         include:
-          - os: ubuntu-24.04
-            platform: amd64
-          - os: ubuntu-24.04-arm
-            platform: arm64
-    name: build-${{ matrix.platform }}
+          - platform: amd64
+            os: ubuntu-24.04
+          - platform: arm64
+            os: ubuntu-24.04-arm
+          - platform: amd64
+            variant: default
+            cache_to: type=gha,mode=max,scope=taskbroker-amd64
+          - platform: arm64
+            variant: default
+            cache_to: type=gha,mode=max,scope=taskbroker-arm64
+          - variant: default
+            target: taskbroker
+            suffix: ''
+          - variant: distroless
+            target: taskbroker-distroless
+            suffix: '-distroless'
+            cache_to: ''
+    name: build-${{ matrix.platform }}${{ matrix.suffix }}
     permissions:
       contents: read
       packages: write
@@ -27,22 +42,28 @@ jobs:
           image_name: 'taskbroker'
           platforms: linux/${{ matrix.platform }}
           dockerfile_path: './Dockerfile'
+          build_target: ${{ matrix.target }}
           build_args: TASKBROKER_GIT_REVISION=${{ github.sha }}
           ghcr: ${{ github.repository == 'getsentry/taskbroker' }}
-          tag_suffix: -${{ matrix.platform }}
+          tag_suffix: ${{ matrix.suffix }}-${{ matrix.platform }}
           publish_on_pr: ${{ github.event.pull_request.author_association == 'OWNER' || github.event.pull_request.author_association == 'MEMBER' }}
           google_ar: false
           tag_nightly: false
           tag_latest: false
           # One cache per architecture, so the amd64 and arm64 builds don't
-          # overwrite each other's cache index.
+          # overwrite each other's cache index. Both variants share the build
+          # stage, so only the default variant exports it.
           cache_from: type=gha,scope=taskbroker-${{ matrix.platform }}
-          cache_to: type=gha,mode=max,scope=taskbroker-${{ matrix.platform }}
+          cache_to: ${{ matrix.cache_to }}
 
   assemble-taskbroker-image:
     runs-on: ubuntu-latest
     needs: [build]
     if: ${{ github.repository == 'getsentry/taskbroker' && (github.ref_name == 'main' || startsWith(github.ref_name, 'release/')) && github.event_name != 'pull_request' }}
+    strategy:
+      matrix:
+        suffix: ['', '-distroless']
+    name: assemble-taskbroker-image${{ matrix.suffix }}
     permissions:
       contents: read
       packages: write
@@ -59,22 +80,32 @@ jobs:
       - name: Create multiplatform manifests
         run: |
           docker buildx imagetools create \
-            --tag ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }} \
-            --tag ghcr.io/getsentry/taskbroker:nightly \
-            ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}-amd64 \
-            ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}-arm64
+            --tag ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}${{ matrix.suffix }} \
+            --tag ghcr.io/getsentry/taskbroker:nightly${{ matrix.suffix }} \
+            ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}${{ matrix.suffix }}-amd64 \
+            ghcr.io/getsentry/taskbroker:${{ github.event.pull_request.head.sha || github.sha }}${{ matrix.suffix }}-arm64
 
   build-production:
     runs-on: ubuntu-24.04
     if: ${{ github.repository == 'getsentry/taskbroker' && github.ref_name == github.event.repository.default_branch }}
-    name: Build and push production images to ${{ matrix.registry }} registry
+    name: Build and push production${{ matrix.suffix }} images to ${{ matrix.registry }} registry
     strategy:
       matrix:
+        registry: [single-region, multi-region]
+        variant: [default, distroless]
         include:
           - registry: single-region
             image: us-central1-docker.pkg.dev/sentryio/taskbroker/image
           - registry: multi-region
             image: us-docker.pkg.dev/sentryio/taskbroker-mr/image
+          - variant: default
+            target: taskbroker
+            suffix: ''
+            tag_latest: true
+          - variant: distroless
+            target: taskbroker-distroless
+            suffix: '-distroless'
+            tag_latest: false
     permissions:
       contents: read
       id-token: write
@@ -87,11 +118,13 @@ jobs:
           image_name: 'taskbroker'
           platforms: linux/amd64
           dockerfile_path: './Dockerfile'
+          build_target: ${{ matrix.target }}
           build_args: TASKBROKER_GIT_REVISION=${{ github.sha }}
           ghcr: false
           google_ar: true
+          tag_suffix: ${{ matrix.suffix }}
           tag_nightly: false
-          tag_latest: true
+          tag_latest: ${{ matrix.tag_latest }}
           google_ar_image_name: ${{ matrix.image }}
           google_workload_identity_provider: projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool
           google_service_account: gha-taskbroker-push@sac-prod-sa.iam.gserviceaccount.com
@@ -105,11 +138,16 @@ jobs:
     needs: [assemble-taskbroker-image]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        suffix: ['', '-distroless']
+    name: self-hosted-end-to-end${{ matrix.suffix }}
 
     steps:
       - name: Run Sentry self-hosted e2e CI
         uses: getsentry/self-hosted@master
         with:
           project_name: taskbroker
-          image_url: ghcr.io/getsentry/taskbroker:${{ github.sha }}
+          image_url: ghcr.io/getsentry/taskbroker:${{ github.sha }}${{ matrix.suffix }}
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
