@@ -7,6 +7,7 @@ import random
 import signal
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator, MutableMapping
 from concurrent.futures import Future
 from datetime import datetime, timezone
@@ -3422,7 +3423,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
 ) -> None:
     leftover_future: Future[BrokerValue[KafkaPayload]] = Future()
     leftover_future.set_result(_make_broker_value())
-    _arroyo_pending_futures["test.producer"].append(leftover_future)
+    _arroyo_pending_futures["test.producer"] = deque([leftover_future])
     assert len(_arroyo_pending_futures) == 1
 
     todo: queue.Queue[InflightTaskActivation] = queue.Queue()
@@ -3449,7 +3450,7 @@ def test_child_process_clears_pending_futures_when_task_fails(
     # The orphaned future is dropped (the activation will be retried at the
     # broker level if applicable) but the global registry is cleared so it
     # cannot bleed into the next task this child processes.
-    assert len(_arroyo_pending_futures) == 0
+    assert not any(_arroyo_pending_futures.values())
 
 
 def test_child_process_uses_configured_future_checking_frequency(

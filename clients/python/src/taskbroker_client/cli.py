@@ -164,7 +164,10 @@ def scheduler() -> None:
 )
 @click.option(
     "--track-producer-futures/--no-track-producer-futures",
-    help="Set ARROYO_TRACK_PRODUCER_FUTURES to enable arroyo producer future tracking.",
+    help=(
+        "Set ARROYO_TRACK_PRODUCER_FUTURES in the worker environment. Applications must read it "
+        "and pass should_track_futures to their FutureTrackingProducer."
+    ),
     default=False,
 )
 def pull(
@@ -333,7 +336,10 @@ def pull(
 )
 @click.option(
     "--track-producer-futures/--no-track-producer-futures",
-    help="Set ARROYO_TRACK_PRODUCER_FUTURES to enable arroyo producer future tracking.",
+    help=(
+        "Set ARROYO_TRACK_PRODUCER_FUTURES in the worker environment. Applications must read it "
+        "and pass should_track_futures to their FutureTrackingProducer."
+    ),
     default=False,
 )
 def push(

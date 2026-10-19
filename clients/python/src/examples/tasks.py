@@ -4,7 +4,9 @@ Example taskbroker application with tasks
 Used in tests for the worker.
 """
 
+import functools
 import logging
+import os
 import random
 from time import sleep
 from typing import Any
@@ -123,6 +125,19 @@ def task_with_headers(value: str, headers: dict[str, str]) -> None:
         redis.set("task-headers-custom", headers["x-custom-header"])
 
 
+@functools.cache
+def _get_producer(bootstrap_servers: str) -> FutureTrackingProducer:
+    # FutureTrackingProducer names must be unique per process, so build it once.
+    def producer_factory() -> KafkaProducer:
+        return KafkaProducer({"bootstrap.servers": bootstrap_servers})
+
+    return FutureTrackingProducer(
+        "test.producer",
+        producer_factory,
+        should_track_futures=os.environ.get("ARROYO_TRACK_PRODUCER_FUTURES", "").lower() == "true",
+    )
+
+
 @exampletasks.register(name="examples.task_that_produces")
 def task_that_produces(
     payload: bytes,
@@ -131,10 +146,7 @@ def task_that_produces(
     production_count: int = 1,
     random_count: bool = False,
 ) -> None:
-    def producer_factory() -> KafkaProducer:
-        return KafkaProducer({"bootstrap.servers": bootstrap_servers})
-
-    producer = FutureTrackingProducer("test.producer", producer_factory)
+    producer = _get_producer(bootstrap_servers)
     production_count = random.randint(1, 50) if random_count else production_count
     for i in range(production_count):
         logger.debug(f"Producing message {i} onto topic {destination_topic}...")

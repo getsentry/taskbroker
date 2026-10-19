@@ -667,13 +667,13 @@ wheels = [
 
 [[package]]
 name = "sentry-arroyo"
-version = "2.41.1"
+version = "2.47.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "confluent-kafka", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_arroyo-2.41.1-py3-none-any.whl", hash = "sha256:12465dd0d388d2ad4abab5e243ca348ad22bd6dc68434d765e41683c9a565573" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_arroyo-2.47.0-py3-none-any.whl", hash = "sha256:8839a5ab50898268757b985c4ec8f73896cfff3cf89aa5f46070185ec197b397" },
 ]
 
 [[package]]

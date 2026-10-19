@@ -590,8 +590,9 @@ def child_process(
             clear_current_task()
             processed_task_count += 1
 
-            # To have Taskworker track futures, set the env var `ARROYO_TRACK_PRODUCER_FUTURES = True`
-            # in the worker process
+            # Only futures from producers created with `should_track_futures=True` are collected.
+            # The `--track-producer-futures` CLI flag sets `ARROYO_TRACK_PRODUCER_FUTURES`
+            # for applications to read when constructing their producers.
             task_produced_futures = FutureTrackingProducer.collect_futures()
 
             # If the task function itself failed, we don't need to await any
