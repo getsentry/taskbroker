@@ -266,8 +266,14 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   rebalance-integration-test:
-    name: Rebalance integration test
+    name: Rebalance integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -304,8 +310,14 @@ jobs:
           make test-rebalance
 
   worker-processing-integration-test:
-    name: Worker processing integration test
+    name: Worker processing integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -342,8 +354,14 @@ jobs:
           make test-worker-processing
 
   upkeep-retry-integration-test:
-    name: Upkeep retry integration test
+    name: Upkeep retry integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -380,8 +398,14 @@ jobs:
           make test-upkeep-retry
 
   upkeep-expiry-integration-test:
-    name: Upkeep expiry integration test
+    name: Upkeep expiry integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -418,8 +442,14 @@ jobs:
           make test-upkeep-expiry
 
   upkeep-delay-integration-test:
-    name: Upkeep delay integration test
+    name: Upkeep delay integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -456,8 +486,14 @@ jobs:
           make test-upkeep-delay
 
   failed-tasks-integration-test:
-    name: Failed tasks integration test
+    name: Failed tasks integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -494,8 +530,14 @@ jobs:
           make test-failed-tasks
 
   multi-topic-integration-test:
-    name: Multi-topic integration test
+    name: Multi-topic integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -532,8 +574,14 @@ jobs:
           make test-multi-topic
 
   push-postgres-integration-test:
-    name: Push mode postgres integration test
+    name: Push mode postgres integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
