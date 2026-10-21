@@ -80,6 +80,8 @@ which cluster it lives on. Exactly one topic must be consumable; the rest
 (retry, dead-letter) are `produce_only`. The dead-letter and retry topics must
 share a cluster with the upkeep producer.
 
+Kafka producers use Arroyo for retries, deadletters, and demoted-task forwarding.
+
 ```yaml
 kafka_deadletter_topic: taskworker-dlq
 

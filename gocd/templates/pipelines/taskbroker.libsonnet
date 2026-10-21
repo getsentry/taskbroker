@@ -45,6 +45,9 @@ local deploy_canary_stage(region) =
               timeout: 30,
               elastic_profile_id: 'taskbroker',
               environment_variables: {
+                // k8s-deploy dispatches deployment workflows using GitHub App credentials.
+                GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
+                GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
                 LABEL_SELECTOR: 'service=taskbroker,env=canary',
               },
               tasks: [
@@ -65,6 +68,9 @@ local deployPrimaryStage = {
         timeout: 40,
         elastic_profile_id: 'taskbroker',
         environment_variables: {
+          // k8s-deploy dispatches deployment workflows using GitHub App credentials.
+          GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
+          GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
           LABEL_SELECTOR: 'service=taskbroker',
         },
         tasks: [

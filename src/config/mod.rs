@@ -1,6 +1,6 @@
 #![allow(clippy::result_large_err)]
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -47,6 +47,27 @@ pub enum DeliveryMode {
 
     /// Broker pushes tasks to workers.
     Push,
+}
+
+/// The applications a pool admits. An empty set admits every application.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Applications(BTreeSet<String>);
+
+impl Applications {
+    pub fn admits(&self, application: &str) -> bool {
+        self.0.is_empty() || self.0.contains(application)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FromIterator<String> for Applications {
+    fn from_iter<T: IntoIterator<Item = String>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Deserialize, Serialize, Validate)]
@@ -129,6 +150,9 @@ pub struct Config {
 
     /// The path to the runtime config file
     pub runtime_config_path: Option<String>,
+
+    /// Consume with Arroyo's async Kafka consumer instead of rdkafka's stream consumer.
+    pub use_arroyo_consumer: bool,
 
     /// The frequency at which upkeep tasks
     /// (discarding, retrying activations, etc.) are executed.
@@ -216,6 +240,12 @@ pub struct Config {
     #[validate(length(min = 1))]
     pub worker_map: BTreeMap<String, String>,
 
+    /// The applications this pool can execute. Activations for any other
+    /// application are discarded by the consumer. Normalization derives this
+    /// from `worker_map` in push mode; left empty, the check is disabled.
+    #[serde(default)]
+    pub applications: Applications,
+
     /// The namespace to assign to raw mode activations.
     pub raw_namespace: Option<String>,
 
@@ -270,6 +300,7 @@ impl Default for Config {
             kafka_send_timeout_ms: 500,
             store: StoreConfig::default(),
             runtime_config_path: None,
+            use_arroyo_consumer: false,
             upkeep_task_interval_ms: 1000,
             upkeep_unhealthy_interval_ms: 5000,
             health_check_killswitched: false,
@@ -291,6 +322,7 @@ impl Default for Config {
             status_update_batch_size: 1,
             status_update_interval_ms: 100,
             worker_map: [].into(),
+            applications: Applications::default(),
             raw_namespace: None,
             raw_application: None,
             raw_taskname: None,
@@ -625,6 +657,8 @@ impl Config {
                     session_timeout_ms: None,
                     auto_commit_interval_ms: None,
                     auto_offset_reset: None,
+                    max_processing_activations: None,
+                    max_pending_activations: None,
                 },
             );
             assert!(prev.is_none(), "internal: duplicate topic '{topic_name}'");
@@ -643,6 +677,8 @@ impl Config {
                     session_timeout_ms: None,
                     auto_commit_interval_ms: None,
                     auto_offset_reset: None,
+                    max_processing_activations: None,
+                    max_pending_activations: None,
                 },
             );
             if prev.is_some() {
@@ -675,6 +711,8 @@ impl Config {
                         session_timeout_ms: None,
                         auto_commit_interval_ms: None,
                         auto_offset_reset: None,
+                        max_processing_activations: None,
+                        max_pending_activations: None,
                     });
             }
         }
@@ -800,6 +838,42 @@ impl Config {
             if self.kafka_retry_topic.as_deref() == Some(topic_name.as_str()) {
                 return Err(anyhow!(
                     "kafka_retry_topic must differ from raw topic '{topic_name}'"
+                ));
+            }
+        }
+
+        self.normalize_applications();
+        self.validate_applications()?;
+
+        Ok(())
+    }
+
+    /// Push pools derive the set from `worker_map`. Pull pools have no such list and
+    /// are left empty, which admits everything.
+    fn normalize_applications(&mut self) {
+        if !self.applications.is_empty() {
+            return;
+        }
+
+        if self.delivery_mode == DeliveryMode::Push {
+            self.applications = self.worker_map.keys().cloned().collect();
+        } else {
+            warn!("applications is unset, activations will not be checked against it");
+        }
+    }
+
+    /// A `worker_map` entry outside `applications` is unreachable in push mode. Pull
+    /// pools never deliver through `worker_map` and are given a default entry from
+    /// `from_args` that they never read, so the check does not apply to them.
+    fn validate_applications(&self) -> Result<()> {
+        if self.applications.is_empty() || self.delivery_mode != DeliveryMode::Push {
+            return Ok(());
+        }
+
+        for application in self.worker_map.keys() {
+            if !self.applications.admits(application) {
+                return Err(anyhow!(
+                    "worker_map application '{application}' is not in applications"
                 ));
             }
         }
@@ -972,6 +1046,7 @@ mod tests {
         assert_eq!(config.store.sqlite.vacuum_page_count, None);
         assert_eq!(config.canary_tasks, 0);
         assert!(config.worker_map.is_empty());
+        assert!(!config.use_arroyo_consumer);
     }
 
     #[test]
@@ -1166,6 +1241,7 @@ mod tests {
             jail.set_env("TASKBROKER_DATABASE_ADAPTER", "postgres");
             jail.set_env("TASKBROKER_MAX_PROCESSING_ATTEMPTS", "5");
             jail.set_env("TASKBROKER_CANARY_TASKS", "2");
+            jail.set_env("TASKBROKER_USE_ARROYO_CONSUMER", "true");
 
             let args = Args {
                 run: Run::Broker,
@@ -1176,6 +1252,7 @@ mod tests {
             assert_eq!(config.store.adapter, DatabaseAdapter::Postgres);
             assert_eq!(config.store.max_processing_attempts, 5);
             assert_eq!(config.canary_tasks, 2);
+            assert!(config.use_arroyo_consumer);
 
             Ok(())
         });
@@ -1242,6 +1319,112 @@ mod tests {
                 config.worker_map,
                 BTreeMap::from([("launchpad".to_owned(), "http://127.0.0.1:50052".to_owned(),)])
             );
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_applications_derived_from_worker_map_in_push_mode() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_DELIVERY_MODE", "push");
+            jail.set_env(
+                "TASKBROKER_WORKER_MAP",
+                "{launchpad=http://127.0.0.1:50052}",
+            );
+
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            assert!(config.applications.admits("launchpad"));
+            assert!(!config.applications.admits("sentry"));
+
+            Ok(())
+        });
+    }
+
+    /// Pull pools are not given a `worker_map`, so there is nothing to derive from
+    /// and everything stays admitted until the pool opts in.
+    #[test]
+    fn test_applications_unset_in_pull_mode_admits_everything() {
+        Jail::expect_with(|_jail| {
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            assert_eq!(config.delivery_mode, DeliveryMode::Pull);
+            assert!(config.applications.is_empty());
+            assert!(config.applications.admits("launchpad"));
+
+            Ok(())
+        });
+    }
+
+    /// `applications` uses the same env list encoding as other sequences.
+    #[test]
+    fn test_applications_from_env() {
+        Jail::expect_with(|jail| {
+            jail.set_env("TASKBROKER_APPLICATIONS", "[sentry,launchpad]");
+
+            let args = Args {
+                run: Run::Broker,
+                config: None,
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            assert!(config.applications.admits("sentry"));
+            assert!(config.applications.admits("launchpad"));
+            assert!(!config.applications.admits("seer"));
+
+            Ok(())
+        });
+    }
+
+    /// `from_args` gives pull pools a default `worker_map` they never deliver through,
+    /// which must not block them from opting in to an unrelated application.
+    #[test]
+    fn test_pull_applications_ignore_default_worker_map() {
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", "applications:\n  - launchpad\n")?;
+
+            let args = Args {
+                run: Run::Broker,
+                config: Some("config.yaml".to_owned()),
+            };
+            let config = Config::from_args(&args).unwrap();
+
+            assert!(config.applications.admits("launchpad"));
+            assert!(!config.applications.admits("sentry"));
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_applications_rejects_unreachable_worker_map_entry() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+                delivery_mode: push
+                applications:
+                    - launchpad
+                worker_map:
+                    sentry: http://sentry:50052
+            "#,
+            )?;
+
+            let args = Args {
+                run: Run::Broker,
+                config: Some("config.yaml".to_owned()),
+            };
+
+            assert!(Config::from_args(&args).is_err());
 
             Ok(())
         });

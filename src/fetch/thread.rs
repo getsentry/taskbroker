@@ -5,7 +5,7 @@ use std::time::Instant;
 use anyhow::Result;
 use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
-use flume::Sender;
+use flume::{Sender, TrySendError};
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
@@ -13,8 +13,10 @@ use crate::config::Config;
 use crate::push::QueueError;
 use crate::store::activation::Activation;
 use crate::store::traits::ActivationStore;
-use crate::store::types::{BucketRange, TopicPartition};
-use crate::timed;
+use crate::store::types::{BucketRange, Claim, TopicPartition};
+
+/// How long to wait between attempts to submit into a full push queue.
+const QUEUE_RETRY_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Abstraction for a single fetch thread.
 pub struct FetchThread {
@@ -52,7 +54,7 @@ impl FetchThread {
         }
     }
 
-    async fn fetch_once(&mut self, fetch_backoff: Duration) -> bool {
+    pub(super) async fn fetch_once(&mut self, fetch_backoff: Duration) -> bool {
         let start = Instant::now();
 
         debug!("Fetching next batch of pending activations...");
@@ -84,8 +86,11 @@ impl FetchThread {
                 // Use this instant to track claimed → pushed latency
                 let start = Instant::now();
 
-                for activation in activations {
+                let mut activations = activations.into_iter();
+
+                while let Some(activation) = activations.next() {
                     let id = activation.id.clone();
+                    let claim = activation.claim();
 
                     if activation.processing_attempts < 1 {
                         let latency = cmp::max(0, activation.received_latency(Utc::now()));
@@ -113,29 +118,51 @@ impl FetchThread {
                         );
                     }
 
-                    match self.push_task(activation, start).await {
-                        Ok(()) => metrics::counter!("fetch.submit", "result" => "ok").increment(1),
+                    let error = match self.push_task(activation, start).await {
+                        Ok(()) => {
+                            metrics::counter!("fetch.submit", "result" => "ok").increment(1);
+                            continue;
+                        }
 
-                        Err(QueueError::Timeout) => {
+                        Err(e) => e,
+                    };
+
+                    // Neither this activation nor the rest of the batch reached the
+                    // push pool, and nothing else will push them, so release every
+                    // claim now instead of waiting for the leases to expire
+                    let unsent: Vec<Claim> = claim
+                        .into_iter()
+                        .chain(activations.by_ref().filter_map(|a| a.claim()))
+                        .collect();
+
+                    match error {
+                        QueueError::Timeout => {
                             metrics::counter!("fetch.submit", "result" => "timeout").increment(1);
 
                             warn!(
                                 task_id = %id,
+                                unsent = unsent.len(),
                                 "Submit to push pool timed out after {} milliseconds",
                                 self.config.push.queue.timeout.as_millis()
                             );
 
+                            self.store.undo_claims(&unsent, "fetch.undo_claim").await;
+
                             // Wait for push queue to empty
                             backoff = true;
+                            break;
                         }
 
-                        Err(QueueError::Closed) => {
+                        QueueError::Closed => {
                             metrics::counter!("fetch.submit", "result" => "closed").increment(1);
 
                             warn!(
                                 task_id = %id,
+                                unsent = unsent.len(),
                                 "Submit to push pool failed due to closed channel",
                             );
+
+                            self.store.undo_claims(&unsent, "fetch.undo_claim").await;
 
                             // We cannot recover from a closed channel
                             return false;
@@ -165,22 +192,36 @@ impl FetchThread {
         true
     }
 
+    /// Submit one claimed activation to the push pool. An error proves it was never handed off.
     async fn push_task(&self, activation: Activation, time: Instant) -> Result<(), QueueError> {
         metrics::gauge!("push.queue.depth").set(self.sender.len() as f64);
 
-        let duration = self.config.push.queue.timeout;
-        let future = self.sender.send_async((activation, time));
-        let timeout = tokio::time::timeout(duration, future);
+        let start = Instant::now();
+        let deadline = start + self.config.push.queue.timeout;
+        let mut item = (activation, time);
 
-        match timed!(timeout, "push.queue.wait_duration") {
-            // The channel was full so the send timed out
-            Err(_) => Err(QueueError::Timeout),
+        let result = loop {
+            match self.sender.try_send(item) {
+                // Pushed to channel successfully
+                Ok(()) => break Ok(()),
 
-            // The channel may close early if the push pool encounters an error
-            Ok(Err(_)) => Err(QueueError::Closed),
+                // The channel may close early if the push pool encounters an error
+                Err(TrySendError::Disconnected(_)) => break Err(QueueError::Closed),
 
-            // Pushed to channel successfully
-            Ok(_) => Ok(()),
-        }
+                // The queue is full, so keep the activation here and try again
+                Err(TrySendError::Full(returned)) => {
+                    if Instant::now() >= deadline {
+                        break Err(QueueError::Timeout);
+                    }
+
+                    item = returned;
+                    sleep(QUEUE_RETRY_INTERVAL).await;
+                }
+            }
+        };
+
+        metrics::histogram!("push.queue.wait_duration").record(start.elapsed());
+
+        result
     }
 }

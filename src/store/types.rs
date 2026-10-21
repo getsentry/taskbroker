@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+
 pub type BucketRange = (i16, i16);
 
 /// A Kafka topic paired with one of its partition indices. Partition indices
@@ -28,6 +30,17 @@ impl From<&(String, i32)> for TopicPartition {
     fn from((topic, partition): &(String, i32)) -> Self {
         Self::new(topic.clone(), *partition)
     }
+}
+
+/// One claim on an activation, as handed out by the fetch query.
+///
+/// Every claim writes a fresh `claim_expires_at`, so the expiry doubles as a
+/// fencing token. A release that matches on it only undoes the claim it was
+/// issued, never a later claim on the same row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claim {
+    pub id: String,
+    pub expires_at: DateTime<Utc>,
 }
 
 pub struct FailedTasksForwarder {

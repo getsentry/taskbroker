@@ -68,6 +68,14 @@ Max seconds PushTaskWorker waits for all children to warm up before
 flipping gRPC health to SERVING anyway.
 """
 
+DEFAULT_WORKER_DRAIN_FILE_PATH = "/tmp/taskworker-draining"
+"""
+File whose presence tells a push worker that its pod is terminating. The pod's
+preStop hook creates it before sleeping; SIGTERM only arrives once preStop
+finishes, so this is the earliest the worker can learn brokers have stopped
+routing to it. The worker stops publishing occupancy when it sees the file.
+"""
+
 
 ALWAYS_EAGER = False
 """

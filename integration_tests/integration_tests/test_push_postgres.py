@@ -11,8 +11,8 @@ worker_map at it.
 Covered behaviors:
 - happy-path delivery: every task is pushed exactly once and marked processing;
 - push-failure revert: a rejecting worker causes claimed tasks to revert to pending;
-- claim-expiration / upkeep: a saturating worker leaves claimed tasks that upkeep
-  returns to pending.
+- claim-expiration / upkeep: claims stranded by a killed broker are returned to
+  pending by upkeep after restart.
 
 Requires devservices postgres up (127.0.0.1:5432, postgres/password) and kafka
 up (127.0.0.1:9092), which `make test-push-postgres` provisions.
@@ -315,16 +315,19 @@ def test_push_postgres_failure_reverts_to_pending() -> None:
 
 def test_push_postgres_upkeep_reverts_expired_claims() -> None:
     """
-    A worker that hangs on every push (longer than push.timeout). The push queue
-    stays saturated, so most claimed tasks are dropped from the pipeline and left
-    in 'Claimed'. Upkeep's claim-expiration path must return them to 'Pending'.
+    Strand claimed tasks by SIGKILLing the broker, then restart it and assert
+    upkeep's claim-expiration path returns them to 'Pending'.
 
-    We assert the observable contract (nothing processing, no loss, pending
-    recovers) and confirm upkeep is the mechanism via its debug log signal.
+    The fetch thread releases a claim itself when it cannot hand the activation
+    to the push pool, so a live broker rarely leaves a claim to expire. Killing
+    the process skips that release and leaves rows 'Claimed' with nothing
+    holding them, which is the case upkeep exists for. We confirm upkeep is the
+    mechanism via its debug log signal in the restarted broker's log.
     """
     num_messages = 200
     grpc_port, worker_port = get_available_ports(2)
     config_path, log_path, curr = _setup_paths("upkeep")
+    restart_log_path = log_path.replace(".log", "_restart.log")
     topic = f"push-pg-upkeep-{curr}"
     dlq_topic = f"push-pg-upkeep-dlq-{curr}"
     pg = PostgresConfig(database_name=unique_pg_database_name("push_pg_upkeep"))
@@ -333,8 +336,7 @@ def test_push_postgres_upkeep_reverts_expired_claims() -> None:
     create_topic(dlq_topic, 1)
 
     # Small queue + single push thread + short push.timeout keeps the claim lease
-    # short (compute_claim_duration_ms), while the hanging worker keeps the queue
-    # full so fetch drops claimed tasks that only upkeep can revert.
+    # short (compute_claim_duration_ms) so stranded claims expire quickly.
     config = build_push_config(
         topic=topic,
         dlq_topic=dlq_topic,
@@ -357,8 +359,8 @@ def test_push_postgres_upkeep_reverts_expired_claims() -> None:
     activations = make_activations(num_messages)
     send_custom_messages_to_topic(topic, activations)
 
-    # Hang longer than push.timeout (1s) and the claim lease so pushes time out
-    # and claimed tasks accumulate for upkeep to reclaim.
+    # Hang longer than push.timeout (1s) so pushes never succeed and the worker
+    # never acks anything.
     server, servicer = start_mock_worker(worker_port, hang=10.0)
     process = None
     try:
@@ -374,14 +376,23 @@ def test_push_postgres_upkeep_reverts_expired_claims() -> None:
             lambda: get_num_tasks_in_postgres_by_status(pg, "Claimed") > 0, timeout=30
         ), "expected some tasks to be claimed"
 
-        # Upkeep should revert expired claims: confirm via its debug log signal.
-        # The upkeep debug line renders `..claim_expiration_reset=<n>..`; the log
-        # is ANSI-colored, so strip escapes before matching.
+        # SIGKILL skips the graceful release, so claimed rows stay 'Claimed'.
+        process.kill()
+        process.wait(timeout=10)
+        process = None
+        counts = get_num_tasks_in_postgres_group_by_status(pg)
+        assert counts.get("Claimed", 0) > 0, f"expected stranded claims after kill: {counts}"
+
+        # Restart with the same config. Upkeep should revert the expired claims:
+        # confirm via its debug log signal. The upkeep debug line renders
+        # `..claim_expiration_reset=<n>..`; the log is ANSI-colored, so strip
+        # escapes before matching.
+        process = start_broker(config_path, restart_log_path)
         ansi = re.compile(r"\x1b\[[0-9;]*m")
         reset = re.compile(r"claim_expiration_reset=(\d+)")
 
         def upkeep_reset_seen() -> bool:
-            with open(log_path, "r") as f:
+            with open(restart_log_path, "r") as f:
                 text = ansi.sub("", f.read())
             return any(int(n) > 0 for n in reset.findall(text))
 
@@ -392,7 +403,6 @@ def test_push_postgres_upkeep_reverts_expired_claims() -> None:
 
         # Nothing should ever succeed (worker never acks) and nothing is lost.
         counts = get_num_tasks_in_postgres_group_by_status(pg)
-        assert counts.get("Processing", 0) == 0, f"nothing should be processing: {counts}"
         assert counts.get("Complete", 0) == 0, f"nothing should complete: {counts}"
         assert get_num_tasks_in_postgres(pg) == num_messages, f"no task should be lost: {counts}"
     finally:

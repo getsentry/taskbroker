@@ -33,6 +33,14 @@ pub struct TopicConfig {
     /// Falls back to the global `kafka_auto_offset_reset` when unset.
     #[serde(default)]
     pub auto_offset_reset: Option<String>,
+    /// The topic-specific maximum number of processing records that can be
+    /// in the ActivationStore.
+    #[serde(default)]
+    pub max_processing_activations: Option<usize>,
+    /// The topic-specific maximum number of pending activations that can be
+    /// in the ActivationStore.
+    #[serde(default)]
+    pub max_pending_activations: Option<usize>,
 }
 
 /// Configuration for a Kafka cluster.

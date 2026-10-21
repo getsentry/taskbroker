@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import multiprocessing
 import os
@@ -31,6 +32,7 @@ from taskbroker_client.app import import_app
 from taskbroker_client.constants import (
     DEFAULT_GRPC_MAX_MESSAGE_SIZE,
     DEFAULT_REBALANCE_AFTER,
+    DEFAULT_WORKER_DRAIN_FILE_PATH,
     DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
     DEFAULT_WORKER_QUEUE_SIZE,
     DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
@@ -40,6 +42,7 @@ from taskbroker_client.constants import (
 )
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.types import InflightTaskActivation, ProcessingResult
+from taskbroker_client.worker.childtiming import ChildTimeAccounting, new_slot
 from taskbroker_client.worker.client import (
     HealthCheckSettings,
     HostTemporarilyUnavailable,
@@ -132,6 +135,22 @@ class WorkerPrometheusMetrics:
             registry=self.registry,
         )
 
+        # Additive and unclamped: the scaler sums across pods and divides once.
+        self.child_busy_seconds = prometheus_client.Counter(
+            "taskworker_worker_child_busy_seconds",
+            "Cumulative child-seconds spent executing tasks.",
+            ["processing_pool"],
+            registry=self.registry,
+        )
+
+        # What occupancy cannot express: free slots with nothing to do.
+        self.child_wait_seconds = prometheus_client.Counter(
+            "taskworker_worker_child_wait_seconds",
+            "Cumulative child-seconds spent blocked waiting for a task to arrive.",
+            ["processing_pool"],
+            registry=self.registry,
+        )
+
         prometheus_client.start_http_server(port, registry=self.registry)
         logger.info("taskworker.worker.prometheus_server_started", extra={"port": port})
 
@@ -211,43 +230,8 @@ class TrackedChild:
     process: BaseProcess
     state: ChildState
     release: Event
-    # Time-weighted busy tracking
-    busy_since: float | None = None  # monotonic timestamp of the currently-open busy segment
-    busy_accumulated: float = 0.0  # the busy seconds banked since the last occupancy flush
-
-    def mark_busy(self, now: float) -> None:
-        """Open a busy segment when the child starts a task.
-
-        `busy`/`idle` strictly alternate per child today, so a segment should
-        never already be open; the guard is defensive and keeps the original
-        start time if that invariant ever drifts.
-        """
-        if self.busy_since is None:
-            self.busy_since = now
-
-    def mark_idle(self, now: float) -> None:
-        """Close the open busy segment and bank its elapsed seconds.
-
-        Guarded so an unexpected `idle` with no open segment is a no-op rather
-        than a crash.
-        """
-        if self.busy_since is not None:
-            self.busy_accumulated += now - self.busy_since
-            self.busy_since = None
-
-    def drain_busy(self, now: float) -> float:
-        """Return busy seconds since the last drain and reset the counter.
-
-        Any segment still open is folded in up to `now` and left open (its
-        start advanced to `now`) so a task spanning multiple intervals keeps
-        contributing to each one.
-        """
-        if self.busy_since is not None:
-            self.busy_accumulated += now - self.busy_since
-            self.busy_since = now
-        banked = self.busy_accumulated
-        self.busy_accumulated = 0.0
-        return banked
+    # Holds the child's slot. Dropping this entry is what frees the memory.
+    timing: ChildTimeAccounting
 
 
 class PushTaskWorker:
@@ -276,6 +260,7 @@ class PushTaskWorker:
         warmup_timeout: float = DEFAULT_WORKER_WARMUP_TIMEOUT_SEC,
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
+        drain_file_path: str | None = DEFAULT_WORKER_DRAIN_FILE_PATH,
     ) -> None:
         app = import_app(app_module)
 
@@ -304,6 +289,7 @@ class PushTaskWorker:
             skip_awaiting_futures=skip_awaiting_futures,
             prometheus_port=prometheus_port,
             future_checking_frequency=future_checking_frequency,
+            drain_file_path=drain_file_path,
         )
 
         logger.info("Running in PUSH mode")
@@ -889,6 +875,7 @@ class TaskWorkerProcessingPool:
         skip_awaiting_futures: bool = True,
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
+        drain_file_path: str | None = None,
     ) -> None:
         self._concurrency = concurrency
 
@@ -920,8 +907,8 @@ class TaskWorkerProcessingPool:
         )
         self._children: Dict[UUID, TrackedChild] = {}
         self._exiting_children: Deque[UUID] = deque()
+
         self._children_lock = threading.Lock()
-        self._last_occupancy_flush_at = time.monotonic()
         self._shutdown_event = self._mp_context.Event()
         self._prometheus_port = prometheus_port
         self._prom: WorkerPrometheusMetrics | None = None
@@ -929,17 +916,93 @@ class TaskWorkerProcessingPool:
         self._metrics_thread: threading.Thread | None = None
         self._spawn_children_thread: threading.Thread | None = None
 
+        self._received_task = False
+        self._occupancy_stopped = False
+        self._drain_file_path = drain_file_path
+        if drain_file_path is not None:
+            self._clear_stale_drain_file(drain_file_path)
+
+    def _clear_stale_drain_file(self, path: str) -> None:
+        """
+        preStop also runs before a liveness restart, and the file survives that
+        restart on an emptyDir /tmp. Left in place it would silence this process's
+        occupancy for its whole life.
+        """
+        try:
+            Path(path).unlink()
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            logger.warning(
+                "taskworker.worker.drain_file.clear_failed",
+                extra={"path": path, "error": e, "processing_pool": self._processing_pool_name},
+            )
+            return
+        logger.info(
+            "taskworker.worker.drain_file.cleared",
+            extra={"path": path, "processing_pool": self._processing_pool_name},
+        )
+
+    def stop_occupancy_reporting(self) -> None:
+        """
+        Withdraw occupancy for the rest of this process's life.
+
+        Only flips a flag: the metrics thread is the sole writer of the gauge, and
+        on its next flush it removes the Prometheus series instead of leaving the
+        last value up, so the scraper marks it stale rather than averaging a
+        draining pod's idle slots into the pool. Idempotent.
+        """
+        if self._occupancy_stopped:
+            return
+        self._occupancy_stopped = True
+        logger.info(
+            "taskworker.worker.occupancy.stopped",
+            extra={"processing_pool": self._processing_pool_name, "pod_name": self._pod_name},
+        )
+
+    def _should_publish_occupancy(self) -> bool:
+        return self._received_task and not self._occupancy_stopped
+
     @property
     def ready_count(self) -> int:
         """Number of children that have finished warming up and are consuming."""
         with self._children_lock:
             return sum(1 for c in self._children.values() if c.state == "running")
 
+    def _accounting_log(
+        self, busy_time: float, wait_time: float, ceiling: float, running_count: int
+    ) -> dict[str, float | int | str]:
+        return {
+            "busy_time": busy_time,
+            "wait_time": wait_time,
+            "ceiling": ceiling,
+            "running_count": running_count,
+            "processing_pool": self._processing_pool_name,
+        }
+
     def _emit_periodic_metrics(self) -> None:
         tags = {
             "processing_pool": self._processing_pool_name,
             "pod_name": self._pod_name,
         }
+
+        if (
+            self._drain_file_path is not None
+            and not self._occupancy_stopped
+            and os.path.exists(self._drain_file_path)
+        ):
+            logger.info(
+                "taskworker.worker.drain_file.detected",
+                extra={
+                    "path": self._drain_file_path,
+                    "processing_pool": self._processing_pool_name,
+                },
+            )
+            self.stop_occupancy_reporting()
+
+        if self._occupancy_stopped and self._prom is not None:
+            with contextlib.suppress(KeyError):
+                self._prom.occupancy.remove(self._processing_pool_name)
 
         # Emit queue size metrics
         try:
@@ -962,7 +1025,6 @@ class TaskWorkerProcessingPool:
             )
 
         with self._children_lock:
-            now = time.monotonic()
             state_counts: dict[ChildState, int] = {
                 "pending": 0,
                 "running": 0,
@@ -970,28 +1032,83 @@ class TaskWorkerProcessingPool:
             }
 
             busy_time = 0.0
+            wait_time = 0.0
+            eligible_time = 0.0
+            running_count = 0
             for child in self._children.values():
                 state_counts[child.state] += 1
-                busy_time += child.drain_busy(now)
+
+                # Running only: the numerator must match occupancy's divisor.
+                if child.state != "running":
+                    continue
+
+                running_count += 1
+                result = child.timing.sample(time.monotonic())
+                busy_time += result.busy
+                wait_time += result.wait
+                eligible_time += result.eligible
 
             exiting_children = len(self._exiting_children)
 
-        elapsed = now - self._last_occupancy_flush_at
-        self._last_occupancy_flush_at = now
-
-        running_count = state_counts["running"]
-        if running_count > 0 and elapsed > 0:
-            occupancy = busy_time / (elapsed * running_count)
-            occupancy = min(occupancy, 1.0)
-            self._metrics.gauge(
-                "taskworker.worker.occupancy",
-                occupancy,
-                tags=tags,
+        # Emitted during warmup too: zero is correct for a counter.
+        self._metrics.distribution(
+            "taskworker.worker.child_busy_seconds",
+            busy_time,
+            tags=tags,
+        )
+        self._metrics.distribution(
+            "taskworker.worker.child_wait_seconds",
+            wait_time,
+            tags=tags,
+        )
+        if self._prom is not None:
+            # inc(0.0) registers the series, so a new pod reads idle not missing.
+            self._prom.child_busy_seconds.labels(processing_pool=self._processing_pool_name).inc(
+                max(0.0, busy_time)
             )
-            if self._prom is not None:
-                self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
-                    occupancy
+            self._prom.child_wait_seconds.labels(processing_pool=self._processing_pool_name).inc(
+                max(0.0, wait_time)
+            )
+
+        if running_count > 0 and eligible_time > 0:
+            # Sum of the windows each child was measured over. `elapsed *
+            # running_count` would instead bill a child baselined part-way
+            # through this flush as if it had been here all along, which reads
+            # as idle time the pool never had.
+            ceiling = eligible_time
+            # busy and wait partition every measured window, so the pair must
+            # land on the ceiling.
+            accounted = busy_time + wait_time
+            if accounted > ceiling:
+                self._metrics.incr(
+                    "taskworker.worker.occupancy.accounting_overflow",
+                    tags=tags,
                 )
+                logger.warning(
+                    "taskworker.worker.occupancy.accounting_overflow",
+                    extra=self._accounting_log(busy_time, wait_time, ceiling, running_count),
+                )
+            elif accounted < ceiling * 0.9:
+                self._metrics.incr(
+                    "taskworker.worker.occupancy.accounting_deficit",
+                    tags=tags,
+                )
+                logger.warning(
+                    "taskworker.worker.occupancy.accounting_deficit",
+                    extra=self._accounting_log(busy_time, wait_time, ceiling, running_count),
+                )
+
+            occupancy = min(busy_time / ceiling, 1.0)
+            if self._should_publish_occupancy():
+                self._metrics.gauge(
+                    "taskworker.worker.occupancy",
+                    occupancy,
+                    tags=tags,
+                )
+                if self._prom is not None:
+                    self._prom.occupancy.labels(processing_pool=self._processing_pool_name).set(
+                        occupancy
+                    )
 
         self._metrics.gauge(
             "taskworker.worker.concurrency",
@@ -1136,6 +1253,18 @@ class TaskWorkerProcessingPool:
                     except queue.Empty:
                         break
 
+                # Lifecycle-queue lag. A rising line means this thread is behind.
+                if received:
+                    drain_at = time.monotonic()
+                    self._metrics.distribution(
+                        "taskworker.worker.child_message.age",
+                        drain_at - min(m.timestamp for m in received),
+                        tags={
+                            "processing_pool": self._processing_pool_name,
+                            "pod_name": self._pod_name,
+                        },
+                    )
+
                 with self._children_lock:
                     children = list(self._children.items())
 
@@ -1173,22 +1302,14 @@ class TaskWorkerProcessingPool:
 
                             continue
 
-                        # This child is now running
+                        # Baseline here, where it also enters `running_count`.
                         if message.event == "running":
                             child.state = "running"
+                            child.timing.mark_running(time.monotonic())
 
                         # This child wants to exit, but we may not have enough running children to shut down right away
                         elif message.event == "exiting":
                             self._exiting_children.append(message.child_id)
-
-                        # This child started executing a task: open a busy segment.
-                        elif message.event == "busy":
-                            child.mark_busy(time.monotonic())
-
-                        # This child finished a task: close the open busy segment
-                        # and bank the elapsed time.
-                        elif message.event == "idle":
-                            child.mark_idle(time.monotonic())
 
                     while True:
                         # Compute how many children are still running
@@ -1210,6 +1331,10 @@ class TaskWorkerProcessingPool:
                             continue
 
                         child.state = "exiting"
+                        # Stop counting it, but keep the slot: the child writes
+                        # once more on its way out, and its replacement can be
+                        # handed the same memory the moment this one is freed.
+                        child.timing.mark_stopped()
                         child.release.set()
 
                     spawned = sum(1 for c in self._children.values() if c.state != "exiting")
@@ -1221,26 +1346,30 @@ class TaskWorkerProcessingPool:
                     child_id = uuid4()
                     release = self._mp_context.Event()
 
-                    process = self._mp_context.Process(
-                        name=f"taskworker-child-{child_id}",
-                        target=child_process,
-                        args=(
-                            child_id,
-                            self._app_module,
-                            self._child_tasks,
-                            self._processed_tasks,
-                            self._shutdown_event,
-                            self._max_child_task_count,
-                            self._processing_pool_name,
-                            self._process_type,
-                            self._skip_awaiting_futures,
-                            self._future_checking_frequency,
-                            messages,
-                            release,
-                        ),
-                    )
-
                     try:
+                        # Inside the try so an allocation failure retries next
+                        # pass instead of killing the spawn thread.
+                        timing_shm = new_slot(self._mp_context)
+
+                        process = self._mp_context.Process(
+                            name=f"taskworker-child-{child_id}",
+                            target=child_process,
+                            args=(
+                                child_id,
+                                self._app_module,
+                                self._child_tasks,
+                                self._processed_tasks,
+                                self._shutdown_event,
+                                self._max_child_task_count,
+                                self._processing_pool_name,
+                                self._process_type,
+                                self._skip_awaiting_futures,
+                                self._future_checking_frequency,
+                                messages,
+                                release,
+                                timing_shm,
+                            ),
+                        )
                         process.start()
 
                         with self._children_lock:
@@ -1248,10 +1377,12 @@ class TaskWorkerProcessingPool:
                                 process=process,
                                 state="pending",
                                 release=release,
+                                timing=ChildTimeAccounting(shm=timing_shm),
                             )
 
                             self._children[child_id] = child
                     except Exception as e:
+                        # `timing_shm` dies with this frame, so nothing leaks.
                         logger.exception(
                             "taskworker.child.spawn.failed",
                             extra={
@@ -1320,6 +1451,7 @@ class TaskWorkerProcessingPool:
             )
             return False
 
+        self._received_task = True
         self._metrics.distribution(
             "taskworker.worker.child_task.put.duration",
             time.monotonic() - start_time,
@@ -1381,6 +1513,7 @@ class TaskWorkerProcessingPool:
         """
         logger.info("taskworker.worker.shutdown.start")
         shutdown_start = time.monotonic()
+        self.stop_occupancy_reporting()
         self._shutdown_event.set()
 
         logger.info("taskworker.worker.shutdown.spawn_children")

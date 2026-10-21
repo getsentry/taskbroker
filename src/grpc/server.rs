@@ -43,6 +43,25 @@ impl ConsumerService for TaskbrokerServer {
         let application = &request.get_ref().application;
         let namespace = &request.get_ref().namespace;
 
+        // Worker pointed at the wrong pool fails
+        if let Some(application) = application
+            && !self.config.applications.admits(application)
+        {
+            metrics::counter!(
+                "grpc_server.unserved_application",
+                "method" => "get_task",
+            )
+            .increment(1);
+            error!(
+                application,
+                "Requested application is not served by this pool"
+            );
+
+            return Err(Status::failed_precondition(format!(
+                "Broker does not serve application '{application}'"
+            )));
+        }
+
         let inflight = self
             .store
             .claim_activation_for_pull(application.as_deref(), namespace.as_deref())
@@ -176,6 +195,24 @@ impl ConsumerService for TaskbrokerServer {
         else {
             return Ok(Response::new(SetTaskStatusResponse { task: None }));
         };
+
+        // Same check as get_task. Returning an error here would make the worker
+        // re-send the status update, so an unserved application just gets no task.
+        if let Some(application) = application
+            && !self.config.applications.admits(application)
+        {
+            metrics::counter!(
+                "grpc_server.unserved_application",
+                "method" => "fetch_next_task",
+            )
+            .increment(1);
+            error!(
+                application,
+                "Requested application is not served by this pool"
+            );
+
+            return Ok(Response::new(SetTaskStatusResponse { task: None }));
+        }
 
         let start_time = Instant::now();
 

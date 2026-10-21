@@ -16,7 +16,7 @@ use crate::config::{Config, DEFAULT_TOPIC};
 use crate::store::activation::{ActivationBuilder, ActivationStatus};
 use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
 use crate::store::traits::ActivationStore;
-use crate::store::types::TopicPartition;
+use crate::store::types::{Claim, TopicPartition};
 use crate::test_utils::{
     StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
     create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
@@ -91,6 +91,13 @@ async fn test_store(#[case] adapter: &str) {
 #[case::postgres("postgres")]
 async fn test_count_depths(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
+    store.assign_partitions(
+        &mut vec![
+            TopicPartition::new("taskworker-2", 0),
+            TopicPartition::new(DEFAULT_TOPIC, 0),
+        ]
+        .into_iter(),
+    );
 
     // Check counts for an empty store
     let pending = store
@@ -106,14 +113,17 @@ async fn test_count_depths(#[case] adapter: &str) {
         .await
         .unwrap();
 
-    let depths = store.count_depths().await.unwrap();
+    let depths = store.count_depths(None).await.unwrap();
 
     assert_eq!(depths.pending, pending);
     assert_eq!(depths.delay, delay);
     assert_eq!(depths.processing, processing);
+    assert_eq!(depths.claimed, 0);
 
     // Check counts for a store with four activations with varying statuses
-    let batch = make_activations(4);
+    let mut batch = make_activations(4);
+    batch[0].topic = "taskworker-2".into();
+    batch[1].topic = "taskworker-2".into();
     assert!(store.store(&batch).await.is_ok());
 
     store
@@ -142,14 +152,88 @@ async fn test_count_depths(#[case] adapter: &str) {
         .await
         .unwrap();
 
-    let depths = store.count_depths().await.unwrap();
+    let depths = store.count_depths(None).await.unwrap();
 
     assert_eq!(depths.pending, pending, "pending");
     assert_eq!(depths.delay, delay, "delay");
     assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(depths.claimed, 0, "claimed");
     assert_eq!(pending, 1);
     assert_eq!(delay, 1);
     assert_eq!(processing, 1);
+}
+
+#[tokio::test]
+#[rstest]
+#[case::postgres("postgres")]
+async fn test_count_depths_with_topic_filter(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    store.assign_partitions(
+        &mut vec![
+            TopicPartition::new("taskworker-2", 0),
+            TopicPartition::new(DEFAULT_TOPIC, 0),
+        ]
+        .into_iter(),
+    );
+
+    // Check counts for a store with activations with varying statuses
+    let mut batch = make_activations(5);
+    batch[0].topic = "taskworker-2".into();
+    batch[1].topic = "taskworker-2".into();
+    assert!(store.store(&batch).await.is_ok());
+
+    store
+        .set_status("id_0", ActivationStatus::Processing, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_1", ActivationStatus::Delay, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_2", ActivationStatus::Complete, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_3", ActivationStatus::Claimed, None, None)
+        .await
+        .unwrap();
+
+    let pending = store
+        .count_by_status(ActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(ActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(ActivationStatus::Processing)
+        .await
+        .unwrap();
+    let claimed = store
+        .count_by_status(ActivationStatus::Claimed)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths(None).await.unwrap();
+
+    assert_eq!(depths.pending, pending, "pending");
+    assert_eq!(depths.delay, delay, "delay");
+    assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(depths.claimed, claimed, "claimed");
+    assert_eq!(pending, 1);
+    assert_eq!(delay, 1);
+    assert_eq!(processing, 1);
+    assert_eq!(claimed, 1);
+
+    let topic_depths = store.count_depths(Some("taskworker-2")).await.unwrap();
+
+    // These activations were processing/delayed
+    assert_eq!(topic_depths.pending, 0, "pending");
+    assert_eq!(topic_depths.delay, 1, "delay");
+    assert_eq!(topic_depths.processing, 1, "processing");
+    assert_eq!(topic_depths.claimed, 0, "claimed");
 
     store.remove_db().await.unwrap();
 }
@@ -1474,6 +1558,108 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
         store.as_ref(),
     )
     .await;
+    store.remove_db().await.unwrap();
+}
+
+/// The fetch and push pools release their own claims rather than waiting on
+/// `handle_claim_expiration`, whose lease is sized for the worst case push.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_reverts_claimed_to_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+
+    let claim = batch[0].claim().unwrap();
+    assert_eq!(1, store.release_claims(&[claim]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Pending);
+    assert_eq!(task.claim_expires_at, None);
+    assert_eq!(task.processing_attempts, 0);
+    store.remove_db().await.unwrap();
+}
+
+/// Releasing a claim races a successful push. If the push won, the activation is
+/// already `Processing` and a worker is running it, so the release has to be a
+/// no-op instead of making the row claimable a second time.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_ignores_activations_that_moved_on(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Processing;
+    assert!(store.store(&batch).await.is_ok());
+
+    let claim = Claim {
+        id: batch[0].id.clone(),
+        expires_at: Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap(),
+    };
+    assert_eq!(0, store.release_claims(&[claim]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Processing);
+    store.remove_db().await.unwrap();
+}
+
+/// A release can arrive after its lease expired and another fetch thread claimed
+/// the row again. That claim carries a new expiry, so the stale release must
+/// leave it alone, or the row becomes claimable while it is being delivered.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_ignores_later_claims(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+
+    let stale = Claim {
+        id: batch[0].id.clone(),
+        expires_at: Utc.with_ymd_and_hms(2030, 1, 1, 1, 0, 0).unwrap(),
+    };
+    assert_eq!(0, store.release_claims(&[stale]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Claimed);
+    assert_eq!(task.claim_expires_at, batch[0].claim_expires_at);
+    store.remove_db().await.unwrap();
+}
+
+/// The claims come straight from the claim query, so the expiry it returns has
+/// to match the stored value exactly, at whatever precision the adapter keeps.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_matches_claims_from_the_claim_query(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let batch = make_activations(3);
+    assert!(store.store(&batch).await.is_ok());
+
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(3, claimed.len());
+
+    let claims: Vec<Claim> = claimed.iter().filter_map(|a| a.claim()).collect();
+    assert_eq!(3, claims.len());
+    assert_eq!(3, store.release_claims(&claims).await.unwrap());
+
+    for activation in &batch {
+        let task = store.get_by_id(&activation.id).await.unwrap().unwrap();
+        assert_eq!(task.status, ActivationStatus::Pending);
+        assert_eq!(task.claim_expires_at, None);
+    }
     store.remove_db().await.unwrap();
 }
 

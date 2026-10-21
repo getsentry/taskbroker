@@ -1,4 +1,37 @@
 # Changelog
+## 0.20.29
+
+### Bug Fixes 🐛
+
+- (worker) Attribute captured task errors to the current task by @yuvmen in [#818](https://github.com/getsentry/taskbroker/pull/818)
+
+## 0.20.28
+
+### New Features ✨
+
+#### Client
+
+- Add healthcheck command for the worker liveness probe by @oioki in [#814](https://github.com/getsentry/taskbroker/pull/814)
+- Add drain command for the worker preStop hook by @oioki in [#810](https://github.com/getsentry/taskbroker/pull/810)
+
+## 0.20.27
+
+### Bug Fixes 🐛
+
+- (worker) Only publish occupancy between first task and drain by @enochtangg in [#796](https://github.com/getsentry/taskbroker/pull/796)
+
+## 0.20.26
+
+### Bug Fixes 🐛
+
+- (worker) Send a portless :authority from the push client by @evanh in [#795](https://github.com/getsentry/taskbroker/pull/795)
+
+## 0.20.25
+
+### Bug Fixes 🐛
+
+- (taskworker) Measure child busy and wait time in shared memory by @enochtangg in [#788](https://github.com/getsentry/taskbroker/pull/788)
+
 ## 0.20.24
 
 ### New Features ✨
