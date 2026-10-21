@@ -516,7 +516,10 @@ def child_process(
                             inflight.activation.namespace,
                             inflight.activation.taskname,
                         ]
-                        scope.set_transaction_name(inflight.activation.taskname)
+                        # Override transaction names inherited from worker startup.
+                        sentry_sdk.get_current_scope().set_transaction_name(
+                            inflight.activation.taskname
+                        )
                         _log_task_failed(inflight.activation, err, processing_pool_name)
                 metrics.incr(
                     "taskworker.worker.processing_deadline_exceeded",
@@ -560,7 +563,9 @@ def child_process(
                                     inflight.activation.namespace,
                                     inflight.activation.taskname,
                                 ]
-                                scope.set_transaction_name(inflight.activation.taskname)
+                                sentry_sdk.get_current_scope().set_transaction_name(
+                                    inflight.activation.taskname
+                                )
                                 sentry_sdk.capture_exception(retry_error)
                             # Emit a structured worker log without logger.exception so this
                             # branch does not create a second Sentry error event.
@@ -576,7 +581,11 @@ def child_process(
                     and not captured_error
                     and next_state != TASK_ACTIVATION_STATUS_RETRY
                 ):
-                    _log_task_failed(inflight.activation, err, processing_pool_name)
+                    with sentry_sdk.isolation_scope():
+                        sentry_sdk.get_current_scope().set_transaction_name(
+                            inflight.activation.taskname
+                        )
+                        _log_task_failed(inflight.activation, err, processing_pool_name)
 
             clear_current_task()
             processed_task_count += 1

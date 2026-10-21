@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Build and push taskbroker image
-        uses: getsentry/action-build-and-push-images@dd9b907092cdd2dbc6c1a409f7290df1b391f6ee
+        uses: getsentry/action-build-and-push-images@3714f354c0bc912a95221f193c9643cdba966e34
         with:
           image_name: 'taskbroker'
           platforms: linux/${{ matrix.platform }}
@@ -34,6 +34,10 @@ jobs:
           google_ar: false
           tag_nightly: false
           tag_latest: false
+          # One cache per architecture, so the amd64 and arm64 builds don't
+          # overwrite each other's cache index.
+          cache_from: type=gha,scope=taskbroker-${{ matrix.platform }}
+          cache_to: type=gha,mode=max,scope=taskbroker-${{ matrix.platform }}
 
   assemble-taskbroker-image:
     runs-on: ubuntu-latest
@@ -78,7 +82,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Build and push taskbroker image
-        uses: getsentry/action-build-and-push-images@dd9b907092cdd2dbc6c1a409f7290df1b391f6ee
+        uses: getsentry/action-build-and-push-images@3714f354c0bc912a95221f193c9643cdba966e34
         with:
           image_name: 'taskbroker'
           platforms: linux/amd64
@@ -91,6 +95,10 @@ jobs:
           google_ar_image_name: ${{ matrix.image }}
           google_workload_identity_provider: projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool
           google_service_account: gha-taskbroker-push@sac-prod-sa.iam.gserviceaccount.com
+          # Same amd64 build as the `build` job, which writes this cache.
+          # Read it, but don't export it again from both registry jobs.
+          cache_from: type=gha,scope=taskbroker-amd64
+          cache_to: ''
 
   self-hosted-end-to-end:
     if: ${{ github.repository == 'getsentry/taskbroker' }}
@@ -100,6 +108,7 @@ jobs:
 
     steps:
       - name: Run Sentry self-hosted e2e CI
+        # Intentionally unpinned: we should not have to bump this manually
         uses: getsentry/self-hosted@master
         with:
           project_name: taskbroker

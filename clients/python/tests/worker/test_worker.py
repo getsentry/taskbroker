@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from multiprocessing import Event, get_context
 from multiprocessing.synchronize import Event as MultiprocessingEvent
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 from unittest import TestCase, mock
 from uuid import uuid4
 
@@ -21,6 +21,7 @@ import grpc
 import msgpack
 import prometheus_client
 import pytest
+import sentry_sdk
 import zstandard as zstd
 from arroyo.backends.kafka import KafkaPayload
 from arroyo.backends.kafka.producer import FutureTrackingProducer
@@ -41,6 +42,8 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TaskActivation,
 )
 from sentry_sdk.crons import MonitorStatus
+from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.transport import Transport
 
 from taskbroker_client.canary import CANARY_TASK_NAME
 from taskbroker_client.constants import INTERNAL_NAMESPACE, CompressionType
@@ -2673,6 +2676,81 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
     assert extra["task_id"] == "111"
     assert extra["processing_pool"] == "test"
     assert "execution deadline" in extra["exception_message"]
+
+
+@pytest.mark.usefixtures("restore_signal_handlers")
+@pytest.mark.parametrize("trace_lifecycle", ["static", "stream"])
+@pytest.mark.parametrize(
+    ("taskname", "args", "deadline", "retry_state"),
+    [
+        pytest.param("examples.timed", [3], 1, RetryState(), id="timeout"),
+        pytest.param("examples.fail_task", [], 2, RetryState(), id="exception"),
+        pytest.param(
+            "examples.will_retry",
+            ["raise"],
+            2,
+            RetryState(attempts=2, max_attempts=3),
+            id="retry-exhausted",
+        ),
+    ],
+)
+def test_child_process_error_event_uses_task_transaction(
+    trace_lifecycle: Literal["static", "stream"],
+    taskname: str,
+    args: list[Any],
+    deadline: int,
+    retry_state: RetryState,
+) -> None:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    todo.put(
+        InflightTaskActivation(
+            host="localhost:50051",
+            receive_timestamp=0,
+            activation=TaskActivation(
+                id="failing-task",
+                namespace="examples",
+                taskname=taskname,
+                parameters_bytes=msgpack.packb({"args": args, "kwargs": {}}, use_bin_type=True),
+                processing_deadline_duration=deadline,
+                retry_state=retry_state,
+            ),
+        )
+    )
+
+    # Inspect the fully processed error event, then drop it instead of sending it.
+    capture_event = mock.Mock(return_value=None)
+    with (
+        sentry_sdk.Client(
+            dsn="https://public@example.com/1",
+            default_integrations=False,
+            integrations=[LoggingIntegration()],
+            transport=mock.Mock(spec=Transport),
+            before_send=capture_event,
+            traces_sample_rate=0,
+            trace_lifecycle=trace_lifecycle,
+        ) as client,
+        sentry_sdk.isolation_scope() as scope,
+    ):
+        scope.set_client(client)
+        # Reproduce a transaction name left over from worker startup.
+        sentry_sdk.get_current_scope().set_transaction_name("StartupService.load_packages")
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            Event(),
+            max_task_count=1,
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
+        )
+
+    assert processed.get_nowait().status == TASK_ACTIVATION_STATUS_FAILURE
+    capture_event.assert_called_once()
+    event = capture_event.call_args.args[0]
+    assert event["transaction"] == taskname
 
 
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")

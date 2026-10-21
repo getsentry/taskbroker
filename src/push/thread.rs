@@ -9,7 +9,7 @@ use flume::Receiver;
 use tracing::{debug, error};
 
 use crate::push::updater::Updater;
-use crate::store::activation::Activation;
+use crate::store::activation::{Activation, ActivationStatus};
 use crate::store::traits::ActivationStore;
 use crate::timed;
 use crate::worker::WorkerMap;
@@ -67,6 +67,19 @@ impl PushThread {
                 application = activation.application,
                 "Application has no worker mapping"
             );
+
+            // Fail the task so upkeep discards it instead of the claim expiring.
+            if let Err(e) = self
+                .store
+                .set_status(id, ActivationStatus::Failure, None, None)
+                .await
+            {
+                error!(
+                    task_id = %id,
+                    error = ?e,
+                    "Failed to fail activation without a worker mapping"
+                );
+            }
 
             return;
         };

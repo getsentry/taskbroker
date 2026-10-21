@@ -26,9 +26,6 @@ pub struct RuntimeConfig {
     /// The topic to forward tasks from demoted namespaces to.
     /// If not set, the taskworker-long topic will be used
     pub demoted_topic: Option<String>,
-    /// Use Arroyo's async Kafka producer for retries, deadletters, and forwarding.
-    #[serde(default)]
-    pub use_arroyo_producer: bool,
 }
 
 pub struct RuntimeConfigManager {
@@ -221,8 +218,7 @@ drop_task_killswitch: []
 demoted_namespaces:
   - bad_namespace
 demoted_topic_cluster: kafka:9092
-demoted_topic: taskworker-demoted-topic
-use_arroyo_producer: true"#;
+demoted_topic: taskworker-demoted-topic"#;
 
         let mut config_file = NamedTempFile::new().unwrap();
         writeln!(config_file, "{}", test_yaml).unwrap();
@@ -231,7 +227,6 @@ use_arroyo_producer: true"#;
         let runtime_config =
             RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await;
         let config = runtime_config.read().await;
-        assert!(config.use_arroyo_producer);
         assert_eq!(
             config.demoted_topic_cluster.as_deref().unwrap(),
             "kafka:9092"

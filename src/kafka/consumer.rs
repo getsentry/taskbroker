@@ -10,9 +10,9 @@ use std::{cmp, iter};
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer};
 use rdkafka::error::{KafkaError, KafkaResult};
-use rdkafka::message::{BorrowedMessage, OwnedMessage};
+use rdkafka::message::BorrowedMessage;
 use rdkafka::types::RDKafkaErrorCode;
-use rdkafka::{ClientConfig, ClientContext, Message, Offset, TopicPartitionList};
+use rdkafka::{ClientConfig, ClientContext, Offset, TopicPartitionList};
 
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -30,6 +30,9 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::store::traits::ActivationStore;
 use crate::store::types::TopicPartition;
+
+use super::consumer_backend::{Assignment, ConsumerBackend};
+use super::message::MessageBackend;
 
 pub async fn start_no_consume_mode(
     topics: &[&str],
@@ -90,11 +93,9 @@ pub async fn start_no_consume_mode(
 pub async fn start_consumer(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
+    use_arroyo: bool,
     activation_store: Arc<dyn ActivationStore>,
-    spawn_actors: impl FnMut(
-        Arc<StreamConsumer<KafkaContext>>,
-        &BTreeSet<(String, i32)>,
-    ) -> ActorHandles,
+    spawn_actors: impl FnMut(Arc<ConsumerBackend>, Assignment) -> ActorHandles,
 ) -> Result<(), Error> {
     let (client_shutdown_sender, client_shutdown_receiver) = oneshot::channel();
     let (event_sender, event_receiver) = unbounded_channel();
@@ -102,18 +103,19 @@ pub async fn start_consumer(
     // never from this string — so a multi-topic consumer stays correct.
     let topics_tag = topics.join(",");
     let context = KafkaContext::new(event_sender.clone(), topics_tag.clone());
-    let consumer: Arc<StreamConsumer<KafkaContext>> = Arc::new(
-        kafka_client_config
-            .create_with_context(context)
-            .expect("Consumer creation failed"),
-    );
-
-    consumer
-        .subscribe(topics)
-        .expect("Can't subscribe to specified topics");
+    let consumer = Arc::new(ConsumerBackend::new(
+        topics,
+        kafka_client_config,
+        context,
+        use_arroyo,
+    )?);
 
     handle_shutdown_signals(event_sender.clone());
-    poll_consumer_client(consumer.clone(), client_shutdown_receiver);
+    // Arroyo polls the consumer on its own thread and commits when it is dropped below, so only
+    // rdkafka needs a poller to drive rebalances and commit on shutdown.
+    if let ConsumerBackend::Rdkafka { consumer } = consumer.as_ref() {
+        poll_consumer_client(consumer.clone(), client_shutdown_receiver);
+    }
     metrics::gauge!(
         "arroyo.consumer.current_partitions",
         "topic" => topics_tag.clone(),
@@ -121,14 +123,18 @@ pub async fn start_consumer(
     )
     .set(0);
     handle_events(
-        consumer,
+        consumer.clone(),
         event_receiver,
         activation_store,
         client_shutdown_sender,
         spawn_actors,
         topics_tag,
     )
-    .await
+    .await?;
+    // Dropping the consumer blocks while it closes, and Arroyo also makes its final commit then,
+    // so keep it off the async workers.
+    task::spawn_blocking(move || drop(consumer)).await?;
+    Ok(())
 }
 
 pub fn handle_shutdown_signals(event_sender: UnboundedSender<(Event, SyncSender<()>)>) {
@@ -174,9 +180,9 @@ pub fn poll_consumer_client(
 
 #[derive(Debug)]
 pub struct KafkaContext {
-    event_sender: UnboundedSender<(Event, SyncSender<()>)>,
+    pub(super) event_sender: UnboundedSender<(Event, SyncSender<()>)>,
     /// The topic(s) this consumer is subscribed to, used as a metric tag.
-    topics_tag: String,
+    pub(super) topics_tag: String,
 }
 
 impl KafkaContext {
@@ -205,7 +211,10 @@ impl ConsumerContext for KafkaContext {
                     return;
                 }
                 let _ = self.event_sender.send((
-                    Event::Assign(tpl.to_topic_map().keys().cloned().collect()),
+                    Event::Assign(Assignment {
+                        partitions: tpl.to_topic_map().keys().cloned().collect(),
+                        arroyo_queues: Vec::new(),
+                    }),
                     rendezvous_sender,
                 ));
                 info!("Partition assignment event sent, waiting for rendezvous...");
@@ -256,7 +265,7 @@ impl ConsumerContext for KafkaContext {
 
 #[derive(Debug)]
 pub enum Event {
-    Assign(BTreeSet<(String, i32)>),
+    Assign(Assignment),
     Revoke(BTreeSet<(String, i32)>),
     Shutdown,
 }
@@ -270,7 +279,7 @@ pub struct ActorHandles {
 
 impl ActorHandles {
     #[instrument(skip(self))]
-    async fn shutdown(mut self, deadline: Duration) {
+    async fn shutdown(mut self, deadline: Duration) -> JoinSet<Result<(), Error>> {
         debug!("Signaling shutdown to actors...");
         self.shutdown.cancel();
         info!("Actor shutdown signaled, waiting for rendezvous...");
@@ -284,9 +293,11 @@ impl ActorHandles {
                     "Unable to rendezvous within callback deadline, \
                     aborting all tasks within JoinSet"
                 );
-                self.join_set.abort_all();
             }
         }
+        // Returned so the Arroyo path can join them before committing or closing the consumer.
+        self.join_set.abort_all();
+        self.join_set
     }
 
     async fn join_next(&mut self) -> Option<Result<Result<(), Error>, JoinError>> {
@@ -340,8 +351,8 @@ macro_rules! processing_strategy {
             reduce: $reduce_first:expr $(,$reduce_rest:expr)*,
         }
     ) => {{
-        |consumer: Arc<rdkafka::consumer::StreamConsumer<$crate::kafka::consumer::KafkaContext>>,
-         tpl: &std::collections::BTreeSet<(String, i32)>|
+        |consumer: Arc<$crate::kafka::consumer_backend::ConsumerBackend>,
+         assignment: $crate::kafka::consumer_backend::Assignment|
          -> $crate::kafka::consumer::ActorHandles {
             let start = std::time::Instant::now();
 
@@ -353,11 +364,10 @@ macro_rules! processing_strategy {
             let (map_sender, reduce_receiver) = tokio::sync::mpsc::channel(1);
             let (err_sender, err_receiver) = tokio::sync::mpsc::channel(1);
 
-            for (topic, partition) in tpl.iter() {
-                let queue = consumer
-                    .split_partition_queue(topic, *partition)
-                    .expect("Unable to split topic by Partition");
-
+            let queues = consumer
+                .partition_queues(assignment)
+                .expect("Unable to split topic by Partition");
+            for queue in queues {
                 handles.spawn($crate::kafka::consumer::map(
                     queue,
                     $map_fn,
@@ -408,14 +418,11 @@ enum ConsumerState {
 
 #[instrument(skip_all)]
 pub async fn handle_events(
-    consumer: Arc<StreamConsumer<KafkaContext>>,
+    consumer: Arc<ConsumerBackend>,
     events: UnboundedReceiver<(Event, SyncSender<()>)>,
     activation_store: Arc<dyn ActivationStore>,
     shutdown_client: oneshot::Sender<()>,
-    mut spawn_actors: impl FnMut(
-        Arc<StreamConsumer<KafkaContext>>,
-        &BTreeSet<(String, i32)>,
-    ) -> ActorHandles,
+    mut spawn_actors: impl FnMut(Arc<ConsumerBackend>, Assignment) -> ActorHandles,
     topics_tag: String,
 ) -> Result<(), anyhow::Error> {
     const CALLBACK_DURATION: Duration = Duration::from_secs(4);
@@ -442,7 +449,8 @@ pub async fn handle_events(
                 };
                 info!("Received event: {:?}", event);
                 state = match (state, event) {
-                    (ConsumerState::Ready, Event::Assign(tpl)) => {
+                    (ConsumerState::Ready, Event::Assign(assignment)) => {
+                        let tpl = assignment.partitions.clone();
                         metrics::gauge!(
                             "arroyo.consumer.current_partitions",
                             "topic" => topics_tag.clone(),
@@ -450,7 +458,7 @@ pub async fn handle_events(
                         )
                         .set(tpl.len() as f64);
                         activation_store.assign_partitions(&mut tpl.iter().map(TopicPartition::from));
-                        ConsumerState::Consuming(spawn_actors(consumer.clone(), &tpl), tpl)
+                        ConsumerState::Consuming(spawn_actors(consumer.clone(), assignment), tpl)
                     }
                     (ConsumerState::Ready, Event::Revoke(_)) => {
                         unreachable!("Got partition revocation before the consumer has started")
@@ -465,7 +473,12 @@ pub async fn handle_events(
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
                         activation_store.revoke_partitions(&mut revoked.iter().map(TopicPartition::from));
-                        handles.shutdown(CALLBACK_DURATION).await;
+                        let mut actors = handles.shutdown(CALLBACK_DURATION).await;
+                        if consumer.is_arroyo() {
+                            // Join the aborted actors so none still holds the consumer when it
+                            // is closed.
+                            actors.shutdown().await;
+                        }
                         metrics::gauge!(
                             "arroyo.consumer.current_partitions",
                             "topic" => topics_tag.clone(),
@@ -476,7 +489,10 @@ pub async fn handle_events(
                     }
                     (ConsumerState::Consuming(handles, tpl), Event::Shutdown) => {
                         activation_store.revoke_partitions(&mut tpl.iter().map(TopicPartition::from));
-                        handles.shutdown(CALLBACK_DURATION).await;
+                        let mut actors = handles.shutdown(CALLBACK_DURATION).await;
+                        if consumer.is_arroyo() {
+                            actors.shutdown().await;
+                        }
                         debug!("Signaling shutdown to client...");
                         shutdown_client.take();
                         metrics::gauge!(
@@ -499,13 +515,13 @@ pub async fn handle_events(
 }
 
 pub trait KafkaMessage {
-    fn detach(&self) -> Result<OwnedMessage, Error>;
+    fn into_message(self) -> Result<MessageBackend, Error>;
 }
 
 impl KafkaMessage for Result<BorrowedMessage<'_>, KafkaError> {
-    fn detach(&self) -> Result<OwnedMessage, Error> {
+    fn into_message(self) -> Result<MessageBackend, Error> {
         match self {
-            Ok(borrowed_msg) => Ok(borrowed_msg.detach()),
+            Ok(borrowed_msg) => Ok(borrowed_msg.detach().into()),
             Err(err) => Err(anyhow!(
                 "Cannot detach message, got error from kafka: {:?}",
                 err
@@ -527,9 +543,9 @@ impl MessageQueue for StreamPartitionQueue<KafkaContext> {
 #[instrument(skip_all)]
 pub async fn map<T>(
     queue: impl MessageQueue,
-    transform: impl Fn(&OwnedMessage) -> Result<T, Error>,
-    ok: mpsc::Sender<(iter::Once<OwnedMessage>, T)>,
-    err: mpsc::Sender<OwnedMessage>,
+    transform: impl Fn(&MessageBackend) -> Result<T, Error>,
+    ok: mpsc::Sender<(iter::Once<MessageBackend>, T)>,
+    err: mpsc::Sender<MessageBackend>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
     let stream = queue.stream();
@@ -548,7 +564,7 @@ pub async fn map<T>(
                 let Some(msg) = val else {
                     break;
                 };
-                let msg = msg.detach()?;
+                let msg = msg.into_message()?;
                 match transform(&msg) {
                     Ok(transformed) => {
                         if ok.send((iter::once(msg), transformed)).await.is_err() {
@@ -616,8 +632,8 @@ pub trait Reducer {
 
 async fn handle_reducer_failure<T>(
     reducer: &mut impl Reducer<Input = T>,
-    inflight_msgs: &mut Vec<OwnedMessage>,
-    err: &mpsc::Sender<OwnedMessage>,
+    inflight_msgs: &mut Vec<MessageBackend>,
+    err: &mpsc::Sender<MessageBackend>,
 ) {
     for msg in take(inflight_msgs).into_iter() {
         err.send(msg).await.expect("reduce_err is not available");
@@ -628,9 +644,9 @@ async fn handle_reducer_failure<T>(
 #[instrument(skip_all)]
 async fn flush_reducer<T, U>(
     reducer: &mut impl Reducer<Input = T, Output = U>,
-    inflight_msgs: &mut Vec<OwnedMessage>,
-    ok: &mpsc::Sender<(Vec<OwnedMessage>, U)>,
-    err: &mpsc::Sender<OwnedMessage>,
+    inflight_msgs: &mut Vec<MessageBackend>,
+    ok: &mpsc::Sender<(Vec<MessageBackend>, U)>,
+    err: &mpsc::Sender<MessageBackend>,
 ) -> Result<(), Error> {
     match reducer.flush().await {
         Err(e) => {
@@ -650,9 +666,9 @@ async fn flush_reducer<T, U>(
 #[instrument(skip_all)]
 pub async fn reduce<T, U>(
     mut reducer: impl Reducer<Input = T, Output = U>,
-    mut receiver: mpsc::Receiver<(impl IntoIterator<Item = OwnedMessage>, T)>,
-    ok: mpsc::Sender<(Vec<OwnedMessage>, U)>,
-    err: mpsc::Sender<OwnedMessage>,
+    mut receiver: mpsc::Receiver<(impl IntoIterator<Item = MessageBackend>, T)>,
+    ok: mpsc::Sender<(Vec<MessageBackend>, U)>,
+    err: mpsc::Sender<MessageBackend>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
     let config = reducer.get_reduce_config();
@@ -741,8 +757,8 @@ pub async fn reduce<T, U>(
 
 #[instrument(skip_all)]
 pub async fn reduce_err(
-    mut reducer: impl Reducer<Input = OwnedMessage, Output = ()>,
-    mut receiver: mpsc::Receiver<OwnedMessage>,
+    mut reducer: impl Reducer<Input = MessageBackend, Output = ()>,
+    mut receiver: mpsc::Receiver<MessageBackend>,
     shutdown: CancellationToken,
 ) -> Result<(), Error> {
     let config = reducer.get_reduce_config();
@@ -832,13 +848,7 @@ pub async fn reduce_err(
 }
 
 pub trait CommitClient {
-    fn store_offsets(&self, tpl: &TopicPartitionList) -> KafkaResult<()>;
-}
-
-impl CommitClient for StreamConsumer<KafkaContext> {
-    fn store_offsets(&self, tpl: &TopicPartitionList) -> KafkaResult<()> {
-        Consumer::store_offsets(self, tpl)
-    }
+    fn store_offsets(&self, tpl: &TopicPartitionList) -> Result<(), Error>;
 }
 
 #[derive(Default)]
@@ -853,7 +863,7 @@ impl HighwaterMark {
         }
     }
 
-    fn track(&mut self, msg: &OwnedMessage) {
+    fn track(&mut self, msg: &MessageBackend) {
         let cur_offset = self
             .data
             .entry((msg.topic().to_string(), msg.partition()))
@@ -879,7 +889,7 @@ impl From<HighwaterMark> for TopicPartitionList {
 
 #[instrument(skip_all)]
 pub async fn commit(
-    mut receiver: mpsc::Receiver<(Vec<OwnedMessage>, ())>,
+    mut receiver: mpsc::Receiver<(Vec<MessageBackend>, ())>,
     consumer: Arc<impl CommitClient>,
     _rendezvous_guard: oneshot::Sender<()>,
 ) -> Result<(), Error> {
@@ -902,21 +912,23 @@ mod tests {
     use std::time::Duration;
 
     use anyhow::{Error, anyhow};
-    use futures::Stream;
-    use rdkafka::error::{KafkaError, KafkaResult};
+    use futures::{Stream, future};
+    use rdkafka::error::KafkaError;
     use rdkafka::message::OwnedMessage;
-    use rdkafka::{Message, Offset, Timestamp, TopicPartitionList};
+    use rdkafka::{Offset, Timestamp, TopicPartitionList};
     use tokio::sync::{broadcast, mpsc, oneshot};
+    use tokio::task::JoinSet;
     use tokio::time::sleep;
     use tokio_stream::wrappers::BroadcastStream;
     use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
     use tokio_util::sync::CancellationToken;
 
     use crate::kafka::consumer::{
-        CommitClient, KafkaMessage, MessageQueue, ReduceConfig, ReduceShutdownBehaviour,
-        ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour, commit, map, reduce,
-        reduce_err,
+        ActorHandles, CommitClient, KafkaMessage, MessageQueue, ReduceConfig,
+        ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer, ReducerWhenFullBehaviour,
+        commit, map, reduce, reduce_err,
     };
+    use crate::kafka::message::MessageBackend;
     use crate::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 
     struct MockCommitClient {
@@ -924,7 +936,7 @@ mod tests {
     }
 
     impl CommitClient for MockCommitClient {
-        fn store_offsets(&self, tpl: &TopicPartitionList) -> KafkaResult<()> {
+        fn store_offsets(&self, tpl: &TopicPartitionList) -> Result<(), Error> {
             self.offsets.write().unwrap().push(tpl.clone());
             Ok(())
         }
@@ -1085,6 +1097,48 @@ mod tests {
         }
     }
 
+    #[rstest::rstest]
+    #[case::rendezvous(true)]
+    #[case::deadline(false)]
+    #[tokio::test]
+    async fn test_native_actor_shutdown_defers_cleanup(#[case] rendezvous_completed: bool) {
+        let consumer = Arc::new(());
+        let mut join_set = JoinSet::new();
+        let (started_sender, started) = oneshot::channel();
+        join_set.spawn({
+            let consumer = consumer.clone();
+            async move {
+                let _consumer = consumer;
+                started_sender.send(()).unwrap();
+                future::pending().await
+            }
+        });
+        started.await.unwrap();
+        assert_eq!(Arc::strong_count(&consumer), 2);
+
+        let (rendezvous_sender, rendezvous) = oneshot::channel();
+        let _rendezvous_guard = if rendezvous_completed {
+            drop(rendezvous_sender);
+            None
+        } else {
+            Some(rendezvous_sender)
+        };
+        let handles = ActorHandles {
+            join_set,
+            shutdown: CancellationToken::new(),
+            rendezvous,
+        };
+        let deadline = if rendezvous_completed {
+            Duration::from_secs(1)
+        } else {
+            Duration::ZERO
+        };
+        let mut cleanup = handles.shutdown(deadline).await;
+        assert_eq!(Arc::strong_count(&consumer), 2);
+        cleanup.shutdown().await;
+        assert_eq!(Arc::strong_count(&consumer), 1);
+    }
+
     #[tokio::test]
     async fn test_commit() {
         let offsets = Arc::new(RwLock::new(Vec::new()));
@@ -1104,7 +1158,8 @@ mod tests {
                 0,
                 1,
                 None,
-            ),
+            )
+            .into(),
             OwnedMessage::new(
                 None,
                 None,
@@ -1113,7 +1168,8 @@ mod tests {
                 1,
                 0,
                 None,
-            ),
+            )
+            .into(),
         ];
 
         assert!(sender.send((msg.clone(), ())).await.is_ok());
@@ -1142,7 +1198,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         let shutdown = CancellationToken::new();
 
-        let msg = OwnedMessage::new(
+        let msg: MessageBackend = OwnedMessage::new(
             Some(vec![0, 1, 2, 3, 4, 5, 6, 7]),
             None,
             "topic".to_string(),
@@ -1150,7 +1206,8 @@ mod tests {
             0,
             0,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce_err(reducer, receiver, shutdown.clone()));
 
@@ -1175,7 +1232,7 @@ mod tests {
         let (err_sender, err_receiver) = mpsc::channel(2);
         let shutdown = CancellationToken::new();
 
-        let msg_0 = OwnedMessage::new(
+        let msg_0: MessageBackend = OwnedMessage::new(
             Some(vec![0, 2, 4, 6]),
             None,
             "topic".to_string(),
@@ -1183,8 +1240,9 @@ mod tests {
             0,
             0,
             None,
-        );
-        let msg_1 = OwnedMessage::new(
+        )
+        .into();
+        let msg_1: MessageBackend = OwnedMessage::new(
             Some(vec![1, 3, 5, 7]),
             None,
             "topic".to_string(),
@@ -1192,7 +1250,8 @@ mod tests {
             0,
             1,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce(
             reducer,
@@ -1234,7 +1293,7 @@ mod tests {
         let (err_sender, mut err_receiver) = mpsc::channel(2);
         let shutdown = CancellationToken::new();
 
-        let msg_0 = OwnedMessage::new(
+        let msg_0: MessageBackend = OwnedMessage::new(
             Some(vec![0, 2, 4, 6]),
             None,
             "topic".to_string(),
@@ -1242,8 +1301,9 @@ mod tests {
             0,
             0,
             None,
-        );
-        let msg_1 = OwnedMessage::new(
+        )
+        .into();
+        let msg_1: MessageBackend = OwnedMessage::new(
             Some(vec![1, 3, 5, 7]),
             None,
             "topic".to_string(),
@@ -1251,8 +1311,9 @@ mod tests {
             0,
             1,
             None,
-        );
-        let msg_2 = OwnedMessage::new(
+        )
+        .into();
+        let msg_2: MessageBackend = OwnedMessage::new(
             Some(vec![0, 0, 0, 0]),
             None,
             "topic".to_string(),
@@ -1260,7 +1321,8 @@ mod tests {
             0,
             2,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce(
             reducer,
@@ -1311,7 +1373,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel(1);
         let shutdown = CancellationToken::new();
 
-        let msg = OwnedMessage::new(
+        let msg: MessageBackend = OwnedMessage::new(
             Some(vec![0, 1, 2, 3, 4, 5, 6, 7]),
             None,
             "topic".to_string(),
@@ -1319,7 +1381,8 @@ mod tests {
             0,
             0,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce_err(reducer, receiver, shutdown.clone()));
 
@@ -1343,7 +1406,7 @@ mod tests {
         let (err_sender, err_receiver) = mpsc::channel(2);
         let shutdown = CancellationToken::new();
 
-        let msg_0 = OwnedMessage::new(
+        let msg_0: MessageBackend = OwnedMessage::new(
             Some(vec![0, 2, 4, 6]),
             None,
             "topic".to_string(),
@@ -1351,8 +1414,9 @@ mod tests {
             0,
             0,
             None,
-        );
-        let msg_1 = OwnedMessage::new(
+        )
+        .into();
+        let msg_1: MessageBackend = OwnedMessage::new(
             Some(vec![1, 3, 5, 7]),
             None,
             "topic".to_string(),
@@ -1360,7 +1424,8 @@ mod tests {
             0,
             1,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce(
             reducer,
@@ -1400,7 +1465,7 @@ mod tests {
         let (err_sender, mut err_receiver) = mpsc::channel(3);
         let shutdown = CancellationToken::new();
 
-        let msg_0 = OwnedMessage::new(
+        let msg_0: MessageBackend = OwnedMessage::new(
             Some(vec![0, 3, 6]),
             None,
             "topic".to_string(),
@@ -1408,8 +1473,9 @@ mod tests {
             0,
             0,
             None,
-        );
-        let msg_1 = OwnedMessage::new(
+        )
+        .into();
+        let msg_1: MessageBackend = OwnedMessage::new(
             Some(vec![1, 4, 7]),
             None,
             "topic".to_string(),
@@ -1417,8 +1483,9 @@ mod tests {
             0,
             1,
             None,
-        );
-        let msg_2 = OwnedMessage::new(
+        )
+        .into();
+        let msg_2: MessageBackend = OwnedMessage::new(
             Some(vec![2, 5, 8]),
             None,
             "topic".to_string(),
@@ -1426,7 +1493,8 @@ mod tests {
             0,
             2,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce(
             reducer,
@@ -1477,7 +1545,7 @@ mod tests {
         let (err_sender, mut err_receiver) = mpsc::channel(1);
         let shutdown = CancellationToken::new();
 
-        let msg_0 = OwnedMessage::new(
+        let msg_0: MessageBackend = OwnedMessage::new(
             Some(vec![0, 3, 6]),
             None,
             "topic".to_string(),
@@ -1485,8 +1553,9 @@ mod tests {
             0,
             0,
             None,
-        );
-        let msg_1 = OwnedMessage::new(
+        )
+        .into();
+        let msg_1: MessageBackend = OwnedMessage::new(
             Some(vec![1, 4, 7]),
             None,
             "topic".to_string(),
@@ -1494,8 +1563,9 @@ mod tests {
             0,
             1,
             None,
-        );
-        let msg_2 = OwnedMessage::new(
+        )
+        .into();
+        let msg_2: MessageBackend = OwnedMessage::new(
             Some(vec![2, 5, 8]),
             None,
             "topic".to_string(),
@@ -1503,8 +1573,9 @@ mod tests {
             0,
             2,
             None,
-        );
-        let msg_3 = OwnedMessage::new(
+        )
+        .into();
+        let msg_3: MessageBackend = OwnedMessage::new(
             Some(vec![0, 0, 0]),
             None,
             "topic".to_string(),
@@ -1512,7 +1583,8 @@ mod tests {
             0,
             3,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce(
             reducer,
@@ -1570,14 +1642,14 @@ mod tests {
 
         let shutdown = CancellationToken::new();
 
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(2);
         let (ok_sender_0, ok_receiver_0) = mpsc::channel(2);
         let (err_sender_0, err_receiver_0) = mpsc::channel(1);
 
         let (ok_sender_1, mut ok_receiver_1) = mpsc::channel(1);
         let (err_sender_1, err_receiver_1) = mpsc::channel(1);
 
-        let msg_0 = OwnedMessage::new(
+        let msg_0: MessageBackend = OwnedMessage::new(
             Some(vec![0, 2, 4, 6]),
             None,
             "topic".to_string(),
@@ -1585,8 +1657,9 @@ mod tests {
             0,
             0,
             None,
-        );
-        let msg_1 = OwnedMessage::new(
+        )
+        .into();
+        let msg_1: MessageBackend = OwnedMessage::new(
             Some(vec![1, 3, 5, 7]),
             None,
             "topic".to_string(),
@@ -1594,7 +1667,11 @@ mod tests {
             0,
             1,
             None,
-        );
+        )
+        .into();
+
+        assert!(sender.send((iter::once(msg_0.clone()), 1)).await.is_ok());
+        assert!(sender.send((iter::once(msg_1.clone()), 2)).await.is_ok());
 
         tokio::spawn(reduce(
             reducer_0,
@@ -1611,9 +1688,6 @@ mod tests {
             err_sender_1,
             shutdown.clone(),
         ));
-
-        assert!(sender.send((iter::once(msg_0.clone()), 1)).await.is_ok());
-        assert!(sender.send((iter::once(msg_1.clone()), 2)).await.is_ok());
 
         let ok_msgs = ok_receiver_1.recv().await.unwrap().0;
         assert_eq!(ok_msgs.len(), 2);
@@ -1649,7 +1723,7 @@ mod tests {
         let (err_sender, err_receiver) = mpsc::channel(2);
         let shutdown = CancellationToken::new();
 
-        let msg_0 = OwnedMessage::new(
+        let msg_0: MessageBackend = OwnedMessage::new(
             Some(vec![0, 2, 4, 6]),
             None,
             "topic".to_string(),
@@ -1657,8 +1731,9 @@ mod tests {
             0,
             0,
             None,
-        );
-        let msg_1 = OwnedMessage::new(
+        )
+        .into();
+        let msg_1: MessageBackend = OwnedMessage::new(
             Some(vec![1, 3, 5, 7]),
             None,
             "topic".to_string(),
@@ -1666,7 +1741,8 @@ mod tests {
             0,
             1,
             None,
-        );
+        )
+        .into();
 
         tokio::spawn(reduce(
             reducer,
@@ -1706,7 +1782,7 @@ mod tests {
     }
 
     impl KafkaMessage for Result<Result<MockMessage, KafkaError>, BroadcastStreamRecvError> {
-        fn detach(&self) -> Result<OwnedMessage, Error> {
+        fn into_message(self) -> Result<MessageBackend, Error> {
             let clone = self.clone().unwrap().unwrap();
             Ok(OwnedMessage::new(
                 Some(clone.payload),
@@ -1716,7 +1792,8 @@ mod tests {
                 clone.partition,
                 clone.offset,
                 None,
-            ))
+            )
+            .into())
         }
     }
 
@@ -1901,7 +1978,7 @@ mod tests {
                 ),
 
             map:
-                |_: &OwnedMessage| Ok(()),
+                |_: &MessageBackend| Ok(()),
             reduce:
                 NoopReducer::new(),
                 NoopReducer::new(),
@@ -1918,7 +1995,7 @@ mod tests {
                 ),
 
             map:
-                |_: &OwnedMessage| Ok(()),
+                |_: &MessageBackend| Ok(()),
             reduce:
                 NoopReducer::new(),
         });
