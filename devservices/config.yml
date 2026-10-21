@@ -36,7 +36,16 @@ services:
   taskbroker:
     image: ghcr.io/getsentry/taskbroker:nightly
     environment:
-      TASKBROKER_KAFKA_CLUSTER: "kafka-kafka-1:9093"
+      # Multi-topic/cluster config expressed via env vars. Nested keys use the
+      # "__" separator; figment lowercases each key segment, so topic/cluster
+      # names can only contain underscores (not hyphens) when set this way.
+      TASKBROKER_KAFKA_CLUSTERS__DEFAULT__ADDRESS: "kafka-kafka-1:9093"
+      TASKBROKER_KAFKA_TOPICS__TASKWORKER__CLUSTER: "default"
+      TASKBROKER_KAFKA_TOPICS__TASKWORKER__CONSUMER_GROUP: "taskworker"
+      TASKBROKER_KAFKA_DEADLETTER_TOPIC: "taskworker_dlq"
+      TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__CLUSTER: "default"
+      TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__CONSUMER_GROUP: "taskworker"
+      TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__PRODUCE_ONLY: "true"
       TASKBROKER_CREATE_MISSING_TOPICS: "true"
     ports:
       - 127.0.0.1:50051:50051

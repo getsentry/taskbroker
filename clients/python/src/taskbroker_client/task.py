@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-import base64
 import datetime
+import inspect
 import time
 from collections.abc import Callable, Collection, Mapping, MutableMapping
 from functools import update_wrapper
-from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar
+from math import ceil
+from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, get_origin
 from uuid import uuid4
 
-import orjson
+import msgpack
 import sentry_sdk
 import zstandard as zstd
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -26,7 +27,7 @@ from taskbroker_client.constants import (
 from taskbroker_client.retry import Retry
 
 if TYPE_CHECKING:
-    from taskbroker_client.registry import TaskNamespace
+    from taskbroker_client.registry import ProducerFuture, TaskNamespace
 
 
 ALWAYS_EAGER = False
@@ -37,6 +38,42 @@ This can be mutated by application test harnesses to run tasks without Kafka.
 
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+def assert_typed_kwarg(
+    func: Callable[..., Any],
+    param_name: str,
+    expected_types: tuple[type, ...],
+    context: str,
+) -> None:
+    """
+    Validate that a function has a keyword argument with a compatible type annotation.
+
+    Raises TypeError if:
+    - The parameter does not exist
+    - The parameter is positional-only
+    - The parameter has a type annotation that is not in expected_types
+    """
+    sig = inspect.signature(func, eval_str=True)
+    if param_name not in sig.parameters:
+        raise TypeError(f"{context}: function does not have a {param_name!r} parameter")
+
+    param = sig.parameters[param_name]
+    if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+        raise TypeError(
+            f"{context}: {param_name!r} parameter is positional-only. "
+            f"It must be a keyword argument."
+        )
+
+    if param.annotation is not inspect.Parameter.empty:
+        origin = get_origin(param.annotation)
+        if origin is None:
+            origin = param.annotation
+        if origin not in expected_types:
+            raise TypeError(
+                f"{context}: {param_name!r} parameter has type {param.annotation!r}. "
+                f"Expected one of: {', '.join(t.__name__ for t in expected_types)}."
+            )
 
 
 class Task(Generic[P, R]):
@@ -51,6 +88,9 @@ class Task(Generic[P, R]):
         at_most_once: bool = False,
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
+        report_timeout_errors: bool = True,
+        silenced_exceptions: tuple[type[BaseException], ...] | None = None,
+        pass_headers: bool = False,
     ):
         self.name = name
         self._func = func
@@ -60,17 +100,27 @@ class Task(Generic[P, R]):
             processing_deadline_duration or DEFAULT_PROCESSING_DEADLINE
         )
         if at_most_once and retry:
-            raise AssertionError(
-                """
+            raise AssertionError("""
                 You cannot enable at_most_once and have retries defined.
                 Having retries enabled means that a task supports being executed
                 multiple times and thus cannot be idempotent.
-                """
-            )
+                """)
         self._retry = retry
         self.at_most_once = at_most_once
         self.wait_for_delivery = wait_for_delivery
         self.compression_type = compression_type
+        self.report_timeout_errors = report_timeout_errors
+        self.silenced_exceptions = silenced_exceptions or ()
+        self.pass_headers = pass_headers
+
+        if pass_headers:
+            assert_typed_kwarg(
+                func,
+                "headers",
+                (dict, Mapping, MutableMapping, Any),
+                f"Task {name!r} with pass_headers=True",
+            )
+
         update_wrapper(self, func)
 
     @property
@@ -95,10 +145,32 @@ class Task(Generic[P, R]):
         """
         Schedule a task to run later with a set of arguments.
 
-        The provided parameters will be JSON encoded and stored within
+        The provided parameters will be msgpack encoded and stored within
         a `TaskActivation` protobuf that is appended to kafka
         """
         self.apply_async(args=args, kwargs=kwargs)
+
+    def _create_activation_for_async_dispatch(
+        self,
+        args: Any | None = None,
+        kwargs: Any | None = None,
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+    ) -> tuple[TaskActivation, Any, Any]:
+        if args is None:
+            args = []
+        if kwargs is None:
+            kwargs = {}
+
+        self._signal_send(task=self, args=args, kwargs=kwargs)
+
+        # Generate an activation even if we're in immediate mode to
+        # catch serialization errors in tests.
+        activation = self.create_activation(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+        return activation, args, kwargs
 
     def apply_async(
         self,
@@ -112,8 +184,68 @@ class Task(Generic[P, R]):
         """
         Schedule a task to run later with a set of arguments.
 
-        The provided parameters will be JSON encoded and stored within
+        The provided parameters will be msgpack encoded and stored within
         a `TaskActivation` protobuf that is appended to kafka.
+        """
+        activation, args, kwargs = self._create_activation_for_async_dispatch(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+        if ALWAYS_EAGER:
+            self._call_func(*args, **kwargs)
+        else:
+            self._namespace.send_task(
+                activation,
+                wait_for_delivery=self.wait_for_delivery,
+            )
+
+    def apply_async_with_future(
+        self,
+        args: Any | None = None,
+        kwargs: Any | None = None,
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        **options: Any,
+    ) -> ProducerFuture | None:
+        """
+        Schedule a task and return the producer future.
+
+        This does not wait for delivery. Callers that need delivery confirmation
+        must wait on the returned future themselves. Callers that do not need the
+        future should use apply_async(). Ignoring the returned future does not
+        cancel or prevent the produce; the task activation has already been
+        handed to the producer.
+        """
+        activation, args, kwargs = self._create_activation_for_async_dispatch(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+        if ALWAYS_EAGER:
+            self._call_func(*args, **kwargs)
+            return None
+
+        return self._namespace.send_task(
+            activation,
+            wait_for_delivery=self.wait_for_delivery,
+        )
+
+    def apply_async_testing(
+        self,
+        args: Any | None = None,
+        kwargs: Any | None = None,
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        bytes: int | None = None,
+        seconds: float | None = None,
+        **options: Any,
+    ) -> None:
+        """
+        Task dispatch for testing tools like the 'taskbroker-send-tasks' command in Sentry.
+
+        If `bytes` is provided, the activation is padded to be at least that size.
+        If `seconds` is provided, it is added to the default processing deadline.
+
+        Normal `delay` and `apply_async` calls do not use this path.
         """
         if args is None:
             args = []
@@ -122,10 +254,14 @@ class Task(Generic[P, R]):
 
         self._signal_send(task=self, args=args, kwargs=kwargs)
 
-        # Generate an activation even if we're in immediate mode to
-        # catch serialization errors in tests.
-        activation = self.create_activation(
-            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        activation = self.create_testing_activation(
+            args=args,
+            kwargs=kwargs,
+            headers=headers,
+            expires=expires,
+            countdown=countdown,
+            bytes=bytes,
+            seconds=seconds,
         )
         if ALWAYS_EAGER:
             self._call_func(*args, **kwargs)
@@ -137,7 +273,15 @@ class Task(Generic[P, R]):
 
     def _call_func(self, *args: Any, **kwargs: Any) -> None:
         # Overridden in ExternalTask
-        self._func(*args, **kwargs)
+        if self.pass_headers:
+            if "headers" in kwargs:
+                raise TypeError(
+                    f"Task '{self.name}' has pass_headers=True, but 'headers' was passed in kwargs. "
+                    "The 'headers' parameter is injected by the worker and cannot be passed by the caller."
+                )
+            self._func(*args, headers={}, **kwargs)  # type: ignore[arg-type]
+        else:
+            self._func(*args, **kwargs)
 
     def _signal_send(self, task: Task[Any, Any], args: Any, kwargs: Any) -> None:
         """
@@ -179,6 +323,9 @@ class Task(Generic[P, R]):
                 **headers,
             }
 
+        for hook in self._namespace.context_hooks:
+            hook.on_dispatch(headers)
+
         # Monitor config is patched in by the sentry_sdk
         # however, taskworkers do not support the nested object,
         # nor do they use it when creating checkins.
@@ -194,37 +341,37 @@ class Task(Generic[P, R]):
                     f"The `{key}` header value is of type {type(value)}"
                 )
 
-        parameters_json = orjson.dumps({"args": args, "kwargs": kwargs})
-        if (
-            len(parameters_json) > MAX_PARAMETER_BYTES_BEFORE_COMPRESSION
-            or self.compression_type == CompressionType.ZSTD
-        ):
-            # Worker uses this header to determine if the parameters are decompressed
+        data = {"args": args, "kwargs": kwargs}
+        msgpack_bytes = msgpack.packb(data, use_bin_type=True)
+
+        should_compress = (
+            self.compression_type == CompressionType.ZSTD
+            or len(msgpack_bytes) > MAX_PARAMETER_BYTES_BEFORE_COMPRESSION
+        )
+
+        if should_compress:
             headers["compression-type"] = CompressionType.ZSTD.value
             start_time = time.perf_counter()
-            parameters_str = base64.b64encode(zstd.compress(parameters_json)).decode("utf8")
-            end_time = time.perf_counter()
+            parameters_bytes_val = zstd.compress(msgpack_bytes)
+            elapsed = time.perf_counter() - start_time
 
+            metric_tags = {
+                "namespace": self._namespace.name,
+                "taskname": self.name,
+                "topic": self._namespace.topic,
+            }
             self.namespace.metrics.distribution(
                 "taskworker.producer.compressed_parameters_size",
-                len(parameters_str),
-                tags={
-                    "namespace": self._namespace.name,
-                    "taskname": self.name,
-                    "topic": self._namespace.topic,
-                },
+                len(parameters_bytes_val),
+                tags=metric_tags,
             )
             self.namespace.metrics.distribution(
                 "taskworker.producer.compression_time",
-                end_time - start_time,
-                tags={
-                    "namespace": self._namespace.name,
-                    "taskname": self.name,
-                    "topic": self._namespace.topic,
-                },
+                elapsed,
+                tags=metric_tags,
             )
         else:
-            parameters_str = parameters_json.decode("utf8")
+            parameters_bytes_val = msgpack_bytes
 
         return TaskActivation(
             id=uuid4().hex,
@@ -232,13 +379,58 @@ class Task(Generic[P, R]):
             namespace=self._namespace.name,
             taskname=self.name,
             headers=headers,
-            parameters=parameters_str,
+            parameters_bytes=parameters_bytes_val,
             retry_state=self._create_retry_state(),
             received_at=received_at,
             processing_deadline_duration=processing_deadline,
             expires=expires,
             delay=countdown,
         )
+
+    def create_testing_activation(
+        self,
+        args: Collection[Any],
+        kwargs: Mapping[Any, Any],
+        headers: MutableMapping[str, Any] | None = None,
+        expires: int | datetime.timedelta | None = None,
+        countdown: int | datetime.timedelta | None = None,
+        bytes: int | None = None,
+        seconds: float | None = None,
+    ) -> TaskActivation:
+        """
+        Build a `TaskActivation` with optional size padding for testing purposes.
+
+        If `bytes` is provided, the activation is padded to be at least that size.
+        If `seconds` is provided, it is added to the default processing deadline.
+        """
+        activation = self.create_activation(
+            args=args, kwargs=kwargs, headers=headers, expires=expires, countdown=countdown
+        )
+
+        if seconds:
+            if seconds < 0:
+                raise ValueError(
+                    f"Test activation seconds is {seconds}, which is NOT greater than zero"
+                )
+
+            activation.processing_deadline_duration = DEFAULT_PROCESSING_DEADLINE + ceil(seconds)
+
+        if bytes:
+            if bytes < 0:
+                raise ValueError(
+                    f"Test activation bytes is {bytes}, which is NOT greater than zero"
+                )
+
+            padding_key = "taskbroker-testing-activation-padding"
+
+            while activation.ByteSize() < bytes:
+                missing_bytes = bytes - activation.ByteSize()
+
+                activation.headers[padding_key] = (
+                    activation.headers.get(padding_key, "") + "x" * missing_bytes
+                )
+
+        return activation
 
     def _create_retry_state(self) -> RetryState:
         retry = self.retry or self._namespace.default_retry or None

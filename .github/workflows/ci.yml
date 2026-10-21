@@ -8,12 +8,14 @@ on:
     branches: ["main"]
 
 env:
-  RUSTFLAGS: -Dwarnings
+  RUSTFLAGS: -Dwarnings --cfg tokio_unstable
 
+# Pinned to ubuntu-24.04: actions/setup-python has no Python 3.12.11
+# (.python-version) build for ubuntu-26.04, which ubuntu-latest now points to.
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -29,9 +31,14 @@ jobs:
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
 
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
-          toolchain: stable
+          # Clippy 1.99 reports false positives in async_trait-generated code.
+          # https://github.com/rust-lang/rust-clippy/issues/17529
+          toolchain: "1.98.1"
           profile: minimal
           override: true
           components: clippy, rustfmt
@@ -46,7 +53,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -65,12 +72,18 @@ jobs:
 
       - name: Run pre-commit
         run: |
-          jq '.[]' --raw-output <<< '${{steps.changes.outputs.all_files}}' |
-            xargs pre-commit run --files
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # On main branch, run on all files to catch any formatting drift
+            pre-commit run --all-files
+          else
+            # On PRs, run only on changed files
+            jq '.[]' --raw-output <<< '${{steps.changes.outputs.all_files}}' |
+              xargs pre-commit run --files
+          fi
 
   python-client-lint:
     name: Python Client Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -90,7 +103,7 @@ jobs:
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         if: steps.changes.outputs.python == 'true'
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           enable-cache: false
 
       - uses: getsentry/action-setup-venv@5a80476d175edf56cb205b08bc58986fa99d1725 # v3.2.0
@@ -117,7 +130,7 @@ jobs:
 
   python-client-test:
     name: Python Client Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -136,7 +149,7 @@ jobs:
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         if: steps.changes.outputs.python == 'true'
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           enable-cache: false
 
       - uses: getsentry/action-setup-venv@5a80476d175edf56cb205b08bc58986fa99d1725 # v3.2.0
@@ -164,14 +177,14 @@ jobs:
 
   test:
     name: Tests (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -187,6 +200,9 @@ jobs:
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -204,7 +220,7 @@ jobs:
 
   coverage:
     name: Coverage (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
@@ -221,13 +237,16 @@ jobs:
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
 
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
       - uses: swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # pin@v1
         with:
           key: ${{ github.job }}
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -249,14 +268,23 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   rebalance-integration-test:
-    name: Rebalance integration test
-    runs-on: ubuntu-latest
+    name: Rebalance integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -270,7 +298,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -284,14 +312,23 @@ jobs:
           make test-rebalance
 
   worker-processing-integration-test:
-    name: Worker processing integration test
-    runs-on: ubuntu-latest
+    name: Worker processing integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -305,7 +342,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -319,14 +356,23 @@ jobs:
           make test-worker-processing
 
   upkeep-retry-integration-test:
-    name: Upkeep retry integration test
-    runs-on: ubuntu-latest
+    name: Upkeep retry integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -340,7 +386,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -354,14 +400,23 @@ jobs:
           make test-upkeep-retry
 
   upkeep-expiry-integration-test:
-    name: Upkeep expiry integration test
-    runs-on: ubuntu-latest
+    name: Upkeep expiry integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -375,7 +430,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -389,14 +444,23 @@ jobs:
           make test-upkeep-expiry
 
   upkeep-delay-integration-test:
-    name: Upkeep delay integration test
-    runs-on: ubuntu-latest
+    name: Upkeep delay integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -410,7 +474,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -424,14 +488,23 @@ jobs:
           make test-upkeep-delay
 
   failed-tasks-integration-test:
-    name: Failed tasks integration test
-    runs-on: ubuntu-latest
+    name: Failed tasks integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
       - name: Install cmake
         uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
 
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
         with:
@@ -445,7 +518,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
         with:
-          version: '0.8.2'
+          version: '0.13.4'
           # we just cache the venv-dir directly in action-setup-venv
           enable-cache: false
 
@@ -457,3 +530,91 @@ jobs:
       - name: Run failed tasks integration test
         run: |
           make test-failed-tasks
+
+  multi-topic-integration-test:
+    name: Multi-topic integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
+
+    steps:
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
+
+      - name: Install cmake
+        uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
+      - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - uses: swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # pin@v1
+        with:
+          key: ${{ github.job }}
+
+      - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
+        with:
+          version: '0.13.4'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@5a80476d175edf56cb205b08bc58986fa99d1725 # v3.2.0
+        with:
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
+
+      - name: Run multi-topic integration test
+        run: |
+          make test-multi-topic
+
+  push-postgres-integration-test:
+    name: Push mode postgres integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        consumer_backend: [rdkafka, arroyo]
+    env:
+      TASKBROKER_USE_ARROYO_CONSUMER: ${{ matrix.consumer_backend == 'arroyo' }}
+
+    steps:
+      - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
+
+      - name: Install cmake
+        uses: lukka/get-cmake@28983e0d3955dba2bb0a6810caae0c6cf268ec0c # latest
+
+      - name: Install libcurl
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+
+      - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # pin@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - uses: swatinem/rust-cache@81d053bdb0871dcd3f10763c8cc60d0adc41762b # pin@v1
+        with:
+          key: ${{ github.job }}
+
+      - uses: astral-sh/setup-uv@5a7eac68fb9809dea845d802897dc5c723910fa3 # v7.1.3
+        with:
+          version: '0.13.4'
+          # we just cache the venv-dir directly in action-setup-venv
+          enable-cache: false
+
+      - uses: getsentry/action-setup-venv@5a80476d175edf56cb205b08bc58986fa99d1725 # v3.2.0
+        with:
+          cache-dependency-path: uv.lock
+          install-cmd: uv sync --frozen --only-dev --active
+
+      - name: Run push mode postgres integration test
+        run: |
+          make test-push-postgres

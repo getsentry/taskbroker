@@ -36,6 +36,13 @@ class Schedule(metaclass=abc.ABCMeta):
         Get the next scheduled time after `start`
         """
 
+    @abc.abstractmethod
+    def schedule_id(self) -> str:
+        """
+        Return a stable identifier for this schedule's interval.
+        Used as a key suffix in Redis so that changing the schedule rotates the key.
+        """
+
 
 class TimedeltaSchedule(Schedule):
     """
@@ -90,6 +97,9 @@ class TimedeltaSchedule(Schedule):
     def runtime_after(self, start: datetime) -> datetime:
         """Get the next time a task should run after start"""
         return start + self._delta
+
+    def schedule_id(self) -> str:
+        return str(int(self._delta.total_seconds()))
 
 
 class CrontabSchedule(Schedule):
@@ -193,3 +203,6 @@ class CrontabSchedule(Schedule):
         """Get the next time a task should be spawned after `start`"""
         start = start.replace(second=0, microsecond=0) + timedelta(minutes=1)
         return self._advance(start)
+
+    def schedule_id(self) -> str:
+        return str(self._crontab).replace(" ", "_")

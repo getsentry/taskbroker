@@ -1,11 +1,12 @@
+use std::mem;
+use std::task::{self, Poll};
+
 use anyhow::Context;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use hmac::{Hmac, Mac};
 use http_body_util::{BodyExt, Full};
 use sha2::Sha256;
-use std::mem;
-use std::task::{self, Poll};
 use tonic::body::Body;
 use tower::{Layer, Service};
 
@@ -146,12 +147,13 @@ fn validate_signature(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::Bytes;
     use hmac::{Hmac, Mac};
     use http::StatusCode;
     use http::request::Request;
     use sha2::Sha256;
+
+    use super::*;
 
     type Hmac256 = Hmac<Sha256>;
 

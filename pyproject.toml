@@ -7,17 +7,18 @@ requires-python = ">=3.11"
 
 [dependency-groups]
 dev = [
-    "black==24.10.0",
+    "black==26.3.1",
     "devservices>=1.2.1",
     "pre-commit>=4.2.0",
-    "pytest>=8.3.3",
+    "pytest>=9.0.3",
     "sentry-devenv>=1.22.2",
     "confluent_kafka>=2.3.0",
     "grpcio>=1.67.0",
     "orjson>=3.10.10",
     "protobuf>=5.28.3",
+    "psycopg2-binary>=2.9",
     "pyyaml>=6.0.2",
-    "sentry-protos>=0.2.0",
+    "sentry-protos>=0.22.1",
     "flake8>=7.3.0",
     "isort>=5.13.2",
     "mypy>=1.17.1",
@@ -57,6 +58,8 @@ module = [
     "redis.*",
     "rediscluster.*",
     "confluent_kafka.*",
+    "psycopg2.*",
+    "msgpack",
 ]
 ignore_missing_imports = true
 # end: missing 3rd party stubs
@@ -70,3 +73,4 @@ target-version = ['py311']
 profile = "black"
 line_length = 100
 lines_between_sections = 1
+src_paths = ["integration_tests", "clients/python/src"]

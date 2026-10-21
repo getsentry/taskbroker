@@ -69,6 +69,11 @@ test-upkeep-retry: build reset-kafka ## Run the upkeep retry integration test
 	rm -r integration_tests/.tests_output/test_upkeep_retry
 .PHONY: test-upkeep-retry
 
+test-multi-topic: build reset-kafka ## Run the multi-topic consumption integration test
+	python -m pytest integration_tests/integration_tests/test_multi_topic.py -s
+	rm -r integration_tests/.tests_output/test_multi_topic
+.PHONY: test-multi-topic
+
 test-upkeep-expiry: build reset-kafka ## Run the upkeep expiry integration test
 	python -m pytest integration_tests/integration_tests/test_upkeep_expiry.py -s
 	rm -r integration_tests/.tests_output/test_upkeep_expiry
@@ -83,6 +88,11 @@ test-failed-tasks: build reset-kafka ## Run the failed tasks integration test
 	python -m pytest integration_tests/integration_tests/test_failed_tasks.py -s
 	rm -r integration_tests/.tests_output/test_failed_tasks
 .PHONY: test-failed-tasks
+
+test-push-postgres: build reset-kafka ## Run the postgres-backed push mode integration test
+	python -m pytest integration_tests/integration_tests/test_push_postgres.py -s
+	rm -r integration_tests/.tests_output/test_push_postgres
+.PHONY: test-push-postgres
 
 integration-test: test-rebalance test-worker-processing test-upkeep-retry test-upkeep-expiry test-upkeep-delay test-failed-tasks ## Run all integration tests
 .PHONY: integration-test

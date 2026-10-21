@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import heapq
 import logging
-from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from redis.client import StrictRedis
-from rediscluster import RedisCluster
 from sentry_sdk import capture_exception
 from sentry_sdk.crons import MonitorStatus, capture_checkin
 
 from taskbroker_client.app import TaskbrokerApp
-from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.scheduler.config import ScheduleConfig, crontab
 from taskbroker_client.scheduler.schedules import CrontabSchedule, Schedule, TimedeltaSchedule
+from taskbroker_client.scheduler.storage import RunStorage, RunStorageProtocol
 from taskbroker_client.task import Task
 
 logger = logging.getLogger(__name__)
@@ -23,65 +20,7 @@ if TYPE_CHECKING:
     from sentry_sdk._types import MonitorConfig
 
 
-class RunStorage:
-    """
-    Storage interface for tracking the last run time of tasks.
-    This is split out from `ScheduleRunner` to allow us to change storage
-    in the future, or adapt taskworkers for other applications should we need to.
-    """
-
-    def __init__(
-        self, metrics: MetricsBackend, redis: RedisCluster[str] | StrictRedis[str]
-    ) -> None:
-        self._redis = redis
-        self._metrics = metrics
-
-    def _make_key(self, taskname: str) -> str:
-        return f"tw:scheduler:{taskname}"
-
-    def set(self, taskname: str, next_runtime: datetime) -> bool:
-        """
-        Record a spawn time for a task.
-        The next_runtime parameter indicates when the record should expire,
-        and a task can be spawned again.
-
-        Returns False when the key is set and a task should not be spawned.
-        """
-        now = datetime.now(tz=UTC)
-        # next_runtime & now could be the same second, and redis gets sad if ex=0
-        duration = max(int((next_runtime - now).total_seconds()), 1)
-
-        result = self._redis.set(self._make_key(taskname), now.isoformat(), ex=duration, nx=True)
-        return bool(result)
-
-    def read(self, taskname: str) -> datetime | None:
-        """
-        Retrieve the last run time of a task
-        Returns None if last run time has expired or is unknown.
-        """
-        result = self._redis.get(self._make_key(taskname))
-        if result:
-            return datetime.fromisoformat(result)
-
-        self._metrics.incr(
-            "taskworker.scheduler.run_storage.read.miss", tags={"taskname": taskname}
-        )
-        return None
-
-    def read_many(self, tasknames: list[str]) -> Mapping[str, datetime | None]:
-        """
-        Retreive last run times in bulk
-        """
-        values = self._redis.mget([self._make_key(taskname) for taskname in tasknames])
-        run_times = {
-            taskname: datetime.fromisoformat(value) if value else None
-            for taskname, value in zip(tasknames, values)
-        }
-        return run_times
-
-    def delete(self, taskname: str) -> None:
-        """remove a task key - mostly for testing."""
-        self._redis.delete(self._make_key(taskname))
+__all__ = ("ScheduleEntry", "ScheduleRunner", "RunStorage")
 
 
 class ScheduleEntry:
@@ -111,6 +50,10 @@ class ScheduleEntry:
     @property
     def fullname(self) -> str:
         return self._task.fullname
+
+    @property
+    def storage_key(self) -> str:
+        return f"{self._key}:{self.fullname}:{self._schedule.schedule_id()}"
 
     @property
     def namespace(self) -> str:
@@ -160,7 +103,7 @@ class ScheduleEntry:
             checkin_config["schedule"]["type"] = "crontab"
             checkin_config["schedule"]["value"] = self._schedule.monitor_value()
         elif isinstance(self._schedule, TimedeltaSchedule):
-            (interval_value, interval_units) = self._schedule.monitor_interval()
+            interval_value, interval_units = self._schedule.monitor_interval()
             # Monitors does not support intervals less than 1 minute.
             if interval_units == "second":
                 return None
@@ -182,7 +125,7 @@ class ScheduleRunner:
     is used in a while loop to spawn tasks and sleep.
     """
 
-    def __init__(self, app: TaskbrokerApp, run_storage: RunStorage) -> None:
+    def __init__(self, app: TaskbrokerApp, run_storage: RunStorageProtocol) -> None:
         self._entries: list[ScheduleEntry] = []
         self._app = app
         self._run_storage = run_storage
@@ -191,7 +134,7 @@ class ScheduleRunner:
     def add(self, key: str, task_config: ScheduleConfig) -> None:
         """Add a scheduled task to the runner."""
         try:
-            (namespace, taskname) = task_config["task"].split(":")
+            namespace, taskname = task_config["task"].split(":")
         except ValueError:
             raise ValueError("Invalid task name. Must be in the format namespace:taskname")
 
@@ -237,7 +180,7 @@ class ScheduleRunner:
     def _try_spawn(self, entry: ScheduleEntry) -> None:
         now = datetime.now(tz=UTC)
         next_runtime = entry.runtime_after(now)
-        if self._run_storage.set(entry.fullname, next_runtime):
+        if self._run_storage.set(entry.storage_key, next_runtime):
             entry.delay_task()
             entry.set_last_run(now)
 
@@ -252,7 +195,7 @@ class ScheduleRunner:
             )
         else:
             # We were not able to set a key, load last run from storage.
-            run_state = self._run_storage.read(entry.fullname)
+            run_state = self._run_storage.read(entry.storage_key)
             entry.set_last_run(run_state)
 
             logger.info(
@@ -284,9 +227,9 @@ class ScheduleRunner:
         We synchronize each time the schedule set is modified and
         then incrementally as tasks spawn attempts are made.
         """
-        last_run_times = self._run_storage.read_many([item.fullname for item in self._entries])
+        last_run_times = self._run_storage.read_many([item.storage_key for item in self._entries])
         for item in self._entries:
-            last_run = last_run_times.get(item.fullname, None)
+            last_run = last_run_times.get(item.storage_key, None)
             item.set_last_run(last_run)
         logger.info(
             "taskworker.scheduler.load_last_run",

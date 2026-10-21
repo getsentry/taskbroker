@@ -5,14 +5,15 @@ from typing import Any
 
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
-from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE
+from taskbroker_client.canary import CANARY_TASK_NAME, canary_task
+from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, INTERNAL_NAMESPACE
 from taskbroker_client.imports import import_string
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.registry import ExternalNamespace, TaskNamespace, TaskRegistry
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import Task
-from taskbroker_client.types import AtMostOnceStore, ProducerFactory
+from taskbroker_client.types import AtMostOnceStore, ContextHook, ProducerFactory
 
 
 class TaskbrokerApp:
@@ -27,9 +28,11 @@ class TaskbrokerApp:
         router_class: str | TaskRouter = "taskbroker_client.router.DefaultRouter",
         metrics_class: str | MetricsBackend = "taskbroker_client.metrics.NoOpMetricsBackend",
         at_most_once_store: AtMostOnceStore | None = None,
+        context_hooks: list[ContextHook] | None = None,
     ) -> None:
         self.name = name
         self.metrics = self._build_metrics(metrics_class)
+        self.context_hooks: list[ContextHook] = context_hooks if context_hooks is not None else []
         self._config = {
             "rpc_secret": None,
             "grpc_config": None,
@@ -41,7 +44,9 @@ class TaskbrokerApp:
             producer_factory=producer_factory,
             router=self._build_router(router_class),
             metrics=self.metrics,
+            context_hooks=self.context_hooks,
         )
+        self._register_internal_tasks()
         self.at_most_once_store(at_most_once_store)
 
     def _build_router(self, router_name: str | TaskRouter) -> TaskRouter:
@@ -59,6 +64,14 @@ class TaskbrokerApp:
             metrics_class = import_string(backend_name)
             return metrics_class()
         return backend_name
+
+    def _register_internal_tasks(self) -> None:
+        namespace = self._taskregistry.create_namespace(
+            name=INTERNAL_NAMESPACE,
+            internal=True,
+        )
+
+        namespace.register(name=CANARY_TASK_NAME)(canary_task)
 
     @property
     def taskregistry(self) -> TaskRegistry:

@@ -1,15 +1,24 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::fs;
 
+pub mod canary_tasks;
 pub mod config;
+pub mod fetch;
+pub mod flusher;
 pub mod grpc;
 pub mod kafka;
+pub mod killswitch;
 pub mod logging;
 pub mod metrics;
+pub mod push;
 pub mod runtime_config;
+pub mod runtime_metrics;
+pub mod serde;
 pub mod store;
 pub mod test_utils;
+pub mod tokio;
 pub mod upkeep;
+pub mod worker;
 
 /// Name of the grpc service.
 /// Using the service type to get a name wasn't working across modules.
@@ -20,9 +29,30 @@ pub fn get_version() -> &'static str {
     Box::leak(release_name.into_boxed_str())
 }
 
+/// What are we running?
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
+pub enum Run {
+    Migrations,
+    Broker,
+}
+
 #[derive(Parser, Debug)]
 pub struct Args {
-    /// Path to the configuration file
-    #[arg(short, long, help = "The path to a config file")]
+    /// What are we running?
+    #[arg(short, long, default_value = "broker")]
+    pub run: Run,
+
+    /// Path to the configuration file.
+    #[arg(short, long)]
     pub config: Option<String>,
+}
+
+#[macro_export]
+macro_rules! timed {
+    ($future:expr, $($histogram_args:tt)+) => {{
+        let start = ::std::time::Instant::now();
+        let result = $future.await;
+        ::metrics::histogram!($($histogram_args)+).record(start.elapsed());
+        result
+    }};
 }

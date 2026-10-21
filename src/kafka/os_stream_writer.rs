@@ -1,9 +1,13 @@
+use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::time::Duration;
+
+use tokio::time::sleep;
+
 use crate::kafka::consumer::{
     ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
     ReducerWhenFullBehaviour,
 };
-use std::{fmt::Debug, marker::PhantomData, time::Duration};
-use tokio::time::sleep;
 
 pub enum OsStream {
     StdOut,

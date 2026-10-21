@@ -1,10 +1,30 @@
+import contextlib
 import dataclasses
-from typing import Callable, Protocol
+from collections.abc import MutableMapping
+from concurrent.futures import Future
+from typing import Any, Callable, Protocol
 
 from arroyo.backends.abstract import ProducerFuture
 from arroyo.backends.kafka import KafkaPayload
-from arroyo.types import BrokerValue, Topic
+from arroyo.types import BrokerValue, Partition, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation, TaskActivationStatus
+
+TaskHeaders = dict[str, str]
+"""Headers passed to a task function when pass_headers=True is set."""
+
+
+class ContextHook(Protocol):
+    """
+    Hook for propagating application context through task headers.
+
+    on_dispatch: called at task creation time to inject context into headers.
+    on_execute: called at task execution time, returns a context manager
+                that restores context from headers for the duration of the task.
+    """
+
+    def on_dispatch(self, headers: MutableMapping[str, Any]) -> None: ...
+
+    def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]: ...
 
 
 class AtMostOnceStore(Protocol):
@@ -19,8 +39,18 @@ class ProducerProtocol(Protocol):
     """Interface for producers that tasks depend on."""
 
     def produce(
-        self, topic: Topic, payload: KafkaPayload
+        self, dest: Topic | Partition, payload: KafkaPayload
     ) -> ProducerFuture[BrokerValue[KafkaPayload]]: ...
+
+
+class CloseableProducerProtocol(Protocol):
+    """Interface used by TaskProducer. Represents a producer that has a shutdown method."""
+
+    def produce(
+        self, dest: Topic | Partition, payload: KafkaPayload
+    ) -> ProducerFuture[BrokerValue[KafkaPayload]]: ...
+
+    def close(self) -> Future[None]: ...
 
 
 ProducerFactory = Callable[[str], ProducerProtocol]
@@ -49,3 +79,5 @@ class ProcessingResult:
     status: TaskActivationStatus.ValueType
     host: str
     receive_timestamp: float
+    max_attempts: int | None = None
+    delay_on_retry: int | None = None

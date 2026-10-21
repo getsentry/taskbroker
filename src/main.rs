@@ -1,54 +1,55 @@
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::{Error, anyhow};
 use chrono::Utc;
 use clap::Parser;
-use std::{sync::Arc, time::Duration};
-use taskbroker::kafka::inflight_activation_batcher::{
-    ActivationBatcherConfig, InflightActivationBatcher,
-};
-use taskbroker::upkeep::upkeep;
+use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
+use taskbroker::push::updater::{EagerUpdater, LazyUpdater, Updater};
+use taskbroker::worker::{Worker, WorkerClient, WorkerMap};
 use tokio::signal::unix::SignalKind;
 use tokio::task::JoinHandle;
 use tokio::{select, time};
 use tonic::transport::Server;
+use tonic_health::ServingStatus;
 use tracing::{debug, error, info, warn};
 
-use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerServiceServer;
-
-use taskbroker::SERVICE_NAME;
-use taskbroker::config::{Config, DatabaseAdapter};
+use taskbroker::canary_tasks;
+use taskbroker::config::store::DatabaseAdapter;
+use taskbroker::config::{Config, DeliveryMode};
+use taskbroker::fetch::FetchPool;
 use taskbroker::grpc::auth_middleware::AuthLayer;
 use taskbroker::grpc::metrics_middleware::MetricsLayer;
-use taskbroker::grpc::server::TaskbrokerServer;
-use taskbroker::kafka::{
-    admin::create_missing_topics,
-    consumer::start_consumer,
-    deserialize_activation::{self, DeserializeActivationConfig},
-    inflight_activation_writer::{ActivationWriterConfig, InflightActivationWriter},
-    os_stream_writer::{OsStream, OsStreamWriter},
-};
-use taskbroker::logging;
+use taskbroker::grpc::server::{TaskbrokerServer, flush_updates};
+use taskbroker::kafka::activation_batcher::{ActivationBatcher, ActivationBatcherConfig};
+use taskbroker::kafka::activation_writer::{ActivationWriter, ActivationWriterConfig};
+use taskbroker::kafka::admin::create_missing_topics;
+use taskbroker::kafka::consumer::{start_consumer, start_no_consume_mode};
+use taskbroker::kafka::deserialize::{self, DeserializeConfig};
+use taskbroker::kafka::os_stream_writer::{OsStream, OsStreamWriter};
 use taskbroker::metrics;
 use taskbroker::processing_strategy;
+use taskbroker::push::PushPool;
 use taskbroker::runtime_config::RuntimeConfigManager;
-use taskbroker::store::inflight_activation::{
-    InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
-};
-use taskbroker::store::postgres_activation_store::{
-    PostgresActivationStore, PostgresActivationStoreConfig,
-};
+use taskbroker::store::adapters::postgres::{self, PostgresStore};
+use taskbroker::store::adapters::sqlite::SqliteStore;
+use taskbroker::store::traits::ActivationStore;
+use taskbroker::upkeep::upkeep;
 use taskbroker::{Args, get_version};
-use tonic_health::ServingStatus;
+use taskbroker::{Run, logging};
+use taskbroker::{SERVICE_NAME, flusher};
 
-async fn log_task_completion(name: &str, task: JoinHandle<Result<(), Error>>) {
+async fn log_task_completion<T: AsRef<str>>(name: T, task: JoinHandle<Result<(), Error>>) {
     match task.await {
         Ok(Ok(())) => {
-            info!("Task {} completed", name);
+            info!("Task {} completed", name.as_ref());
         }
         Ok(Err(e)) => {
-            error!("Task {} failed: {:?}", name, e);
+            error!("Task {} failed: {:?}", name.as_ref(), e);
         }
         Err(e) => {
-            error!("Task {} panicked: {:?}", name, e);
+            error!("Task {} panicked: {:?}", name.as_ref(), e);
         }
     }
 }
@@ -65,30 +66,41 @@ async fn main() -> Result<(), Error> {
 
     logging::init(logging::LoggingConfig::from_config(&config));
     metrics::init(metrics::MetricsConfig::from_config(&config));
+    sentry_arroyo::metrics::configure_scope(|scope| scope.set_tag("application", "taskbroker"))?;
 
-    let store: Arc<dyn InflightActivationStore> = match config.database_adapter {
-        DatabaseAdapter::Sqlite => Arc::new(
-            SqliteActivationStore::new(
-                &config.db_path,
-                InflightActivationStoreConfig::from_config(&config),
-            )
-            .await?,
-        ),
-        DatabaseAdapter::Postgres => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(&config))
-                .await?,
-        ),
+    info!(config = config.dump_redacted_yaml()?, "Configuration");
+
+    if args.run == Run::Migrations {
+        return config.store.adapter.migrate(&config).await;
+    }
+
+    let store: Arc<dyn ActivationStore> = match config.store.adapter {
+        DatabaseAdapter::Sqlite => Arc::new(SqliteStore::new(&config).await?),
+
+        DatabaseAdapter::Postgres => {
+            if config.store.pg.run_migrations {
+                postgres::migrate(&config.store).await?;
+            }
+
+            Arc::new(PostgresStore::new(&config).await?)
+        }
     };
 
     // If this is an environment where the topics might not exist, check and create them.
     if config.create_missing_topics {
-        let kafka_client_config = config.kafka_consumer_config();
-        create_missing_topics(
-            kafka_client_config,
-            &config.kafka_topic,
-            config.default_topic_partitions,
-        )
-        .await?;
+        // Group every declared topic by its cluster so each is created on the
+        // right brokers (main, retry, deadletter and produce-only topics, which
+        // may live on different clusters).
+        let mut topics_by_cluster: BTreeMap<&str, Vec<(&str, i32)>> = BTreeMap::new();
+        for (topic_name, topic_config) in &config.kafka_topics {
+            topics_by_cluster
+                .entry(topic_config.cluster.as_str())
+                .or_default()
+                .push((topic_name.as_str(), config.default_topic_partitions));
+        }
+        for (cluster, topics) in topics_by_cluster {
+            create_missing_topics(config.kafka_admin_config(cluster), &topics).await?;
+        }
     }
 
     if config.full_vacuum_on_start {
@@ -98,7 +110,10 @@ async fn main() -> Result<(), Error> {
             Err(err) => error!("Failed to run full vacuum on startup: {:?}", err),
         }
     }
-    // Get startup time after migrations and vacuum
+
+    canary_tasks::enqueue(&config, store.as_ref()).await?;
+
+    // Get startup time after migrations, vacuum, and startup canaries
     let startup_time = Utc::now();
 
     // Taskbroker exposes a grpc.v1.health endpoint. We use upkeep to track the health
@@ -109,7 +124,7 @@ async fn main() -> Result<(), Error> {
         .await;
 
     // Upkeep loop
-    let upkeep_task = tokio::spawn({
+    let upkeep_task = taskbroker::tokio::spawn({
         let upkeep_store = store.clone();
         let upkeep_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
@@ -127,7 +142,7 @@ async fn main() -> Result<(), Error> {
     });
 
     // Maintenance task loop
-    let maintenance_task = tokio::spawn({
+    let maintenance_task = taskbroker::tokio::spawn({
         let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
         let maintenance_store = store.clone();
         let mut timer = time::interval(Duration::from_millis(config.maintenance_task_interval_ms));
@@ -151,17 +166,50 @@ async fn main() -> Result<(), Error> {
         }
     });
 
-    // Consumer from kafka
-    let consumer_task = tokio::spawn({
+    // Tokio runtime metrics sampler: emits per-broker worker-thread utilization
+    // and queue-depth gauges.
+    let runtime_metrics_task = taskbroker::tokio::spawn(taskbroker::runtime_metrics::run(
+        config.runtime_metrics_interval,
+    ));
+
+    // Consumer(s) from kafka. Each consumed topic gets its own consumer (own
+    // group.id and cluster), so we spawn one consumer task per consumable topic,
+    // all sharing the one activation store.
+    let consumer_topics: Vec<(String, bool)> = config
+        .consumable_topics()
+        .expect("invalid config: no consumable topic")
+        .into_iter()
+        .map(|(name, cfg)| (name.to_owned(), cfg.consumer_disabled))
+        .collect();
+
+    let mut consumer_tasks: Vec<(String, JoinHandle<Result<(), Error>>)> = Vec::new();
+    for (topic, consumer_disabled) in consumer_topics {
         let consumer_store = store.clone();
         let consumer_config = config.clone();
         let runtime_config_manager = runtime_config_manager.clone();
-        async move {
+        let task_topic = topic.clone();
+
+        if consumer_disabled {
+            let handle = taskbroker::tokio::spawn(async move {
+                start_no_consume_mode(
+                    &[task_topic.as_str()],
+                    &consumer_config.kafka_consumer_config_for(&task_topic),
+                )
+                .await
+            });
+            consumer_tasks.push((topic, handle));
+            continue;
+        }
+
+        let handle = taskbroker::tokio::spawn(async move {
             // The consumer has an internal thread that listens for cancellations, so it doesn't need
             // an outer select here like the other tasks.
+            let topic_refs = [task_topic.as_str()];
             start_consumer(
-                &[&consumer_config.kafka_topic],
-                &consumer_config.kafka_consumer_config(),
+                &topic_refs,
+                &consumer_config.kafka_consumer_config_for(&task_topic),
+                consumer_config.use_arroyo_consumer,
+                consumer_store.clone(),
                 processing_strategy!({
                     err:
                         OsStreamWriter::new(
@@ -170,82 +218,201 @@ async fn main() -> Result<(), Error> {
                         ),
 
                     map:
-                        deserialize_activation::new(DeserializeActivationConfig::from_config(&consumer_config)),
+                        deserialize::new(DeserializeConfig::from_topic(&consumer_config, &task_topic)),
 
                     reduce:
-                        InflightActivationBatcher::new(
-                            ActivationBatcherConfig::from_config(&consumer_config),
+                        ActivationBatcher::new(
+                            ActivationBatcherConfig::from_topic(&consumer_config, &task_topic),
                             runtime_config_manager.clone()
                         ),
-                        InflightActivationWriter::new(
+                        ActivationWriter::new(
                             consumer_store.clone(),
-                            ActivationWriterConfig::from_config(&consumer_config)
+                            ActivationWriterConfig::from_topic(&consumer_config, &task_topic)
                         ),
 
                 }),
             )
             .await
-        }
-    });
+        });
+        consumer_tasks.push((topic, handle));
+    }
 
-    // GRPC server
-    let grpc_server_task = tokio::spawn({
-        let grpc_store = store.clone();
-        let grpc_config = config.clone();
-        async move {
-            let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
-                .parse()
-                .expect("Failed to parse address");
+    // Status update flush task
+    let (status_update_tx, status_update_task) = if config.batch_status_updates {
+        let (tx, rx) = tokio::sync::mpsc::channel(config.status_update_batch_size);
 
-            let layers = tower::ServiceBuilder::new()
-                .layer(MetricsLayer::default())
-                .layer(AuthLayer::new(&grpc_config))
-                .into_inner();
+        let flusher_store = store.clone();
+        let flusher_config = config.clone();
 
-            let server = Server::builder()
-                .layer(layers)
-                .add_service(ConsumerServiceServer::new(TaskbrokerServer {
-                    store: grpc_store,
-                }))
-                .add_service(health_service.clone())
-                .serve(addr);
+        let handle = taskbroker::tokio::spawn(async move {
+            flusher::run_flusher(
+                rx,
+                flusher_config.status_update_batch_size,
+                flusher_config.status_update_interval_ms,
+                move |buffer| Box::pin(flush_updates(flusher_store.clone(), buffer)),
+            )
+            .await
+        });
 
-            let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            info!("GRPC server listening on {}", addr);
-            select! {
-                biased;
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
 
-                res = server => {
-                    info!("GRPC server task failed, shutting down");
+    // GRPC server - only start if port is configured (port 0 disables it)
+    let grpc_server_task = if config.grpc_port > 0 {
+        Some(taskbroker::tokio::spawn({
+            let grpc_store = store.clone();
+            let grpc_config = config.clone();
+            let grpc_status_tx = status_update_tx.clone();
 
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    match res {
-                        Ok(()) => Ok(()),
-                        Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+            async move {
+                let addr = format!("{}:{}", grpc_config.grpc_addr, grpc_config.grpc_port)
+                    .parse()
+                    .expect("Failed to parse address");
+
+                let layers = tower::ServiceBuilder::new()
+                    .layer(MetricsLayer::default())
+                    .layer(AuthLayer::new(&grpc_config))
+                    .into_inner();
+
+                let server = Server::builder()
+                    .layer(layers)
+                    .add_service(ConsumerServiceServer::new(TaskbrokerServer {
+                        store: grpc_store,
+                        config: grpc_config,
+                        update_tx: grpc_status_tx,
+                    }))
+                    .add_service(health_service.clone())
+                    .serve(addr);
+
+                let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+                info!("GRPC server listening on {}", addr);
+                select! {
+                    biased;
+
+                    res = server => {
+                        info!("GRPC server task failed, shutting down");
+
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        match res {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(anyhow!("GRPC server task failed: {:?}", e)),
+                        }
+                    }
+                    _ = guard.wait() => {
+                        info!("Cancellation token received, shutting down GRPC server");
+
+                        // Wait for any running requests to drain
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        Ok(())
                     }
                 }
-                _ = guard.wait() => {
-                    info!("Cancellation token received, shutting down GRPC server");
-
-                    // Wait for any running requests to drain
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    Ok(())
-                }
             }
-        }
-    });
+        }))
+    } else {
+        info!("GRPC server disabled (grpc_port=0)");
+        None
+    };
 
-    elegant_departure::tokio::depart()
+    // Initialize push queue
+    let (sender, receiver) = flume::bounded(config.push.queue.size);
+
+    // Initialize push and fetch pools
+    let push_pool = PushPool::new(receiver, config.clone());
+    let fetch_pool = FetchPool::new(sender, store.clone(), config.clone());
+
+    // Initialize push threads
+    let push_task = if config.delivery_mode == DeliveryMode::Push {
+        let mut workers: Vec<WorkerMap> = vec![];
+
+        // For every push thread, create a map from applications to worker connections
+        for _ in 0..config.push.threads {
+            let mut map = HashMap::new();
+
+            for (application, endpoint) in config.worker_map.clone() {
+                let worker = match Worker::connect(config.clone(), endpoint.clone()).await {
+                    Ok(w) => {
+                        debug!(application, endpoint, "Connected to worker!");
+                        Box::new(w) as Box<dyn WorkerClient>
+                    }
+
+                    Err(e) => {
+                        error!(
+                            application,
+                            endpoint,
+                            error = ?e,
+                            "Failed to connect to worker"
+                        );
+                        return Err(e);
+                    }
+                };
+
+                map.insert(application, worker);
+            }
+
+            workers.push(map);
+        }
+
+        // Create the correct kind of push updater
+        let updater = if config.push.update.batched {
+            let lazy = LazyUpdater::new(config.clone(), store.clone());
+            Arc::new(lazy) as Arc<dyn Updater>
+        } else {
+            let eager = EagerUpdater::new(store.clone());
+            Arc::new(eager) as Arc<dyn Updater>
+        };
+
+        Some(taskbroker::tokio::spawn(async move {
+            push_pool.start(workers, updater, store.clone()).await
+        }))
+    } else {
+        None
+    };
+
+    // Initialize fetch threads
+    let fetch_task = if config.delivery_mode == DeliveryMode::Push {
+        Some(taskbroker::tokio::spawn(
+            async move { fetch_pool.start().await },
+        ))
+    } else {
+        None
+    };
+
+    let mut departure = elegant_departure::tokio::depart()
         .on_termination()
         .on_sigint()
         .on_signal(SignalKind::hangup())
         .on_signal(SignalKind::quit())
-        .on_completion(log_task_completion("consumer", consumer_task))
-        .on_completion(log_task_completion("grpc_server", grpc_server_task))
         .on_completion(log_task_completion("upkeep_task", upkeep_task))
         .on_completion(log_task_completion("maintenance_task", maintenance_task))
-        .await;
+        .on_completion(log_task_completion(
+            "runtime_metrics_task",
+            runtime_metrics_task,
+        ));
 
+    for (topic, handle) in consumer_tasks {
+        departure =
+            departure.on_completion(log_task_completion(format!("consumer:{topic}"), handle));
+    }
+
+    if let Some(task) = grpc_server_task {
+        departure = departure.on_completion(log_task_completion("grpc_server", task));
+    }
+
+    if let Some(task) = push_task {
+        departure = departure.on_completion(log_task_completion("push_task", task));
+    }
+
+    if let Some(task) = fetch_task {
+        departure = departure.on_completion(log_task_completion("fetch_task", task));
+    }
+
+    if let Some(task) = status_update_task {
+        departure = departure.on_completion(log_task_completion("status_update_task", task));
+    }
+
+    departure.await;
     Ok(())
 }

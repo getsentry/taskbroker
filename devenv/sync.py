@@ -1,7 +1,7 @@
+import shutil
+
 from devenv import constants
 from devenv.lib import brew, config, proc, uv
-
-import shutil
 
 
 def main(context: dict[str, str]) -> int:
@@ -27,7 +27,14 @@ def main(context: dict[str, str]) -> int:
 
     print("syncing .venv ...")
     proc.run(
-        (f"{reporoot}/.devenv/bin/uv", "sync", "--frozen", "--quiet", "--active"),
+        (
+            f"{reporoot}/.devenv/bin/uv",
+            "sync",
+            "--frozen",
+            "--quiet",
+            "--active",
+            "--all-packages",
+        ),
     )
 
     print("installing pre-commit hooks ...")

@@ -1,12 +1,16 @@
-use sentry::{integrations::tracing::EventFilter, types::Dsn};
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::str::FromStr;
+
+use sentry::integrations::tracing::EventFilter;
+use sentry::types::Dsn;
+use serde::{Deserialize, Serialize};
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::*;
 
-use crate::{config::Config, get_version};
+use crate::config::Config;
+use crate::get_version;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,6 +38,9 @@ pub struct LoggingConfig {
 
     /// The log format to use
     pub log_format: LogFormat,
+
+    /// Default tags to add to all Sentry events.
+    pub default_tags: BTreeMap<String, String>,
 }
 
 impl LoggingConfig {
@@ -44,6 +51,7 @@ impl LoggingConfig {
             traces_sample_rate: config.traces_sample_rate.unwrap_or(0.0),
             log_filter: config.log_filter.clone(),
             log_format: config.log_format,
+            default_tags: config.default_metrics_tags.clone(),
         }
     }
 }
@@ -59,6 +67,12 @@ pub fn init(log_config: LoggingConfig) {
             traces_sample_rate: log_config.traces_sample_rate,
             enable_logs: true,
             ..Default::default()
+        });
+
+        sentry::configure_scope(|scope| {
+            for (key, value) in &log_config.default_tags {
+                scope.set_tag(key, value);
+            }
         });
 
         // We manually deinitialize sentry later

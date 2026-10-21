@@ -22,12 +22,18 @@ def main() -> None:
     help="The number of tasks to generate",
     default=1,
 )
-def spawn(count: int = 1) -> None:
+@click.option(
+    "--sleep-seconds",
+    help="How long each task sleeps. Use a larger value to make occupancy observable.",
+    default=0.1,
+    type=float,
+)
+def spawn(count: int = 1, sleep_seconds: float = 0.1) -> None:
     from examples.tasks import timed_task
 
     click.echo(f"Spawning {count} tasks")
     for _ in range(0, count):
-        timed_task.delay(sleep_seconds=0.1)
+        timed_task.delay(sleep_seconds=sleep_seconds)
     click.echo("Complete")
 
 
@@ -73,21 +79,58 @@ def scheduler() -> None:
     help="The number of child processes to start.",
     default=2,
 )
-def worker(rpc_host: str, concurrency: int) -> None:
-    from taskbroker_client.worker import TaskWorker
+@click.option(
+    "--push-mode", help="Whether to run in PUSH or PULL mode.", default=False, is_flag=True
+)
+@click.option(
+    "--grpc-port",
+    help="Port for the gRPC server to listen on.",
+    default=50052,
+    type=int,
+)
+@click.option(
+    "--prometheus-port",
+    help="Expose prometheus metrics on this port for scraping. Unset = disabled.",
+    default=None,
+    type=int,
+)
+def worker(
+    rpc_host: str,
+    concurrency: int,
+    push_mode: bool,
+    grpc_port: int,
+    prometheus_port: int | None,
+) -> None:
+    from taskbroker_client.worker import PushTaskWorker, TaskWorker
 
     click.echo("Starting worker")
-    worker = TaskWorker(
-        app_module="examples.app:app",
-        broker_hosts=[rpc_host],
-        max_child_task_count=100,
-        concurrency=concurrency,
-        child_tasks_queue_maxsize=concurrency * 2,
-        result_queue_maxsize=concurrency * 2,
-        rebalance_after=32,
-        processing_pool_name="examples",
-        process_type="forkserver",
-    )
+    if push_mode:
+        worker: PushTaskWorker | TaskWorker = PushTaskWorker(
+            app_module="examples.app:app",
+            broker_service=rpc_host,
+            max_child_task_count=100,
+            concurrency=concurrency,
+            child_tasks_queue_maxsize=concurrency * 2,
+            result_queue_maxsize=concurrency * 2,
+            rebalance_after=32,
+            processing_pool_name="examples",
+            process_type="forkserver",
+            grpc_port=grpc_port,
+            push_task_timeout=5,
+            prometheus_port=prometheus_port,
+        )
+    else:
+        worker = TaskWorker(
+            app_module="examples.app:app",
+            broker_hosts=[rpc_host],
+            max_child_task_count=100,
+            concurrency=concurrency,
+            child_tasks_queue_maxsize=concurrency * 2,
+            result_queue_maxsize=concurrency * 2,
+            rebalance_after=32,
+            processing_pool_name="examples",
+            process_type="forkserver",
+        )
     exitcode = worker.start()
     raise SystemExit(exitcode)
 

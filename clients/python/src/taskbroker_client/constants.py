@@ -1,5 +1,10 @@
 from enum import Enum
 
+INTERNAL_NAMESPACE = "internal"
+"""
+Namespace reserved for taskbroker client internal tasks.
+"""
+
 DEFAULT_PROCESSING_DEADLINE = 10
 """
 The fallback/default processing_deadline that tasks
@@ -46,9 +51,29 @@ MAX_PARAMETER_BYTES_BEFORE_COMPRESSION = 3000000  # 3MB
 The maximum number of bytes before a task parameter is compressed.
 """
 
+DEFAULT_GRPC_MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
+"""
+The maximum size of a gRPC message in bytes.
+Can be overridden via TASKBROKER_GRPC_MAX_MESSAGE_SIZE env var.
+"""
+
 DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH = 1.0
 """
 The number of gRPC requests before touching the health check file
+"""
+
+DEFAULT_WORKER_WARMUP_TIMEOUT_SEC = 90.0
+"""
+Max seconds PushTaskWorker waits for all children to warm up before
+flipping gRPC health to SERVING anyway.
+"""
+
+DEFAULT_WORKER_DRAIN_FILE_PATH = "/tmp/taskworker-draining"
+"""
+File whose presence tells a push worker that its pod is terminating. The pod's
+preStop hook creates it before sleeping; SIGTERM only arrives once preStop
+finishes, so this is the earliest the worker can learn brokers have stopped
+routing to it. The worker stops publishing occupancy when it sees the file.
 """
 
 
@@ -56,6 +81,26 @@ ALWAYS_EAGER = False
 """
 Whether or not tasks should be invoked eagerly (synchronously)
 This can be mutated by application test harnesses to run tasks without Kafka.
+"""
+
+WORKER_CHILD_JOIN_TIMEOUT_SEC = 5
+"""
+How long the parent worker process should allow child processes
+to drain pending produce futures on shutdown before sending SIGKILL.
+"""
+
+SHUTDOWN_POLL_INTERVAL_SEC = 0.5
+"""
+How often blocking waits in the worker check whether a signal handler
+asked for shutdown. Signal handlers cannot wake those waits directly,
+so this is the worst case delay before a SIGTERM is noticed.
+"""
+
+TASK_PRODUCER_MAX_PENDING_FUTURES = 10_000
+"""
+Maximum number of pending futures that can be in the TaskProducer module's
+`_pending_futures` list. This list is a global, so is shared between all instances
+of TaskProducer.
 """
 
 

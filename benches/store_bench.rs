@@ -3,19 +3,19 @@ use std::sync::Arc;
 use chrono::Utc;
 use criterion::{Criterion, criterion_group, criterion_main};
 use rand::Rng;
-use taskbroker::{
-    store::inflight_activation::{
-        InflightActivationStatus, InflightActivationStore, InflightActivationStoreConfig,
-        SqliteActivationStore,
-    },
-    test_utils::{
-        generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
-    },
-};
+use taskbroker::config::Config;
+use taskbroker::config::store::{SqliteConfig, StoreConfig};
 use tokio::task::JoinSet;
 
+use taskbroker::store::activation::ActivationStatus;
+use taskbroker::store::adapters::sqlite::SqliteStore;
+use taskbroker::store::traits::ActivationStore;
+use taskbroker::test_utils::{
+    generate_temp_filename, generate_unique_namespace, make_activations_with_namespace,
+};
+
 async fn get_pending_activations(num_activations: u32, num_workers: u32) {
-    let url = if cfg!(feature = "bench-with-mnt-disk") {
+    let path = if cfg!(feature = "bench-with-mnt-disk") {
         let mut rng = rand::thread_rng();
         format!(
             "/mnt/disks/sqlite/{}-{}.sqlite",
@@ -25,24 +25,27 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
     } else {
         generate_temp_filename()
     };
-    let store = Arc::new(
-        SqliteActivationStore::new(
-            &url,
-            InflightActivationStoreConfig {
-                max_processing_attempts: 1,
+
+    let config = Config {
+        store: StoreConfig {
+            sqlite: SqliteConfig {
+                path,
                 vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                enable_sqlite_status_metrics: false,
+                enable_status_metrics: false,
             },
-        )
-        .await
-        .unwrap(),
-    );
+            max_processing_attempts: 1,
+            processing_deadline_grace_sec: 3,
+            ..StoreConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let store = Arc::new(SqliteStore::new(&config).await.unwrap());
 
     let namespace = generate_unique_namespace();
 
     for chunk in make_activations_with_namespace(namespace.clone(), num_activations).chunks(1024) {
-        store.store(chunk.to_vec()).await.unwrap();
+        store.store(chunk).await.unwrap();
     }
 
     assert_eq!(
@@ -59,7 +62,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
             let mut num_activations_processed = 0;
 
             while store
-                .get_pending_activation(Some("sentry"), Some(&ns))
+                .claim_activation_for_pull(Some("sentry"), Some(&ns))
                 .await
                 .unwrap()
                 .is_some()
@@ -78,7 +81,7 @@ async fn get_pending_activations(num_activations: u32, num_workers: u32) {
 async fn set_status(num_activations: u32, num_workers: u32) {
     assert!(num_activations.is_multiple_of(num_workers));
 
-    let url = if cfg!(feature = "bench-with-mnt-disk") {
+    let path = if cfg!(feature = "bench-with-mnt-disk") {
         let mut rng = rand::thread_rng();
         format!(
             "/mnt/disks/sqlite/{}-{}.sqlite",
@@ -89,24 +92,26 @@ async fn set_status(num_activations: u32, num_workers: u32) {
         generate_temp_filename()
     };
 
-    let store = Arc::new(
-        SqliteActivationStore::new(
-            &url,
-            InflightActivationStoreConfig {
-                max_processing_attempts: 1,
+    let config = Config {
+        store: StoreConfig {
+            sqlite: SqliteConfig {
+                path,
                 vacuum_page_count: None,
-                processing_deadline_grace_sec: 3,
-                enable_sqlite_status_metrics: false,
+                enable_status_metrics: false,
             },
-        )
-        .await
-        .unwrap(),
-    );
+            max_processing_attempts: 1,
+            processing_deadline_grace_sec: 3,
+            ..StoreConfig::default()
+        },
+        ..Config::default()
+    };
+
+    let store = Arc::new(SqliteStore::new(&config).await.unwrap());
 
     let namespace = generate_unique_namespace();
 
     for chunk in make_activations_with_namespace(namespace, num_activations).chunks(1024) {
-        store.store(chunk.to_vec()).await.unwrap();
+        store.store(chunk).await.unwrap();
     }
 
     assert_eq!(
@@ -121,7 +126,12 @@ async fn set_status(num_activations: u32, num_workers: u32) {
             for task_id in 0..num_activations {
                 if task_id % num_workers == worker_idx {
                     store
-                        .set_status(&format!("id_{task_id}"), InflightActivationStatus::Complete)
+                        .set_status(
+                            &format!("id_{task_id}"),
+                            ActivationStatus::Complete,
+                            None,
+                            None,
+                        )
                         .await
                         .unwrap();
                 }
@@ -133,7 +143,7 @@ async fn set_status(num_activations: u32, num_workers: u32) {
 
     assert_eq!(
         store
-            .count_by_status(InflightActivationStatus::Complete)
+            .count_by_status(ActivationStatus::Complete)
             .await
             .unwrap(),
         num_activations as usize
@@ -144,7 +154,7 @@ fn store_bench(c: &mut Criterion) {
     let num_activations: u32 = 4_096;
     let num_workers = 64;
 
-    c.benchmark_group("bench_InflightActivationStore")
+    c.benchmark_group("bench_ActivationStore")
         .sample_size(256)
         .throughput(criterion::Throughput::Elements(num_activations.into()))
         .bench_function("get_pending_activation", |b| {

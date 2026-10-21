@@ -1,4 +1,383 @@
 # Changelog
+## 0.20.29
+
+### Bug Fixes 🐛
+
+- (worker) Attribute captured task errors to the current task by @yuvmen in [#818](https://github.com/getsentry/taskbroker/pull/818)
+
+## 0.20.28
+
+### New Features ✨
+
+#### Client
+
+- Add healthcheck command for the worker liveness probe by @oioki in [#814](https://github.com/getsentry/taskbroker/pull/814)
+- Add drain command for the worker preStop hook by @oioki in [#810](https://github.com/getsentry/taskbroker/pull/810)
+
+## 0.20.27
+
+### Bug Fixes 🐛
+
+- (worker) Only publish occupancy between first task and drain by @enochtangg in [#796](https://github.com/getsentry/taskbroker/pull/796)
+
+## 0.20.26
+
+### Bug Fixes 🐛
+
+- (worker) Send a portless :authority from the push client by @evanh in [#795](https://github.com/getsentry/taskbroker/pull/795)
+
+## 0.20.25
+
+### Bug Fixes 🐛
+
+- (taskworker) Measure child busy and wait time in shared memory by @enochtangg in [#788](https://github.com/getsentry/taskbroker/pull/788)
+
+## 0.20.24
+
+### New Features ✨
+
+- (worker) Add metrics for tasks lost during shutdown by @evanh in [#791](https://github.com/getsentry/taskbroker/pull/791)
+
+## 0.20.23
+
+### New Features ✨
+
+- (taskworker) Add child fetch wait duration metric by @enochtangg in [#787](https://github.com/getsentry/taskbroker/pull/787)
+
+## 0.20.22
+
+### Bug Fixes 🐛
+
+- (python) Shut workers down without raising from signal handlers by @untitaker in [#784](https://github.com/getsentry/taskbroker/pull/784)
+- (worker) Keep pull worker healthy while queue is full by @aminvakil in [#779](https://github.com/getsentry/taskbroker/pull/779)
+
+## 0.20.21
+
+### Bug Fixes 🐛
+
+- (taskworker) Widen taskworker busy segment to cover the full task cycle by @enochtangg in [#780](https://github.com/getsentry/taskbroker/pull/780)
+
+## 0.20.20
+
+### Bug Fixes 🐛
+
+- (python) Make worker occupancy time-weighted and warm-aware by @enochtangg in [#774](https://github.com/getsentry/taskbroker/pull/774)
+
+## 0.20.19
+
+### New Features ✨
+
+- (client) Add is_raw_mode flag to namespaces by @untitaker in [#777](https://github.com/getsentry/taskbroker/pull/777)
+- (worker) Remove TaskProducer by @bmckerry in [#748](https://github.com/getsentry/taskbroker/pull/748)
+
+### Internal Changes 🔧
+
+- (o11y) Remove custom origin in the streaming trace lifecycle by @alexander-alderman-webb in [#771](https://github.com/getsentry/taskbroker/pull/771)
+
+## 0.20.18
+
+### Internal Changes 🔧
+
+- (o11y) Support `sentry-sdk` configured with the streaming trace lifecycle (#757) by @alexander-alderman-webb in [#767](https://github.com/getsentry/taskbroker/pull/767)
+
+## 0.20.17
+
+### Bug Fixes 🐛
+
+- Revert "fix(python): Shut workers down without raising from signal handlers (#764)" in [e9d14941](https://github.com/getsentry/taskbroker/commit/e9d14941f83450b6a24076c1ae29c9d76f07cfa5)
+
+## 0.20.16
+
+### New Features ✨
+
+- (taskbroker) Add Canary Task Sending to Taskbroker by @george-sentry in [#752](https://github.com/getsentry/taskbroker/pull/752)
+
+### Bug Fixes 🐛
+
+- (python) Shut workers down without raising from signal handlers by @untitaker in [#764](https://github.com/getsentry/taskbroker/pull/764)
+
+## 0.20.15
+
+### Bug Fixes 🐛
+
+- (workerchild) Ignore empty producer future sets by @lvthanh03 in [#766](https://github.com/getsentry/taskbroker/pull/766)
+
+## 0.20.14
+
+### Bug Fixes 🐛
+
+- Revert "ref(o11y): Support `sentry-sdk` configured with the streaming trace lifecycle (#757)" in [57724b62](https://github.com/getsentry/taskbroker/commit/57724b62a637cc9f7862c617e47f071bb687f7f3)
+
+## 0.20.13
+
+### Internal Changes 🔧
+
+#### O11y
+
+- Support SDK configured with the streaming trace lifecycle by @alexander-alderman-webb in [#757](https://github.com/getsentry/taskbroker/pull/757)
+- Remove redundant span status assignment by @alexander-alderman-webb in [#759](https://github.com/getsentry/taskbroker/pull/759)
+
+## 0.20.12
+
+### New Features ✨
+
+- (workerchild) Begin porting producer to FutureTrackingProducer by @bmckerry in [#744](https://github.com/getsentry/taskbroker/pull/744)
+
+## 0.20.11
+
+### New Features ✨
+
+- (taskbroker-client) Expose task enqueue producer future by @lvthanh03 in [#741](https://github.com/getsentry/taskbroker/pull/741)
+
+### Documentation 📚
+
+- (taskbroker_client) Better docstring for apply_async_with_future by @lvthanh03 in [#743](https://github.com/getsentry/taskbroker/pull/743)
+
+### Internal Changes 🔧
+
+- (deps) Bump msgpack from 1.1.1 to 1.2.1 by @dependabot in [#738](https://github.com/getsentry/taskbroker/pull/738)
+- Bump arroyo to 2.41.0 by @bmckerry in [#742](https://github.com/getsentry/taskbroker/pull/742)
+
+### Other
+
+- Silence error logging when exception is silenced by @cmanallen in [#739](https://github.com/getsentry/taskbroker/pull/739)
+
+## 0.20.10
+
+### New Features ✨
+
+- (taskworker) Better Testing Support by @george-sentry in [#736](https://github.com/getsentry/taskbroker/pull/736)
+
+## 0.20.9
+
+### New Features ✨
+
+- (taskworker) Minimum Worker Concurrency by @george-sentry in [#735](https://github.com/getsentry/taskbroker/pull/735)
+
+## 0.20.8
+
+### New Features ✨
+
+- (taskworker) Emit worker occupancy metric for autoscaling by @enochtangg in [#734](https://github.com/getsentry/taskbroker/pull/734)
+
+## 0.20.7
+
+### Internal Changes 🔧
+
+- (TaskProducer) Free up the GIL more by @bmckerry in [#733](https://github.com/getsentry/taskbroker/pull/733)
+
+## 0.20.6
+
+### New Features ✨
+
+- (worker) Defer SERVING until child processes are warm by @enochtangg in [#731](https://github.com/getsentry/taskbroker/pull/731)
+
+## 0.20.5
+
+### Internal Changes 🔧
+
+- (deps) Drop hard redis-py-cluster dependency to allow redis>=4 by @cmanallen in [#730](https://github.com/getsentry/taskbroker/pull/730)
+
+## 0.20.4
+
+### Internal Changes 🔧
+
+- (workerchild) Allow user to specify if futures should be awaited by @bmckerry in [#729](https://github.com/getsentry/taskbroker/pull/729)
+
+## 0.20.3
+
+### Bug Fixes 🐛
+
+- (taskworker) Fix Worker Queue Metrics by @george-sentry in [#728](https://github.com/getsentry/taskbroker/pull/728)
+
+## 0.20.2
+
+### Internal Changes 🔧
+
+- (workerchild) Move checking future completion into bg thread by @bmckerry in [#727](https://github.com/getsentry/taskbroker/pull/727)
+
+## 0.20.1
+
+- No documented changes.
+
+## 0.19.4
+
+- fix(worker) Add processing_pool tag to client metrics by @markstory in [#725](https://github.com/getsentry/taskbroker/pull/725)
+
+## 0.20.0
+
+### Internal Changes 🔧
+
+- (params) Remove JSON parameter encoding by @untitaker in [#723](https://github.com/getsentry/taskbroker/pull/723)
+
+## 0.19.3
+
+### Internal Changes 🔧
+
+- (worker) Add more observability for producer futures by @bmckerry in [#719](https://github.com/getsentry/taskbroker/pull/719)
+
+### Other
+
+- temp: bypass awaiting futures while still recording metrics by @bmckerry in [#720](https://github.com/getsentry/taskbroker/pull/720)
+
+## 0.19.2
+
+### New Features ✨
+
+- Add datadog metrics backend by @markstory in [#703](https://github.com/getsentry/taskbroker/pull/703)
+
+### Bug Fixes 🐛
+
+- (TaskProducer) Call close() on shutdown by @bmckerry in [#718](https://github.com/getsentry/taskbroker/pull/718)
+
+## 0.19.0
+
+### New Features ✨
+
+- Add a BatchPushTaskWorker for batched updates to the broker by @evanh in [#695](https://github.com/getsentry/taskbroker/pull/695)
+
+## 0.18.6
+
+### Internal Changes 🔧
+
+- (workerchild) Add produce future success/failure metrics by @bmckerry in [#697](https://github.com/getsentry/taskbroker/pull/697)
+
+## 0.18.5
+
+### Bug Fixes 🐛
+
+- (producer) DummyProducer typing by @bmckerry in [#688](https://github.com/getsentry/taskbroker/pull/688)
+
+### Internal Changes 🔧
+
+- (producer) Minor metrics improvements by @bmckerry in [#694](https://github.com/getsentry/taskbroker/pull/694)
+
+## 0.18.4
+
+### Bug Fixes 🐛
+
+- (producer) TaskProducer can produce to partitions by @bmckerry in [#685](https://github.com/getsentry/taskbroker/pull/685)
+- (worker) Keep worker health checks alive while idle in push mode by @lvthanh03 in [#683](https://github.com/getsentry/taskbroker/pull/683)
+
+## 0.18.3
+
+### New Features ✨
+
+- (TaskProducer) Add metrics on queue size by @bmckerry in [#681](https://github.com/getsentry/taskbroker/pull/681)
+
+### Bug Fixes 🐛
+
+- (TaskProducer) Bounded queue of pending futures by @bmckerry in [#678](https://github.com/getsentry/taskbroker/pull/678)
+
+## 0.18.2
+
+### Internal Changes 🔧
+
+- (workerchild) Add metric tracking pending futures by @bmckerry in [#671](https://github.com/getsentry/taskbroker/pull/671)
+
+## 0.18.1
+
+### New Features ✨
+
+- (TaskProducer) Lazy load inner producer by @bmckerry in [#670](https://github.com/getsentry/taskbroker/pull/670)
+
+## 0.18.0
+
+### New Features ✨
+
+- (client) Workerchild awaits TaskProducer futures by @bmckerry in [#642](https://github.com/getsentry/taskbroker/pull/642)
+
+## 0.17.1
+
+### Bug Fixes 🐛
+
+- (grpc) Increase max message size to 10MB by @untitaker in [#658](https://github.com/getsentry/taskbroker/pull/658)
+
+## 0.17.0
+
+### New Features ✨
+
+- (taskworker) Add Health Check Service by @george-sentry in [#656](https://github.com/getsentry/taskbroker/pull/656)
+
+## 0.16.0
+
+### Bug Fixes 🐛
+
+- Update to latest sentry-protos version by @untitaker in [#651](https://github.com/getsentry/taskbroker/pull/651)
+
+## 0.1.15
+
+### New Features ✨
+
+- (client) Add TaskProducer by @bmckerry in [#633](https://github.com/getsentry/taskbroker/pull/633)
+- (examples) Add task that produces by @bmckerry in [#638](https://github.com/getsentry/taskbroker/pull/638)
+
+### Bug Fixes 🐛
+
+- (client) Use correct default topic name by @bmckerry in [#636](https://github.com/getsentry/taskbroker/pull/636)
+- (iswf) Reverts change to reporting logic that silences NoRetriesRemaining exceptions by @GabeVillalobos in [#627](https://github.com/getsentry/taskbroker/pull/627)
+
+## 0.1.14
+
+### New Features ✨
+
+- (taskbroker-client) Add pass_headers option to task registration by @untitaker in [#623](https://github.com/getsentry/taskbroker/pull/623)
+
+### Bug Fixes 🐛
+
+- (taskbroker-client) Update docstrings to reflect msgpack serialization by @untitaker in [#624](https://github.com/getsentry/taskbroker/pull/624)
+
+## 0.1.13
+
+- No documented changes.
+
+## 0.1.12
+
+### Bug Fixes 🐛
+
+- (taskworker) Improve Queue Size Metrics by @george-sentry in [#612](https://github.com/getsentry/taskbroker/pull/612)
+
+### Internal Changes 🔧
+
+- (deps-dev) Bump black from 24.10.0 to 26.3.1 in /clients/python by @dependabot in [#606](https://github.com/getsentry/taskbroker/pull/606)
+
+## 0.1.11
+
+### New Features ✨
+
+- Add volatile schedule storage by @markstory in [#605](https://github.com/getsentry/taskbroker/pull/605)
+
+## 0.1.9
+
+### New Features ✨
+
+- (taskbroker) Dual-write new parameters_bytes by @untitaker in [#602](https://github.com/getsentry/taskbroker/pull/602)
+
+### Other
+
+- release: 26.5.0 by @untitaker in [0206415b](https://github.com/getsentry/taskbroker/commit/0206415bffe6b91c4934fe3e3682e78f2659f13c)
+
+## 26.5.0
+
+### New Features ✨
+
+- (taskbroker) Dual-write new parameters_bytes by @untitaker in [#602](https://github.com/getsentry/taskbroker/pull/602)
+
+## 0.1.8
+
+### New Features ✨
+
+- (taskworker) Add Push Mode to Taskworker by @george-sentry in [#576](https://github.com/getsentry/taskbroker/pull/576)
+
+### Internal Changes 🔧
+
+- Bump sentry-arroyo to 2.38.7 by @bmckerry in [#585](https://github.com/getsentry/taskbroker/pull/585)
+- Bump sentry-arroyo to 2.38.5 by @bmckerry in [#583](https://github.com/getsentry/taskbroker/pull/583)
+
+### Other
+
+- Add headers and hooks to taskbroker client by @gricha in [#587](https://github.com/getsentry/taskbroker/pull/587)
+
 ## 0.1.7
 
 - feat(client) Make the ProducerFactory depend on a protocol by @markstory in [#578](https://github.com/getsentry/taskbroker/pull/578)

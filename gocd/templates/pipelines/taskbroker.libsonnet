@@ -8,10 +8,26 @@ local checks_stage = {
         timeout: 20,
         elastic_profile_id: 'taskbroker',
         environment_variables: {
-          GITHUB_TOKEN: '{{SECRET:[devinfra-github][token]}}',
+          GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
+          GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
         },
         tasks: [
           gocdtasks.script(importstr '../bash/check-github-runs.sh'),
+        ],
+      },
+    },
+  },
+};
+
+local run_migrations_stage = {
+  'run-migrations': {
+    fetch_materials: true,
+    jobs: {
+      'run-migrations': {
+        timeout: 60,
+        elastic_profile_id: 'taskbroker',
+        tasks: [
+          gocdtasks.script(importstr '../bash/run-migrations.sh'),
         ],
       },
     },
@@ -29,6 +45,9 @@ local deploy_canary_stage(region) =
               timeout: 30,
               elastic_profile_id: 'taskbroker',
               environment_variables: {
+                // k8s-deploy dispatches deployment workflows using GitHub App credentials.
+                GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
+                GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
                 LABEL_SELECTOR: 'service=taskbroker,env=canary',
               },
               tasks: [
@@ -49,6 +68,9 @@ local deployPrimaryStage = {
         timeout: 40,
         elastic_profile_id: 'taskbroker',
         environment_variables: {
+          // k8s-deploy dispatches deployment workflows using GitHub App credentials.
+          GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
+          GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
           LABEL_SELECTOR: 'service=taskbroker',
         },
         tasks: [
@@ -73,5 +95,7 @@ function(region) {
     },
   },
   lock_behavior: 'unlockWhenFinished',
-  stages: [checks_stage] + deploy_canary_stage(region) + [deployPrimaryStage],
+  stages: [checks_stage, run_migrations_stage]
+          + deploy_canary_stage(region)
+          + [deployPrimaryStage],
 }

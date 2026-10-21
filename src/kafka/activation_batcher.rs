@@ -1,0 +1,756 @@
+use std::collections::BTreeMap;
+use std::mem::replace;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use chrono::Utc;
+use futures::future::join_all;
+use rdkafka::config::ClientConfig;
+use tracing::error;
+
+use crate::config::{Applications, Config};
+use crate::kafka::producer::KafkaProducer;
+use crate::runtime_config::RuntimeConfigManager;
+use crate::store::activation::Activation;
+
+use super::consumer::{
+    ReduceConfig, ReduceShutdownBehaviour, ReduceShutdownCondition, Reducer,
+    ReducerWhenFullBehaviour,
+};
+
+pub struct ActivationBatcherConfig {
+    pub producer_config: ClientConfig,
+    pub kafka_topic: String,
+    pub kafka_long_topic: String,
+    pub kafka_deadletter_topic: String,
+    pub applications: Applications,
+    pub send_timeout_ms: u64,
+    pub max_batch_time_ms: u64,
+    pub max_batch_len: usize,
+    pub max_batch_size: usize,
+}
+
+impl ActivationBatcherConfig {
+    /// Convert from application configuration into ActivationBatcher config for a
+    /// single consumed topic. Each consumer has its own batcher, so the topic is
+    /// passed explicitly rather than derived from "the" consumable topic.
+    pub fn from_topic(config: &Config, topic_name: &str) -> Self {
+        Self {
+            producer_config: config.kafka_producer_config(),
+            kafka_topic: topic_name.to_owned(),
+            kafka_long_topic: config.kafka_long_topic.clone(),
+            kafka_deadletter_topic: config.kafka_deadletter_topic.clone(),
+            applications: config.applications.clone(),
+            send_timeout_ms: config.kafka_send_timeout_ms,
+            max_batch_time_ms: config.store.insert_batch_max_time_ms,
+            max_batch_len: config.store.insert_batch_max_length,
+            max_batch_size: config.store.insert_batch_max_bytes,
+        }
+    }
+}
+
+pub struct ActivationBatcher {
+    batch: Vec<Activation>,
+    batch_size: usize,
+    forward_batch: Vec<Vec<u8>>,              // payload
+    deadletter_batch: Vec<(String, Vec<u8>)>, // application, payload
+    config: ActivationBatcherConfig,
+    runtime_config_manager: Arc<RuntimeConfigManager>,
+    producer: Arc<KafkaProducer>,
+    producer_cluster: String,
+}
+
+impl ActivationBatcher {
+    pub fn new(
+        config: ActivationBatcherConfig,
+        runtime_config_manager: Arc<RuntimeConfigManager>,
+    ) -> Self {
+        let producer = Arc::new(
+            KafkaProducer::new(
+                config.producer_config.clone(),
+                Duration::from_millis(config.send_timeout_ms),
+            )
+            .expect("Could not create kafka producer in activation batcher"),
+        );
+        let producer_cluster = config
+            .producer_config
+            .get("bootstrap.servers")
+            .unwrap()
+            .to_owned();
+        Self {
+            batch: Vec::with_capacity(config.max_batch_len),
+            batch_size: 0,
+            forward_batch: Vec::with_capacity(config.max_batch_len),
+            deadletter_batch: Vec::new(),
+            config,
+            runtime_config_manager,
+            producer,
+            producer_cluster,
+        }
+    }
+
+    /// The cluster the deadletter topic lives on. The forwarding producer
+    /// authenticates against it, so it is also the forwarding default.
+    fn deadletter_cluster(&self) -> String {
+        self.config
+            .producer_config
+            .get("bootstrap.servers")
+            .expect("producer config always sets bootstrap.servers")
+            .to_string()
+    }
+
+    /// The producer, recreated when the target cluster changed.
+    fn producer_for(&mut self, cluster: String) -> Arc<KafkaProducer> {
+        if self.producer_cluster != cluster {
+            let mut config = self.config.producer_config.clone();
+            config.set("bootstrap.servers", &cluster);
+            self.producer = Arc::new(
+                KafkaProducer::new(config, Duration::from_millis(self.config.send_timeout_ms))
+                    .expect("Could not create kafka producer in activation batcher"),
+            );
+            self.producer_cluster = cluster;
+        }
+
+        self.producer.clone()
+    }
+
+    /// Produce every payload to `topic`, returning (attempts, successes).
+    async fn send_all<'a>(
+        &self,
+        producer: &KafkaProducer,
+        topic: &str,
+        payloads: impl Iterator<Item = &'a Vec<u8>>,
+    ) -> (usize, usize) {
+        let sends = payloads.map(|payload| producer.send(topic, payload));
+
+        let results = join_all(sends).await;
+        let successes = results.iter().filter(|r| r.is_ok()).count();
+
+        (results.len(), successes)
+    }
+}
+
+impl Reducer for ActivationBatcher {
+    type Input = Activation;
+
+    type Output = Vec<Activation>;
+
+    async fn reduce(&mut self, t: Self::Input) -> Result<(), anyhow::Error> {
+        let runtime_config = self.runtime_config_manager.read().await;
+        let forward_topic = runtime_config
+            .demoted_topic
+            .clone()
+            .unwrap_or(self.config.kafka_long_topic.clone());
+        let task_name = &t.taskname;
+        let namespace = &t.namespace;
+
+        // Drop the task if a killswitch matches. `should_drop` only decodes the activation
+        // when a selector targets this task, and fails open on any decode error.
+        //
+        // Guard on emptiness so the common "no killswitches active" case skips the timing
+        // entirely: when active, the selector path decodes each candidate activation's
+        // msgpack args, so record how long that costs per activation.
+        if !runtime_config.drop_task_killswitch.is_empty() {
+            let should_drop_start = Instant::now();
+            let match_kind = crate::killswitch::should_drop(
+                &runtime_config.drop_task_killswitch,
+                task_name,
+                &t.activation,
+            );
+            metrics::histogram!(
+                "filter.drop_task_killswitch.duration",
+                "topic" => self.config.kafka_topic.clone(),
+            )
+            .record(should_drop_start.elapsed());
+            if let Some(match_kind) = match_kind {
+                metrics::counter!(
+                    "filter.drop_task_killswitch",
+                    "topic" => self.config.kafka_topic.clone(),
+                    "taskname" => task_name.clone(),
+                    "match" => match_kind,
+                )
+                .increment(1);
+                return Ok(());
+            }
+        }
+
+        if let Some(expires_at) = t.expires_at
+            && Utc::now() > expires_at
+        {
+            metrics::counter!(
+                "filter.expired_at_consumer",
+                "topic" => self.config.kafka_topic.clone(),
+            )
+            .increment(1);
+            return Ok(());
+        }
+
+        // Discard tasks for applications this pool's workers do not serve.
+        if !self.config.applications.admits(&t.application) {
+            metrics::counter!(
+                "filter.unknown_application",
+                "topic" => self.config.kafka_topic.clone(),
+            )
+            .increment(1);
+            self.deadletter_batch.push((t.application, t.activation));
+            return Ok(());
+        }
+
+        if runtime_config.demoted_namespaces.contains(namespace) {
+            if forward_topic == self.config.kafka_topic {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace.skipped",
+                    "topic" => self.config.kafka_topic.clone(),
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+            } else {
+                metrics::counter!(
+                    "filter.forward_task_demoted_namespace",
+                    "topic" => self.config.kafka_topic.clone(),
+                    "namespace" => namespace.clone(),
+                    "taskname" => task_name.clone(),
+                )
+                .increment(1);
+                self.forward_batch.push(t.activation);
+                return Ok(());
+            }
+        }
+
+        self.batch_size += t.activation.len();
+        self.batch.push(t);
+
+        Ok(())
+    }
+
+    async fn flush(&mut self) -> Result<Option<Self::Output>, anyhow::Error> {
+        if self.batch.is_empty()
+            && self.forward_batch.is_empty()
+            && self.deadletter_batch.is_empty()
+        {
+            return Ok(None);
+        }
+
+        metrics::histogram!("consumer.batch_rows", "topic" => self.config.kafka_topic.clone())
+            .record(self.batch.len() as f64);
+        metrics::histogram!("consumer.batch_bytes", "topic" => self.config.kafka_topic.clone())
+            .record(self.batch_size as f64);
+
+        let runtime_config = self.runtime_config_manager.read().await;
+
+        // Send all forward batch in parallel
+        if !self.forward_batch.is_empty() {
+            // The forwarding producer authenticates against the deadletter
+            // cluster, so default demoted forwarding there too (and consistently
+            // with upkeep) when no demoted_topic_cluster is configured.
+            let forward_cluster = runtime_config
+                .demoted_topic_cluster
+                .clone()
+                .unwrap_or_else(|| self.deadletter_cluster());
+            let producer = self.producer_for(forward_cluster);
+            let forward_topic = runtime_config
+                .demoted_topic
+                .clone()
+                .unwrap_or(self.config.kafka_long_topic.clone());
+
+            let (attempts, successes) = self
+                .send_all(&producer, &forward_topic, self.forward_batch.iter())
+                .await;
+
+            let topic = self.config.kafka_topic.clone();
+            metrics::histogram!("consumer.forward_attempts", "topic" => topic.clone())
+                .record(attempts as f64);
+            metrics::histogram!("consumer.forward_successes", "topic" => topic.clone())
+                .record(successes as f64);
+            metrics::histogram!("consumer.forward_failures", "topic" => topic)
+                .record((attempts - successes) as f64);
+
+            self.forward_batch.clear();
+        }
+
+        if !self.deadletter_batch.is_empty() {
+            let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+            for (application, _) in &self.deadletter_batch {
+                *counts.entry(application.as_str()).or_default() += 1;
+            }
+            error!(
+                topic = self.config.kafka_topic.as_str(),
+                ?counts,
+                "Discarding activations for applications this pool does not serve"
+            );
+
+            let deadletter_cluster = self.deadletter_cluster();
+            let producer = self.producer_for(deadletter_cluster);
+            let deadletter_topic = self.config.kafka_deadletter_topic.clone();
+            let (attempts, successes) = self
+                .send_all(
+                    &producer,
+                    &deadletter_topic,
+                    self.deadletter_batch.iter().map(|(_, payload)| payload),
+                )
+                .await;
+
+            let topic = self.config.kafka_topic.clone();
+            metrics::histogram!("consumer.unknown_application_attempts", "topic" => topic.clone())
+                .record(attempts as f64);
+            metrics::histogram!("consumer.unknown_application_successes", "topic" => topic.clone())
+                .record(successes as f64);
+            metrics::histogram!("consumer.unknown_application_failures", "topic" => topic)
+                .record((attempts - successes) as f64);
+
+            self.deadletter_batch.clear();
+        }
+
+        self.batch_size = 0;
+
+        Ok(Some(replace(
+            &mut self.batch,
+            Vec::with_capacity(self.config.max_batch_len),
+        )))
+    }
+
+    fn reset(&mut self) {
+        self.batch_size = 0;
+        self.forward_batch.clear();
+        self.deadletter_batch.clear();
+        self.batch.clear();
+    }
+
+    async fn is_full(&self) -> bool {
+        self.batch.len() >= self.config.max_batch_len
+            || self.forward_batch.len() >= self.config.max_batch_len
+            || self.deadletter_batch.len() >= self.config.max_batch_len
+            || self.batch_size >= self.config.max_batch_size
+    }
+
+    fn get_reduce_config(&self) -> ReduceConfig {
+        ReduceConfig {
+            shutdown_condition: ReduceShutdownCondition::Signal,
+            shutdown_behaviour: ReduceShutdownBehaviour::Drop,
+            when_full_behaviour: ReducerWhenFullBehaviour::Flush,
+            flush_interval: Some(Duration::from_millis(self.config.max_batch_time_ms)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use prost::Message;
+    use sentry_protos::taskbroker::v1::TaskActivation;
+    use tempfile::NamedTempFile;
+
+    use crate::config::deprecated::DeprecatedConfig;
+    use crate::config::store::StoreConfig;
+    use crate::store::activation::ActivationBuilder;
+    use crate::test_utils::{
+        TaskActivationBuilder, consume_topic, create_integration_config_from_base,
+        generate_unique_namespace, reset_topic,
+    };
+
+    use super::{
+        ActivationBatcher, ActivationBatcherConfig, Config, Reducer, RuntimeConfigManager,
+    };
+
+    #[tokio::test]
+    async fn test_drop_task_due_to_killswitch() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  - task_to_be_filtered
+demoted_namespaces:
+  -"#;
+
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+
+        let activation_0 = ActivationBuilder::new()
+            .id("0")
+            .taskname("task_to_be_filtered")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(activation_0).await.unwrap();
+        assert_eq!(batcher.batch.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_drop_task_due_to_selector_killswitch() {
+        let test_yaml = r#"
+drop_task_killswitch:
+  - name: sentry.tasks.unmerge
+    select_kwarg: {project_id: 123}
+demoted_namespaces: []"#;
+
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+
+        // Encode `{"args": [...], "kwargs": {...}}` (written as YAML) into msgpack bytes.
+        let msgpack_params = |yaml: &str| -> Vec<u8> {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            rmp_serde::to_vec_named(&value).unwrap()
+        };
+
+        // Matching project_id: dropped.
+        let matching = ActivationBuilder::new()
+            .id("0")
+            .taskname("sentry.tasks.unmerge")
+            .namespace(&namespace)
+            .build(
+                TaskActivationBuilder::new()
+                    .parameters_bytes(msgpack_params("{args: [], kwargs: {project_id: 123}}")),
+            );
+        batcher.reduce(matching).await.unwrap();
+        assert_eq!(batcher.batch.len(), 0);
+
+        // Same task, different project_id: kept.
+        let non_matching = ActivationBuilder::new()
+            .id("1")
+            .taskname("sentry.tasks.unmerge")
+            .namespace(&namespace)
+            .build(
+                TaskActivationBuilder::new()
+                    .parameters_bytes(msgpack_params("{args: [], kwargs: {project_id: 456}}")),
+            );
+        batcher.reduce(non_matching).await.unwrap();
+        assert_eq!(batcher.batch.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_drop_task_due_to_expiry() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+
+        let activation_0 = ActivationBuilder::new()
+            .id("0")
+            .taskname("task_to_be_filtered")
+            .namespace(&namespace)
+            .expires_at(Utc::now())
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(activation_0).await.unwrap();
+        assert_eq!(batcher.batch.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_discard_task_from_unserved_application() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut config = Config {
+            applications: ["sentry".to_owned()].into_iter().collect(),
+            ..Default::default()
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+
+        let unserved = ActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .application("launchpad")
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(unserved).await.unwrap();
+        assert_eq!(batcher.batch.len(), 0);
+        assert_eq!(batcher.deadletter_batch.len(), 1);
+        assert_eq!(batcher.deadletter_batch[0].0, "launchpad");
+
+        let served = ActivationBuilder::new()
+            .id("1")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .application("sentry")
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(served).await.unwrap();
+        assert_eq!(batcher.batch.len(), 1);
+        assert_eq!(batcher.deadletter_batch.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_discarded_task_is_published_to_deadletter_topic() {
+        let topic = "taskbroker-test-unknown-application";
+        let config = Arc::new(create_integration_config_from_base(Config {
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some(topic.to_owned()),
+                ..DeprecatedConfig::default()
+            },
+            kafka_deadletter_topic: format!("{topic}-dlq"),
+            applications: ["sentry".to_owned()].into_iter().collect(),
+            ..Default::default()
+        }));
+        reset_topic(config.clone()).await;
+
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let unserved = ActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(generate_unique_namespace())
+            .application("launchpad")
+            .build(TaskActivationBuilder::new());
+        let expected = TaskActivation::decode(&unserved.activation as &[u8]).unwrap();
+
+        batcher.reduce(unserved).await.unwrap();
+        assert_eq!(batcher.deadletter_batch.len(), 1);
+
+        let flushed = batcher
+            .flush()
+            .await
+            .unwrap()
+            .expect("flush produced a batch");
+        assert!(flushed.is_empty());
+        assert_eq!(batcher.deadletter_batch.len(), 0);
+
+        let messages =
+            consume_topic(config.clone(), config.kafka_deadletter_topic.as_ref(), 1).await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, expected.id);
+        assert_eq!(messages[0].application, Some("launchpad".to_owned()));
+        assert_eq!(messages[0].parameters_bytes, expected.parameters_bytes);
+    }
+
+    /// Discards bypass `batch`, so without them `is_full` never trips and a misrouted
+    /// topic only flushes on the timer.
+    #[tokio::test]
+    async fn test_deadletter_batch_counts_towards_full() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut config = Config {
+            applications: ["sentry".to_owned()].into_iter().collect(),
+            store: StoreConfig {
+                insert_batch_max_length: 2,
+                ..StoreConfig::default()
+            },
+            ..Default::default()
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+        for id in 0..2 {
+            let unserved = ActivationBuilder::new()
+                .id(id.to_string())
+                .taskname("taskname")
+                .namespace(&namespace)
+                .application("launchpad")
+                .build(TaskActivationBuilder::new());
+            batcher.reduce(unserved).await.unwrap();
+        }
+
+        assert!(batcher.batch.is_empty());
+        assert!(batcher.is_full().await);
+    }
+
+    /// A pool that has not opted in keeps running every application it is sent.
+    #[tokio::test]
+    async fn test_unset_applications_keeps_every_task() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let activation = ActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(generate_unique_namespace())
+            .application("launchpad")
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(activation).await.unwrap();
+        assert_eq!(batcher.batch.len(), 1);
+        assert_eq!(batcher.deadletter_batch.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_close_by_bytes_limit() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut config = Config {
+            store: StoreConfig {
+                insert_batch_max_bytes: 1,
+                insert_batch_max_length: 2,
+                ..StoreConfig::default()
+            },
+            ..Default::default()
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+
+        let activation_0 = ActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(activation_0).await.unwrap();
+        assert!(batcher.is_full().await);
+        batcher.flush().await.unwrap();
+        assert!(!batcher.is_full().await)
+    }
+
+    #[tokio::test]
+    async fn test_close_by_rows_limit() {
+        let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
+        let mut config = Config {
+            store: StoreConfig {
+                insert_batch_max_bytes: 100000,
+                insert_batch_max_length: 2,
+                ..StoreConfig::default()
+            },
+            ..Default::default()
+        };
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let namespace = generate_unique_namespace();
+
+        let activation_0 = ActivationBuilder::new()
+            .id("0")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
+
+        let activation_1 = ActivationBuilder::new()
+            .id("1")
+            .taskname("taskname")
+            .namespace(&namespace)
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(activation_0).await.unwrap();
+        batcher.reduce(activation_1).await.unwrap();
+        assert!(batcher.is_full().await);
+        batcher.flush().await.unwrap();
+        assert!(!batcher.is_full().await)
+    }
+
+    #[tokio::test]
+    async fn test_forward_task_due_to_demoted_namespace() {
+        let test_yaml = r#"
+drop_task_killswitch: []
+demoted_namespaces:
+  - bad_namespace
+demoted_topic_cluster: 0.0.0.0:9092
+demoted_topic: taskworker-demoted"#;
+
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
+        let mut config = Config::default();
+        config.normalize_and_validate().unwrap();
+        let config = Arc::new(config);
+        let mut batcher = ActivationBatcher::new(
+            ActivationBatcherConfig::from_topic(&config, config.consumable_topics().unwrap()[0].0),
+            runtime_config,
+        );
+
+        let (_, topic_config) = config.consumable_topics().unwrap()[0];
+        let cluster_address = config
+            .cluster(&topic_config.cluster)
+            .unwrap()
+            .address
+            .clone();
+        assert_eq!(batcher.producer_cluster, cluster_address);
+
+        let activation_0 = ActivationBuilder::new()
+            .id("0")
+            .taskname("task_to_be_filtered")
+            .namespace("bad_namespace")
+            .build(TaskActivationBuilder::new());
+
+        let activation_1 = ActivationBuilder::new()
+            .id("1")
+            .taskname("good_task")
+            .namespace("good_namespace")
+            .build(TaskActivationBuilder::new());
+
+        batcher.reduce(activation_0).await.unwrap();
+        batcher.reduce(activation_1).await.unwrap();
+
+        assert_eq!(batcher.batch.len(), 1);
+        assert_eq!(batcher.forward_batch.len(), 1);
+
+        let flush_result = batcher.flush().await.unwrap();
+        assert!(flush_result.is_some());
+        assert_eq!(flush_result.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            flush_result.as_ref().unwrap()[0].namespace,
+            "good_namespace"
+        );
+        assert_eq!(flush_result.as_ref().unwrap()[0].taskname, "good_task");
+        assert_eq!(batcher.batch.len(), 0);
+        assert_eq!(batcher.forward_batch.len(), 0);
+        assert_eq!(batcher.producer_cluster, "0.0.0.0:9092");
+    }
+}

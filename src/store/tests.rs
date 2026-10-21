@@ -1,111 +1,73 @@
+use std::collections::HashSet;
+use std::fs;
+use std::sync::Arc;
+use std::time::Duration;
+
 use chrono::{DateTime, SubsecRound, TimeZone, Utc};
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivationStatus};
-use sqlx::postgres::PgSslMode;
 use sqlx::{QueryBuilder, Sqlite};
-use std::{collections::HashSet, fs, io::Error, path::Path, sync::Arc, time::Duration};
-use tokio::{sync::broadcast, task::JoinSet};
+use tempfile::TempDir;
+use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 
-use crate::{
-    config::Config,
-    store::inflight_activation::{
-        InflightActivationBuilder, InflightActivationStatus, InflightActivationStore,
-        InflightActivationStoreConfig, QueryResult, SqliteActivationStore, create_sqlite_pool,
-    },
-    store::postgres_activation_store::build_pg_connect_options,
-    test_utils::{
-        StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
-        create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
-        make_activations_with_namespace, replace_retry_state,
-    },
+use crate::config::store::{SqliteConfig, StoreConfig};
+use crate::config::{Config, DEFAULT_TOPIC};
+use crate::store::activation::{ActivationBuilder, ActivationStatus};
+use crate::store::adapters::sqlite::{SqliteStore, create_sqlite_pool};
+use crate::store::traits::ActivationStore;
+use crate::store::types::{Claim, TopicPartition};
+use crate::test_utils::{
+    StatusCount, TaskActivationBuilder, assert_counts, create_integration_config,
+    create_test_store, generate_temp_filename, generate_unique_namespace, make_activations,
+    make_activations_with_namespace, replace_retry_state,
 };
 
 #[test]
-fn test_inflightactivation_status_is_completion() {
-    let mut value = InflightActivationStatus::Unspecified;
+fn test_activation_status_is_completion() {
+    let mut value = ActivationStatus::Unspecified;
     assert!(!value.is_conclusion());
 
-    value = InflightActivationStatus::Pending;
+    value = ActivationStatus::Pending;
     assert!(!value.is_conclusion());
 
-    value = InflightActivationStatus::Processing;
+    value = ActivationStatus::Processing;
     assert!(!value.is_conclusion());
 
-    value = InflightActivationStatus::Retry;
+    value = ActivationStatus::Retry;
     assert!(value.is_conclusion());
 
-    value = InflightActivationStatus::Failure;
+    value = ActivationStatus::Failure;
     assert!(value.is_conclusion());
 
-    value = InflightActivationStatus::Complete;
+    value = ActivationStatus::Complete;
     assert!(value.is_conclusion());
 }
 
 #[test]
-fn test_inflightactivation_status_from() {
-    let mut value: InflightActivationStatus = TaskActivationStatus::Pending.into();
-    assert_eq!(value, InflightActivationStatus::Pending);
+fn test_activation_status_from() {
+    let mut value: ActivationStatus = TaskActivationStatus::Pending.into();
+    assert_eq!(value, ActivationStatus::Pending);
 
     value = TaskActivationStatus::Processing.into();
-    assert_eq!(value, InflightActivationStatus::Processing);
+    assert_eq!(value, ActivationStatus::Processing);
 
     value = TaskActivationStatus::Retry.into();
-    assert_eq!(value, InflightActivationStatus::Retry);
+    assert_eq!(value, ActivationStatus::Retry);
 
     value = TaskActivationStatus::Failure.into();
-    assert_eq!(value, InflightActivationStatus::Failure);
+    assert_eq!(value, ActivationStatus::Failure);
 
     value = TaskActivationStatus::Complete.into();
-    assert_eq!(value, InflightActivationStatus::Complete);
+    assert_eq!(value, ActivationStatus::Complete);
 }
 
 #[tokio::test]
 async fn test_sqlite_create_db() {
-    assert!(
-        SqliteActivationStore::new(
-            &generate_temp_filename(),
-            InflightActivationStoreConfig::from_config(&create_integration_config())
-        )
-        .await
-        .is_ok()
-    )
-}
+    let mut config = create_integration_config();
+    config.store.sqlite.path = generate_temp_filename();
 
-#[test]
-fn test_connect_opts_plain_url() {
-    let pg_url = "postgresql://user:pass@localhost:5432";
-    let custom_db_name = "my-custom-db";
-    let opts = build_pg_connect_options(pg_url, custom_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some(custom_db_name));
-    assert_eq!(opts.get_host(), "localhost");
-    assert_eq!(opts.get_port(), 5432);
-}
-
-#[test]
-fn test_connect_opts_preserves_sslmode_query_param() {
-    let pg_url_with_query = "postgresql://user:pass@localhost:5432?sslmode=require";
-    let custom_db_name = "my-custom-db";
-    let opts = build_pg_connect_options(pg_url_with_query, custom_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some(custom_db_name));
-    assert!(matches!(opts.get_ssl_mode(), PgSslMode::Require));
-}
-
-#[test]
-fn test_connect_opts_overrides_existing_db_in_url() {
-    let pg_url_with_existing_db = "postgresql://user:pass@localhost:5432/olddb-in-path";
-    let new_db_name = "newdb";
-    let opts = build_pg_connect_options(pg_url_with_existing_db, new_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some(new_db_name));
-}
-
-#[test]
-fn test_connect_opts_overrides_db_and_preserves_tls() {
-    let pg_url_with_existing_db_and_tls =
-        "postgresql://user:pass@localhost:5432/olddb?sslmode=verify-ca";
-    let new_db_name = "newdb";
-    let opts = build_pg_connect_options(pg_url_with_existing_db_and_tls, new_db_name).unwrap();
-    assert_eq!(opts.get_database(), Some("newdb"));
-    assert!(matches!(opts.get_ssl_mode(), PgSslMode::VerifyCa));
+    assert!(SqliteStore::new(&config).await.is_ok())
 }
 
 #[tokio::test]
@@ -116,10 +78,375 @@ async fn test_store(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 2);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_count_depths(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    store.assign_partitions(
+        &mut vec![
+            TopicPartition::new("taskworker-2", 0),
+            TopicPartition::new(DEFAULT_TOPIC, 0),
+        ]
+        .into_iter(),
+    );
+
+    // Check counts for an empty store
+    let pending = store
+        .count_by_status(ActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(ActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(ActivationStatus::Processing)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths(None).await.unwrap();
+
+    assert_eq!(depths.pending, pending);
+    assert_eq!(depths.delay, delay);
+    assert_eq!(depths.processing, processing);
+    assert_eq!(depths.claimed, 0);
+
+    // Check counts for a store with four activations with varying statuses
+    let mut batch = make_activations(4);
+    batch[0].topic = "taskworker-2".into();
+    batch[1].topic = "taskworker-2".into();
+    assert!(store.store(&batch).await.is_ok());
+
+    store
+        .set_status("id_0", ActivationStatus::Processing, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_1", ActivationStatus::Delay, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_2", ActivationStatus::Complete, None, None)
+        .await
+        .unwrap();
+
+    let pending = store
+        .count_by_status(ActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(ActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(ActivationStatus::Processing)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths(None).await.unwrap();
+
+    assert_eq!(depths.pending, pending, "pending");
+    assert_eq!(depths.delay, delay, "delay");
+    assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(depths.claimed, 0, "claimed");
+    assert_eq!(pending, 1);
+    assert_eq!(delay, 1);
+    assert_eq!(processing, 1);
+}
+
+#[tokio::test]
+#[rstest]
+#[case::postgres("postgres")]
+async fn test_count_depths_with_topic_filter(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    store.assign_partitions(
+        &mut vec![
+            TopicPartition::new("taskworker-2", 0),
+            TopicPartition::new(DEFAULT_TOPIC, 0),
+        ]
+        .into_iter(),
+    );
+
+    // Check counts for a store with activations with varying statuses
+    let mut batch = make_activations(5);
+    batch[0].topic = "taskworker-2".into();
+    batch[1].topic = "taskworker-2".into();
+    assert!(store.store(&batch).await.is_ok());
+
+    store
+        .set_status("id_0", ActivationStatus::Processing, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_1", ActivationStatus::Delay, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_2", ActivationStatus::Complete, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("id_3", ActivationStatus::Claimed, None, None)
+        .await
+        .unwrap();
+
+    let pending = store
+        .count_by_status(ActivationStatus::Pending)
+        .await
+        .unwrap();
+    let delay = store
+        .count_by_status(ActivationStatus::Delay)
+        .await
+        .unwrap();
+    let processing = store
+        .count_by_status(ActivationStatus::Processing)
+        .await
+        .unwrap();
+    let claimed = store
+        .count_by_status(ActivationStatus::Claimed)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths(None).await.unwrap();
+
+    assert_eq!(depths.pending, pending, "pending");
+    assert_eq!(depths.delay, delay, "delay");
+    assert_eq!(depths.processing, processing, "processing");
+    assert_eq!(depths.claimed, claimed, "claimed");
+    assert_eq!(pending, 1);
+    assert_eq!(delay, 1);
+    assert_eq!(processing, 1);
+    assert_eq!(claimed, 1);
+
+    let topic_depths = store.count_depths(Some("taskworker-2")).await.unwrap();
+
+    // These activations were processing/delayed
+    assert_eq!(topic_depths.pending, 0, "pending");
+    assert_eq!(topic_depths.delay, 1, "delay");
+    assert_eq!(topic_depths.processing, 1, "processing");
+    assert_eq!(topic_depths.claimed, 0, "claimed");
+
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_count_depths_per_partition_postgres() {
+    let store = create_test_store("postgres").await;
+
+    // Assign three partitions; partition 2 will have no activations and must
+    // appear in the result with zero counts (zero-fill behavior).
+    store.assign_partitions(
+        &mut [0, 1, 2]
+            .into_iter()
+            .map(|p| TopicPartition::new(DEFAULT_TOPIC, p)),
+    );
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+
+    let make = |id: &str, partition: i32, offset: i64| {
+        ActivationBuilder::new()
+            .id(id.to_string())
+            .taskname("taskname")
+            .namespace(namespace.clone())
+            .partition(partition)
+            .added_at(now)
+            .received_at(now)
+            .offset(offset)
+            .processing_deadline_duration(10)
+            .build(TaskActivationBuilder::new())
+    };
+
+    // Partition 0: 3 pending. Partition 1: 1 pending (later flipped to Delay).
+    let batch = vec![
+        make("p0_0", 0, 0),
+        make("p0_1", 0, 1),
+        make("p0_2", 0, 2),
+        make("p1_0", 1, 3),
+    ];
+    assert!(store.store(&batch).await.is_ok());
+
+    store
+        .set_status("p0_0", ActivationStatus::Processing, None, None)
+        .await
+        .unwrap();
+    store
+        .set_status("p1_0", ActivationStatus::Delay, None, None)
+        .await
+        .unwrap();
+
+    let depths = store.count_depths_per_partition().await.unwrap();
+
+    let p0 = depths
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 0))
+        .expect("partition 0 missing");
+    assert_eq!(p0.pending, 2, "partition 0 pending");
+    assert_eq!(p0.processing, 1, "partition 0 processing");
+    assert_eq!(p0.delay, 0, "partition 0 delay");
+    assert_eq!(p0.claimed, 0, "partition 0 claimed");
+
+    let p1 = depths
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 1))
+        .expect("partition 1 missing");
+    assert_eq!(p1.pending, 0, "partition 1 pending");
+    assert_eq!(p1.delay, 1, "partition 1 delay");
+    assert_eq!(p1.processing, 0, "partition 1 processing");
+    assert_eq!(p1.claimed, 0, "partition 1 claimed");
+
+    // Zero-fill: partition 2 is assigned but has no rows.
+    let p2 = depths
+        .get(&TopicPartition::new(DEFAULT_TOPIC, 2))
+        .expect("partition 2 missing (zero-fill failed)");
+    assert_eq!(p2.pending, 0, "partition 2 pending");
+    assert_eq!(p2.delay, 0, "partition 2 delay");
+    assert_eq!(p2.processing, 0, "partition 2 processing");
+    assert_eq!(p2.claimed, 0, "partition 2 claimed");
+
+    store.remove_db().await.unwrap();
+}
+
+/// Multi-topic: partition indices overlap across topics, so claims must filter
+/// by (topic, partition). A broker assigned only topic-a/partition-0 must not
+/// claim a fresh topic-b/partition-0 row, even though the partition index is the
+/// same.
+#[tokio::test]
+async fn test_multi_topic_partition_scoping_postgres() {
+    let store = create_test_store("postgres").await;
+
+    // Replace the default assignment from `create_test_store` with topic-a only.
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("topic-a", 0)));
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+    let make = |id: &str, topic: &str| {
+        ActivationBuilder::new()
+            .id(id.to_string())
+            .taskname("taskname")
+            .namespace(namespace.clone())
+            .topic(topic.to_string())
+            .partition(0)
+            .added_at(now)
+            .received_at(now)
+            .processing_deadline_duration(10)
+            .build(TaskActivationBuilder::new())
+    };
+    assert!(
+        store
+            .store(&[make("a0", "topic-a"), make("b0", "topic-b")])
+            .await
+            .is_ok()
+    );
+
+    // Only topic-a/partition-0 is owned, so only "a0" is claimable.
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, "a0");
+
+    // After also owning topic-b, "b0" becomes claimable.
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("topic-b", 0)));
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, "b0");
+
+    store.remove_db().await.unwrap();
+}
+
+/// Age-based drain: a row whose (topic, partition) this broker doesn't own is
+/// still claimed once it is older than `contention_drain_age_sec`, so orphaned
+/// activations drain without operator intervention. A fresh unowned row is not.
+#[tokio::test]
+async fn test_age_based_drain_claims_orphan_postgres() {
+    let store = create_test_store("postgres").await;
+    // Owns an unrelated topic/partition, so neither row matches by ownership.
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)));
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+    let make = |id: &str, added_at| {
+        ActivationBuilder::new()
+            .id(id.to_string())
+            .taskname("taskname")
+            .namespace(namespace.clone())
+            .topic("orphan-topic".to_string())
+            .partition(99)
+            .added_at(added_at)
+            .received_at(now)
+            .processing_deadline_duration(10)
+            .build(TaskActivationBuilder::new())
+    };
+    // "old" is past the 60s default threshold; "fresh" is not.
+    let old_added_at = now - chrono::Duration::seconds(120);
+    assert!(
+        store
+            .store(&[make("old", old_added_at), make("fresh", now)])
+            .await
+            .is_ok()
+    );
+
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1, "only the old orphan should drain");
+    assert_eq!(claimed[0].id, "old");
+
+    store.remove_db().await.unwrap();
+}
+
+/// Age-based drain also applies to upkeep: an orphaned Delay row past its
+/// delay_until is released to Pending once older than the threshold, even though
+/// this broker doesn't own its (topic, partition).
+#[tokio::test]
+async fn test_age_based_drain_upkeep_postgres() {
+    let store = create_test_store("postgres").await;
+    store.revoke_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+    store.assign_partitions(&mut std::iter::once(TopicPartition::new("owned-topic", 0)));
+
+    let namespace = generate_unique_namespace();
+    let now = Utc::now();
+    let delayed = ActivationBuilder::new()
+        .id("orphan_delayed".to_string())
+        .taskname("taskname")
+        .namespace(namespace.clone())
+        .topic("orphan-topic".to_string())
+        .partition(99)
+        .status(ActivationStatus::Delay)
+        .delay_until(now - chrono::Duration::seconds(5))
+        .added_at(now - chrono::Duration::seconds(120))
+        .received_at(now)
+        .processing_deadline_duration(10)
+        .build(TaskActivationBuilder::new());
+    assert!(store.store(&[delayed]).await.is_ok());
+
+    let released = store.handle_delay_until().await.unwrap();
+    assert_eq!(released, 1, "old orphaned delay row should be released");
+    assert_eq!(
+        store
+            .get_by_id("orphan_delayed")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        ActivationStatus::Pending
+    );
+
     store.remove_db().await.unwrap();
 }
 
@@ -135,7 +462,7 @@ async fn test_store_duplicate_id_in_batch(#[case] adapter: &str) {
     batch[0].id = "id_0".into();
     batch[1].id = "id_0".into();
 
-    let first_result = store.store(batch).await;
+    let first_result = store.store(&batch).await;
     assert!(
         first_result.is_ok(),
         "{}",
@@ -155,7 +482,7 @@ async fn test_store_duplicate_id_between_batches(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     let first_count = store.count().await;
     assert_eq!(first_count.unwrap(), 2);
 
@@ -163,7 +490,7 @@ async fn test_store_duplicate_id_between_batches(#[case] adapter: &str) {
     // Old batch and new should have conflicts
     assert_eq!(batch[0].id, new_batch[0].id);
     assert_eq!(batch[1].id, new_batch[1].id);
-    assert!(store.store(new_batch).await.is_ok());
+    assert!(store.store(&new_batch).await.is_ok());
 
     let second_count = store.count().await;
     assert_eq!(second_count.unwrap(), 2);
@@ -178,16 +505,16 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let result = store
-        .get_pending_activation(None, None)
+        .claim_activation_for_pull(None, None)
         .await
         .unwrap()
-        .unwrap();
+        .expect("expected one activation");
 
     assert_eq!(result.id, "id_0");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert_eq!(result.processing_deadline_duration, 10);
     assert!(
         result.processing_deadline.unwrap().timestamp() >= Utc::now().timestamp() + 13,
@@ -205,6 +532,47 @@ async fn test_get_pending_activation(#[case] adapter: &str) {
     store.remove_db().await.unwrap();
 }
 
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activation_bucket_filter(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let mut batch = make_activations(2);
+    batch[0].bucket = 10;
+    batch[1].bucket = 20;
+    assert!(store.store(&batch).await.is_ok());
+
+    let mut first = store
+        .claim_activations_for_push(Some(1), Some((15, 25)))
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    let first = first.pop().unwrap();
+    assert_eq!(first.id, "id_1");
+    assert_eq!(first.bucket, 20);
+
+    let mut second = store
+        .claim_activations_for_push(Some(1), Some((0, 15)))
+        .await
+        .unwrap();
+    assert_eq!(second.len(), 1);
+    let second = second.pop().unwrap();
+    assert_eq!(second.id, "id_0");
+    assert_eq!(second.bucket, 10);
+
+    assert!(
+        store
+            .claim_activations_for_push(Some(1), Some((15, 25)))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    store.remove_db().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 32)]
 #[rstest]
 #[case::sqlite("sqlite")]
@@ -218,7 +586,7 @@ async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
     for chunk in
         make_activations_with_namespace(namespace.clone(), NUM_CONCURRENT_WRITES).chunks(1024)
     {
-        store.store(chunk.to_vec()).await.unwrap();
+        store.store(chunk).await.unwrap();
     }
 
     let (tx, _) = broadcast::channel::<()>(1);
@@ -231,11 +599,14 @@ async fn test_get_pending_activation_with_race(#[case] adapter: &str) {
 
         join_set.spawn(async move {
             rx.recv().await.unwrap();
-            store
-                .get_pending_activation(Some("sentry"), Some(&ns))
-                .await
-                .unwrap()
-                .unwrap()
+            {
+                let v = store
+                    .claim_activation_for_pull(Some("sentry"), Some(ns.as_str()))
+                    .await
+                    .unwrap();
+                assert!(v.is_some());
+                v.unwrap()
+            }
         });
     }
 
@@ -261,16 +632,17 @@ async fn test_get_pending_activation_with_namespace(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[1].namespace = "other_namespace".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
+    let other_namespace = "other_namespace".to_string();
     // Get activation from other namespace
     let result = store
-        .get_pending_activation(Some("sentry"), Some("other_namespace"))
+        .claim_activation_for_pull(Some("sentry"), Some(other_namespace.as_str()))
         .await
         .unwrap()
-        .unwrap();
+        .expect("expected one activation");
     assert_eq!(result.id, "id_1");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.namespace, "other_namespace");
     store.remove_db().await.unwrap();
@@ -288,22 +660,23 @@ async fn test_get_pending_activation_from_multiple_namespaces(#[case] adapter: &
     batch[1].namespace = "ns2".into();
     batch[2].namespace = "ns3".into();
     batch[3].namespace = "ns4".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
-    // Get activation from multiple namespaces (should get oldest)
+    // Get activation from multiple namespaces (should get oldest).
+    // Use `claim_activations` so upkeep-style `None` application + namespaces is allowed (not `claim_activations_for_push`).
     let namespaces = vec!["ns2".to_string(), "ns3".to_string()];
     let result = store
-        .get_pending_activations_from_namespaces(None, Some(&namespaces), None)
+        .claim_activations(None, Some(&namespaces), None, None, false)
         .await
         .unwrap();
 
     assert_eq!(result.len(), 2);
     assert_eq!(result[1].id, "id_2");
     assert_eq!(result[1].namespace, "ns3");
-    assert_eq!(result[1].status, InflightActivationStatus::Processing);
+    assert_eq!(result[1].status, ActivationStatus::Claimed);
     assert_eq!(result[0].id, "id_1");
     assert_eq!(result[0].namespace, "ns2");
-    assert_eq!(result[0].status, InflightActivationStatus::Processing);
+    assert_eq!(result[0].status, ActivationStatus::Claimed);
     store.remove_db().await.unwrap();
 }
 
@@ -316,20 +689,20 @@ async fn test_get_pending_activation_with_namespace_requires_application(#[case]
 
     let mut batch = make_activations(2);
     batch[1].namespace = "other_namespace".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
-    // This is an invalid query as we don't want to allow clients
-    // to fetch tasks from any application.
-    let opt = store
-        .get_pending_activation(None, Some("other_namespace"))
+    // This is an invalid query as we don't want to allow clients to fetch tasks from any application
+    let other_namespace = "other_namespace".to_string();
+    let got = store
+        .claim_activation_for_pull(None, Some(other_namespace.as_str()))
         .await
         .unwrap();
-    assert!(opt.is_none());
+    assert!(got.is_none());
 
     // We allow no application in this method because of usage in upkeep
     let namespaces = vec!["other_namespace".to_string()];
     let activations = store
-        .get_pending_activations_from_namespaces(None, Some(namespaces).as_deref(), Some(2))
+        .claim_activations(None, Some(&namespaces), Some(2), None, false)
         .await
         .unwrap();
     assert_eq!(
@@ -358,12 +731,11 @@ async fn test_get_pending_activation_skip_expires(#[case] adapter: &str) {
 
     let mut batch = make_activations(1);
     batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
-    let result = store.get_pending_activation(None, None).await;
+    let result = store.claim_activation_for_pull(None, None).await;
     assert!(result.is_ok());
-    let res_option = result.unwrap();
-    assert!(res_option.is_none());
+    assert!(result.unwrap().is_none());
 
     assert_counts(
         StatusCount {
@@ -386,14 +758,14 @@ async fn test_get_pending_activation_earliest(#[case] adapter: &str) {
     let mut batch = make_activations(2);
     batch[0].added_at = Utc.with_ymd_and_hms(2024, 6, 24, 0, 0, 0).unwrap();
     batch[1].added_at = Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap();
-    let ret = store.store(batch.clone()).await;
+    let ret = store.store(&batch).await;
     assert!(ret.is_ok(), "{}", ret.err().unwrap().to_string());
 
     let result = store
-        .get_pending_activation(None, None)
+        .claim_activation_for_pull(None, None)
         .await
         .unwrap()
-        .unwrap();
+        .expect("expected one activation");
     assert_eq!(
         result.added_at,
         Utc.with_ymd_and_hms(1998, 6, 24, 0, 0, 0).unwrap()
@@ -410,17 +782,17 @@ async fn test_get_pending_activation_fetches_application(#[case] adapter: &str) 
 
     let mut batch = make_activations(1);
     batch[0].application = "hammers".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     // Getting an activation with no application filter should
     // include activations with application set.
     let result = store
-        .get_pending_activation(None, None)
+        .claim_activation_for_pull(None, None)
         .await
         .unwrap()
-        .unwrap();
+        .expect("expected one activation");
     assert_eq!(result.id, "id_0");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
     store.remove_db().await.unwrap();
@@ -435,21 +807,21 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
 
     let mut batch = make_activations(2);
     batch[1].application = "hammers".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     // Get activation from a named application
     let result = store
-        .get_pending_activation(Some("hammers"), None)
+        .claim_activation_for_pull(Some("hammers"), None)
         .await
         .unwrap()
-        .unwrap();
+        .expect("expected one activation");
     assert_eq!(result.id, "id_1");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
 
     let result_opt = store
-        .get_pending_activation(Some("hammers"), None)
+        .claim_activation_for_pull(Some("hammers"), None)
         .await
         .unwrap();
     assert!(
@@ -457,8 +829,8 @@ async fn test_get_pending_activation_with_application(#[case] adapter: &str) {
         "no pending activations in hammers left"
     );
 
-    let result_opt = store.get_pending_activation(None, None).await.unwrap();
-    assert!(result_opt.is_some(), "one pending activation in '' left");
+    let remaining = store.claim_activation_for_pull(None, None).await.unwrap();
+    assert!(remaining.is_some(), "one pending activation in '' left");
     store.remove_db().await.unwrap();
 }
 
@@ -477,28 +849,121 @@ async fn test_get_pending_activation_with_application_and_namespace(#[case] adap
 
     batch[2].application = "hammers".into();
     batch[2].namespace = "not-target".into();
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
+    let target_ns = "target".to_string();
     // Get activation from a named application
     let result = store
-        .get_pending_activation(Some("hammers"), Some("target"))
+        .claim_activation_for_pull(Some("hammers"), Some(target_ns.as_str()))
         .await
         .unwrap()
-        .unwrap();
+        .expect("expected one activation");
     assert_eq!(result.id, "id_1");
-    assert_eq!(result.status, InflightActivationStatus::Processing);
+    assert_eq!(result.status, ActivationStatus::Processing);
     assert!(result.processing_deadline.unwrap() > Utc::now());
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "target");
 
     let result = store
-        .get_pending_activation(Some("hammers"), None)
+        .claim_activation_for_pull(Some("hammers"), None)
         .await
         .unwrap()
-        .unwrap();
+        .expect("expected one activation");
     assert_eq!(result.id, "id_2");
     assert_eq!(result.application, "hammers");
     assert_eq!(result.namespace, "not-target");
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activations_no_limit(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    const N: usize = 4;
+
+    let batch = make_activations(N as u32);
+    assert!(store.store(&batch).await.is_ok());
+
+    let got = store.claim_activations_for_push(None, None).await.unwrap();
+    assert_eq!(got.len(), N);
+    assert!(got.iter().all(|a| a.status == ActivationStatus::Claimed));
+    assert_eq!(store.count_pending_activations().await.unwrap(), 0);
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            claimed: N,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activations_limit_below_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    const N: usize = 5;
+    const X: i32 = 3;
+
+    let batch = make_activations(N as u32);
+    assert!(store.store(&batch).await.is_ok());
+
+    let got = store
+        .claim_activations_for_push(Some(X), None)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), X as usize);
+    assert!(got.iter().all(|a| a.status == ActivationStatus::Claimed));
+    assert_eq!(
+        store.count_pending_activations().await.unwrap(),
+        N - X as usize
+    );
+    assert_counts(
+        StatusCount {
+            pending: N - X as usize,
+            claimed: X as usize,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_get_pending_activations_limit_above_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    const Y: usize = 2;
+    const X: i32 = 10;
+
+    let batch = make_activations(Y as u32);
+    assert!(store.store(&batch).await.is_ok());
+
+    let got = store
+        .claim_activations_for_push(Some(X), None)
+        .await
+        .unwrap();
+    assert_eq!(got.len(), Y);
+    assert!(got.iter().all(|a| a.status == ActivationStatus::Claimed));
+    assert_eq!(store.count_pending_activations().await.unwrap(), 0);
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            claimed: Y,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
     store.remove_db().await.unwrap();
 }
 
@@ -510,8 +975,8 @@ async fn test_count_pending_activations(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(3);
-    batch[0].status = InflightActivationStatus::Processing;
-    assert!(store.store(batch).await.is_ok());
+    batch[0].status = ActivationStatus::Processing;
+    assert!(store.store(&batch).await.is_ok());
 
     assert_eq!(store.count_pending_activations().await.unwrap(), 2);
     assert_counts(
@@ -534,7 +999,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 2,
@@ -546,7 +1011,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", ActivationStatus::Failure, None, None)
             .await
             .is_ok()
     );
@@ -562,7 +1027,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Pending)
+            .set_status("id_0", ActivationStatus::Pending, None, None)
             .await
             .is_ok()
     );
@@ -576,13 +1041,13 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Failure)
+            .set_status("id_0", ActivationStatus::Failure, None, None)
             .await
             .is_ok()
     );
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Failure)
+            .set_status("id_1", ActivationStatus::Failure, None, None)
             .await
             .is_ok()
     );
@@ -597,14 +1062,14 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     .await;
     assert!(
         store
-            .get_pending_activation(None, None)
+            .claim_activation_for_pull(None, None)
             .await
             .unwrap()
             .is_none()
     );
 
     let result = store
-        .set_status("not_there", InflightActivationStatus::Complete)
+        .set_status("not_there", ActivationStatus::Complete, None, None)
         .await;
     assert!(result.is_ok(), "no query error");
 
@@ -612,7 +1077,7 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     assert!(activation.is_none(), "no activation found");
 
     let result = store
-        .set_status("id_0", InflightActivationStatus::Complete)
+        .set_status("id_0", ActivationStatus::Complete, None, None)
         .await;
     assert!(result.is_ok(), "no query error");
 
@@ -620,7 +1085,106 @@ async fn test_set_activation_status(#[case] adapter: &str) {
     assert!(result_opt.is_some(), "activation should be returned");
     let inflight = result_opt.unwrap();
     assert_eq!(inflight.id, "id_0");
-    assert_eq!(inflight.status, InflightActivationStatus::Complete);
+    assert_eq!(inflight.status, ActivationStatus::Complete);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::postgres("postgres")]
+async fn test_set_activation_status_with_partitions(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let mut batch = make_activations(2);
+    batch[1].partition = 1;
+    assert!(store.store(&batch).await.is_ok());
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+
+    assert!(
+        store
+            .set_status("id_0", ActivationStatus::Failure, None, None)
+            .await
+            .is_ok()
+    );
+    assert_counts(
+        StatusCount {
+            failure: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+
+    assert!(
+        store
+            .set_status("id_0", ActivationStatus::Pending, None, None)
+            .await
+            .is_ok()
+    );
+    assert_counts(
+        StatusCount {
+            pending: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    assert!(
+        store
+            .set_status("id_0", ActivationStatus::Failure, None, None)
+            .await
+            .is_ok()
+    );
+    assert!(
+        store
+            .set_status("id_1", ActivationStatus::Failure, None, None)
+            .await
+            .is_ok()
+    );
+    // The broker can update the status of an activation in a different partition, but
+    // it still should not be counted in its upkeep.
+    assert_counts(
+        StatusCount {
+            pending: 0,
+            failure: 1,
+            ..StatusCount::default()
+        },
+        store.as_ref(),
+    )
+    .await;
+    assert!(
+        store
+            .claim_activations(None, None, Some(1), None, true)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let result = store
+        .set_status("not_there", ActivationStatus::Complete, None, None)
+        .await;
+    assert!(result.is_ok(), "no query error");
+
+    let activation = result.unwrap();
+    assert!(activation.is_none(), "no activation found");
+
+    let result = store
+        .set_status("id_0", ActivationStatus::Complete, None, None)
+        .await;
+    assert!(result.is_ok(), "no query error");
+
+    let result_opt = result.unwrap();
+    assert!(result_opt.is_some(), "activation should be returned");
+    let inflight = result_opt.unwrap();
+    assert_eq!(inflight.id, "id_0");
+    assert_eq!(inflight.status, ActivationStatus::Complete);
     store.remove_db().await.unwrap();
 }
 
@@ -632,7 +1196,7 @@ async fn test_set_processing_deadline(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(1);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let deadline = Utc::now().round_subsecs(0);
     let result = store.set_processing_deadline("id_0", Some(deadline)).await;
@@ -654,7 +1218,7 @@ async fn test_delete_activation(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let result = store.count().await;
     assert_eq!(result.unwrap(), 2);
@@ -681,7 +1245,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 2,
@@ -693,7 +1257,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_0", InflightActivationStatus::Retry)
+            .set_status("id_0", ActivationStatus::Retry, None, None)
             .await
             .is_ok()
     );
@@ -709,7 +1273,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
 
     assert!(
         store
-            .set_status("id_1", InflightActivationStatus::Retry)
+            .set_status("id_1", ActivationStatus::Retry, None, None)
             .await
             .is_ok()
     );
@@ -717,7 +1281,7 @@ async fn test_get_retry_activations(#[case] adapter: &str) {
     let retries = store.get_retry_activations().await.unwrap();
     assert_eq!(retries.len(), 2);
     for record in retries.iter() {
-        assert_eq!(record.status, InflightActivationStatus::Retry);
+        assert_eq!(record.status, ActivationStatus::Retry);
     }
     store.remove_db().await.unwrap();
 }
@@ -730,10 +1294,10 @@ async fn test_handle_processing_deadline(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -774,14 +1338,15 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[0].status = InflightActivationStatus::Processing;
+    batch[0].status = ActivationStatus::Processing;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Claimed;
     batch[1].processing_deadline = Some(Utc::now() + chrono::Duration::days(30));
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
-            processing: 2,
+            processing: 1,
+            claimed: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -794,7 +1359,7 @@ async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     assert_counts(
         StatusCount {
             pending: 1,
-            processing: 1,
+            claimed: 1,
             ..StatusCount::default()
         },
         store.as_ref(),
@@ -812,10 +1377,11 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
 
     // Both records are past processing deadlines
     let mut batch = make_activations(2);
-    batch[0].status = InflightActivationStatus::Processing;
+    batch[0].status = ActivationStatus::Processing;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
+
     replace_retry_state(
         &mut batch[1],
         Some(RetryState {
@@ -829,7 +1395,7 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
     batch[1].at_most_once = true;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             processing: 2,
@@ -853,7 +1419,7 @@ async fn test_handle_processing_at_most_once(#[case] adapter: &str) {
     .await;
 
     let task = store.get_by_id(&batch[1].id).await.unwrap().unwrap();
-    assert_eq!(task.status, InflightActivationStatus::Failure);
+    assert_eq!(task.status, ActivationStatus::Failure);
     store.remove_db().await.unwrap();
 }
 
@@ -865,7 +1431,7 @@ async fn test_handle_processing_deadline_discard_after(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -878,7 +1444,7 @@ async fn test_handle_processing_deadline_discard_after(#[case] adapter: &str) {
         }),
     );
 
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -911,7 +1477,7 @@ async fn test_handle_processing_deadline_deadletter_after(#[case] adapter: &str)
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -924,7 +1490,7 @@ async fn test_handle_processing_deadline_deadletter_after(#[case] adapter: &str)
         }),
     );
 
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -957,7 +1523,7 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(2);
-    batch[1].status = InflightActivationStatus::Processing;
+    batch[1].status = ActivationStatus::Processing;
     batch[1].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
     replace_retry_state(
         &mut batch[1],
@@ -969,7 +1535,7 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
             delay_on_retry: None,
         }),
     );
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             processing: 1,
@@ -995,6 +1561,145 @@ async fn test_handle_processing_deadline_no_retries_remaining(#[case] adapter: &
     store.remove_db().await.unwrap();
 }
 
+/// The fetch and push pools release their own claims rather than waiting on
+/// `handle_claim_expiration`, whose lease is sized for the worst case push.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_reverts_claimed_to_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+
+    let claim = batch[0].claim().unwrap();
+    assert_eq!(1, store.release_claims(&[claim]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Pending);
+    assert_eq!(task.claim_expires_at, None);
+    assert_eq!(task.processing_attempts, 0);
+    store.remove_db().await.unwrap();
+}
+
+/// Releasing a claim races a successful push. If the push won, the activation is
+/// already `Processing` and a worker is running it, so the release has to be a
+/// no-op instead of making the row claimable a second time.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_ignores_activations_that_moved_on(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Processing;
+    assert!(store.store(&batch).await.is_ok());
+
+    let claim = Claim {
+        id: batch[0].id.clone(),
+        expires_at: Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap(),
+    };
+    assert_eq!(0, store.release_claims(&[claim]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Processing);
+    store.remove_db().await.unwrap();
+}
+
+/// A release can arrive after its lease expired and another fetch thread claimed
+/// the row again. That claim carries a new expiry, so the stale release must
+/// leave it alone, or the row becomes claimable while it is being delivered.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_ignores_later_claims(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2030, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+
+    let stale = Claim {
+        id: batch[0].id.clone(),
+        expires_at: Utc.with_ymd_and_hms(2030, 1, 1, 1, 0, 0).unwrap(),
+    };
+    assert_eq!(0, store.release_claims(&[stale]).await.unwrap());
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Claimed);
+    assert_eq!(task.claim_expires_at, batch[0].claim_expires_at);
+    store.remove_db().await.unwrap();
+}
+
+/// The claims come straight from the claim query, so the expiry it returns has
+/// to match the stored value exactly, at whatever precision the adapter keeps.
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_release_claims_matches_claims_from_the_claim_query(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let batch = make_activations(3);
+    assert!(store.store(&batch).await.is_ok());
+
+    let claimed = store
+        .claim_activations_for_push(Some(10), None)
+        .await
+        .unwrap();
+    assert_eq!(3, claimed.len());
+
+    let claims: Vec<Claim> = claimed.iter().filter_map(|a| a.claim()).collect();
+    assert_eq!(3, claims.len());
+    assert_eq!(3, store.release_claims(&claims).await.unwrap());
+
+    for activation in &batch {
+        let task = store.get_by_id(&activation.id).await.unwrap().unwrap();
+        assert_eq!(task.status, ActivationStatus::Pending);
+        assert_eq!(task.claim_expires_at, None);
+    }
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_claim_expiration_unsent_no_attempt_increment(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+    let count = store.handle_claim_expiration().await.unwrap();
+    assert_eq!(count, 1);
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Pending);
+    assert_eq!(task.processing_attempts, 0);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_handle_claim_expiration_at_most_once_reverts_to_pending(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut batch = make_activations(1);
+    batch[0].status = ActivationStatus::Claimed;
+    batch[0].at_most_once = true;
+    batch[0].claim_expires_at = Some(Utc.with_ymd_and_hms(2020, 1, 1, 1, 1, 1).unwrap());
+    assert!(store.store(&batch).await.is_ok());
+    let count = store.handle_claim_expiration().await.unwrap();
+    assert_eq!(count, 1);
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Pending);
+    assert_eq!(task.processing_attempts, 0);
+    store.remove_db().await.unwrap();
+}
+
 #[tokio::test]
 #[rstest]
 #[case::sqlite("sqlite")]
@@ -1004,18 +1709,18 @@ async fn test_processing_attempts_exceeded(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut batch = make_activations(3);
-    batch[0].status = InflightActivationStatus::Pending;
+    batch[0].status = ActivationStatus::Pending;
     batch[0].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[0].processing_attempts = config.max_processing_attempts as i32;
+    batch[0].processing_attempts = config.store.max_processing_attempts as i32;
 
-    batch[1].status = InflightActivationStatus::Complete;
+    batch[1].status = ActivationStatus::Complete;
     batch[1].added_at += Duration::from_secs(1);
 
-    batch[2].status = InflightActivationStatus::Pending;
+    batch[2].status = ActivationStatus::Pending;
     batch[2].processing_deadline = Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-    batch[2].processing_attempts = config.max_processing_attempts as i32;
+    batch[2].processing_attempts = config.store.max_processing_attempts as i32;
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             complete: 1,
@@ -1049,13 +1754,13 @@ async fn test_remove_completed(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let mut records = make_activations(3);
-    records[0].status = InflightActivationStatus::Complete;
-    records[1].status = InflightActivationStatus::Pending;
+    records[0].status = ActivationStatus::Complete;
+    records[1].status = ActivationStatus::Pending;
     records[1].added_at += Duration::from_secs(1);
-    records[2].status = InflightActivationStatus::Complete;
+    records[2].status = ActivationStatus::Complete;
     records[2].added_at += Duration::from_secs(2);
 
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.store(&records).await.is_ok());
     assert_counts(
         StatusCount {
             complete: 2,
@@ -1111,17 +1816,17 @@ async fn test_remove_completed_multiple_gaps(#[case] adapter: &str) {
 
     let mut records = make_activations(4);
     // only record 1 can be removed
-    records[0].status = InflightActivationStatus::Complete;
-    records[1].status = InflightActivationStatus::Failure;
+    records[0].status = ActivationStatus::Complete;
+    records[1].status = ActivationStatus::Failure;
     records[1].added_at += Duration::from_secs(1);
 
-    records[2].status = InflightActivationStatus::Complete;
+    records[2].status = ActivationStatus::Complete;
     records[2].added_at += Duration::from_secs(2);
 
-    records[3].status = InflightActivationStatus::Processing;
+    records[3].status = ActivationStatus::Processing;
     records[3].added_at += Duration::from_secs(3);
 
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.store(&records).await.is_ok());
     assert_counts(
         StatusCount {
             complete: 2,
@@ -1186,7 +1891,7 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
 
     let mut records = make_activations(4);
     // deadletter
-    records[0].status = InflightActivationStatus::Failure;
+    records[0].status = ActivationStatus::Failure;
     replace_retry_state(
         &mut records[0],
         Some(RetryState {
@@ -1198,7 +1903,7 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
         }),
     );
     // discard
-    records[1].status = InflightActivationStatus::Failure;
+    records[1].status = ActivationStatus::Failure;
     replace_retry_state(
         &mut records[1],
         Some(RetryState {
@@ -1210,11 +1915,11 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
         }),
     );
     // no retry state = discard
-    records[2].status = InflightActivationStatus::Failure;
+    records[2].status = ActivationStatus::Failure;
     replace_retry_state(&mut records[2], None);
 
     // Another deadletter
-    records[3].status = InflightActivationStatus::Failure;
+    records[3].status = ActivationStatus::Failure;
     replace_retry_state(
         &mut records[3],
         Some(RetryState {
@@ -1225,7 +1930,7 @@ async fn test_handle_failed_tasks(#[case] adapter: &str) {
             delay_on_retry: None,
         }),
     );
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.store(&records).await.is_ok());
     assert_counts(
         StatusCount {
             failure: 4,
@@ -1275,7 +1980,7 @@ async fn test_mark_completed(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let records = make_activations(3);
-    assert!(store.store(records.clone()).await.is_ok());
+    assert!(store.store(&records).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 3,
@@ -1316,7 +2021,7 @@ async fn test_handle_expires_at(#[case] adapter: &str) {
     batch[1].expires_at = Some(Utc::now() + (Duration::from_secs(5 * 60)));
     batch[2].expires_at = Some(Utc::now() - (Duration::from_secs(5 * 60)));
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 3,
@@ -1356,7 +2061,7 @@ async fn test_remove_killswitched(#[case] adapter: &str) {
     batch[2].taskname = "task_to_be_killswitched_two".to_string();
     batch[4].taskname = "task_to_be_killswitched_three".to_string();
 
-    assert!(store.store(batch.clone()).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 6,
@@ -1399,7 +2104,7 @@ async fn test_clear(#[case] adapter: &str) {
     let namespace = generate_unique_namespace();
 
     let batch = vec![
-        InflightActivationBuilder::new()
+        ActivationBuilder::new()
             .id("id_0")
             .taskname("taskname")
             .namespace(&namespace)
@@ -1408,7 +2113,7 @@ async fn test_clear(#[case] adapter: &str) {
             .build(TaskActivationBuilder::new()),
     ];
 
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
     assert_counts(
         StatusCount {
             pending: 1,
@@ -1433,7 +2138,7 @@ async fn test_full_vacuum(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let result = store.full_vacuum_db().await;
     assert!(result.is_ok());
@@ -1448,7 +2153,7 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let result = store.vacuum_db().await;
     assert!(result.is_ok());
@@ -1458,18 +2163,23 @@ async fn test_vacuum_db_no_limit(#[case] adapter: &str) {
 #[tokio::test]
 async fn test_vacuum_db_incremental() {
     let config = Config {
-        vacuum_page_count: Some(10),
+        store: StoreConfig {
+            sqlite: SqliteConfig {
+                path: generate_temp_filename(),
+                vacuum_page_count: Some(10),
+                ..SqliteConfig::default()
+            },
+            ..StoreConfig::default()
+        },
         ..Config::default()
     };
-    let store = SqliteActivationStore::new(
-        &generate_temp_filename(),
-        InflightActivationStoreConfig::from_config(&config),
-    )
-    .await
-    .expect("could not create store");
+
+    let store = SqliteStore::new(&config)
+        .await
+        .expect("could not create store");
 
     let batch = make_activations(2);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let result = store.vacuum_db().await;
     assert!(result.is_ok());
@@ -1488,7 +2198,7 @@ async fn test_db_size(#[case] adapter: &str) {
 
     // Generate a large enough batch that we use another page.
     let batch = make_activations(50);
-    assert!(store.store(batch).await.is_ok());
+    assert!(store.store(&batch).await.is_ok());
 
     let second_size = store.db_size().await.unwrap();
     assert!(second_size > first_size, "should have more bytes now");
@@ -1506,10 +2216,10 @@ async fn test_pending_activation_max_lag_no_pending(#[case] adapter: &str) {
     assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
 
     let mut processing = make_activations(1);
-    processing[0].status = InflightActivationStatus::Processing;
-    assert!(store.store(processing).await.is_ok());
+    processing[0].status = ActivationStatus::Processing;
+    assert!(store.store(&processing).await.is_ok());
 
-    // No pending activations, max lag is 0
+    // No pending or claimed activations, max lag is 0
     assert_eq!(0.0, store.pending_activation_max_lag(&now).await);
     store.remove_db().await.unwrap();
 }
@@ -1522,10 +2232,33 @@ async fn test_pending_activation_max_lag_use_oldest(#[case] adapter: &str) {
     let now = Utc::now();
     let store = create_test_store(adapter).await;
 
-    let mut pending = make_activations(2);
+    let mut pending = make_activations(3);
     pending[0].received_at = now - Duration::from_secs(10);
     pending[1].received_at = now - Duration::from_secs(500);
-    assert!(store.store(pending).await.is_ok());
+    pending[2].status = ActivationStatus::Claimed;
+    pending[2].received_at = now - Duration::from_secs(50);
+    assert!(store.store(&pending).await.is_ok());
+
+    let result = store.pending_activation_max_lag(&now).await;
+    assert!(11.0 < result, "Should not get the small record");
+    assert!(result < 501.0, "Should not get an inflated value");
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_pending_activation_max_lag_use_oldest_with_claimed(#[case] adapter: &str) {
+    let now = Utc::now();
+    let store = create_test_store(adapter).await;
+
+    let mut pending = make_activations(3);
+    pending[0].received_at = now - Duration::from_secs(10);
+    pending[1].received_at = now - Duration::from_secs(500);
+    pending[1].status = ActivationStatus::Claimed;
+    pending[2].received_at = now - Duration::from_secs(50);
+    assert!(store.store(&pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(11.0 < result, "Should not get the small record");
@@ -1541,11 +2274,14 @@ async fn test_pending_activation_max_lag_ignore_processing_attempts(#[case] adap
     let now = Utc::now().round_subsecs(0);
     let store = create_test_store(adapter).await;
 
-    let mut pending = make_activations(2);
+    let mut pending = make_activations(3);
     pending[0].received_at = now - Duration::from_secs(10);
     pending[1].received_at = now - Duration::from_secs(500);
     pending[1].processing_attempts = 1;
-    assert!(store.store(pending).await.is_ok());
+    pending[2].status = ActivationStatus::Claimed;
+    pending[2].received_at = now - Duration::from_secs(500);
+    pending[2].processing_attempts = 1;
+    assert!(store.store(&pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert_eq!(result, 10.0, "max lag: {result:?}");
@@ -1560,12 +2296,13 @@ async fn test_pending_activation_max_lag_account_for_delayed(#[case] adapter: &s
     let now = Utc::now();
     let store = create_test_store(adapter).await;
 
-    let mut pending = make_activations(2);
+    let mut pending = make_activations(3);
     // delayed tasks are received well before they become pending
     // the lag of a delayed task should begin *after* the delay has passed.
     pending[0].received_at = now - Duration::from_secs(520);
     pending[0].delay_until = Some(now - Duration::from_millis(22020));
-    assert!(store.store(pending).await.is_ok());
+    pending[1].status = ActivationStatus::Claimed;
+    assert!(store.store(&pending).await.is_ok());
 
     let result = store.pending_activation_max_lag(&now).await;
     assert!(22.00 < result, "result: {result}");
@@ -1589,17 +2326,21 @@ async fn test_db_status_calls_ok() {
     let url = format!("sqlite:{db_path}");
 
     // Initialize a store to create the database and run migrations
-    SqliteActivationStore::new(
-        &url,
-        InflightActivationStoreConfig {
+    let config = Config {
+        store: StoreConfig {
             max_processing_attempts: 3,
             processing_deadline_grace_sec: 0,
-            vacuum_page_count: None,
-            enable_sqlite_status_metrics: false,
+            sqlite: SqliteConfig {
+                path: db_path,
+                vacuum_page_count: None,
+                enable_status_metrics: false,
+            },
+            ..StoreConfig::default()
         },
-    )
-    .await
-    .expect("store init");
+        ..Config::default()
+    };
+
+    SqliteStore::new(&config).await.expect("store init");
 
     // Acquire a fresh read connection from a temporary pool, since store.read_pool is private
     let (read_pool, _write_pool) = create_sqlite_pool(&url).await.expect("pool");
@@ -1633,56 +2374,17 @@ async fn test_db_status_calls_ok() {
     }
 }
 
-struct TestFolders {
-    parent_folder: String,
-    initial_folder: String,
-    other_folder: String,
-}
-
-impl TestFolders {
-    fn new() -> Result<Self, Error> {
-        let parent_folder = "./testmigrations".to_string();
-        let parent = fs::create_dir(&parent_folder);
-        if parent.is_err() {
-            return Err(parent.err().unwrap());
-        }
-
-        let initial_folder = parent_folder.clone() + "/initial_migrations";
-        let other_folder = parent_folder.clone() + "/other_migrations";
-
-        let initial = fs::create_dir(&initial_folder);
-        if initial.is_err() {
-            return Err(initial.err().unwrap());
-        }
-        let other = fs::create_dir(&other_folder);
-        if other.is_err() {
-            return Err(other.err().unwrap());
-        }
-
-        Ok(TestFolders {
-            parent_folder,
-            initial_folder,
-            other_folder,
-        })
-    }
-}
-
-impl Drop for TestFolders {
-    fn drop(&mut self) {
-        let parent = fs::remove_dir_all(Path::new(&self.parent_folder));
-        if parent.is_err() {
-            println!("Could not remove dir {}, {:?}", self.parent_folder, parent);
-        }
-    }
-}
-
 #[tokio::test]
 async fn test_migrations() {
-    // Create the folders that will be used
-    let folders = TestFolders::new().unwrap();
+    // Create temp folders that auto-cleanup on drop
+    let temp_dir = TempDir::new().unwrap();
+    let initial_folder = temp_dir.path().join("initial_migrations");
+    let other_folder = temp_dir.path().join("other_migrations");
+    fs::create_dir(&initial_folder).unwrap();
+    fs::create_dir(&other_folder).unwrap();
 
     // Move migrations to different folders
-    let orig = fs::read_dir("./migrations");
+    let orig = fs::read_dir("./migrations/sqlite");
     assert!(orig.is_ok(), "{orig:?}");
 
     let origdir = orig.unwrap();
@@ -1692,20 +2394,17 @@ async fn test_migrations() {
         let filename = entry.file_name().into_string().unwrap();
         // Write the initial migration to a separate folder, so the table can be initialized without any migrations.
         if filename.starts_with("0001") {
-            let result = fs::copy(
-                entry.path(),
-                folders.initial_folder.clone() + "/" + &filename,
-            );
+            let result = fs::copy(entry.path(), initial_folder.join(&filename));
             assert!(result.is_ok(), "{result:?}");
         }
 
-        let result = fs::copy(entry.path(), folders.other_folder.clone() + "/" + &filename);
+        let result = fs::copy(entry.path(), other_folder.join(&filename));
         assert!(result.is_ok(), "{result:?}");
     }
 
     // Run initial migration
     let (_read_pool, write_pool) = create_sqlite_pool(&generate_temp_filename()).await.unwrap();
-    let result = sqlx::migrate::Migrator::new(Path::new(&folders.initial_folder))
+    let result = sqlx::migrate::Migrator::new(initial_folder.as_path())
         .await
         .unwrap()
         .run(&write_pool)
@@ -1755,11 +2454,11 @@ async fn test_migrations() {
         .build();
     let result = query.execute(&write_pool).await;
     assert!(result.is_ok(), "{result:?}");
-    let meta_result: QueryResult = result.unwrap().into();
-    assert_eq!(meta_result.rows_affected, 2);
+    let result = result.unwrap();
+    assert_eq!(result.rows_affected(), 2);
 
     // Run other migrations
-    let result = sqlx::migrate::Migrator::new(Path::new(&folders.other_folder))
+    let result = sqlx::migrate::Migrator::new(other_folder.as_path())
         .await
         .unwrap()
         .run(&write_pool)

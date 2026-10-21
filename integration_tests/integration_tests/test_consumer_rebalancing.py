@@ -10,10 +10,10 @@ import yaml
 
 from integration_tests.helpers import (
     TASKBROKER_BIN,
+    TASKBROKER_RESTART_PORT_DELAY_SEC,
     TESTS_OUTPUT_ROOT,
     TaskbrokerConfig,
     create_topic,
-    get_available_ports,
     send_generic_messages_to_topic,
 )
 
@@ -48,6 +48,13 @@ def manage_taskbroker(
                 assert return_code == 0
             except Exception:
                 process.kill()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+
+            if i < iterations - 1:
+                time.sleep(TASKBROKER_RESTART_PORT_DELAY_SEC)
 
 
 def test_tasks_written_once_during_rebalancing() -> None:
@@ -78,11 +85,9 @@ def test_tasks_written_once_during_rebalancing() -> None:
     max_pending_count = 15_000
     topic_name = "taskworker"
     kafka_deadletter_topic = "taskworker-dlq"
-    grpc_ports = get_available_ports(num_consumers)
     curr_time = int(time.time())
 
-    print(
-        f"""
+    print(f"""
 Running test with the following configuration:
         num of consumers: {num_consumers},
         num of messages: {num_messages},
@@ -91,10 +96,8 @@ Running test with the following configuration:
         min restart duration: {min_restart_duration} seconds,
         max restart duration: {max_restart_duration} seconds,
         topic name: {topic_name},
-        grpc ports: {grpc_ports},
         random seed value: 42
-    """
-    )
+    """)
     random.seed(42)
 
     # Ensure topic exists and has correct number of partitions
@@ -115,7 +118,7 @@ Running test with the following configuration:
             kafka_deadletter_topic=kafka_deadletter_topic,
             kafka_consumer_group=topic_name,
             kafka_auto_offset_reset="earliest",
-            grpc_port=grpc_ports[i],
+            grpc_port=0,  # Disable gRPC - not needed for this test
         )
 
     for filename, config in taskbroker_configs.items():

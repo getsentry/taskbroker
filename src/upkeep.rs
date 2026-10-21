@@ -1,44 +1,45 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use chrono::{DateTime, Timelike, Utc};
-use futures::{StreamExt, stream::FuturesUnordered};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use prost::Message;
 use prost_types::Timestamp;
-use rdkafka::error::KafkaError;
-use rdkafka::{
-    producer::{FutureProducer, FutureRecord},
-    util::Timeout,
-};
+use sentry_arroyo::backends::ProducerError;
 use sentry_protos::taskbroker::v1::TaskActivation;
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
 use tokio::{fs, join, select, time};
 use tonic_health::ServingStatus;
 use tonic_health::server::HealthReporter;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::{
-    SERVICE_NAME,
-    config::Config,
-    runtime_config::RuntimeConfigManager,
-    store::inflight_activation::{InflightActivationStatus, InflightActivationStore},
-};
+use crate::SERVICE_NAME;
+use crate::config::Config;
+use crate::kafka::producer::KafkaProducer;
+use crate::runtime_config::RuntimeConfigManager;
+use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
 
 /// The upkeep task that periodically performs upkeep
-/// on the inflight store
+/// on the activation store
 pub async fn upkeep(
     config: Arc<Config>,
-    store: Arc<dyn InflightActivationStore>,
+    store: Arc<dyn ActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     health_reporter: HealthReporter,
 ) -> Result<(), anyhow::Error> {
+    const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
+
     let kafka_config = config.kafka_producer_config();
-    let producer: Arc<FutureProducer> = Arc::new(
-        kafka_config
-            .create()
-            .expect("Could not create kafka producer in upkeep"),
+    let producer = Arc::new(
+        KafkaProducer::new(
+            kafka_config,
+            Duration::from_millis(config.kafka_send_timeout_ms),
+        )
+        .expect("Could not create kafka producer in upkeep"),
     );
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
@@ -46,6 +47,8 @@ pub async fn upkeep(
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
+    let mut last_backtrace_log = Instant::now();
+    let mut emitted_partitions: HashSet<TopicPartition> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
@@ -56,8 +59,17 @@ pub async fn upkeep(
                     startup_time,
                     runtime_config_manager.clone(),
                     &mut last_vacuum,
+                    &mut emitted_partitions,
                 ).await;
                 last_run = check_health(last_run, &config, health_reporter.clone()).await;
+
+                if config.log_async_backtrace
+                    && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
+                {
+                    let tree = async_backtrace::taskdump_tree(false);
+                    debug!(backtrace = %tree, "async backtrace dump");
+                    last_backtrace_log = Instant::now();
+                }
             }
             _ = guard.wait() => {
                 info!("Cancellation token received, shutting down upkeep");
@@ -72,6 +84,7 @@ pub async fn upkeep(
 #[derive(Debug)]
 pub struct UpkeepResults {
     retried: u64,
+    claim_expiration_reset: u64,
     processing_deadline_reset: u64,
     processing_attempts_exceeded: u64,
     delay_elapsed: u64,
@@ -79,6 +92,7 @@ pub struct UpkeepResults {
     completed: u64,
     failed: u64,
     pending: u32,
+    claimed: u32,
     processing: u32,
     delay: u32,
     deadlettered: u64,
@@ -90,12 +104,14 @@ pub struct UpkeepResults {
 impl UpkeepResults {
     fn empty(&self) -> bool {
         self.retried == 0
+            && self.claim_expiration_reset == 0
             && self.processing_deadline_reset == 0
             && self.processing_attempts_exceeded == 0
             && self.expired == 0
             && self.completed == 0
             && self.failed == 0
             && self.pending == 0
+            && self.claimed == 0
             && self.processing == 0
             && self.delay == 0
             && self.discarded == 0
@@ -110,16 +126,18 @@ impl UpkeepResults {
 )]
 pub async fn do_upkeep(
     config: Arc<Config>,
-    store: Arc<dyn InflightActivationStore>,
-    producer: Arc<FutureProducer>,
+    store: Arc<dyn ActivationStore>,
+    producer: Arc<KafkaProducer>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
     last_vacuum: &mut Instant,
+    emitted_partitions: &mut HashSet<TopicPartition>,
 ) -> UpkeepResults {
     let current_time = Utc::now();
     let upkeep_start = Instant::now();
     let mut result_context = UpkeepResults {
         retried: 0,
+        claim_expiration_reset: 0,
         processing_deadline_reset: 0,
         processing_attempts_exceeded: 0,
         delay_elapsed: 0,
@@ -127,6 +145,7 @@ pub async fn do_upkeep(
         completed: 0,
         failed: 0,
         pending: 0,
+        claimed: 0,
         processing: 0,
         delay: 0,
         deadlettered: 0,
@@ -138,26 +157,22 @@ pub async fn do_upkeep(
     // 1. Handle retry tasks
     let handle_retries_start = Instant::now();
     if let Ok(retries) = store.get_retry_activations().await {
+        let retry_target_topic = config.retry_topic().to_owned();
+
         // 2. Append retries to kafka
         let deliveries = retries
             .into_iter()
             .map(|inflight| {
                 let producer = producer.clone();
-                let config = config.clone();
+                let target_topic = retry_target_topic.clone();
 
                 async move {
                     let activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
-                    let serialized = create_retry_activation(&activation).encode_to_vec();
-                    let delivery = producer
-                        .send(
-                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_topic)
-                                .payload(&serialized),
-                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                        )
-                        .await;
+                    let serialized = create_retry_activation(activation).encode_to_vec();
+                    let delivery = producer.send(&target_topic, &serialized).await;
                     match delivery {
-                        Ok(_) => Ok(inflight.id),
-                        Err((err, _msg)) => Err(err),
+                        Ok(()) => Ok(inflight.id),
+                        Err(err) => Err(err),
                     }
                 }
             })
@@ -167,7 +182,7 @@ pub async fn do_upkeep(
             .collect::<Vec<_>>()
             .await
             .into_iter()
-            .filter_map(|result: Result<String, KafkaError>| match result {
+            .filter_map(|result: Result<String, ProducerError>| match result {
                 Ok(id) => Some(id),
                 Err(err) => {
                     error!("retry.publish.failure {}", err);
@@ -183,7 +198,7 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.handle_retries").record(handle_retries_start.elapsed());
 
-    // 4. Handle processing deadlines
+    // 4. Handle processing deadlines and claim expirations
     let seconds_since_startup = (current_time - startup_time).num_seconds() as u64;
     if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
         let handle_processing_deadline_start = Instant::now();
@@ -194,6 +209,19 @@ pub async fn do_upkeep(
             .record(handle_processing_deadline_start.elapsed());
     } else {
         metrics::counter!("upkeep.handle_processing_deadline.skipped").increment(1);
+    }
+
+    if seconds_since_startup > config.upkeep_deadline_reset_skip_after_startup_sec {
+        let handle_claim_expiration_start = Instant::now();
+
+        if let Ok(claim_expiration_reset) = store.handle_claim_expiration().await {
+            result_context.claim_expiration_reset = claim_expiration_reset;
+        }
+
+        metrics::histogram!("upkeep.handle_claim_expiration")
+            .record(handle_claim_expiration_start.elapsed());
+    } else {
+        metrics::counter!("upkeep.handle_claim_expiration.skipped").increment(1);
     }
 
     // 5. Handle processing attempts exceeded
@@ -235,14 +263,10 @@ pub async fn do_upkeep(
                     metrics::histogram!("upkeep.dlq.message_size")
                         .record(activation_data.len() as f64);
                     let delivery = producer
-                        .send(
-                            FutureRecord::<(), Vec<u8>>::to(&config.kafka_deadletter_topic)
-                                .payload(&activation_data),
-                            Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                        )
+                        .send(&config.kafka_deadletter_topic, &activation_data)
                         .await;
 
-                    if let Err((err, _msg)) = delivery {
+                    if let Err(err) = delivery {
                         error!(
                             "deadletter.publish.failure: {}, message: {:?}",
                             err, activation_data
@@ -270,13 +294,26 @@ pub async fn do_upkeep(
     }
     metrics::histogram!("upkeep.remove_completed").record(remove_completed_start.elapsed());
 
-    // 11. Remove killswitched tasks from store
+    // 11. Remove killswitched tasks from store. Guard on emptiness so the common
+    // "no killswitches active" case partitions and clones nothing.
     let runtime_config = runtime_config_manager.read().await;
-    let killswitched_tasks = runtime_config.drop_task_killswitch.clone();
-    if !killswitched_tasks.is_empty() {
+    if !runtime_config.drop_task_killswitch.is_empty() {
         let remove_killswitched_start = Instant::now();
-        if let Ok(count) = store.remove_killswitched(killswitched_tasks).await {
-            result_context.killswitched = count;
+        let (killswitched_tasks, killswitched_selectors) =
+            crate::killswitch::partition_rules(&runtime_config.drop_task_killswitch);
+        if !killswitched_tasks.is_empty()
+            && let Ok(count) = store.remove_killswitched(killswitched_tasks).await
+        {
+            result_context.killswitched += count;
+        }
+        // Selector rules require decoding each candidate activation's arguments, so they
+        // use a separate scan-and-delete path.
+        if !killswitched_selectors.is_empty()
+            && let Ok(count) = store
+                .remove_killswitched_selectors(killswitched_selectors)
+                .await
+        {
+            result_context.killswitched += count;
         }
         metrics::histogram!("upkeep.remove_killswitched")
             .record(remove_killswitched_start.elapsed());
@@ -284,27 +321,58 @@ pub async fn do_upkeep(
 
     // 12. Forward tasks from demoted namespaces to `runtime_config.demoted_topic`
     let demoted_namespaces = runtime_config.demoted_namespaces.clone();
+    let consumable = config.consumable_topics().expect("no consumable topic");
+    // The forward producer authenticates against the deadletter cluster, so
+    // default demoted forwarding there too (and consistently with the
+    // consumer-side batcher) when no demoted_topic_cluster is configured. For
+    // legacy configs where kafka_deadletter_cluster is unset the deadletter
+    // cluster address defaults to the consumed cluster's address, so this is
+    // unchanged there; it only differs when a distinct deadletter cluster is set.
     let forward_cluster = runtime_config
         .demoted_topic_cluster
         .clone()
-        .unwrap_or(config.kafka_cluster.clone());
+        .unwrap_or_else(|| config.kafka_producer_cluster().address.clone());
     let forward_topic = runtime_config
         .demoted_topic
         .clone()
         .unwrap_or(config.kafka_long_topic.clone());
-    let same_cluster = forward_cluster == config.kafka_cluster;
-    let same_topic = forward_topic == config.kafka_topic;
-    if !(demoted_namespaces.is_empty() || (same_cluster && same_topic)) {
+    // Forwarding to a topic+cluster this broker itself consumes would loop the
+    // tasks straight back in, so treat that as a no-op. For a single consumed
+    // topic this is exactly the old `same_topic && same_cluster` guard.
+    let forwards_to_consumed = consumable.iter().any(|(name, topic_config)| {
+        *name == forward_topic
+            && config
+                .cluster(&topic_config.cluster)
+                .map(|c| c.address == forward_cluster)
+                .unwrap_or(false)
+    });
+    if !(demoted_namespaces.is_empty() || forwards_to_consumed) {
         let forward_demoted_start = Instant::now();
+        // The forwarding producer reuses the deadletter cluster's credentials
+        // (see Config::kafka_producer_config) and only overrides
+        // bootstrap.servers. If we're forwarding to a different cluster that has
+        // its own auth, those credentials won't apply there and publishing will
+        // fail. We keep the legacy behavior (reuse + override) for compatibility
+        // but warn so the misconfiguration is visible.
+        let dlq_cluster = config.kafka_producer_cluster();
+        if forward_cluster != dlq_cluster.address && dlq_cluster.has_auth() {
+            warn!(
+                "forwarding demoted-namespace tasks to cluster '{}', but the producer reuses the \
+                 deadletter cluster '{}' credentials; publishing may fail if their auth differs",
+                forward_cluster, dlq_cluster.address
+            );
+        }
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
-        let forward_producer: Arc<FutureProducer> = Arc::new(
-            forward_producer_config
-                .create()
-                .expect("Could not create kafka producer in upkeep"),
+        let forward_producer = Arc::new(
+            KafkaProducer::new(
+                forward_producer_config,
+                Duration::from_millis(config.kafka_send_timeout_ms),
+            )
+            .expect("Could not create kafka producer in upkeep"),
         );
         if let Ok(tasks) = store
-            .get_pending_activations_from_namespaces(None, Some(&demoted_namespaces), None)
+            .claim_activations(None, Some(&demoted_namespaces), None, None, false)
             .await
         {
             // Produce tasks to Kafka with updated namespace
@@ -312,21 +380,14 @@ pub async fn do_upkeep(
                 .into_iter()
                 .map(|inflight| {
                     let forward_producer = forward_producer.clone();
-                    let config = config.clone();
                     let topic = forward_topic.clone();
                     async move {
                         metrics::counter!("upkeep.forward_task_demoted_namespace", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
 
-                        let delivery = forward_producer
-                            .send(
-                                FutureRecord::<(), Vec<u8>>::to(&topic)
-                                    .payload(&inflight.activation),
-                                Timeout::After(Duration::from_millis(config.kafka_send_timeout_ms)),
-                            )
-                            .await;
+                        let delivery = forward_producer.send(&topic, &inflight.activation).await;
                         match delivery {
-                            Ok(_) => Ok(inflight.id),
-                            Err((err, _msg)) => {
+                            Ok(()) => Ok(inflight.id),
+                            Err(err) => {
                                 metrics::counter!("upkeep.forward_task_demoted_namespace.publish_failure", "namespace" => inflight.namespace.clone(), "taskname" => inflight.taskname.clone()).increment(1);
                                 error!("forward_task_demoted_namespace.publish.failure: {}", err);
                                 Err(anyhow::anyhow!("failed to publish activation: {}", err))
@@ -370,23 +431,20 @@ pub async fn do_upkeep(
     }
 
     let now = Utc::now();
-    let (pending_count, processing_count, delay_count, max_lag, db_file_meta, wal_file_meta) = join!(
-        store.count_by_status(InflightActivationStatus::Pending),
-        store.count_by_status(InflightActivationStatus::Processing),
-        store.count_by_status(InflightActivationStatus::Delay),
+    let (depth_counts, max_lag, db_file_meta, wal_file_meta) = join!(
+        store.count_depths_per_partition(),
         store.pending_activation_max_lag(&now),
-        fs::metadata(config.db_path.clone()),
-        fs::metadata(config.db_path.clone() + "-wal")
+        fs::metadata(config.store.sqlite.path.clone()),
+        fs::metadata(config.store.sqlite.path.clone() + "-wal")
     );
 
-    if let Ok(pending_count) = pending_count {
-        result_context.pending = pending_count as u32;
-    }
-    if let Ok(processing_count) = processing_count {
-        result_context.processing = processing_count as u32;
-    }
-    if let Ok(delay_count) = delay_count {
-        result_context.delay = delay_count as u32;
+    if let Ok(ref depths) = depth_counts {
+        for counts in depths.values() {
+            result_context.pending += counts.pending as u32;
+            result_context.delay += counts.delay as u32;
+            result_context.claimed += counts.claimed as u32;
+            result_context.processing += counts.processing as u32;
+        }
     }
 
     if !result_context.empty() {
@@ -394,17 +452,20 @@ pub async fn do_upkeep(
             result_context.completed,
             result_context.deadlettered,
             result_context.discarded,
+            result_context.claim_expiration_reset,
             result_context.processing_deadline_reset,
             result_context.processing_attempts_exceeded,
             result_context.expired,
             result_context.retried,
             result_context.pending,
+            result_context.claimed,
             result_context.processing,
             result_context.delay,
             result_context.delay_elapsed,
             "upkeep.complete",
         );
     }
+
     metrics::histogram!("upkeep.duration").record(upkeep_start.elapsed());
 
     // Task statuses
@@ -424,7 +485,9 @@ pub async fn do_upkeep(
         .increment(result_context.discarded);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_attempts_exceeded_as_failure")
         .increment(result_context.processing_attempts_exceeded);
-    metrics::counter!("upkeep.cleanup_action", "kind" => "mark_processing_deadline_exceeded_as_failure")
+    metrics::counter!("upkeep.cleanup_action", "kind" => "claim_expiration_exceeded")
+        .increment(result_context.claim_expiration_reset);
+    metrics::counter!("upkeep.cleanup_action", "kind" => "processing_deadline_exceeded")
         .increment(result_context.processing_deadline_reset);
     metrics::counter!("upkeep.cleanup_action", "kind" => "mark_delay_elapsed_as_pending")
         .increment(result_context.delay_elapsed);
@@ -432,10 +495,39 @@ pub async fn do_upkeep(
     // Forwarded tasks
     metrics::counter!("upkeep.forwarded_tasks").increment(result_context.forwarded);
 
-    // State of inflight tasks
-    metrics::gauge!("upkeep.current_pending_tasks").set(result_context.pending);
-    metrics::gauge!("upkeep.current_processing_tasks").set(result_context.processing);
-    metrics::gauge!("upkeep.current_delayed_tasks").set(result_context.delay);
+    // State of activations, tagged per partition. Dashboards aggregating
+    // without a partition filter still see the global total via tag sum.
+    // Zero out gauges for partitions we emitted last cycle but no longer own.
+    if let Ok(depths) = depth_counts {
+        let current: HashSet<TopicPartition> = depths.keys().cloned().collect();
+
+        for tp in emitted_partitions.difference(&current) {
+            let topic = tp.topic.clone();
+            let partition = tp.partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+                .set(0.0);
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition).set(0.0);
+        }
+
+        for (tp, counts) in &depths {
+            let topic = tp.topic.clone();
+            let partition = tp.partition.to_string();
+            metrics::gauge!("upkeep.current_pending_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+                .set(counts.pending as f64);
+            metrics::gauge!("upkeep.current_claimed_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+                .set(counts.claimed as f64);
+            metrics::gauge!("upkeep.current_processing_tasks", "topic" => topic.clone(), "partition" => partition.clone())
+                .set(counts.processing as f64);
+            metrics::gauge!("upkeep.current_delayed_tasks", "topic" => topic, "partition" => partition)
+                .set(counts.delay as f64);
+        }
+
+        *emitted_partitions = current;
+    }
     metrics::gauge!("upkeep.pending_activation.max_lag.sec").set(max_lag);
 
     if let Ok(db_file_meta) = db_file_meta {
@@ -448,12 +540,10 @@ pub async fn do_upkeep(
     result_context
 }
 
-/// Create a new activation that is a 'retry' of the passed inflight_activation
+/// Create a new activation that is a 'retry' of the passed activation
 /// The retry_state.attempts is advanced as part of the retry state machine.
 #[instrument(skip_all)]
-fn create_retry_activation(activation: &TaskActivation) -> TaskActivation {
-    let mut new_activation = activation.clone();
-
+fn create_retry_activation(mut new_activation: TaskActivation) -> TaskActivation {
     let now = Utc::now();
     new_activation.id = Uuid::new_v4().into();
     new_activation.received_at = Some(Timestamp {
@@ -507,28 +597,30 @@ pub async fn check_health(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::io::Write;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use std::time::Instant;
+
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use prost::Message;
     use prost_types::Timestamp;
     use rstest::rstest;
     use sentry_protos::taskbroker::v1::{OnAttemptsExceeded, RetryState, TaskActivation};
-    use std::sync::Arc;
-    use std::time::Duration;
-    use std::time::Instant;
-    use tokio::fs;
+    use tempfile::NamedTempFile;
     use tokio::time::sleep;
 
-    use crate::{
-        config::Config,
-        runtime_config::RuntimeConfigManager,
-        store::inflight_activation::InflightActivationStatus,
-        test_utils::{
-            StatusCount, assert_counts, consume_topic, create_config, create_integration_config,
-            create_integration_config_with_topic, create_producer, create_test_store,
-            make_activations, replace_retry_state, reset_topic,
-        },
-        upkeep::{create_retry_activation, do_upkeep},
+    use crate::config::Config;
+    use crate::config::deprecated::DeprecatedConfig;
+    use crate::runtime_config::RuntimeConfigManager;
+    use crate::store::activation::ActivationStatus;
+    use crate::test_utils::{
+        StatusCount, assert_counts, consume_topic, create_config,
+        create_integration_config_from_base, create_producer, create_test_store, make_activations,
+        replace_retry_state, reset_topic,
     };
+    use crate::upkeep::{create_retry_activation, do_upkeep};
 
     #[tokio::test]
     async fn test_retry_activation_sets_delay_with_delay_on_retry() {
@@ -543,7 +635,7 @@ mod tests {
             delay_on_retry: Some(60),
         });
 
-        let retry = create_retry_activation(&activation);
+        let retry = create_retry_activation(activation);
         assert_eq!(retry.delay, Some(60));
         assert_eq!(
             retry.retry_state,
@@ -570,7 +662,7 @@ mod tests {
             delay_on_retry: Some(60),
         });
 
-        let retry = create_retry_activation(&activation);
+        let retry = create_retry_activation(activation);
         assert_eq!(retry.delay, Some(60));
         assert_eq!(
             retry.retry_state,
@@ -597,7 +689,7 @@ mod tests {
             delay_on_retry: None,
         });
 
-        let retry = create_retry_activation(&activation);
+        let retry = create_retry_activation(activation);
         assert_eq!(retry.delay, None);
         assert_eq!(
             retry.retry_state,
@@ -616,9 +708,15 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
-        let config = create_integration_config_with_topic(format!("taskbroker-test-{}", adapter));
+        let config = Arc::new(create_integration_config_from_base(Config {
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some(format!("taskbroker-test-retry-{adapter}")),
+                ..DeprecatedConfig::default()
+            },
+            kafka_deadletter_topic: format!("taskbroker-test-retry-{adapter}-dlq"),
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
-        reset_topic(config.clone()).await;
 
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
@@ -647,14 +745,15 @@ mod tests {
             activation.received_at.unwrap().nanos as u32,
         )
         .expect("");
-        activation.parameters = r#"{"a":"b"}"#.into();
+        // msgpack-encoded `{"a": "b"}`
+        activation.parameters_bytes = vec![0x81, 0xa1, b'a', 0xa1, b'b'];
         activation.delay = Some(30);
-        records[0].status = InflightActivationStatus::Retry;
+        records[0].status = ActivationStatus::Retry;
         records[0].delay_until = Some(Utc::now() + Duration::from_secs(30));
         records[0].activation = activation.encode_to_vec();
 
         records[1].added_at += Duration::from_secs(1);
-        assert!(store.store(records.clone()).await.is_ok());
+        assert!(store.store(&records).await.is_ok());
 
         let result_context = do_upkeep(
             config.clone(),
@@ -663,6 +762,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -670,7 +770,8 @@ mod tests {
         assert_eq!(store.count().await.unwrap(), 1);
         assert_eq!(result_context.retried, 1);
 
-        let messages = consume_topic(config.clone(), config.kafka_topic.as_ref(), 1).await;
+        let (main_topic, _) = config.consumable_topics().unwrap()[0];
+        let messages = consume_topic(config.clone(), main_topic, 1).await;
         assert_eq!(messages.len(), 1);
         let activation = &messages[0];
 
@@ -684,7 +785,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.taskname, activation_to_check.taskname);
         assert_eq!(activation.namespace, activation_to_check.namespace);
-        assert_eq!(activation.parameters, activation_to_check.parameters);
+        assert_eq!(
+            activation.parameters_bytes,
+            activation_to_check.parameters_bytes
+        );
         // received_at should be set be later than the original activation
         assert!(
             activation.received_at.unwrap().seconds
@@ -709,9 +813,9 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task with a future processing deadline
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline = Some(Utc::now() + TimeDelta::minutes(5));
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let _ = do_upkeep(
             config,
@@ -720,13 +824,14 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
         // Should retain the processing record
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Processing)
+                .count_by_status(ActivationStatus::Processing)
                 .await
                 .unwrap(),
             1
@@ -745,15 +850,15 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         // Should start off with one in processing
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Processing)
+                .count_by_status(ActivationStatus::Processing)
                 .await
                 .unwrap(),
             1
@@ -771,6 +876,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -801,23 +907,23 @@ mod tests {
 
         let mut batch = make_activations(2);
         // Make a task past with a processing deadline in the past
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].processing_attempts = 0;
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         // Should start off with one in processing
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Processing)
+                .count_by_status(ActivationStatus::Processing)
                 .await
                 .unwrap(),
             1
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
@@ -830,6 +936,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -870,11 +977,11 @@ mod tests {
                 delay_on_retry: None,
             }),
         );
-        batch[1].status = InflightActivationStatus::Processing;
+        batch[1].status = ActivationStatus::Processing;
         batch[1].processing_deadline =
             Some(Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap());
         batch[1].at_most_once = true;
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -883,6 +990,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -913,15 +1021,15 @@ mod tests {
 
         let mut batch = make_activations(3);
         // Because 1 is complete and has a higher offset than 0, index 2 can be discarded
-        batch[0].processing_attempts = config.max_processing_attempts as i32;
+        batch[0].processing_attempts = config.store.max_processing_attempts as i32;
 
-        batch[1].status = InflightActivationStatus::Complete;
+        batch[1].status = ActivationStatus::Complete;
         batch[1].added_at += Duration::from_secs(1);
 
-        batch[2].processing_attempts = config.max_processing_attempts as i32;
+        batch[2].processing_attempts = config.store.max_processing_attempts as i32;
         batch[2].added_at += Duration::from_secs(2);
 
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
         let result_context = do_upkeep(
             config,
             store.clone(),
@@ -929,6 +1037,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -937,7 +1046,7 @@ mod tests {
         assert_eq!(result_context.completed, 3); // all three are removed as completed
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             0,
@@ -945,7 +1054,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Complete)
+                .count_by_status(ActivationStatus::Complete)
                 .await
                 .unwrap(),
             0,
@@ -958,7 +1067,14 @@ mod tests {
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_remove_at_remove_failed_publish_to_kafka(#[case] adapter: &str) {
-        let config = create_integration_config();
+        let config = Arc::new(create_integration_config_from_base(Config {
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some(format!("taskbroker-test-dlq-{adapter}")),
+                ..DeprecatedConfig::default()
+            },
+            kafka_deadletter_topic: format!("taskbroker-test-dlq-{adapter}-dlq"),
+            ..Default::default()
+        }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         reset_topic(config.clone()).await;
 
@@ -977,9 +1093,9 @@ mod tests {
                 delay_on_retry: None,
             }),
         );
-        records[0].status = InflightActivationStatus::Failure;
+        records[0].status = ActivationStatus::Failure;
         records[1].added_at += Duration::from_secs(1);
-        assert!(store.store(records.clone()).await.is_ok());
+        assert!(store.store(&records).await.is_ok());
 
         let result_context = do_upkeep(
             config.clone(),
@@ -988,6 +1104,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1004,7 +1121,10 @@ mod tests {
         let activation_to_check = TaskActivation::decode(&records[0].activation as &[u8]).unwrap();
         assert_eq!(activation.id, activation_to_check.id);
         // DLQ should retain parameters of original task
-        assert_eq!(activation.parameters, activation_to_check.parameters);
+        assert_eq!(
+            activation.parameters_bytes,
+            activation_to_check.parameters_bytes
+        );
     }
 
     #[tokio::test]
@@ -1020,9 +1140,9 @@ mod tests {
         let mut last_vacuum = Instant::now();
 
         let mut batch = make_activations(2);
-        batch[0].status = InflightActivationStatus::Failure;
+        batch[0].status = ActivationStatus::Failure;
         batch[1].added_at += Duration::from_secs(1);
-        assert!(store.store(batch).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -1031,6 +1151,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1043,7 +1164,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1,
@@ -1066,14 +1187,14 @@ mod tests {
         let mut batch = make_activations(4);
 
         batch[0].expires_at = Some(Utc::now() - Duration::from_secs(100));
-        batch[1].status = InflightActivationStatus::Complete;
+        batch[1].status = ActivationStatus::Complete;
         batch[2].expires_at = Some(Utc::now() - Duration::from_secs(100));
 
         // Ensure the fourth task is in the future
         batch[3].expires_at = Some(Utc::now() + Duration::from_secs(100));
         batch[3].added_at += Duration::from_secs(1);
 
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
         let result_context = do_upkeep(
             config,
             store.clone(),
@@ -1081,6 +1202,7 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
@@ -1088,7 +1210,7 @@ mod tests {
         assert_eq!(result_context.completed, 1); // 1 complete
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1,
@@ -1096,7 +1218,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Complete)
+                .count_by_status(ActivationStatus::Complete)
                 .await
                 .unwrap(),
             0,
@@ -1135,23 +1257,23 @@ mod tests {
 
         let mut batch = make_activations(2);
 
-        batch[0].status = InflightActivationStatus::Delay;
+        batch[0].status = ActivationStatus::Delay;
         batch[0].delay_until = Some(Utc::now() - Duration::from_secs(1));
 
-        batch[1].status = InflightActivationStatus::Delay;
+        batch[1].status = ActivationStatus::Delay;
         batch[1].delay_until = Some(Utc::now() + Duration::from_secs(1));
 
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Delay)
+                .count_by_status(ActivationStatus::Delay)
                 .await
                 .unwrap(),
             2
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             0
@@ -1163,31 +1285,29 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
         );
-        assert_eq!(
-            store
-                .get_pending_activation(None, None)
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            "id_0",
-        );
+        let pending = store
+            .claim_activations(None, None, Some(1), None, true)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "id_0");
         assert!(
             store
-                .get_pending_activation(None, None)
+                .claim_activations(None, None, Some(1), None, true)
                 .await
                 .unwrap()
-                .is_none()
+                .is_empty()
         );
 
         sleep(Duration::from_secs(2)).await;
@@ -1198,25 +1318,23 @@ mod tests {
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
         assert_eq!(result_context.delay_elapsed, 1);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             1
         );
-        assert_eq!(
-            store
-                .get_pending_activation(None, None)
-                .await
-                .unwrap()
-                .unwrap()
-                .id,
-            "id_1",
-        );
+        let pending = store
+            .claim_activations(None, None, Some(1), None, true)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, "id_1");
     }
 
     #[tokio::test]
@@ -1227,15 +1345,17 @@ mod tests {
         // Create runtime config with demoted namespaces
         let config = create_config();
         let test_yaml = r#"
-drop_task_killswitch:
-  -
+drop_task_killswitch: []
 demoted_namespaces:
   - bad_namespace1
   - bad_namespace2"#;
 
-        let test_path = "test_forward_demoted_namespaces.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
-        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
         let producer = create_producer(config.clone());
         let store = create_test_store(adapter).await;
         let start_time = Utc::now();
@@ -1245,7 +1365,7 @@ demoted_namespaces:
 
         batch[1].namespace = "bad_namespace2".to_string();
         batch[4].namespace = "bad_namespace1".to_string();
-        assert!(store.store(batch).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -1254,13 +1374,14 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
         assert_eq!(result_context.forwarded, 2);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             4,
@@ -1268,13 +1389,12 @@ demoted_namespaces:
         );
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Complete)
+                .count_by_status(ActivationStatus::Complete)
                 .await
                 .unwrap(),
             2,
             "two tasks should be marked as complete"
         );
-        let _ = fs::remove_file(test_path).await;
     }
 
     #[tokio::test]
@@ -1289,10 +1409,13 @@ drop_task_killswitch:
 demoted_namespaces:
   -"#;
 
-        let test_path = "test_drop_task_due_to_killswitch.yaml";
-        fs::write(test_path, test_yaml).await.unwrap();
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
 
-        let runtime_config = Arc::new(RuntimeConfigManager::new(Some(test_path.to_string())).await);
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
         let producer = create_producer(config.clone());
         let store = create_test_store(adapter).await;
         let start_time = Utc::now();
@@ -1304,7 +1427,7 @@ demoted_namespaces:
         batch[2].taskname = "task_to_be_killswitched".to_string();
         batch[4].taskname = "task_to_be_killswitched".to_string();
 
-        assert!(store.store(batch).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let result_context = do_upkeep(
             config,
@@ -1313,19 +1436,89 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 
         assert_eq!(result_context.killswitched, 3);
         assert_eq!(
             store
-                .count_by_status(InflightActivationStatus::Pending)
+                .count_by_status(ActivationStatus::Pending)
                 .await
                 .unwrap(),
             3
         );
+    }
 
-        let _ = fs::remove_file(test_path).await;
+    #[tokio::test]
+    #[rstest]
+    #[case::sqlite("sqlite")]
+    #[case::postgres("postgres")]
+    async fn test_remove_killswitched_selectors(#[case] adapter: &str) {
+        use crate::store::activation::ActivationBuilder;
+        use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
+
+        let config = create_config();
+        let test_yaml = r#"
+drop_task_killswitch:
+  - name: sentry.tasks.unmerge
+    select_kwarg: {project_id: 123}
+demoted_namespaces: []"#;
+
+        let mut config_file = NamedTempFile::new().unwrap();
+        writeln!(config_file, "{}", test_yaml).unwrap();
+        config_file.flush().unwrap();
+
+        let runtime_config = Arc::new(
+            RuntimeConfigManager::new(Some(config_file.path().to_str().unwrap().to_string())).await,
+        );
+        let producer = create_producer(config.clone());
+        let store = create_test_store(adapter).await;
+        let start_time = Utc::now();
+        let mut last_vacuum = Instant::now();
+
+        let msgpack = |yaml: &str| -> Vec<u8> {
+            let value: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            rmp_serde::to_vec_named(&value).unwrap()
+        };
+        let namespace = generate_unique_namespace();
+        let make = |id: &str, params: Vec<u8>| {
+            ActivationBuilder::new()
+                .id(id)
+                .taskname("sentry.tasks.unmerge")
+                .namespace(&namespace)
+                .added_at(Utc::now())
+                .received_at(Utc::now())
+                .processing_deadline_duration(10)
+                .build(TaskActivationBuilder::new().parameters_bytes(params))
+        };
+
+        let batch = vec![
+            make("0", msgpack("{args: [], kwargs: {project_id: 123}}")), // dropped
+            make("1", msgpack("{args: [], kwargs: {project_id: 456}}")), // kept
+            make("2", msgpack("{args: [], kwargs: {project_id: 123}}")), // dropped
+        ];
+        assert!(store.store(&batch).await.is_ok());
+
+        let result_context = do_upkeep(
+            config,
+            store.clone(),
+            producer,
+            start_time,
+            runtime_config.clone(),
+            &mut last_vacuum,
+            &mut HashSet::new(),
+        )
+        .await;
+
+        assert_eq!(result_context.killswitched, 2);
+        assert_eq!(
+            store
+                .count_by_status(ActivationStatus::Pending)
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -1333,11 +1526,14 @@ demoted_namespaces:
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
     async fn test_full_vacuum_on_upkeep(#[case] adapter: &str) {
-        let raw_config = Config {
+        let config = Arc::new(create_integration_config_from_base(Config {
+            deprecated: DeprecatedConfig {
+                kafka_topic: Some(format!("taskbroker-test-full-vacuum-{adapter}")),
+                ..DeprecatedConfig::default()
+            },
             full_vacuum_on_start: true,
             ..Default::default()
-        };
-        let config = Arc::new(raw_config);
+        }));
 
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
         let store = create_test_store(adapter).await;
@@ -1346,7 +1542,7 @@ demoted_namespaces:
         let mut last_vacuum = Instant::now() - Duration::from_secs(60);
 
         let batch = make_activations(2);
-        assert!(store.store(batch.clone()).await.is_ok());
+        assert!(store.store(&batch).await.is_ok());
 
         let _ = do_upkeep(
             config,
@@ -1355,6 +1551,7 @@ demoted_namespaces:
             start_time,
             runtime_config.clone(),
             &mut last_vacuum,
+            &mut HashSet::new(),
         )
         .await;
 

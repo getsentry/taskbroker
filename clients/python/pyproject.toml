@@ -1,19 +1,20 @@
 [project]
 name = "taskbroker-client"
-version = "0.1.7"
+version = "0.20.29"
 description = "Taskbroker python client and worker runtime"
 readme = "README.md"
 dependencies = [
-    "sentry-arroyo>=2.33.1",
-    "sentry-sdk[http2]>=2.43.0",
-    "sentry-protos>=0.4.11",
+    "sentry-arroyo>=2.41.1",
+    "sentry-sdk[http2]>=2.66.1",
+    "sentry-protos>=0.26.1",
     "confluent_kafka>=2.3.0",
     "cronsim>=2.6",
-    "grpcio>=1.67.0",
-    "orjson>=3.10.10",
+    "grpcio>=1.67.1",
+    "grpcio-health-checking>=1.67.1",
+    "msgpack>=1.2.1",
+    "prometheus_client>=0.22",
     "protobuf>=5.28.3",
     "redis>=3.4.1",
-    "redis-py-cluster>=2.1.0",
     "zstandard>=0.18.0",
 ]
 
@@ -21,7 +22,7 @@ dependencies = [
 dev = [
     "devservices>=1.2.1",
     "sentry-devenv>=1.22.2",
-    "black==24.10.0",
+    "black==26.3.1",
     "pre-commit>=4.2.0",
     "pytest>=8.3.3",
     "pytest-cov>=4.0.0",
@@ -30,11 +31,20 @@ dev = [
     "mypy>=1.17.1",
     "time-machine>=2.16.0",
     "types-protobuf>=5.27.0.20240626,<6.0.0",
+    "datadog>=0.49",
 ]
 [project.optional-dependencies]
+# redis<4 does not bundle cluster support; pull in redis-py-cluster (EOL) for it.
+# Not needed on redis>=4.1, which provides redis.RedisCluster natively.
+cluster = [
+    "redis-py-cluster>=2.1.0",
+]
 examples = [
     "click>=8.3",
     "setuptools>=80.0",
+]
+datadog = [
+    "datadog>=0.49",
 ]
 
 [build-system]
@@ -63,3 +73,4 @@ target-version = ['py311']
 profile = "black"
 line_length = 100
 lines_between_sections = 1
+src_paths = ["src", "../../integration_tests"]

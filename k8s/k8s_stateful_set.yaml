@@ -37,8 +37,20 @@ spec:
       - name: taskbroker
         image: us-central1-docker.pkg.dev/sentryio/taskbroker/image:8ff9bdee7be16ecf73bc9a20a7db6f2d9dda2e95
         env:
-          - name: TASKBROKER_KAFKA_CLUSTER
+          - name: TASKBROKER_KAFKA_CLUSTERS__DEFAULT__ADDRESS
             value: "kafka-001:9092"
+          - name: TASKBROKER_KAFKA_TOPICS__TASKWORKER__CLUSTER
+            value: "default"
+          - name: TASKBROKER_KAFKA_TOPICS__TASKWORKER__CONSUMER_GROUP
+            value: "taskworker"
+          - name: TASKBROKER_KAFKA_DEADLETTER_TOPIC
+            value: "taskworker_dlq"
+          - name: TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__CLUSTER
+            value: "default"
+          - name: TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__CONSUMER_GROUP
+            value: "taskworker"
+          - name: TASKBROKER_KAFKA_TOPICS__TASKWORKER_DLQ__PRODUCE_ONLY
+            value: "true"
         ports:
         - containerPort: 50051
           name: grpc

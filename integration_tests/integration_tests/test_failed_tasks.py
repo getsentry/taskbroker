@@ -254,16 +254,14 @@ def test_failed_tasks() -> None:
     kafka_deadletter_topic = "taskworker-dlq"
     curr_time = int(time.time())
 
-    print(
-        f"""
+    print(f"""
 Running test with the following configuration:
         num of messages: {num_messages},
         num of partitions: {num_partitions},
         num of workers: {num_workers},
         max pending count: {max_pending_count},
         topic name: {topic_name}
-    """
-    )
+    """)
 
     create_topic(topic_name, num_partitions)
 

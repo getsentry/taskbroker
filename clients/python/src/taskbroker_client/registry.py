@@ -4,20 +4,24 @@ import datetime
 import logging
 from collections.abc import Callable
 from concurrent import futures
-from typing import Any
+from typing import Any, cast
 
-import sentry_sdk
 from arroyo.backends.kafka import KafkaPayload
 from arroyo.types import BrokerValue, Topic
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 from sentry_sdk.consts import OP, SPANDATA
 
-from taskbroker_client.constants import DEFAULT_PROCESSING_DEADLINE, CompressionType
+from taskbroker_client.constants import (
+    DEFAULT_PROCESSING_DEADLINE,
+    INTERNAL_NAMESPACE,
+    CompressionType,
+)
 from taskbroker_client.metrics import MetricsBackend
-from taskbroker_client.retry import Retry
+from taskbroker_client.retry import LastAction, Retry
 from taskbroker_client.router import TaskRouter
+from taskbroker_client.sdk import start_span
 from taskbroker_client.task import ExternalTask, P, R, Task
-from taskbroker_client.types import ProducerFactory, ProducerProtocol
+from taskbroker_client.types import ContextHook, ProducerFactory, ProducerProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,8 @@ class TaskNamespace:
         expires: int | datetime.timedelta | None = None,
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
+        context_hooks: list[ContextHook] | None = None,
+        is_raw_mode: bool = False,
     ):
         self.name = name
         self.application = application
@@ -49,7 +55,9 @@ class TaskNamespace:
         self.default_retry = retry
         self.default_expires = expires  # seconds
         self.default_processing_deadline_duration = processing_deadline_duration  # seconds
+        self.is_raw_mode = is_raw_mode
         self.app_feature = app_feature or name
+        self.context_hooks: list[ContextHook] = context_hooks or []
         self._registered_tasks: dict[str, Task[Any, Any]] = {}
         self._producers: dict[str, ProducerProtocol] = {}
         self._producer_factory = producer_factory
@@ -76,6 +84,66 @@ class TaskNamespace:
         """The topic that a namespace is routed to."""
         return self.router.route_namespace(self.name)
 
+    def _validate_raw_mode(
+        self,
+        *,
+        name: str,
+        retry: Retry | None,
+        expires: int | datetime.timedelta | None,
+        processing_deadline_duration: int | datetime.timedelta | None,
+        at_most_once: bool,
+        compression_type: CompressionType,
+    ) -> None:
+        """
+        Reject task options that taskbroker ignores in raw mode.
+
+        Nothing produces a raw-mode task: taskbroker consumes the topic and builds the
+        activation itself. Options that a producer would normally embed in the
+        activation therefore never reach the broker. Some of them it takes from the
+        topic's `raw:` config instead, and the rest it hardcodes. Either way the
+        decorator value is inert, so reject it here instead of dropping it silently at
+        runtime.
+        """
+        if self._registered_tasks:
+            registered = ", ".join(sorted(self._registered_tasks))
+            raise ValueError(
+                f"Raw-mode namespace {self.name!r} already has a registered task "
+                f"({registered}). taskbroker only spawns the single taskname configured "
+                f"for the raw topic, so {name!r} would never run. Give it its own namespace."
+            )
+
+        from_topic_config = []
+        if expires is not None or self.default_expires is not None:
+            from_topic_config.append("expires")
+        if (
+            processing_deadline_duration is not None
+            or self.default_processing_deadline_duration != DEFAULT_PROCESSING_DEADLINE
+        ):
+            from_topic_config.append("processing_deadline_duration")
+        if compression_type != CompressionType.PLAINTEXT:
+            from_topic_config.append("compression_type")
+        if from_topic_config:
+            raise ValueError(
+                f"Task {name!r} in raw-mode namespace {self.name!r} sets "
+                f"{', '.join(from_topic_config)} (on the task or as a namespace default). "
+                "In raw mode taskbroker takes these from the topic's `raw:` block in its "
+                "own config, not from the decorator, so the value here has no effect and "
+                "will silently drift from what is deployed."
+            )
+
+        if at_most_once:
+            raise ValueError(
+                f"Task {name!r} in raw-mode namespace {self.name!r} sets at_most_once. "
+                "taskbroker hardcodes at_most_once=false for raw activations, so the task "
+                "would still be retried past its processing deadline."
+            )
+        if retry is not None and retry._times_exceeded == LastAction.Deadletter:
+            raise ValueError(
+                f"Task {name!r} in raw-mode namespace {self.name!r} sets "
+                "retry times_exceeded=LastAction.Deadletter. taskbroker hardcodes Discard "
+                "for raw activations, so exhausted tasks would be dropped, not deadlettered."
+            )
+
     def register(
         self,
         *,
@@ -86,6 +154,9 @@ class TaskNamespace:
         at_most_once: bool = False,
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
+        report_timeout_errors: bool = True,
+        silenced_exceptions: tuple[type[BaseException], ...] | None = None,
+        pass_headers: bool = False,
     ) -> Callable[[Callable[P, R]], Task[P, R]]:
         """
         Register a task.
@@ -113,12 +184,28 @@ class TaskNamespace:
             before returning.
         compression_type: CompressionType
             The compression type to use to compress the task parameters.
+        report_timeout_errors: bool
+            Enable reporting of ProcessingDeadlineExceededError to Sentry.
+        silenced_exceptions: tuple[type[BaseException], ...] | None
+            A tuple of exception types that will not be reported by Sentry.
+        pass_headers: bool
+            If True, the task function will receive task activation headers
+            as a keyword argument named `headers` (dict[str, str]).
         """
 
         def wrapped(func: Callable[P, R]) -> Task[P, R]:
             task_retry = retry
             if not at_most_once:
                 task_retry = retry or self.default_retry
+            if self.is_raw_mode:
+                self._validate_raw_mode(
+                    name=name,
+                    retry=task_retry,
+                    expires=expires,
+                    processing_deadline_duration=processing_deadline_duration,
+                    at_most_once=at_most_once,
+                    compression_type=compression_type,
+                )
             task = Task(
                 name=name,
                 func=func,
@@ -131,6 +218,9 @@ class TaskNamespace:
                 at_most_once=at_most_once,
                 wait_for_delivery=wait_for_delivery,
                 compression_type=compression_type,
+                report_timeout_errors=report_timeout_errors,
+                silenced_exceptions=silenced_exceptions,
+                pass_headers=pass_headers,
             )
             # TODO(taskworker) tasks should be registered into the registry
             # so that we can ensure task names are globally unique
@@ -148,18 +238,21 @@ class TaskNamespace:
         else:
             self.metrics.incr("taskworker.registry.send_task.success", tags=tags)
 
-    def send_task(self, activation: TaskActivation, wait_for_delivery: bool = False) -> None:
+    def send_task(
+        self, activation: TaskActivation, wait_for_delivery: bool = False
+    ) -> ProducerFuture:
         topic = self.topic
 
-        with sentry_sdk.start_span(
-            op=OP.QUEUE_PUBLISH,
+        with start_span(
             name=activation.taskname,
+            op=OP.QUEUE_PUBLISH,
             origin="taskworker",
-        ) as span:
-            span.set_data(SPANDATA.MESSAGING_DESTINATION_NAME, activation.namespace)
-            span.set_data(SPANDATA.MESSAGING_MESSAGE_ID, activation.id)
-            span.set_data(SPANDATA.MESSAGING_SYSTEM, "taskworker")
-
+            attributes={
+                SPANDATA.MESSAGING_DESTINATION_NAME: activation.namespace,
+                SPANDATA.MESSAGING_MESSAGE_ID: activation.id,
+                SPANDATA.MESSAGING_SYSTEM: "taskworker",
+            },
+        ):
             produce_future = self._producer(topic).produce(
                 Topic(name=topic),
                 KafkaPayload(key=None, value=activation.SerializeToString(), headers=[]),
@@ -175,7 +268,7 @@ class TaskNamespace:
         )
         # We know this type is futures.Future, but cannot assert so,
         # because it is also mock.Mock in tests.
-        produce_future.add_done_callback(  # type:ignore[union-attr]
+        produce_future.add_done_callback(  # type: ignore[union-attr]
             lambda future: self._handle_produce_future(
                 future=future,
                 tags={
@@ -190,6 +283,8 @@ class TaskNamespace:
                 produce_future.result(timeout=10)
             except Exception:
                 logger.exception("Failed to wait for delivery")
+
+        return cast(ProducerFuture, produce_future)
 
     def _producer(self, topic: str) -> ProducerProtocol:
         if topic not in self._producers:
@@ -222,6 +317,9 @@ class ExternalNamespace(TaskNamespace):
         at_most_once: bool = False,
         wait_for_delivery: bool = False,
         compression_type: CompressionType = CompressionType.PLAINTEXT,
+        report_timeout_errors: bool = True,
+        silenced_exceptions: tuple[type[BaseException], ...] | None = None,
+        pass_headers: bool = False,
     ) -> Callable[[Callable[P, R]], ExternalTask[P, R]]:
         """
         Register an external task stub.
@@ -249,6 +347,10 @@ class ExternalNamespace(TaskNamespace):
             before returning.
         compression_type: CompressionType
             The compression type to use to compress the task parameters.
+        report_timeout_errors: bool
+            Enable reporting of ProcessingDeadlineExceededError to Sentry.
+        silenced_exceptions: tuple[type[BaseException], ...] | None
+            A tuple of exception types that will not be reported by Sentry.
         """
 
         def wrapped(func: Callable[P, R]) -> ExternalTask[P, R]:
@@ -267,6 +369,9 @@ class ExternalNamespace(TaskNamespace):
                 at_most_once=at_most_once,
                 wait_for_delivery=wait_for_delivery,
                 compression_type=compression_type,
+                report_timeout_errors=report_timeout_errors,
+                silenced_exceptions=silenced_exceptions,
+                pass_headers=pass_headers,
             )
             self._registered_tasks[name] = task
             return task
@@ -289,6 +394,7 @@ class TaskRegistry:
         producer_factory: ProducerFactory,
         router: TaskRouter,
         metrics: MetricsBackend,
+        context_hooks: list[ContextHook] | None = None,
     ) -> None:
         self._application = application
         self._namespaces: dict[str, TaskNamespace] = {}
@@ -296,6 +402,7 @@ class TaskRegistry:
         self._producer_factory = producer_factory
         self._router = router
         self._metrics = metrics
+        self._context_hooks: list[ContextHook] = context_hooks or []
 
     def contains(self, name: str) -> bool:
         return name in self._namespaces
@@ -318,6 +425,8 @@ class TaskRegistry:
         expires: int | datetime.timedelta | None = None,
         processing_deadline_duration: int = DEFAULT_PROCESSING_DEADLINE,
         app_feature: str | None = None,
+        internal: bool = False,
+        is_raw_mode: bool = False,
     ) -> TaskNamespace:
         """
         Create a task namespace.
@@ -326,7 +435,16 @@ class TaskRegistry:
         infrastructure to be scaled based on a region's requirements.
 
         Namespaces can define default behavior for tasks defined within a namespace.
+
+        Set `is_raw_mode` when the namespace backs a topic that taskbroker consumes in
+        "raw mode", where taskbroker builds activations from raw Kafka messages itself
+        rather than a producer sending them. A raw topic maps 1:1 onto a namespace and
+        onto a single task, both pinned in taskbroker's own config. The flag makes that
+        contract explicit and rejects task options taskbroker would ignore; see
+        `TaskNamespace._validate_raw_mode`.
         """
+        if name == INTERNAL_NAMESPACE and not internal:
+            raise ValueError(f"{INTERNAL_NAMESPACE!r} is reserved for internal taskbroker tasks.")
         if name in self._namespaces:
             raise ValueError(f"Task namespace with name {name} already exists.")
         namespace = TaskNamespace(
@@ -339,6 +457,8 @@ class TaskRegistry:
             expires=expires,
             processing_deadline_duration=processing_deadline_duration,
             app_feature=app_feature,
+            context_hooks=self._context_hooks,
+            is_raw_mode=is_raw_mode,
         )
         self._namespaces[name] = namespace
 
@@ -371,6 +491,7 @@ class TaskRegistry:
             retry=retry,
             expires=expires,
             processing_deadline_duration=processing_deadline_duration,
+            context_hooks=self._context_hooks,
         )
         self._external_namespaces[key] = namespace
         return namespace

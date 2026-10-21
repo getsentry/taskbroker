@@ -55,9 +55,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use http::StatusCode;
     use tower::ServiceExt;
+
+    use super::*;
 
     #[tokio::test]
     async fn test_metrics_middleware() {

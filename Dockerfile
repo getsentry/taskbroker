@@ -1,7 +1,7 @@
 # Build image
 # Note that it is important which debian image is used, because not all of them have a
 # recent enough version of protobuf-compiler
-FROM rust:1-bookworm AS build
+FROM ghcr.io/getsentry/image-mirror-library-rust:1.96.1-trixie AS build
 
 RUN apt-get update && apt-get upgrade -y
 RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
@@ -9,16 +9,12 @@ RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compi
 RUN USER=root cargo new --bin taskbroker
 WORKDIR /taskbroker
 
-# This is set by the cloudbuild.yaml file
-ARG TASKBROKER_GIT_REVISION
-ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
-
 # All these files are required to build or run the application
 COPY ./Cargo.lock ./Cargo.lock
 COPY ./Cargo.toml ./Cargo.toml
 COPY ./migrations ./migrations
-COPY ./pg_migrations ./pg_migrations
 COPY ./benches ./benches
+COPY ./.cargo ./.cargo
 
 # Build dependencies in a way they can be cached
 RUN cargo build --release
@@ -31,10 +27,15 @@ COPY ./src ./src
 RUN rm ./target/release/deps/taskbroker*
 RUN cargo build --release
 
+# Declared after the dependency build so a new revision on every commit
+# doesn't invalidate the cached dependency layers.
+ARG TASKBROKER_GIT_REVISION
+ENV TASKBROKER_VERSION=$TASKBROKER_GIT_REVISION
+
 RUN echo "${TASKBROKER_VERSION}" > ./VERSION
 
 # Runtime image
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN groupadd taskbroker --gid 1000 && useradd --gid taskbroker --uid 1000 taskbroker
 

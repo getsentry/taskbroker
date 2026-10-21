@@ -1,7 +1,10 @@
+import msgpack
 import pytest
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import TaskActivation
 
 from taskbroker_client.app import TaskbrokerApp
+from taskbroker_client.canary import CANARY_TASK_NAME
+from taskbroker_client.constants import INTERNAL_NAMESPACE
 from taskbroker_client.retry import Retry
 from taskbroker_client.router import TaskRouter
 from taskbroker_client.task import Task
@@ -27,7 +30,7 @@ def test_taskregistry_router_str() -> None:
         router_class="taskbroker_client.router.DefaultRouter",
     )
     ns = app.taskregistry.create_namespace("test")
-    assert ns.topic == "taskbroker"
+    assert ns.topic == "taskworker"
 
 
 def test_set_config() -> None:
@@ -37,12 +40,26 @@ def test_set_config() -> None:
     assert "ignored" not in app.config
 
 
+def test_registers_internal_canary_task(capsys: pytest.CaptureFixture[str]) -> None:
+    app = TaskbrokerApp(name="acme", producer_factory=producer_factory)
+
+    namespace = app.get_namespace(INTERNAL_NAMESPACE)
+    task = app.get_task(INTERNAL_NAMESPACE, CANARY_TASK_NAME)
+
+    assert namespace.name == INTERNAL_NAMESPACE
+    assert isinstance(task, Task)
+    assert task.name == CANARY_TASK_NAME
+    task()
+
+    assert capsys.readouterr().out == "Running canary task...\nDone running canary task!\n"
+
+
 def test_should_attempt_at_most_once() -> None:
     activation = TaskActivation(
         id="111",
         taskname="examples.simple_task",
         namespace="examples",
-        parameters='{"args": [], "kwargs": {}}',
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
         processing_deadline_duration=2,
     )
     at_most = StubAtMostOnce()

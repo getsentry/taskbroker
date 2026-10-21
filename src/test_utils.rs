@@ -1,27 +1,31 @@
+use std::collections::HashMap;
+use std::env::var;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
+use rdkafka::Message;
+use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
+
 use chrono::Utc;
 use futures::StreamExt;
 use prost::Message as ProstMessage;
 use prost_types::Timestamp;
-use rdkafka::{
-    Message,
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-    consumer::{CommitMode, Consumer, StreamConsumer},
-    producer::FutureProducer,
-};
 use sentry_protos::taskbroker::v1::{self, OnAttemptsExceeded, RetryState, TaskActivation};
-use std::{collections::HashMap, env::var, sync::Arc, time::SystemTime};
 use uuid::Uuid;
 
-use crate::{
-    config::Config,
-    store::{
-        inflight_activation::{
-            InflightActivation, InflightActivationBuilder, InflightActivationStatus,
-            InflightActivationStore, InflightActivationStoreConfig, SqliteActivationStore,
-        },
-        postgres_activation_store::{PostgresActivationStore, PostgresActivationStoreConfig},
-    },
-};
+use crate::config::deprecated::DeprecatedConfig;
+use crate::config::store::{PgConfig, StoreConfig};
+use crate::config::{Config, DEFAULT_TOPIC};
+use crate::kafka::producer::KafkaProducer;
+use crate::store::activation::{Activation, ActivationBuilder, ActivationStatus};
+use crate::store::adapters::postgres::{self, PostgresStore};
+use crate::store::adapters::sqlite::SqliteStore;
+use crate::store::traits::ActivationStore;
+use crate::store::types::TopicPartition;
+
+/// msgpack encoding of an empty map (`{}`), used as default task parameters in tests.
+pub const EMPTY_MSGPACK_MAP: &[u8] = &[0x80];
 
 /// Builder for `TaskActivation`. We cannot generate a builder automatically because `TaskActivation` is defined in `sentry-protos`.
 pub struct TaskActivationBuilder {
@@ -29,7 +33,7 @@ pub struct TaskActivationBuilder {
     pub application: Option<String>,
     pub namespace: Option<String>,
     pub taskname: Option<String>,
-    pub parameters: Option<String>,
+    pub parameters_bytes: Option<Vec<u8>>,
     pub headers: Option<HashMap<String, String>>,
     pub received_at: Option<Timestamp>,
     pub retry_state: Option<v1::RetryState>,
@@ -45,7 +49,7 @@ impl TaskActivationBuilder {
             application: None,
             namespace: None,
             taskname: None,
-            parameters: None,
+            parameters_bytes: None,
             headers: None,
             received_at: None,
             retry_state: None,
@@ -75,8 +79,8 @@ impl TaskActivationBuilder {
         self
     }
 
-    pub fn parameters<T: Into<String>>(mut self, parameters: T) -> Self {
-        self.parameters = Some(parameters.into());
+    pub fn parameters_bytes(mut self, parameters_bytes: Vec<u8>) -> Self {
+        self.parameters_bytes = Some(parameters_bytes);
         self
     }
 
@@ -110,13 +114,18 @@ impl TaskActivationBuilder {
         self
     }
 
+    #[allow(deprecated)]
     pub fn build(self) -> v1::TaskActivation {
         v1::TaskActivation {
             id: self.id.expect("id is required"),
             application: Some(self.application.expect("application is required")),
             namespace: self.namespace.expect("namespace is required"),
             taskname: self.taskname.expect("taskname is required"),
-            parameters: self.parameters.unwrap_or_else(|| "{}".to_string()),
+            parameters: String::new(),
+            // Default to an empty msgpack map (`{}`) when no parameters are provided.
+            parameters_bytes: self
+                .parameters_bytes
+                .unwrap_or_else(|| EMPTY_MSGPACK_MAP.to_vec()),
             headers: self.headers.unwrap_or_default(),
             processing_deadline_duration: self.processing_deadline_duration.unwrap_or(0),
             received_at: self.received_at,
@@ -133,12 +142,12 @@ impl Default for TaskActivationBuilder {
     }
 }
 
-impl InflightActivationBuilder {
+impl ActivationBuilder {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn build(mut self, builder: TaskActivationBuilder) -> InflightActivation {
+    pub fn build(mut self, builder: TaskActivationBuilder) -> Activation {
         // Grab required fields
         let id = self.id.as_ref().expect("field 'id' is required");
 
@@ -187,13 +196,28 @@ impl InflightActivationBuilder {
 
         match self._build() {
             Ok(activation) => activation,
-            Err(e) => panic!("Failed to build InflightActivation - {}", e),
+            Err(e) => panic!("Failed to build Activation - {}", e),
         }
     }
 }
 
-pub fn get_pg_url() -> String {
-    var("TASKBROKER_PG_URL").unwrap_or("postgres://postgres:password@localhost:5432/".to_string())
+pub fn get_pg_host() -> String {
+    var("TASKBROKER_PG_HOST").unwrap_or("localhost".to_string())
+}
+
+pub fn get_pg_port() -> u16 {
+    var("TASKBROKER_PG_PORT")
+        .unwrap_or("5432".to_string())
+        .parse()
+        .unwrap()
+}
+
+pub fn get_pg_username() -> String {
+    var("TASKBROKER_PG_USERNAME").unwrap_or("postgres".to_string())
+}
+
+pub fn get_pg_password() -> String {
+    var("TASKBROKER_PG_PASSWORD").unwrap_or("password".to_string())
 }
 
 pub fn get_pg_database_name() -> String {
@@ -214,13 +238,13 @@ pub fn generate_unique_namespace() -> String {
 }
 
 /// Create a collection of `count` pending unsaved activations in a particular `namespace`. If you do not want to provide a namespace, use `make_activations`.
-pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<InflightActivation> {
-    let mut records: Vec<InflightActivation> = vec![];
+pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Activation> {
+    let mut records: Vec<Activation> = vec![];
 
     for i in 0..count {
         let now = Utc::now();
 
-        let item = InflightActivationBuilder::new()
+        let item = ActivationBuilder::new()
             .id(format!("id_{i}"))
             .taskname("taskname")
             .namespace(&namespace)
@@ -236,93 +260,110 @@ pub fn make_activations_with_namespace(namespace: String, count: u32) -> Vec<Inf
 }
 
 /// Create a collection of `count` pending unsaved activations in a unique namespace. If you want to provide the namespace, use `make_activations_with_namespace`.
-pub fn make_activations(count: u32) -> Vec<InflightActivation> {
+pub fn make_activations(count: u32) -> Vec<Activation> {
     let namespace = generate_unique_namespace();
     make_activations_with_namespace(namespace, count)
 }
 
-/// Create a basic default [`Config`]
+/// Create a basic default [`Config`], normalized so the kafka helpers
+/// (`consumable_topic`, `cluster`, ...) are usable.
 pub fn create_config() -> Arc<Config> {
-    Arc::new(Config::default())
+    let mut config = Config::default();
+    config.normalize_and_validate().unwrap();
+    Arc::new(config)
 }
 
-/// Create an InflightActivationStore instance
-pub async fn create_test_store(adapter: &str) -> Arc<dyn InflightActivationStore> {
+/// Create an ActivationStore instance
+pub async fn create_test_store(adapter: &str) -> Arc<dyn ActivationStore> {
+    let mut config = create_integration_config();
+    config.store.sqlite.path = generate_temp_filename();
+
     match adapter {
-        "sqlite" => Arc::new(
-            SqliteActivationStore::new(
-                &generate_temp_filename(),
-                InflightActivationStoreConfig::from_config(&create_integration_config()),
-            )
-            .await
-            .unwrap(),
-        ) as Arc<dyn InflightActivationStore>,
-        "postgres" => Arc::new(
-            PostgresActivationStore::new(PostgresActivationStoreConfig::from_config(
-                &create_integration_config(),
-            ))
-            .await
-            .unwrap(),
-        ) as Arc<dyn InflightActivationStore>,
+        "sqlite" => Arc::new(SqliteStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>,
+
+        "postgres" => {
+            postgres::migrate(&config.store).await.unwrap();
+
+            let store =
+                Arc::new(PostgresStore::new(&config).await.unwrap()) as Arc<dyn ActivationStore>;
+
+            store.assign_partitions(&mut std::iter::once(TopicPartition::new(DEFAULT_TOPIC, 0)));
+            store
+        }
         _ => panic!("Invalid adapter: {}", adapter),
     }
+}
+
+/// Create a normalized integration [`Config`] from a caller-supplied `base`.
+/// The standard integration defaults (pg connection, local kafka cluster,
+/// consumer group, earliest offset reset) are applied first, then `base`
+/// overrides them, and finally the config is normalized — so any field the
+/// caller sets (e.g. `kafka_deadletter_topic`) is in place before the kafka
+/// topic maps are built.
+pub fn create_integration_config_from_base(base: Config) -> Config {
+    let mut config = Config {
+        deprecated: DeprecatedConfig {
+            kafka_cluster: Some("127.0.0.1:9092".into()),
+            kafka_consumer_group: Some("taskworker".into()),
+            ..base.deprecated
+        },
+        store: StoreConfig {
+            pg: PgConfig {
+                host: get_pg_host(),
+                port: get_pg_port(),
+                username: get_pg_username(),
+                password: get_pg_password(),
+                database_name: get_pg_database_name(),
+                run_migrations: true,
+                ..base.store.pg
+            },
+            ..base.store
+        },
+        kafka_auto_offset_reset: "earliest".into(),
+        ..base
+    };
+    config.normalize_and_validate().unwrap();
+    config
 }
 
 /// Create a Config instance that uses a testing topic
 /// and earliest auto_offset_reset. This is intended to be combined
 /// with [`reset_topic`]
-pub fn create_integration_config() -> Arc<Config> {
-    let config = Config {
-        pg_url: get_pg_url(),
-        pg_database_name: get_pg_database_name(),
-        run_migrations: true,
-        kafka_topic: "taskbroker-test".into(),
-        kafka_auto_offset_reset: "earliest".into(),
+pub fn create_integration_config() -> Config {
+    create_integration_config_from_base(Config {
+        deprecated: DeprecatedConfig {
+            kafka_topic: Some("taskbroker-test".into()),
+            ..DeprecatedConfig::default()
+        },
         ..Config::default()
-    };
-
-    Arc::new(config)
-}
-
-pub fn create_integration_config_with_topic(topic: String) -> Arc<Config> {
-    let config = Config {
-        pg_url: get_pg_url(),
-        pg_database_name: get_pg_database_name(),
-        run_migrations: true,
-        kafka_topic: topic,
-        kafka_auto_offset_reset: "earliest".into(),
-        ..Config::default()
-    };
-
-    Arc::new(config)
+    })
 }
 
 /// Create a kafka producer for a given config
-pub fn create_producer(config: Arc<Config>) -> Arc<FutureProducer> {
-    let producer: FutureProducer = config
-        .kafka_producer_config()
-        .create()
-        .expect("Could not create kafka producer");
+pub fn create_producer(config: Arc<Config>) -> Arc<KafkaProducer> {
+    let producer = KafkaProducer::new(
+        config.kafka_producer_config(),
+        Duration::from_millis(config.kafka_send_timeout_ms),
+    )
+    .expect("Could not create kafka producer");
 
     Arc::new(producer)
 }
 
 /// Reset a kafka topic by destroying it and recreating it.
 pub async fn reset_topic(config: Arc<Config>) {
+    let (main_topic, _) = config.consumable_topics().expect("no consumable topic")[0];
     let admin_client: AdminClient<_> = config
-        .kafka_consumer_config()
+        .kafka_consumer_config_for(main_topic)
         .create()
         .expect("Could not create admin client");
 
     let options = AdminOptions::default();
     admin_client
-        .delete_topics(
-            &[config.kafka_topic.as_ref(), &config.kafka_deadletter_topic],
-            &options,
-        )
+        .delete_topics(&[main_topic, &config.kafka_deadletter_topic], &options)
         .await
         .expect("Could not delete topic");
-    let new_topic = NewTopic::new(&config.kafka_topic, 1, TopicReplication::Fixed(0));
+    let new_topic = NewTopic::new(main_topic, 1, TopicReplication::Fixed(0));
     let new_dlq_topic = NewTopic::new(
         &config.kafka_deadletter_topic,
         1,
@@ -342,7 +383,7 @@ pub async fn consume_topic(
     num_records: usize,
 ) -> Vec<TaskActivation> {
     let consumer: StreamConsumer = config
-        .kafka_consumer_config()
+        .kafka_consumer_config_for(topic)
         .create()
         .expect("could not create consumer");
     consumer.subscribe(&[topic]).expect("could not subscribe");
@@ -380,7 +421,7 @@ pub async fn consume_topic(
     results
 }
 
-pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<RetryState>) {
+pub fn replace_retry_state(inflight: &mut Activation, retry: Option<RetryState>) {
     let mut activation = TaskActivation::decode(&inflight.activation as &[u8]).unwrap();
     activation.retry_state = retry;
     inflight.activation = activation.encode_to_vec();
@@ -392,10 +433,11 @@ pub fn replace_retry_state(inflight: &mut InflightActivation, retry: Option<Retr
     }
 }
 
-/// Helper struct for asserting counts on the InflightActivationStore.
+/// Helper struct for asserting counts on the ActivationStore.
 #[derive(Default)]
 pub struct StatusCount {
     pub pending: usize,
+    pub claimed: usize,
     pub processing: usize,
     pub retry: usize,
     pub delayed: usize,
@@ -403,20 +445,28 @@ pub struct StatusCount {
     pub failure: usize,
 }
 
-/// Assert the state of all counts in the inflight activation store.
-pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivationStore) {
+/// Assert the state of all counts in the activation store.
+pub async fn assert_counts(expected: StatusCount, store: &dyn ActivationStore) {
     assert_eq!(
         expected.pending,
         store
-            .count_by_status(InflightActivationStatus::Pending)
+            .count_by_status(ActivationStatus::Pending)
             .await
             .unwrap(),
         "difference in pending count",
     );
     assert_eq!(
+        expected.claimed,
+        store
+            .count_by_status(ActivationStatus::Claimed)
+            .await
+            .unwrap(),
+        "difference in claimed count",
+    );
+    assert_eq!(
         expected.processing,
         store
-            .count_by_status(InflightActivationStatus::Processing)
+            .count_by_status(ActivationStatus::Processing)
             .await
             .unwrap(),
         "difference in processing count",
@@ -424,7 +474,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.retry,
         store
-            .count_by_status(InflightActivationStatus::Retry)
+            .count_by_status(ActivationStatus::Retry)
             .await
             .unwrap(),
         "difference in retry count",
@@ -432,7 +482,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.delayed,
         store
-            .count_by_status(InflightActivationStatus::Delay)
+            .count_by_status(ActivationStatus::Delay)
             .await
             .unwrap(),
         "difference in delay count",
@@ -440,7 +490,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.complete,
         store
-            .count_by_status(InflightActivationStatus::Complete)
+            .count_by_status(ActivationStatus::Complete)
             .await
             .unwrap(),
         "difference in complete count",
@@ -448,7 +498,7 @@ pub async fn assert_counts(expected: StatusCount, store: &dyn InflightActivation
     assert_eq!(
         expected.failure,
         store
-            .count_by_status(InflightActivationStatus::Failure)
+            .count_by_status(ActivationStatus::Failure)
             .await
             .unwrap(),
         "difference in failure count",

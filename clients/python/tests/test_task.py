@@ -1,8 +1,11 @@
+import contextlib
 import datetime
+from collections.abc import MutableMapping
+from concurrent.futures import Future
 from typing import Any
 from unittest.mock import patch
 
-import orjson
+import msgpack
 import pytest
 import sentry_sdk
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
@@ -76,9 +79,9 @@ def test_apply_async_expires(task_namespace: TaskNamespace) -> None:
 
     activation = call_params.args[0]
     assert activation.expires == 10
-    assert activation.parameters == orjson.dumps(
-        {"args": ["arg2"], "kwargs": {"org_id": 2}}
-    ).decode("utf-8")
+    expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
+    assert activation.parameters == ""
 
 
 def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
@@ -97,9 +100,9 @@ def test_apply_async_countdown(task_namespace: TaskNamespace) -> None:
 
     activation = call_params.args[0]
     assert activation.delay == 600
-    assert activation.parameters == orjson.dumps(
-        {"args": ["arg2"], "kwargs": {"org_id": 2}}
-    ).decode("utf-8")
+    expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
+    assert activation.parameters == ""
 
 
 def test_delay_immediate_mode(task_namespace: TaskNamespace) -> None:
@@ -148,6 +151,26 @@ def test_delay_immediate_validate_activation(task_namespace: TaskNamespace) -> N
     assert len(calls) == 2
     assert calls[0] == {"mixed": None}
     assert calls[1] == {"mixed": "str"}
+
+
+def test_apply_async_with_future_returns_producer_future(task_namespace: TaskNamespace) -> None:
+    def test_func(*args: Any, **kwargs: Any) -> None:
+        pass
+
+    task = Task(
+        name="test.test_func",
+        func=test_func,
+        namespace=task_namespace,
+    )
+    producer_future: Future[Any] = Future()
+
+    with patch.object(task_namespace, "send_task", return_value=producer_future) as mock_send:
+        assert task.apply_async_with_future(args=["arg2"], kwargs={"org_id": 2}) is producer_future
+
+    assert mock_send.call_count == 1
+    activation = mock_send.call_args.args[0]
+    expected_params = {"args": ["arg2"], "kwargs": {"org_id": 2}}
+    assert msgpack.unpackb(activation.parameters_bytes, raw=False) == expected_params
 
 
 def test_should_retry(task_namespace: TaskNamespace) -> None:
@@ -266,10 +289,12 @@ def test_create_activation_parameters(task_namespace: TaskNamespace) -> None:
         raise NotImplementedError
 
     activation = with_parameters.create_activation(["one", 22], {"org_id": 99})
-    params = orjson.loads(activation.parameters)
+    params = msgpack.unpackb(activation.parameters_bytes, raw=False)
     assert params["args"]
     assert params["args"] == ["one", 22]
     assert params["kwargs"] == {"org_id": 99}
+
+    assert activation.parameters == ""
 
 
 def test_create_activation_tracing(task_namespace: TaskNamespace) -> None:
@@ -375,3 +400,175 @@ def test_create_activation_headers_monitor_config_treatment(task_namespace: Task
     assert "sentry-monitor-config" not in result
     assert "sentry-monitor-slug" in result
     assert "sentry-monitor-check-in-id" in result
+
+
+class StubContextHook:
+    """Test hook that writes/reads a simple key."""
+
+    last_executed: str
+
+    def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
+        headers["x-test-context"] = "dispatched"
+
+    def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
+        if "x-test-context" not in headers:
+            return contextlib.nullcontext()
+        # Store the value so the test can verify it was called
+        StubContextHook.last_executed = headers["x-test-context"]
+        return contextlib.nullcontext()
+
+
+def test_context_hook_on_dispatch() -> None:
+    """Context hooks inject headers during create_activation."""
+    ns = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+        context_hooks=[StubContextHook()],
+    )
+
+    @ns.register(name="test.hooked")
+    def hooked_task() -> None:
+        pass
+
+    activation = hooked_task.create_activation([], {})
+    assert activation.headers["x-test-context"] == "dispatched"
+
+
+def test_context_hook_not_present_without_hooks() -> None:
+    """Without hooks, no extra headers are injected."""
+    ns = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+    )
+
+    @ns.register(name="test.no_hooks")
+    def no_hooks_task() -> None:
+        pass
+
+    activation = no_hooks_task.create_activation([], {})
+    assert "x-test-context" not in activation.headers
+
+
+def test_context_hook_multiple_hooks() -> None:
+    """Multiple hooks all get called."""
+
+    class AnotherHook:
+        def on_dispatch(self, headers: MutableMapping[str, Any]) -> None:
+            headers["x-another"] = "also-here"
+
+        def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]:
+            return contextlib.nullcontext()
+
+    ns = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+        context_hooks=[StubContextHook(), AnotherHook()],
+    )
+
+    @ns.register(name="test.multi_hooks")
+    def multi_task() -> None:
+        pass
+
+    activation = multi_task.create_activation([], {})
+    assert activation.headers["x-test-context"] == "dispatched"
+    assert activation.headers["x-another"] == "also-here"
+
+
+def test_task_pass_headers_attribute(task_namespace: TaskNamespace) -> None:
+    """Tasks can opt into receiving headers via pass_headers=True."""
+
+    @task_namespace.register(name="test.with_headers", pass_headers=True)
+    def with_headers(org_id: int, headers: dict[str, str]) -> None:
+        pass
+
+    assert with_headers.pass_headers is True
+
+    @task_namespace.register(name="test.without_headers")
+    def without_headers(org_id: int) -> None:
+        pass
+
+    assert without_headers.pass_headers is False
+
+
+def test_pass_headers_requires_headers_parameter(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True must have a 'headers' parameter."""
+    with pytest.raises(TypeError, match="does not have a 'headers' parameter"):
+
+        @task_namespace.register(name="test.missing_headers", pass_headers=True)
+        def missing_headers(org_id: int) -> None:
+            pass
+
+
+def test_pass_headers_rejects_positional_only_headers(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True cannot have a positional-only 'headers' parameter."""
+    with pytest.raises(TypeError, match="positional-only"):
+
+        @task_namespace.register(name="test.positional_headers", pass_headers=True)
+        def positional_headers(org_id: int, headers: dict[str, str], /) -> None:
+            pass
+
+
+def test_pass_headers_rejects_incompatible_type_annotation(
+    task_namespace: TaskNamespace,
+) -> None:
+    """Tasks with pass_headers=True must have a dict-like type annotation for 'headers'."""
+    with pytest.raises(TypeError, match="Expected one of: dict"):
+
+        @task_namespace.register(name="test.wrong_type_headers", pass_headers=True)
+        def wrong_type_headers(org_id: int, headers: str) -> None:
+            pass
+
+
+def test_delay_immediate_mode_with_pass_headers(task_namespace: TaskNamespace) -> None:
+    """In ALWAYS_EAGER mode, tasks with pass_headers=True receive empty headers."""
+    calls: list[dict[str, Any]] = []
+
+    @task_namespace.register(name="test.headers_task", pass_headers=True)
+    def headers_task(value: str, headers: dict[str, str]) -> None:
+        calls.append({"value": value, "headers": headers})
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        headers_task.delay("test")  # type: ignore[call-arg]
+
+    assert len(calls) == 1
+    assert calls[0]["value"] == "test"
+    assert calls[0]["headers"] == {}
+
+
+def test_pass_headers_rejects_headers_in_kwargs(task_namespace: TaskNamespace) -> None:
+    """Tasks with pass_headers=True reject 'headers' passed in kwargs."""
+
+    @task_namespace.register(name="test.headers_collision", pass_headers=True)
+    def headers_task(value: str, headers: dict[str, str]) -> None:
+        pass
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        with pytest.raises(TypeError, match="cannot be passed by the caller"):
+            headers_task.delay("test", headers={"x-custom": "value"})
+
+
+def test_delay_immediate_mode_without_pass_headers(task_namespace: TaskNamespace) -> None:
+    """In ALWAYS_EAGER mode, tasks without pass_headers do not receive headers kwarg."""
+    calls: list[dict[str, Any]] = []
+
+    @task_namespace.register(name="test.no_headers_task")
+    def no_headers_task(value: str) -> None:
+        calls.append({"value": value})
+
+    with patch("taskbroker_client.task.ALWAYS_EAGER", True):
+        no_headers_task.delay("test")
+
+    assert len(calls) == 1
+    assert calls[0] == {"value": "test"}

@@ -1,13 +1,16 @@
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
-use crate::config::Config;
-use crate::store::inflight_activation::{InflightActivation, InflightActivationStatus};
 use anyhow::{Error, anyhow};
 use chrono::{DateTime, Utc};
 use prost::Message as _;
-use rdkafka::{Message, message::OwnedMessage};
 use sentry_protos::taskbroker::v1::OnAttemptsExceeded;
 use sentry_protos::taskbroker::v1::TaskActivation;
+use uuid::Uuid;
+
+use crate::config::Config;
+use crate::fetch::MAX_FETCH_THREADS;
+use crate::kafka::message::MessageBackend;
+use crate::store::activation::{Activation, ActivationStatus};
 
 pub struct DeserializeActivationConfig {
     pub max_delayed_allowed: u64,
@@ -21,10 +24,17 @@ impl DeserializeActivationConfig {
     }
 }
 
+/// Use the UUID of an activation to determine its bucket.
+pub fn bucket_from_id(id: &str) -> i16 {
+    Uuid::parse_str(id)
+        .map(|u| (u.as_u128() % MAX_FETCH_THREADS as u128) as i16)
+        .unwrap_or(0)
+}
+
 pub fn new(
     config: DeserializeActivationConfig,
-) -> impl Fn(Arc<OwnedMessage>) -> Result<InflightActivation, Error> {
-    move |msg: Arc<OwnedMessage>| {
+) -> impl Fn(&MessageBackend) -> Result<Activation, Error> {
+    move |msg: &MessageBackend| {
         let Some(payload) = msg.payload() else {
             return Err(anyhow!("Message has no payload"));
         };
@@ -36,6 +46,7 @@ pub fn new(
 
         metrics::histogram!(
             "consumer.message.payload_size_bytes",
+            "topic" => msg.topic().to_string(),
             "namespace" => namespace.clone(),
             "taskname" => taskname.clone()
         )
@@ -63,11 +74,11 @@ pub fn new(
             activation_time + delay
         });
 
-        let status = delay_until.map_or(InflightActivationStatus::Pending, |delay_until| {
+        let status = delay_until.map_or(ActivationStatus::Pending, |delay_until| {
             if Utc::now() > delay_until {
-                InflightActivationStatus::Pending
+                ActivationStatus::Pending
             } else {
-                InflightActivationStatus::Delay
+                ActivationStatus::Delay
             }
         });
 
@@ -78,15 +89,19 @@ pub fn new(
             .try_into()
             .unwrap();
 
-        Ok(InflightActivation {
+        let bucket = bucket_from_id(&activation.id);
+
+        Ok(Activation {
             id: activation.id.clone(),
             activation: payload.to_vec(),
             status,
+            topic: msg.topic().to_owned(),
             partition: msg.partition(),
             offset: msg.offset(),
             added_at: Utc::now(),
             received_at: activation_time,
             processing_deadline: None,
+            claim_expires_at: None,
             processing_deadline_duration: activation.processing_deadline_duration as i32,
             processing_attempts: 0,
             expires_at,
@@ -96,22 +111,23 @@ pub fn new(
             namespace,
             taskname,
             on_attempts_exceeded,
+            bucket,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     use chrono::Utc;
     use prost::Message as _;
-    use rdkafka::{Timestamp, message::OwnedMessage};
-    use sentry_protos::taskbroker::v1::TaskActivation;
+    use rdkafka::Timestamp;
+    use rdkafka::message::OwnedMessage;
 
-    use crate::{
-        store::inflight_activation::InflightActivationStatus, test_utils::generate_unique_namespace,
-    };
+    use crate::store::activation::ActivationStatus;
+    use crate::test_utils::{TaskActivationBuilder, generate_unique_namespace};
 
     use super::{Config, DeserializeActivationConfig, new};
 
@@ -122,24 +138,18 @@ mod tests {
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // not used when the activation doesn't have expires.
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: the_past.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: None,
-        };
+            })
+            .processing_deadline_duration(10)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -149,8 +159,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -167,24 +176,19 @@ mod tests {
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // used because the activation has expires
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: the_past.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: Some(100),
-            delay: None,
-        };
+            })
+            .processing_deadline_duration(10)
+            .expires(100)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -194,8 +198,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -213,24 +216,19 @@ mod tests {
         let now = Utc::now();
         let the_past = now - Duration::from_secs(60 * 10);
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            headers: HashMap::new(),
-            // used because the activation has expires
-            received_at: Some(prost_types::Timestamp {
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
+            // used because the activation has delay
+            .received_at(prost_types::Timestamp {
                 seconds: the_past.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: Some(100),
-        };
+            })
+            .processing_deadline_duration(10)
+            .delay(100)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -240,8 +238,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -250,7 +247,7 @@ mod tests {
             delta.num_seconds() >= 99,
             "Should have ~100 seconds of delay from received_at"
         );
-        assert_eq!(inflight.status, InflightActivationStatus::Pending)
+        assert_eq!(inflight.status, ActivationStatus::Pending)
     }
 
     #[test]
@@ -259,24 +256,19 @@ mod tests {
         let deserializer = new(DeserializeActivationConfig::from_config(&config));
         let now = Utc::now();
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // used because the activation has delay
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: now.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: Some(100),
-        };
+            })
+            .processing_deadline_duration(10)
+            .delay(100)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -286,8 +278,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -296,7 +287,7 @@ mod tests {
             delta.num_seconds() >= 99,
             "Should have ~100 seconds of delay from received_at"
         );
-        assert_eq!(inflight.status, InflightActivationStatus::Delay)
+        assert_eq!(inflight.status, ActivationStatus::Delay)
     }
 
     #[test]
@@ -306,24 +297,19 @@ mod tests {
         let now = Utc::now();
         let delay_sec = config.max_delayed_task_allowed_sec * 2;
 
-        #[allow(deprecated)]
-        let activation = TaskActivation {
-            id: "id_0".into(),
-            application: Some("sentry".to_string()),
-            namespace: generate_unique_namespace(),
-            taskname: "taskname".into(),
-            parameters: "{}".into(),
-            headers: HashMap::new(),
+        let activation = TaskActivationBuilder::new()
+            .id("id_0")
+            .application("sentry")
+            .namespace(generate_unique_namespace())
+            .taskname("taskname")
             // used because the activation has delay
-            received_at: Some(prost_types::Timestamp {
+            .received_at(prost_types::Timestamp {
                 seconds: now.timestamp(),
                 nanos: 0,
-            }),
-            retry_state: None,
-            processing_deadline_duration: 10,
-            expires: None,
-            delay: Some(delay_sec),
-        };
+            })
+            .processing_deadline_duration(10)
+            .delay(delay_sec)
+            .build();
         let message = OwnedMessage::new(
             Some(activation.encode_to_vec()),
             None,
@@ -333,8 +319,7 @@ mod tests {
             0,
             None,
         );
-        let arc_message = Arc::new(message);
-        let inflight_opt = deserializer(arc_message);
+        let inflight_opt = deserializer(&message.into());
 
         assert!(inflight_opt.is_ok());
         let inflight = inflight_opt.unwrap();
@@ -343,6 +328,6 @@ mod tests {
             delta.num_seconds() <= (config.max_delayed_task_allowed_sec as f64 * 1.1) as i64,
             "Should have approxmiately max_delayed_task_allowed_sec of delay from received_at"
         );
-        assert_eq!(inflight.status, InflightActivationStatus::Delay)
+        assert_eq!(inflight.status, ActivationStatus::Delay)
     }
 }

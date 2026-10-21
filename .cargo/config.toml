@@ -1,3 +1,12 @@
+[build]
+# Exposes Tokio's per-worker runtime metrics (worker_total_busy_duration,
+# worker_local_queue_depth, etc.) via `Handle::metrics()`. These are gated
+# behind the `tokio_unstable` cfg.
+rustflags = ["--cfg", "tokio_unstable"]
+# Doc-tests are compiled by rustdoc, which reads rustdocflags rather than
+# rustflags; without this they'd miss the cfg above and hit our compile_error!.
+rustdocflags = ["--cfg", "tokio_unstable"]
+
 [env]
 # Workaround for https://github.com/confluentinc/librdkafka/pull/5012
 CMAKE_POLICY_VERSION_MINIMUM = "3.10"
