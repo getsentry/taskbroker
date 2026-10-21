@@ -108,7 +108,7 @@ jobs:
 
     steps:
       - name: Run Sentry self-hosted e2e CI
-        uses: getsentry/self-hosted@d369a92e70470e3838b3ad9c64b7739411003671 # master
+        uses: getsentry/self-hosted@master
         with:
           project_name: taskbroker
           image_url: ghcr.io/getsentry/taskbroker:${{ github.sha }}
