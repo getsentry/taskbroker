@@ -30,8 +30,16 @@ dev = [
 environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
 
 [[tool.uv.index]]
+name = "sentry-pypi"
 url = "https://pypi.devinfra.sentry.io/simple"
 default = true
+
+[[tool.uv.index]]
+# Org-level Dependabot registry. Declaring it here stops Dependabot from
+# passing it as `--default-index`; `explicit` keeps uv from ever using it.
+name = "sfw"
+url = "https://sfw.security.sentry.io/pypi/simple"
+explicit = true
 
 [tool.uv.workspace]
 members = ["integration_tests", "clients/python"]
