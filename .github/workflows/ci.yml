@@ -10,10 +10,12 @@ on:
 env:
   RUSTFLAGS: -Dwarnings --cfg tokio_unstable
 
+# Pinned to ubuntu-24.04: actions/setup-python has no Python 3.12.11
+# (.python-version) build for ubuntu-26.04, which ubuntu-latest now points to.
 jobs:
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -81,7 +83,7 @@ jobs:
 
   python-client-lint:
     name: Python Client Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -128,7 +130,7 @@ jobs:
 
   python-client-test:
     name: Python Client Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
 
@@ -175,7 +177,7 @@ jobs:
 
   test:
     name: Tests (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
@@ -218,7 +220,7 @@ jobs:
 
   coverage:
     name: Coverage (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2
 
@@ -267,7 +269,7 @@ jobs:
 
   rebalance-integration-test:
     name: Rebalance integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -311,7 +313,7 @@ jobs:
 
   worker-processing-integration-test:
     name: Worker processing integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -355,7 +357,7 @@ jobs:
 
   upkeep-retry-integration-test:
     name: Upkeep retry integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -399,7 +401,7 @@ jobs:
 
   upkeep-expiry-integration-test:
     name: Upkeep expiry integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -443,7 +445,7 @@ jobs:
 
   upkeep-delay-integration-test:
     name: Upkeep delay integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -487,7 +489,7 @@ jobs:
 
   failed-tasks-integration-test:
     name: Failed tasks integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -531,7 +533,7 @@ jobs:
 
   multi-topic-integration-test:
     name: Multi-topic integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -575,7 +577,7 @@ jobs:
 
   push-postgres-integration-test:
     name: Push mode postgres integration test${{ matrix.consumer_backend == 'arroyo' && ' (arroyo)' || '' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
