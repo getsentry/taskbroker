@@ -108,6 +108,7 @@ jobs:
 
     steps:
       - name: Run Sentry self-hosted e2e CI
+        # Intentionally unpinned: we should not have to bump this manually
         uses: getsentry/self-hosted@master
         with:
           project_name: taskbroker
