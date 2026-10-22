@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from multiprocessing import Event, get_context
 from multiprocessing.synchronize import Event as MultiprocessingEvent
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 from unittest import TestCase, mock
 from uuid import uuid4
 
@@ -2679,7 +2679,6 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
 
 
 @pytest.mark.usefixtures("restore_signal_handlers")
-@pytest.mark.parametrize("trace_lifecycle", ["static", "stream"])
 @pytest.mark.parametrize(
     ("taskname", "args", "deadline", "retry_state"),
     [
@@ -2695,7 +2694,6 @@ def test_child_process_terminate_task(mock_logger: mock.Mock) -> None:
     ],
 )
 def test_child_process_error_event_uses_task_transaction(
-    trace_lifecycle: Literal["static", "stream"],
     taskname: str,
     args: list[Any],
     deadline: int,
@@ -2728,7 +2726,7 @@ def test_child_process_error_event_uses_task_transaction(
             transport=mock.Mock(spec=Transport),
             before_send=capture_event,
             traces_sample_rate=0,
-            trace_lifecycle=trace_lifecycle,
+            trace_lifecycle="stream",
         ) as client,
         sentry_sdk.isolation_scope() as scope,
     ):

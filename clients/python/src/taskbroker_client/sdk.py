@@ -4,82 +4,53 @@ from typing import Any, ContextManager
 import sentry_sdk
 from sentry_sdk.scope import Scope
 from sentry_sdk.traces import StreamedSpan
-from sentry_sdk.tracing import NoOpSpan, Span, Transaction
-from sentry_sdk.tracing_utils import has_span_streaming_enabled
 
 
-def start_transaction(
+def start_segment(
     name: str,
     op: str,
     origin: str,
     attributes: dict[str, Any],
     headers: dict[str, Any],
     sampling_context: dict[str, Any],
-) -> Transaction | NoOpSpan | StreamedSpan | ContextManager[Any]:
-    """Start a transaction, or a span if span streaming is enabled."""
-    span = None
+) -> StreamedSpan | ContextManager[Any]:
+    """Continue the trace from `headers` and start a segment span."""
     try:
-        is_span_streaming = has_span_streaming_enabled(sentry_sdk.get_client().options)
-        if is_span_streaming:
-            sentry_sdk.traces.continue_trace(headers)
-            Scope.set_custom_sampling_context(sampling_context)
+        sentry_sdk.traces.continue_trace(headers)
+        Scope.set_custom_sampling_context(sampling_context)
 
-            return sentry_sdk.traces.start_span(
-                name=name,
-                attributes={
-                    "sentry.op": op,
-                    **attributes,
-                },
-            )
-
-        transaction = sentry_sdk.continue_trace(
-            environ_or_headers=headers,
-            op=op,
+        return sentry_sdk.traces.start_span(
             name=name,
-            origin=origin,
+            attributes={
+                "sentry.op": op,
+                "sentry.origin": origin,
+                **attributes,
+            },
         )
-
-        span = sentry_sdk.start_transaction(transaction, custom_sampling_context=sampling_context)
-        for key, value in attributes.items():
-            span.set_data(key, value)
     except Exception:
         pass
 
-    if span is None:
-        return nullcontext()
-    return span
+    return nullcontext()
 
 
 def start_span(
     name: str, op: str, origin: str, attributes: dict[str, Any]
-) -> Span | StreamedSpan | ContextManager[Any]:
-    """Start a span in the currently active trace lifecycle."""
+) -> StreamedSpan | ContextManager[Any]:
+    """Start a child span of the currently active span."""
     try:
-        is_span_streaming = has_span_streaming_enabled(sentry_sdk.get_client().options)
-
         # Early return to avoid large increase in span volume.
-        # Mirrors transaction-based tracing, in which `start_span()` no-ops when there is no active transaction.
-        if is_span_streaming and sentry_sdk.traces.get_current_span() is None:
+        # Only create spans when there is an active trace, e.g. a task spawned from a request.
+        if sentry_sdk.traces.get_current_span() is None:
             return nullcontext()
 
-        if is_span_streaming:
-            return sentry_sdk.traces.start_span(
-                name=name,
-                attributes={
-                    "sentry.op": op,
-                    **attributes,
-                },
-            )
-
-        span = sentry_sdk.start_span(
-            op=op,
+        return sentry_sdk.traces.start_span(
             name=name,
-            origin=origin,
+            attributes={
+                "sentry.op": op,
+                "sentry.origin": origin,
+                **attributes,
+            },
         )
-        for key, value in attributes.items():
-            span.set_data(key, value)
-
-        return span
     except Exception:
         pass
 

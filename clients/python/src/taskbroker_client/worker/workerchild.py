@@ -32,12 +32,11 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 )
 from sentry_sdk.consts import OP, SPANDATA
 from sentry_sdk.crons import MonitorStatus, capture_checkin
-from sentry_sdk.tracing import Span
 
 from taskbroker_client.app import import_app
 from taskbroker_client.constants import CompressionType
 from taskbroker_client.retry import NoRetriesRemainingError
-from taskbroker_client.sdk import start_span, start_transaction
+from taskbroker_client.sdk import start_segment, start_span
 from taskbroker_client.state import clear_current_task, current_task, set_current_task
 from taskbroker_client.task import Task
 from taskbroker_client.types import ContextHook, InflightTaskActivation, ProcessingResult
@@ -669,7 +668,7 @@ def child_process(
                 tags={"namespace": activation.namespace, "taskname": activation.taskname},
             ),
             sentry_sdk.isolation_scope(),
-            start_transaction(
+            start_segment(
                 name=activation.taskname,
                 op="queue.task.taskworker",
                 origin="taskworker",
@@ -682,13 +681,8 @@ def child_process(
                         "task": activation.taskname,
                     }
                 },
-            ) as transaction,
+            ),
         ):
-            # Do not attach on StreamedSpan because eager serialization increases memory use.
-            if isinstance(transaction, Span):
-                transaction.set_data("taskworker-task.args", args)
-                transaction.set_data("taskworker-task.kwargs", kwargs)
-
             # ToDatetime().timestamp() reads a naive UTC datetime as local time.
             task_added_time = activation.received_at.seconds + activation.received_at.nanos / 1e9
             # latency attribute needs to be in milliseconds
