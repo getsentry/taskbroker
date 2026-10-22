@@ -7,14 +7,11 @@ use std::sync::mpsc::{SyncSender, sync_channel};
 use std::time::Duration;
 use std::{cmp, iter};
 
-use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
-use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer};
-use rdkafka::error::{KafkaError, KafkaResult};
-use rdkafka::message::BorrowedMessage;
+use rdkafka::consumer::{BaseConsumer, Consumer};
+use rdkafka::error::KafkaError;
 use rdkafka::types::RDKafkaErrorCode;
-use rdkafka::{ClientConfig, ClientContext, Offset, TopicPartitionList};
+use rdkafka::{ClientConfig, Offset, TopicPartitionList};
 
-use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{JoinError, JoinSet};
@@ -26,26 +23,22 @@ use tokio_util::sync::CancellationToken;
 
 use anyhow::{Error, anyhow};
 use futures::{Stream, StreamExt, future, pin_mut};
-use tracing::{debug, error, info, instrument, warn};
+use sentry_arroyo::backends::kafka::async_consumer::AsyncKafkaConsumer;
+use tracing::{debug, error, info, instrument};
 
 use crate::store::traits::ActivationStore;
 use crate::store::types::TopicPartition;
 
-use super::consumer_backend::{Assignment, ConsumerBackend};
+use super::consumer_backend::{Assignment, KafkaContext, create_consumer};
 use super::message::MessageBackend;
 
 pub async fn start_no_consume_mode(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
 ) -> Result<(), Error> {
-    let topics_tag = topics.join(",");
-    let (event_sender, _) = unbounded_channel();
-    let context = KafkaContext::new(event_sender.clone(), topics_tag.clone());
-    let consumer: Arc<StreamConsumer<KafkaContext>> = Arc::new(
-        kafka_client_config
-            .create_with_context(context)
-            .expect("Consumer creation failed"),
-    );
+    let consumer: BaseConsumer = kafka_client_config
+        .create()
+        .expect("Consumer creation failed");
 
     // Validates: broker reachability, SASL/SSL auth handshake,
     // topic existence, and partition count — no group join.
@@ -93,29 +86,17 @@ pub async fn start_no_consume_mode(
 pub async fn start_consumer(
     topics: &[&str],
     kafka_client_config: &ClientConfig,
-    use_arroyo: bool,
     activation_store: Arc<dyn ActivationStore>,
-    spawn_actors: impl FnMut(Arc<ConsumerBackend>, Assignment) -> ActorHandles,
+    spawn_actors: impl FnMut(Arc<AsyncKafkaConsumer>, Assignment) -> ActorHandles,
 ) -> Result<(), Error> {
-    let (client_shutdown_sender, client_shutdown_receiver) = oneshot::channel();
     let (event_sender, event_receiver) = unbounded_channel();
     // Metrics tag only. Ownership keys come per-topic from the assignment `tpl`,
     // never from this string — so a multi-topic consumer stays correct.
     let topics_tag = topics.join(",");
     let context = KafkaContext::new(event_sender.clone(), topics_tag.clone());
-    let consumer = Arc::new(ConsumerBackend::new(
-        topics,
-        kafka_client_config,
-        context,
-        use_arroyo,
-    )?);
+    let consumer = Arc::new(create_consumer(topics, kafka_client_config, context)?);
 
     handle_shutdown_signals(event_sender.clone());
-    // Arroyo polls the consumer on its own thread and commits when it is dropped below, so only
-    // rdkafka needs a poller to drive rebalances and commit on shutdown.
-    if let ConsumerBackend::Rdkafka { consumer } = consumer.as_ref() {
-        poll_consumer_client(consumer.clone(), client_shutdown_receiver);
-    }
     metrics::gauge!(
         "arroyo.consumer.current_partitions",
         "topic" => topics_tag.clone(),
@@ -126,7 +107,6 @@ pub async fn start_consumer(
         consumer.clone(),
         event_receiver,
         activation_store,
-        client_shutdown_sender,
         spawn_actors,
         topics_tag,
     )
@@ -147,122 +127,6 @@ pub fn handle_shutdown_signals(event_sender: UnboundedSender<(Event, SyncSender<
     });
 }
 
-#[instrument(skip_all)]
-pub fn poll_consumer_client(
-    consumer: Arc<StreamConsumer<KafkaContext>>,
-    mut shutdown: oneshot::Receiver<()>,
-) {
-    task::spawn_blocking(|| {
-        Handle::current().block_on(async move {
-            let _guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-            loop {
-                select! {
-                    biased;
-                    _ = &mut shutdown => {
-                        debug!("Received shutdown signal, commiting state in sync mode...");
-                        let _ = consumer.commit_consumer_state(rdkafka::consumer::CommitMode::Sync);
-                        break;
-                    }
-                    msg = consumer.recv() => {
-                        if let Err(KafkaError::MessageConsumption(RDKafkaErrorCode::BrokerTransportFailure)) = msg {
-                            error!("Failed to connect to broker, retrying...")
-                        } else {
-                            error!("Got unexpected status from consumer client: {:?}", msg);
-                            break
-                        }
-                    }
-                }
-            }
-            debug!("Shutdown complete");
-        });
-    });
-}
-
-#[derive(Debug)]
-pub struct KafkaContext {
-    pub(super) event_sender: UnboundedSender<(Event, SyncSender<()>)>,
-    /// The topic(s) this consumer is subscribed to, used as a metric tag.
-    pub(super) topics_tag: String,
-}
-
-impl KafkaContext {
-    pub fn new(event_sender: UnboundedSender<(Event, SyncSender<()>)>, topics_tag: String) -> Self {
-        Self {
-            event_sender,
-            topics_tag,
-        }
-    }
-}
-
-impl ClientContext for KafkaContext {}
-
-impl ConsumerContext for KafkaContext {
-    #[instrument(skip_all)]
-    fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
-        let (rendezvous_sender, rendezvous_receiver) = sync_channel(0);
-        match rebalance {
-            Rebalance::Assign(tpl) => {
-                debug!("Got pre-rebalance callback, kind: Assign");
-                if tpl.count() == 0 {
-                    warn!(
-                        "Got partition assignment with no partitions, \
-                        this is likely due to there being more consumers than partitions"
-                    );
-                    return;
-                }
-                let _ = self.event_sender.send((
-                    Event::Assign(Assignment {
-                        partitions: tpl.to_topic_map().keys().cloned().collect(),
-                        arroyo_queues: Vec::new(),
-                    }),
-                    rendezvous_sender,
-                ));
-                info!("Partition assignment event sent, waiting for rendezvous...");
-                let _ = rendezvous_receiver.recv();
-                info!("Rendezvous complete");
-                metrics::counter!(
-                    "arroyo.consumer.partitions_assigned.count",
-                    "topic" => self.topics_tag.clone(),
-                    "application" => "taskbroker",
-                )
-                .increment(tpl.count() as u64);
-            }
-            Rebalance::Revoke(tpl) => {
-                debug!("Got pre-rebalance callback, kind: Revoke");
-                if tpl.count() == 0 {
-                    warn!(
-                        "Got partition revocation with no partitions, \
-                        this is likely due to there being more consumers than partitions"
-                    );
-                    return;
-                }
-                let _ = self.event_sender.send((
-                    Event::Revoke(tpl.to_topic_map().keys().cloned().collect()),
-                    rendezvous_sender,
-                ));
-                info!("Partition revocation event sent, waiting for rendezvous...");
-                let _ = rendezvous_receiver.recv();
-                info!("Rendezvous complete");
-                metrics::counter!(
-                    "arroyo.consumer.partitions_revoked.count",
-                    "topic" => self.topics_tag.clone(),
-                    "application" => "taskbroker",
-                )
-                .increment(tpl.count() as u64);
-            }
-            Rebalance::Error(err) => {
-                debug!("Got pre-rebalance callback, kind: Error");
-                error!("Got rebalance error: {}", err);
-            }
-        }
-    }
-
-    #[instrument(skip(self))]
-    fn commit_callback(&self, result: KafkaResult<()>, _offsets: &TopicPartitionList) {
-        debug!("Got commit callback");
-    }
-}
-
 #[derive(Debug)]
 pub enum Event {
     Assign(Assignment),
@@ -279,7 +143,7 @@ pub struct ActorHandles {
 
 impl ActorHandles {
     #[instrument(skip(self))]
-    async fn shutdown(mut self, deadline: Duration) -> JoinSet<Result<(), Error>> {
+    async fn shutdown(mut self, deadline: Duration) {
         debug!("Signaling shutdown to actors...");
         self.shutdown.cancel();
         info!("Actor shutdown signaled, waiting for rendezvous...");
@@ -295,9 +159,9 @@ impl ActorHandles {
                 );
             }
         }
-        // Returned so the Arroyo path can join them before committing or closing the consumer.
-        self.join_set.abort_all();
-        self.join_set
+        // Wait for the aborted actors to exit, so none stores offsets or holds the consumer after
+        // the partitions are revoked or the consumer is closed.
+        self.join_set.shutdown().await;
     }
 
     async fn join_next(&mut self) -> Option<Result<Result<(), Error>, JoinError>> {
@@ -351,7 +215,7 @@ macro_rules! processing_strategy {
             reduce: $reduce_first:expr $(,$reduce_rest:expr)*,
         }
     ) => {{
-        |consumer: Arc<$crate::kafka::consumer_backend::ConsumerBackend>,
+        |consumer: Arc<sentry_arroyo::backends::kafka::async_consumer::AsyncKafkaConsumer>,
          assignment: $crate::kafka::consumer_backend::Assignment|
          -> $crate::kafka::consumer::ActorHandles {
             let start = std::time::Instant::now();
@@ -364,10 +228,7 @@ macro_rules! processing_strategy {
             let (map_sender, reduce_receiver) = tokio::sync::mpsc::channel(1);
             let (err_sender, err_receiver) = tokio::sync::mpsc::channel(1);
 
-            let queues = consumer
-                .partition_queues(assignment)
-                .expect("Unable to split topic by Partition");
-            for queue in queues {
+            for queue in assignment.queues {
                 handles.spawn($crate::kafka::consumer::map(
                     queue,
                     $map_fn,
@@ -418,17 +279,15 @@ enum ConsumerState {
 
 #[instrument(skip_all)]
 pub async fn handle_events(
-    consumer: Arc<ConsumerBackend>,
+    consumer: Arc<AsyncKafkaConsumer>,
     events: UnboundedReceiver<(Event, SyncSender<()>)>,
     activation_store: Arc<dyn ActivationStore>,
-    shutdown_client: oneshot::Sender<()>,
-    mut spawn_actors: impl FnMut(Arc<ConsumerBackend>, Assignment) -> ActorHandles,
+    mut spawn_actors: impl FnMut(Arc<AsyncKafkaConsumer>, Assignment) -> ActorHandles,
     topics_tag: String,
 ) -> Result<(), anyhow::Error> {
     const CALLBACK_DURATION: Duration = Duration::from_secs(4);
 
     let _guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
-    let mut shutdown_client = Some(shutdown_client);
     let mut events_stream = UnboundedReceiverStream::new(events);
 
     let mut state = ConsumerState::Ready;
@@ -473,12 +332,7 @@ pub async fn handle_events(
                             "Revoked TPL should be equal to the subset of TPL we're consuming from"
                         );
                         activation_store.revoke_partitions(&mut revoked.iter().map(TopicPartition::from));
-                        let mut actors = handles.shutdown(CALLBACK_DURATION).await;
-                        if consumer.is_arroyo() {
-                            // Join the aborted actors so none still holds the consumer when it
-                            // is closed.
-                            actors.shutdown().await;
-                        }
+                        handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!(
                             "arroyo.consumer.current_partitions",
                             "topic" => topics_tag.clone(),
@@ -489,12 +343,7 @@ pub async fn handle_events(
                     }
                     (ConsumerState::Consuming(handles, tpl), Event::Shutdown) => {
                         activation_store.revoke_partitions(&mut tpl.iter().map(TopicPartition::from));
-                        let mut actors = handles.shutdown(CALLBACK_DURATION).await;
-                        if consumer.is_arroyo() {
-                            actors.shutdown().await;
-                        }
-                        debug!("Signaling shutdown to client...");
-                        shutdown_client.take();
+                        handles.shutdown(CALLBACK_DURATION).await;
                         metrics::gauge!(
                             "arroyo.consumer.current_partitions",
                             "topic" => topics_tag.clone(),
@@ -518,26 +367,8 @@ pub trait KafkaMessage {
     fn into_message(self) -> Result<MessageBackend, Error>;
 }
 
-impl KafkaMessage for Result<BorrowedMessage<'_>, KafkaError> {
-    fn into_message(self) -> Result<MessageBackend, Error> {
-        match self {
-            Ok(borrowed_msg) => Ok(borrowed_msg.detach().into()),
-            Err(err) => Err(anyhow!(
-                "Cannot detach message, got error from kafka: {:?}",
-                err
-            )),
-        }
-    }
-}
-
 pub trait MessageQueue {
     fn stream(&self) -> impl Stream<Item = impl KafkaMessage>;
-}
-
-impl MessageQueue for StreamPartitionQueue<KafkaContext> {
-    fn stream(&self) -> impl Stream<Item = impl KafkaMessage> {
-        self.stream()
-    }
 }
 
 #[instrument(skip_all)]
@@ -1101,7 +932,7 @@ mod tests {
     #[case::rendezvous(true)]
     #[case::deadline(false)]
     #[tokio::test]
-    async fn test_native_actor_shutdown_defers_cleanup(#[case] rendezvous_completed: bool) {
+    async fn test_actor_shutdown_joins_actors(#[case] rendezvous_completed: bool) {
         let consumer = Arc::new(());
         let mut join_set = JoinSet::new();
         let (started_sender, started) = oneshot::channel();
@@ -1133,9 +964,7 @@ mod tests {
         } else {
             Duration::ZERO
         };
-        let mut cleanup = handles.shutdown(deadline).await;
-        assert_eq!(Arc::strong_count(&consumer), 2);
-        cleanup.shutdown().await;
+        handles.shutdown(deadline).await;
         assert_eq!(Arc::strong_count(&consumer), 1);
     }
 
