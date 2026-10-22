@@ -5,6 +5,7 @@ use std::sync::mpsc::{SyncSender, sync_channel};
 use anyhow::{Context, Error};
 use futures::Stream;
 use rdkafka::error::KafkaError;
+use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, TopicPartitionList};
 use sentry_arroyo::backends::kafka::async_consumer::{
     AsyncAssignmentCallbacks, AsyncKafkaConsumer, AsyncPartitionQueue,
@@ -122,36 +123,40 @@ impl KafkaContext {
     }
 }
 
+fn partition_key(partition: Partition) -> (String, i32) {
+    (
+        partition.topic.as_str().to_owned(),
+        i32::from(partition.index),
+    )
+}
+
 impl AsyncAssignmentCallbacks for KafkaContext {
     fn on_assign(&self, queues: Vec<AsyncPartitionQueue>) {
         let partitions = queues
             .iter()
-            .map(|queue| {
-                let partition = queue.partition();
-                (
-                    partition.topic.as_str().to_owned(),
-                    i32::from(partition.index),
-                )
-            })
+            .map(|queue| partition_key(queue.partition()))
             .collect();
         self.handle_rebalance(Event::Assign(Assignment { partitions, queues }));
     }
 
     fn on_revoke(&self, partitions: Vec<Partition>) {
-        let partitions = partitions
-            .iter()
-            .map(|partition| {
-                (
-                    partition.topic.as_str().to_owned(),
-                    i32::from(partition.index),
-                )
-            })
-            .collect();
+        let partitions = partitions.into_iter().map(partition_key).collect();
         self.handle_rebalance(Event::Revoke(partitions));
     }
 
     /// Arroyo has already logged the error. Shut down on unexpected consumer errors.
-    fn on_error(&self, _error: KafkaError) {
+    fn on_error(&self, error: KafkaError) {
+        if error.rdkafka_error_code() == Some(RDKafkaErrorCode::InconsistentGroupProtocol) {
+            // for switching to cooperative-sticky
+            warn!("Waiting for group members on the other rebalance protocol to leave");
+            metrics::counter!(
+                "arroyo.consumer.inconsistent_group_protocol",
+                "topic" => self.topics_tag.clone(),
+                "application" => "taskbroker",
+            )
+            .increment(1);
+            return;
+        }
         drop(elegant_departure::shutdown());
     }
 }
@@ -160,6 +165,19 @@ impl AsyncAssignmentCallbacks for KafkaContext {
 pub struct Assignment {
     pub partitions: BTreeSet<(String, i32)>,
     pub queues: Vec<AsyncPartitionQueue>,
+}
+
+impl Assignment {
+    pub fn split(self) -> impl Iterator<Item = ((String, i32), Assignment)> {
+        self.queues.into_iter().map(|queue| {
+            let partition = partition_key(queue.partition());
+            let assignment = Assignment {
+                partitions: BTreeSet::from([partition.clone()]),
+                queues: vec![queue],
+            };
+            (partition, assignment)
+        })
+    }
 }
 
 impl Debug for Assignment {
