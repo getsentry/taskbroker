@@ -1,4 +1,17 @@
 # Changelog
+## 0.20.30
+
+### New Features ✨
+
+- (client) Use span streaming exclusively by @sentrivana in [#828](https://github.com/getsentry/taskbroker/pull/828)
+
+### Internal Changes 🔧
+
+#### Deps
+
+- Keep Dependabot uv updates on internal PyPI by @sentry-junior in [#826](https://github.com/getsentry/taskbroker/pull/826)
+- Bump Python to 3.12.15 for Ubuntu 26.04 runners by @sentry-junior in [#825](https://github.com/getsentry/taskbroker/pull/825)
+
 ## 0.20.29
 
 ### Bug Fixes 🐛
