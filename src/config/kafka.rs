@@ -62,6 +62,14 @@ pub struct ClusterConfig {
     pub ssl_certificate_location: Option<String>,
     /// The location to the private key file
     pub ssl_key_location: Option<String>,
+    /// How librdkafka gets OAUTHBEARER tokens, eg. oidc
+    pub sasl_oauthbearer_method: Option<String>,
+    /// The OIDC token endpoint, eg. a local auth server
+    pub sasl_oauthbearer_token_endpoint_url: Option<String>,
+    /// The OIDC client id
+    pub sasl_oauthbearer_client_id: Option<String>,
+    /// The OIDC client secret
+    pub sasl_oauthbearer_client_secret: Option<String>,
 }
 
 impl ClusterConfig {
@@ -76,6 +84,10 @@ impl ClusterConfig {
             || self.ssl_ca_location.is_some()
             || self.ssl_certificate_location.is_some()
             || self.ssl_key_location.is_some()
+            || self.sasl_oauthbearer_method.is_some()
+            || self.sasl_oauthbearer_token_endpoint_url.is_some()
+            || self.sasl_oauthbearer_client_id.is_some()
+            || self.sasl_oauthbearer_client_secret.is_some()
     }
 
     /// Apply this cluster's `bootstrap.servers` and any configured sasl/ssl
@@ -104,6 +116,18 @@ impl ClusterConfig {
         }
         if let Some(ref ssl_private_key_location) = self.ssl_key_location {
             config.set("ssl.key.location", ssl_private_key_location);
+        }
+        if let Some(ref method) = self.sasl_oauthbearer_method {
+            config.set("sasl.oauthbearer.method", method);
+        }
+        if let Some(ref url) = self.sasl_oauthbearer_token_endpoint_url {
+            config.set("sasl.oauthbearer.token.endpoint.url", url);
+        }
+        if let Some(ref client_id) = self.sasl_oauthbearer_client_id {
+            config.set("sasl.oauthbearer.client.id", client_id);
+        }
+        if let Some(ref client_secret) = self.sasl_oauthbearer_client_secret {
+            config.set("sasl.oauthbearer.client.secret", client_secret);
         }
     }
 }

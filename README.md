@@ -93,6 +93,13 @@ kafka_clusters:
     # sasl_mechanism: scram-sha-256
     # sasl_username: ...
     # sasl_password: ...
+    # or OAUTHBEARER with tokens from an OIDC endpoint, eg. Google Managed
+    # Kafka's local auth server:
+    # sasl_mechanism: OAUTHBEARER
+    # sasl_oauthbearer_method: oidc
+    # sasl_oauthbearer_token_endpoint_url: http://localhost:14293
+    # sasl_oauthbearer_client_id: ...
+    # sasl_oauthbearer_client_secret: ...
 
 kafka_topics:
   taskworker:
