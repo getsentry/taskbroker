@@ -229,24 +229,24 @@ wheels = [
 
 [[package]]
 name = "grpcio"
-version = "1.75.1"
+version = "1.84.1"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp311-cp311-macosx_11_0_universal2.whl", hash = "sha256:6a4996a2c8accc37976dc142d5991adf60733e223e5c9a2219e157dc6a8fd3a2" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:b1ea1bbe77ecbc1be00af2769f4ae4a88ce93be57a4f3eebd91087898ed749f9" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0049a7bf547dafaeeb1db17079ce79596c298bfe308fc084d023c8907a845b9a" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:8775036efe4ad2085975531d221535329f5dac99b6c2a854a995456098f99546" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:bb658f703468d7fbb5dcc4037c65391b7dc34f808ac46ed9136c24fc5eeb041d" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:7d4fa6ccc3ec2e68a04f7b883d354d7fea22a34c44ce535a2f0c0049cf626ddf" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:5b8f381eadcd6ecaa143a21e9e80a26424c76a0a9b3d546febe6648f3a36a5ac" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:5bf4001d3293e3414d0cf99ff9b1139106e57c3a66dfff0c5f60b2a6286ec133" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:0ee119f4f88d9f75414217823d21d75bfe0e6ed40135b0cbbfc6376bc9f7757d" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:06373a94fd16ec287116a825161dca179a0402d0c60674ceeec8c9fba344fe66" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:4484f4b7287bdaa7a5b3980f3c7224c3c622669405d20f69549f5fb956ad0421" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.75.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:07a554fa31c668cf0e7a188678ceeca3cb8fead29bbe455352e712ec33ca701c" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp311-cp311-macosx_11_0_universal2.whl", hash = "sha256:11c1d07c58922f5dad022b422d3f7998755c3e35e2f1949bac47cfd7a5eb31fd" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:6a22342e59b5b2f4c5ed276ef72a3668ec84f38d2f5fad8a64af0b3618e510eb" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:eb881326607275ad2d2d17dce09b823472414dcc559e8f694d5607fe8af3cbc1" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:f7533921b52ef94210437dedd3911e00b7642ca8d11eda64eb1715778630715e" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e0dcc7b588e7b7dd3363317296983db23a26af8baa5884db15a10fc0c8534186" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:474408c92b27c823ea6aab2315e2ea52d5a4e0040b37ce1e65e89d9149c48205" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:af0f0c10281c2b62c68868e0a98de24f89c31308c68dbf19320d30c3a329aba5" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c1c04d2876ccb063507a976602bc88b5c31330982e650c620bf8e730b120c9d5" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:2ce575e400e0dec9484f5d038fa12d6b3919d493c2beb897a23b9a32fa3bfd12" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:f2482ebe5e3a9c6d1f99859e135cc0ca370362e3b2a94cb6304f64943997bfcb" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:b8fb04fe0ded6fb1c5edd4c90ed39193d7b6226214685111b25a153ccb33a52a" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/grpcio-1.84.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ccd8be89a73d276336cbf223b22bd5c677d9fd15233100f208845c6a0c7cbc72" },
 ]
 
 [[package]]
