@@ -1,4 +1,8 @@
 # Changelog
+## 0.20.32
+
+- No documented changes.
+
 ## 0.20.30
 
 ### New Features ✨
