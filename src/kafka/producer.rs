@@ -1,31 +1,26 @@
 use std::time::{Duration, Instant};
 
-use sentry_arroyo::backends::ProducerError;
 use sentry_arroyo::backends::kafka::config::KafkaConfig;
 use sentry_arroyo::backends::kafka::config_blob::ProducerSelector;
 use sentry_arroyo::backends::kafka::reloading_producer::{
     ReloadConfig, ReloadError, ReloadingKafkaProducer,
 };
+use sentry_arroyo::backends::kafka::types::KafkaPayload;
+use sentry_arroyo::backends::{AsyncProducer, ProducerError};
+use sentry_arroyo::types::{Topic, TopicOrPartition};
 
 use rdkafka::ClientConfig;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
-use rdkafka::producer::BaseRecord;
 
-/// The application name used to pick per-application overrides from the
-/// shared Kafka config.
-const APP_NAME: &str = "taskbroker";
-
-/// An Arroyo producer that can swap its Kafka client when config changes,
-/// with bounded retries when the local queue is full.
+/// An Arroyo producer with bounded retries when the local queue is full.
 pub struct KafkaProducer {
     producer: ReloadingKafkaProducer,
     queue_timeout: Duration,
 }
 
 impl KafkaProducer {
-    /// `topic` is the topic this producer mainly sends to. It picks this
-    /// producer's entry in the shared Kafka config. Other topics are sent to
-    /// under their own name.
+    /// `topic` picks this producer's entry in the shared Kafka config. Other
+    /// topics are sent to under their own name.
     pub fn new(
         config: ClientConfig,
         topic: &str,
@@ -46,24 +41,23 @@ impl KafkaProducer {
             ignore_key_ordering: true,
             ..ReloadConfig::default()
         };
-
         Ok(Self {
             producer: ReloadingKafkaProducer::from_config(
                 arroyo_config,
-                ProducerSelector::new(topic, APP_NAME),
+                ProducerSelector::new(topic, "taskbroker"),
                 settings,
             )?,
             queue_timeout,
         })
     }
 
-    /// Sends a message and waits until the broker has it.
     pub async fn send(&self, topic: &str, payload: &[u8]) -> Result<(), ProducerError> {
+        let destination = TopicOrPartition::Topic(Topic::new(topic));
+        let payload = KafkaPayload::new(None, None, Some(payload.to_vec()));
         let deadline = Instant::now() + self.queue_timeout;
 
         loop {
-            let record = BaseRecord::<(), [u8]>::to(topic).payload(payload);
-            match self.producer.produce_record_with_delivery(record).await {
+            match self.producer.produce(&destination, payload.clone()).await {
                 Err(
                     error @ ProducerError::Kafka(KafkaError::MessageProduction(
                         RDKafkaErrorCode::QueueFull,
@@ -88,9 +82,10 @@ mod tests {
 
     use rdkafka::ClientConfig;
     use rdkafka::error::{KafkaError, RDKafkaErrorCode};
-    use rdkafka::producer::BaseRecord;
 
-    use sentry_arroyo::backends::ProducerError;
+    use sentry_arroyo::backends::kafka::types::KafkaPayload;
+    use sentry_arroyo::backends::{AsyncProducer, ProducerError};
+    use sentry_arroyo::types::{Topic, TopicOrPartition};
 
     use super::KafkaProducer;
 
@@ -103,11 +98,12 @@ mod tests {
             .set("message.timeout.ms", "5000");
         let producer = KafkaProducer::new(config, "test", Duration::from_millis(20)).unwrap();
 
-        // Fill the queue without waiting for delivery.
-        producer
-            .producer
-            .produce_record(BaseRecord::<(), [u8]>::to("test").payload(b"first".as_slice()))
-            .unwrap();
+        // Fill the queue without polling the delivery future.
+        let destination = TopicOrPartition::Topic(Topic::new("test"));
+        let _first = producer.producer.produce(
+            &destination,
+            KafkaPayload::new(None, None, Some(b"first".to_vec())),
+        );
 
         let started = Instant::now();
         let result = producer.send("test", b"second").await;
