@@ -1,4 +1,18 @@
 # Changelog
+## 26.10.1
+
+### Internal Changes 🔧
+
+#### Deps
+
+- Bump grpcio to 1.84.1 by @geoffg-sentry with @sentry-junior in [#833](https://github.com/getsentry/taskbroker/pull/833)
+- Bump uv to 0.13.5 by @geoffg-sentry with @sentry-junior in [#831](https://github.com/getsentry/taskbroker/pull/831)
+- Drop vendored webpki root bundles by @untitaker with @sentry-junior in [#829](https://github.com/getsentry/taskbroker/pull/829)
+
+#### Other
+
+- (consumer) Remove the legacy rdkafka consumer path by @lvthanh03 in [#827](https://github.com/getsentry/taskbroker/pull/827)
+
 ## 26.10.0
 
 ### Internal Changes 🔧
