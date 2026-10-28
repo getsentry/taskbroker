@@ -19,8 +19,9 @@ pub struct KafkaProducer {
 }
 
 impl KafkaProducer {
-    /// `topic` picks this producer's entry in the shared Kafka config. Other
-    /// topics are sent to under their own name.
+    /// `topic` only picks this producer's entry in the shared Kafka config.
+    /// It is not the only topic the producer can send to: other topics are
+    /// sent to under their own name, on the same cluster.
     pub fn new(
         config: ClientConfig,
         topic: &str,
