@@ -37,6 +37,7 @@ pub async fn upkeep(
     let producer = Arc::new(
         KafkaProducer::new(
             kafka_config,
+            &config.kafka_deadletter_topic,
             Duration::from_millis(config.kafka_send_timeout_ms),
         )
         .expect("Could not create kafka producer in upkeep"),
@@ -367,6 +368,7 @@ pub async fn do_upkeep(
         let forward_producer = Arc::new(
             KafkaProducer::new(
                 forward_producer_config,
+                &forward_topic,
                 Duration::from_millis(config.kafka_send_timeout_ms),
             )
             .expect("Could not create kafka producer in upkeep"),

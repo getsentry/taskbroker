@@ -343,6 +343,7 @@ pub fn create_integration_config() -> Config {
 pub fn create_producer(config: Arc<Config>) -> Arc<KafkaProducer> {
     let producer = KafkaProducer::new(
         config.kafka_producer_config(),
+        &config.kafka_deadletter_topic,
         Duration::from_millis(config.kafka_send_timeout_ms),
     )
     .expect("Could not create kafka producer");

@@ -68,6 +68,7 @@ impl ActivationBatcher {
         let producer = Arc::new(
             KafkaProducer::new(
                 config.producer_config.clone(),
+                &config.kafka_deadletter_topic,
                 Duration::from_millis(config.send_timeout_ms),
             )
             .expect("Could not create kafka producer in activation batcher"),
@@ -105,8 +106,12 @@ impl ActivationBatcher {
             let mut config = self.config.producer_config.clone();
             config.set("bootstrap.servers", &cluster);
             self.producer = Arc::new(
-                KafkaProducer::new(config, Duration::from_millis(self.config.send_timeout_ms))
-                    .expect("Could not create kafka producer in activation batcher"),
+                KafkaProducer::new(
+                    config,
+                    &self.config.kafka_deadletter_topic,
+                    Duration::from_millis(self.config.send_timeout_ms),
+                )
+                .expect("Could not create kafka producer in activation batcher"),
             );
             self.producer_cluster = cluster;
         }
