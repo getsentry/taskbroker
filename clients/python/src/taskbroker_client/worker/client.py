@@ -34,9 +34,9 @@ else:
 
 logger = logging.getLogger(__name__)
 
-# gRPC runs the unary request deserializer and the servicer on the same thread for a given call
-# If HMAC verification fails inside a deserializer wrapper, raising turns into INTERNAL, so we set this flag and abort UNAUTHENTICATED from the servicer
-_RPC_SIGNATURE_AUTH_TLS = threading.local()
+# Raising in the deserializer would return INTERNAL, so a request that fails the HMAC check
+# is replaced with this marker and the servicer aborts with UNAUTHENTICATED.
+_AUTH_FAILED = object()
 
 MAX_ACTIVATION_SIZE = 1024 * 1024 * 10
 """Max payload size we will process."""
@@ -217,18 +217,15 @@ class RequestSignatureServerInterceptor(ServerInterceptor):
         original = handler.unary_unary
 
         def request_deserializer(serialized_request: bytes) -> Any:
-            _RPC_SIGNATURE_AUTH_TLS.failed = False
-
             if not verify_rpc_request_signature_hmac(
                 self._secrets, method, serialized_request, signature
             ):
-                _RPC_SIGNATURE_AUTH_TLS.failed = True
-                return inner_deserializer(b"")
+                return _AUTH_FAILED
 
             return inner_deserializer(serialized_request)
 
         def unary_unary(request: Any, context: grpc.ServicerContext) -> Any:
-            if getattr(_RPC_SIGNATURE_AUTH_TLS, "failed", False):
+            if request is _AUTH_FAILED:
                 context.abort(grpc.StatusCode.UNAUTHENTICATED, "Authentication failed")
 
             return original(request, context)
