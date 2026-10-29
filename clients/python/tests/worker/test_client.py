@@ -6,6 +6,7 @@ import string
 import time
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -20,9 +21,15 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     GetTaskRequest,
     GetTaskResponse,
     PushTaskRequest,
+    PushTaskResponse,
     SetTaskStatusRequest,
     SetTaskStatusResponse,
     TaskActivation,
+)
+from sentry_protos.taskbroker.v1.taskbroker_pb2_grpc import (
+    WorkerServiceServicer,
+    WorkerServiceStub,
+    add_WorkerServiceServicer_to_server,
 )
 
 from taskbroker_client.constants import DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH
@@ -392,6 +399,53 @@ def test_request_signature_server_interceptor_skips_grpc_health_check() -> None:
     interceptor = RequestSignatureServerInterceptor(["secret"])
 
     assert interceptor.intercept_service(lambda _: handler, handler_call_details) is handler
+
+
+@pytest.mark.parametrize(
+    ("signature", "expected"),
+    [
+        (None, grpc.StatusCode.UNAUTHENTICATED),
+        (lambda body: _push_task_hmac(b"wrong", body), grpc.StatusCode.UNAUTHENTICATED),
+        (lambda body: _push_task_hmac(b"secret", body + b"x"), grpc.StatusCode.UNAUTHENTICATED),
+        (lambda body: _push_task_hmac(b"secret", body), grpc.StatusCode.OK),
+    ],
+    ids=["missing", "wrong_secret", "wrong_body", "valid"],
+)
+def test_request_signature_server_interceptor_on_grpc_server(
+    signature: Callable[[bytes], str] | None, expected: grpc.StatusCode
+) -> None:
+    received: list[PushTaskRequest] = []
+
+    class Worker(WorkerServiceServicer):
+        def PushTask(
+            self, request: PushTaskRequest, context: grpc.ServicerContext
+        ) -> PushTaskResponse:
+            received.append(request)
+            return PushTaskResponse()
+
+    server = grpc.server(
+        ThreadPoolExecutor(max_workers=2),
+        interceptors=[RequestSignatureServerInterceptor(["secret"])],
+    )
+    add_WorkerServiceServicer_to_server(Worker(), server)
+    port = server.add_insecure_port("127.0.0.1:0")
+    server.start()
+    try:
+        with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+            request = PushTaskRequest(task=TaskActivation(id="abc123", taskname="do_thing"))
+            metadata: tuple[tuple[str, str | bytes], ...] = ()
+            if signature is not None:
+                metadata = (("sentry-signature", signature(request.SerializeToString())),)
+            try:
+                WorkerServiceStub(channel).PushTask(request, metadata=metadata, timeout=5)
+                code = grpc.StatusCode.OK
+            except grpc.RpcError as e:
+                code = e.code()
+    finally:
+        server.stop(None)
+
+    assert code == expected
+    assert received == ([request] if expected == grpc.StatusCode.OK else [])
 
 
 def test_get_task_with_namespace() -> None:
