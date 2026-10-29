@@ -131,6 +131,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2974,12 +2996,13 @@ dependencies = [
 
 [[package]]
 name = "sentry_arroyo"
-version = "2.45.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0613349751745af9d0dc617b78c531754e4443343809b19c6c78a1c68fa78c8a"
+version = "2.48.1"
+source = "git+https://github.com/getsentry/arroyo?branch=markus%2Freloading-producer-delivery-futures#8cb627c971c69955b523f912be21127a8ce897e0"
 dependencies = [
+ "async-stream",
  "chrono",
  "coarsetime",
+ "futures",
  "metrics",
  "once_cell",
  "parking_lot",
@@ -2990,6 +3013,8 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-stream",
+ "tokio-util",
  "tracing",
  "uuid",
 ]
@@ -4247,7 +4272,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

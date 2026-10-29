@@ -1,7 +1,10 @@
 use std::time::{Duration, Instant};
 
 use sentry_arroyo::backends::kafka::config::KafkaConfig;
-use sentry_arroyo::backends::kafka::producer::AsyncKafkaProducer;
+use sentry_arroyo::backends::kafka::config_blob::ProducerSelector;
+use sentry_arroyo::backends::kafka::reloading_producer::{
+    ReloadConfig, ReloadError, ReloadingKafkaProducer,
+};
 use sentry_arroyo::backends::kafka::types::KafkaPayload;
 use sentry_arroyo::backends::{AsyncProducer, ProducerError};
 use sentry_arroyo::types::{Topic, TopicOrPartition};
@@ -11,12 +14,19 @@ use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 
 /// An Arroyo producer with bounded retries when the local queue is full.
 pub struct KafkaProducer {
-    producer: AsyncKafkaProducer,
+    producer: ReloadingKafkaProducer,
     queue_timeout: Duration,
 }
 
 impl KafkaProducer {
-    pub fn new(config: ClientConfig, queue_timeout: Duration) -> Result<Self, KafkaError> {
+    /// `topic` only picks this producer's entry in the shared Kafka config.
+    /// It is not the only topic the producer can send to: other topics are
+    /// sent to under their own name, on the same cluster.
+    pub fn new(
+        config: ClientConfig,
+        topic: &str,
+        queue_timeout: Duration,
+    ) -> Result<Self, ReloadError> {
         let bootstrap_servers = config
             .get("bootstrap.servers")
             .expect("producer config always sets bootstrap.servers")
@@ -25,8 +35,19 @@ impl KafkaProducer {
             vec![bootstrap_servers],
             Some(config.config_map().clone()),
         );
+        let settings = ReloadConfig {
+            // Taskbroker sends messages without a key, so their order does not
+            // matter. Swap clients right away instead of holding back sends
+            // until the old client has drained.
+            ignore_key_ordering: true,
+            ..ReloadConfig::default()
+        };
         Ok(Self {
-            producer: AsyncKafkaProducer::new(arroyo_config)?,
+            producer: ReloadingKafkaProducer::from_config(
+                arroyo_config,
+                ProducerSelector::new(topic, "taskbroker"),
+                settings,
+            )?,
             queue_timeout,
         })
     }
@@ -76,7 +97,7 @@ mod tests {
             .set("bootstrap.servers", "127.0.0.1:1")
             .set("queue.buffering.max.messages", "1")
             .set("message.timeout.ms", "5000");
-        let producer = KafkaProducer::new(config, Duration::from_millis(20)).unwrap();
+        let producer = KafkaProducer::new(config, "test", Duration::from_millis(20)).unwrap();
 
         // Fill the queue without polling the delivery future.
         let destination = TopicOrPartition::Topic(Topic::new("test"));
