@@ -1,4 +1,17 @@
 # Changelog
+## 0.20.33
+
+### Bug Fixes 🐛
+
+#### Client
+
+- Join split surrogate pairs when encoding task parameters by @enochtangg and @claude in [#835](https://github.com/getsentry/taskbroker/pull/835)
+- Reject push requests with a missing or invalid signature by @theminjunchoi in [#836](https://github.com/getsentry/taskbroker/pull/836)
+
+### Other
+
+- release: 0.20.32 by @untitaker in [a9351e89](https://github.com/getsentry/taskbroker/commit/a9351e897d45f6bfb0797d77599b30df3cd5dd50)
+
 ## 0.20.32
 
 - No documented changes.

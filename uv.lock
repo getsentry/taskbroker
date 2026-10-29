@@ -796,7 +796,7 @@ dev = [
 
 [[package]]
 name = "taskbroker-client"
-version = "0.20.32"
+version = "0.20.33"
 source = { editable = "clients/python" }
 dependencies = [
     { name = "confluent-kafka" },
