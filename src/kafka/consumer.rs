@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::future::Future;
 use std::mem::take;
@@ -103,14 +103,27 @@ pub async fn start_consumer(
         "application" => "taskbroker",
     )
     .set(0);
-    handle_events(
-        consumer.clone(),
-        event_receiver,
-        activation_store,
-        spawn_actors,
-        topics_tag,
-    )
-    .await?;
+    let cooperative =
+        kafka_client_config.get("partition.assignment.strategy") == Some("cooperative-sticky");
+    if cooperative {
+        handle_events_cooperative(
+            consumer.clone(),
+            event_receiver,
+            activation_store,
+            spawn_actors,
+            topics_tag,
+        )
+        .await?;
+    } else {
+        handle_events(
+            consumer.clone(),
+            event_receiver,
+            activation_store,
+            spawn_actors,
+            topics_tag,
+        )
+        .await?;
+    }
     // Dropping the consumer blocks while it closes, and Arroyo also makes its final commit then,
     // so keep it off the async workers.
     task::spawn_blocking(move || drop(consumer)).await?;
@@ -355,6 +368,82 @@ pub async fn handle_events(
                     (ConsumerState::Stopped, _) => {
                         unreachable!("Got event after consumer has stopped")
                     }
+                }
+            }
+        }
+    }
+    debug!("Shutdown complete");
+    Ok(())
+}
+
+#[instrument(skip_all)]
+pub async fn handle_events_cooperative(
+    consumer: Arc<AsyncKafkaConsumer>,
+    events: UnboundedReceiver<(Event, SyncSender<()>)>,
+    activation_store: Arc<dyn ActivationStore>,
+    mut spawn_actors: impl FnMut(Arc<AsyncKafkaConsumer>, Assignment) -> ActorHandles,
+    topics_tag: String,
+) -> Result<(), anyhow::Error> {
+    const CALLBACK_DURATION: Duration = Duration::from_secs(4);
+
+    let _guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
+    let mut events_stream = UnboundedReceiverStream::new(events);
+
+    let mut pipelines: BTreeMap<(String, i32), ActorHandles> = BTreeMap::new();
+
+    loop {
+        select! {
+            res = async {
+                if pipelines.is_empty() {
+                    future::pending().await
+                } else {
+                    future::select_all(pipelines.values_mut().map(|handles| Box::pin(handles.join_next()))).await.0
+                }
+            } => {
+                error!("Actor exited unexpectedly with {:?}, shutting down...", res);
+                drop(elegant_departure::shutdown());
+            }
+
+            event = events_stream.next() => {
+                let Some((event, _rendezvous_guard)) = event else {
+                    unreachable!("Unexpected end to event stream");
+                };
+                info!("Received event: {:?}", event);
+                let shutdown = matches!(event, Event::Shutdown);
+                let revoked = match event {
+                    Event::Assign(assignment) => {
+                        activation_store.assign_partitions(&mut assignment.partitions.iter().map(TopicPartition::from));
+                        for (partition, assignment) in assignment.split() {
+                            let previous = pipelines.insert(partition, spawn_actors(consumer.clone(), assignment));
+                            assert!(previous.is_none(), "Got assignment for a partition we're already consuming from");
+                        }
+                        vec![]
+                    }
+                    Event::Revoke(revoked) => {
+                        activation_store.revoke_partitions(&mut revoked.iter().map(TopicPartition::from));
+                        revoked
+                            .iter()
+                            .map(|partition| {
+                                pipelines
+                                    .remove(partition)
+                                    .expect("Got revocation for a partition we're not consuming from")
+                            })
+                            .collect()
+                    }
+                    Event::Shutdown => {
+                        activation_store.revoke_partitions(&mut pipelines.keys().map(TopicPartition::from));
+                        take(&mut pipelines).into_values().collect()
+                    }
+                };
+                future::join_all(revoked.into_iter().map(|handles| handles.shutdown(CALLBACK_DURATION))).await;
+                metrics::gauge!(
+                    "arroyo.consumer.current_partitions",
+                    "topic" => topics_tag.clone(),
+                    "application" => "taskbroker",
+                )
+                .set(pipelines.len() as f64);
+                if shutdown {
+                    break;
                 }
             }
         }
