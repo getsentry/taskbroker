@@ -114,6 +114,19 @@ def will_retry_on_deadline_exceeded() -> None:
     timed_task(sleep_seconds=2)
 
 
+@exampletasks.register(
+    name="examples.will_mask_deadline_exceeded",
+    processing_deadline_duration=1,
+)
+def will_mask_deadline_exceeded() -> None:
+    # Mimics a database driver that raises its own error from cleanup code
+    # while the deadline is unwinding the task.
+    try:
+        timed_task(sleep_seconds=2)
+    finally:
+        raise RuntimeError("cleanup failed while the deadline unwound")
+
+
 @exampletasks.register(name="examples.task_with_headers", pass_headers=True)
 def task_with_headers(value: str, headers: dict[str, str]) -> None:
     redis = StrictRedis(host="localhost", port=6379, decode_responses=True)

@@ -40,6 +40,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     PushTaskResponse,
     RetryState,
     TaskActivation,
+    TaskActivationStatus,
 )
 from sentry_sdk.crons import MonitorStatus
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -73,8 +74,9 @@ from taskbroker_client.worker.worker import (
     TrackedChild,
     WorkerServicer,
 )
-from taskbroker_client.worker.workerchild import ChildMessage
+from taskbroker_client.worker.workerchild import ChildMessage, ProcessingDeadlineExceeded
 from taskbroker_client.worker.workerchild import child_process as _child_process
+from taskbroker_client.worker.workerchild import find_deadline_in_chain
 
 SIMPLE_TASK = InflightTaskActivation(
     host="localhost:50051",
@@ -259,6 +261,18 @@ RETRY_TASK_WITH_SILENCED_IGNORED_EXCEPTION = InflightTaskActivation(
             max_attempts=2,
             on_attempts_exceeded=ON_ATTEMPTS_EXCEEDED_DISCARD,
         ),
+    ),
+)
+
+MASKED_DEADLINE_TASK = InflightTaskActivation(
+    host="localhost:50051",
+    receive_timestamp=0,
+    activation=TaskActivation(
+        id="masked-deadline",
+        taskname="examples.will_mask_deadline_exceeded",
+        namespace="examples",
+        parameters_bytes=msgpack.packb({"args": [], "kwargs": {}}, use_bin_type=True),
+        processing_deadline_duration=1,
     ),
 )
 
@@ -3830,3 +3844,141 @@ def test_stale_drain_file_cleared_on_startup(tmp_path: Path) -> None:
 
     assert not drain_file.exists()
     assert pool._should_publish_occupancy()
+
+
+def _run_child(*activations: InflightTaskActivation) -> list[ProcessingResult]:
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    for activation in activations:
+        todo.put(activation)
+    child_process(
+        "examples.app:app",
+        todo,
+        processed,
+        Event(),
+        max_task_count=len(activations),
+        processing_pool_name="test",
+        process_type="fork",
+        skip_awaiting_futures=False,
+        future_checking_frequency=0.1,
+    )
+    return [processed.get() for _ in activations]
+
+
+def test_find_deadline_in_chain() -> None:
+    deadline = ProcessingDeadlineExceeded("deadline")
+    assert find_deadline_in_chain(deadline) is deadline
+    assert find_deadline_in_chain(ValueError("unrelated")) is None
+
+    # psycopg2-style: the driver error is raised while handling the deadline,
+    # then wrapped with `raise ... from` by the ORM.
+    driver_error = RuntimeError("set_session cannot be used inside a transaction")
+    driver_error.__context__ = deadline
+    wrapped = ValueError("wrapped")
+    wrapped.__cause__ = driver_error
+    wrapped.__context__ = driver_error
+    assert find_deadline_in_chain(wrapped) is deadline
+
+    # Explicit cause that hides the deadline on __context__.
+    other = KeyError("other")
+    hidden = ValueError("hidden")
+    hidden.__cause__ = other
+    hidden.__context__ = deadline
+    assert find_deadline_in_chain(hidden) is deadline
+
+    cyclic_a = ValueError("a")
+    cyclic_b = ValueError("b")
+    cyclic_a.__context__ = cyclic_b
+    cyclic_b.__context__ = cyclic_a
+    assert find_deadline_in_chain(cyclic_a) is None
+
+
+@mock.patch("taskbroker_client.worker.workerchild.logger")
+def test_child_process_reports_masked_deadline(mock_logger: mock.Mock) -> None:
+    """A deadline replaced by another exception is still handled as a deadline."""
+    from examples.app import app
+
+    with mock.patch.object(app.metrics, "incr") as mock_incr:
+        (result,) = _run_child(MASKED_DEADLINE_TASK)
+
+    assert result.status == TASK_ACTIVATION_STATUS_FAILURE
+    failed_calls = [
+        c
+        for c in mock_logger.exception.call_args_list
+        if c.args and c.args[0] == "taskworker.task.failed"
+    ]
+    assert len(failed_calls) == 1
+    assert failed_calls[0].kwargs["extra"]["exception_type"] == "RuntimeError"
+    deadline_calls = [
+        c
+        for c in mock_incr.call_args_list
+        if c.args and c.args[0] == "taskworker.worker.processing_deadline_exceeded"
+    ]
+    assert len(deadline_calls) == 1
+    assert deadline_calls[0].kwargs["tags"]["masked"] == "true"
+
+
+def test_child_process_completion_hooks() -> None:
+    """Completion hooks run after every task, outside the deadline alarm."""
+    calls: list[tuple[str, int, bool, float]] = []
+
+    class RecordingHook:
+        def after_task(
+            self,
+            activation: TaskActivation,
+            status: TaskActivationStatus.ValueType,
+            deadline_exceeded: bool,
+        ) -> None:
+            remaining, _ = signal.getitimer(signal.ITIMER_REAL)
+            calls.append((activation.taskname, status, deadline_exceeded, remaining))
+
+    from examples.app import app
+
+    hook = RecordingHook()
+    app.completion_hooks.append(hook)
+    try:
+        results = _run_child(SIMPLE_TASK, FAIL_TASK, MASKED_DEADLINE_TASK)
+    finally:
+        app.completion_hooks.remove(hook)
+
+    assert [r.status for r in results] == [
+        TASK_ACTIVATION_STATUS_COMPLETE,
+        TASK_ACTIVATION_STATUS_FAILURE,
+        TASK_ACTIVATION_STATUS_FAILURE,
+    ]
+    assert calls == [
+        ("examples.simple_task", TASK_ACTIVATION_STATUS_COMPLETE, False, 0.0),
+        ("examples.fail_task", TASK_ACTIVATION_STATUS_FAILURE, False, 0.0),
+        ("examples.will_mask_deadline_exceeded", TASK_ACTIVATION_STATUS_FAILURE, True, 0.0),
+    ]
+
+
+@mock.patch("taskbroker_client.worker.workerchild.logger")
+def test_child_process_completion_hook_failure_does_not_stop_child(
+    mock_logger: mock.Mock,
+) -> None:
+    class BrokenHook:
+        def after_task(
+            self,
+            activation: TaskActivation,
+            status: TaskActivationStatus.ValueType,
+            deadline_exceeded: bool,
+        ) -> None:
+            raise RuntimeError("hook failed")
+
+    from examples.app import app
+
+    hook = BrokenHook()
+    app.completion_hooks.append(hook)
+    try:
+        results = _run_child(SIMPLE_TASK, SIMPLE_TASK)
+    finally:
+        app.completion_hooks.remove(hook)
+
+    assert [r.status for r in results] == [TASK_ACTIVATION_STATUS_COMPLETE] * 2
+    hook_failures = [
+        c
+        for c in mock_logger.exception.call_args_list
+        if c.args and c.args[0] == "taskworker.worker.completion_hook_failed"
+    ]
+    assert len(hook_failures) == 2
