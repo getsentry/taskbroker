@@ -150,13 +150,22 @@ class ChildTimeAccounting:
     _prev_wait: float = 0.0
     _accounted: bool = False
     _measured_from: float = 0.0
+    _starting: bool = False
+    _startup_busy: float = 0.0
+
+    def mark_spawned(self, now: float) -> None:
+        """Count a warming child as busy: its slot cannot take work yet."""
+        self._accounted = True
+        self._starting = True
+        self._measured_from = now
 
     def mark_running(self, now: float) -> None:
-        """Start counting this child, baselining against the slot as it stands.
+        """Start reading this child's slot, baselining against it as it stands.
 
         Baselining rather than zeroing discards whatever the child banked before
-        the parent saw its `running` message, which is the same window over
-        which it is absent from the pool's running count.
+        the parent saw its `running` message. A spawned child already billed
+        that window as startup busy; carry the unsampled tail into the next
+        sample and leave `_measured_from` alone so eligible covers it too.
         """
         reading = self._read(now)
         if reading is None:
@@ -167,8 +176,13 @@ class ChildTimeAccounting:
         else:
             self._prev_busy, self._prev_wait = reading
 
+        if self._starting:
+            self._startup_busy = max(0.0, now - self._measured_from)
+            self._starting = False
+        else:
+            self._startup_busy = 0.0
+            self._measured_from = now
         self._accounted = True
-        self._measured_from = now
 
     def mark_stopped(self) -> None:
         """Stop counting, so an exiting child's tail misses the live pool."""
@@ -179,6 +193,11 @@ class ChildTimeAccounting:
         if not self._accounted:
             return SampleResult()
 
+        if self._starting:
+            elapsed = max(0.0, now - self._measured_from)
+            self._measured_from = now
+            return SampleResult(elapsed, 0.0, elapsed)
+
         reading = self._read(now)
         if reading is None:
             # Advance nothing. The next sample then covers both windows, and its
@@ -186,7 +205,8 @@ class ChildTimeAccounting:
             return SampleResult()
 
         busy_now, wait_now = reading
-        busy = max(0.0, busy_now - self._prev_busy)
+        busy = max(0.0, busy_now - self._prev_busy) + self._startup_busy
+        self._startup_busy = 0.0
         wait = max(0.0, wait_now - self._prev_wait)
         eligible = max(0.0, now - self._measured_from)
 

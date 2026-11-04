@@ -1340,7 +1340,10 @@ def _make_tracked_child(
     # Baseline against the zeroed slot, so the seeding below lands in sample 1.
     # Defaults to the start of the [10.0, 11.0] interval the occupancy tests
     # use, so a child is measurable throughout unless told otherwise.
-    timing.mark_running(measured_from)
+    if state == "pending":
+        timing.mark_spawned(measured_from)
+    else:
+        timing.mark_running(measured_from)
 
     if busy_since is not None:
         kind, start = KIND_BUSY, busy_since
@@ -1381,7 +1384,8 @@ def _gauge_calls(metrics: mock.Mock, name: str) -> list[Any]:
 
 
 def test_emit_periodic_metrics_skips_occupancy_during_warmup() -> None:
-    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    # A fresh pod has no task yet, so the first-task gate holds the gauge back.
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4, received_task=False)
     pool._metrics = mock.Mock()
 
     # A freshly started pod has only pending children; none are consuming yet.
@@ -1433,7 +1437,7 @@ def test_emit_periodic_metrics_time_weights_busy_over_the_interval() -> None:
             assert child.timing.sample(12.0).busy == pytest.approx(0.0)
 
 
-def test_emit_periodic_metrics_divides_by_running_children() -> None:
+def test_emit_periodic_metrics_bills_warming_children_as_busy() -> None:
     # Two children busy for the whole 1s interval, one idle, one still warming.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=8)
     pool._metrics = mock.Mock()
@@ -1442,7 +1446,7 @@ def test_emit_periodic_metrics_divides_by_running_children() -> None:
         pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
         pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=1.0)
         pool._children[uuid4()] = _make_tracked_child("running", busy_accumulated=0.0)
-        # Excluded from both numerator and denominator.
+        # Cannot take work, so busy in both numerator and denominator.
         pool._children[uuid4()] = _make_tracked_child("pending")
 
     with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=11.0):
@@ -1450,8 +1454,7 @@ def test_emit_periodic_metrics_divides_by_running_children() -> None:
 
     occupancy_calls = _gauge_calls(pool._metrics, "taskworker.worker.occupancy")
     assert len(occupancy_calls) == 1
-    # 2 busy-child-seconds over 3 running slots for a 1s interval.
-    assert occupancy_calls[0].args[1] == pytest.approx(2 / 3)
+    assert occupancy_calls[0].args[1] == pytest.approx(3 / 4)
 
 
 def test_emit_periodic_metrics_clamps_occupancy_and_flags_the_overflow() -> None:
@@ -1649,7 +1652,7 @@ def test_sample_keeps_counting_wait_when_the_fold_overshoots_a_close() -> None:
     assert second.eligible == pytest.approx(1.0)
 
 
-def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:
+def test_emit_periodic_metrics_counters_exclude_exiting_children() -> None:
     # The counters must sum over the same population occupancy divides by.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
     pool._metrics = mock.Mock()
@@ -1663,7 +1666,7 @@ def test_emit_periodic_metrics_counters_exclude_non_running_children() -> None:
         pool._emit_periodic_metrics()
 
     busy = _distribution_calls(pool._metrics, "taskworker.worker.child_busy_seconds")
-    assert busy[0].args[1] == pytest.approx(1.0)
+    assert busy[0].args[1] == pytest.approx(2.0)
     assert _gauge_calls(pool._metrics, "taskworker.worker.occupancy")[0].args[1] == pytest.approx(
         1.0
     )
@@ -1867,6 +1870,21 @@ def test_child_timing_excludes_time_banked_before_the_parent_saw_running() -> No
     assert _bw(reader.sample(6.0)) == pytest.approx((0.0, 1.0))
 
 
+def test_child_timing_bills_startup_as_busy_across_the_running_handoff() -> None:
+    writer, reader = _writer_and_reader()
+    reader.mark_spawned(0.0)
+
+    first = reader.sample(1.0)
+    assert (first.busy, first.wait, first.eligible) == pytest.approx((1.0, 0.0, 1.0))
+
+    writer.mark_running(1.2)  # child's own wait before the parent saw it is dropped
+    reader.mark_running(1.5)
+    second = reader.sample(2.0)
+    assert (second.busy, second.wait, second.eligible) == pytest.approx((0.5, 0.5, 1.0))
+
+    assert _bw(reader.sample(3.0)) == pytest.approx((0.0, 1.0))
+
+
 def test_emit_periodic_metrics_emits_busy_and_wait_seconds() -> None:
     # Interval [10.0, 11.0]: one child busy throughout, one waiting 0.25s.
     pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
@@ -1895,7 +1913,7 @@ def test_emit_periodic_metrics_emits_busy_and_wait_seconds() -> None:
 
 def test_emit_periodic_metrics_emits_counters_during_warmup() -> None:
     # Unlike occupancy: zero separates "idle" from "not reporting".
-    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4)
+    pool = _make_result_thread_pool(_SendResultCapture(), concurrency=4, received_task=False)
     pool._metrics = mock.Mock()
 
     with pool._children_lock:

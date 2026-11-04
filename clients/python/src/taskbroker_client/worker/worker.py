@@ -970,13 +970,13 @@ class TaskWorkerProcessingPool:
             return sum(1 for c in self._children.values() if c.state == "running")
 
     def _accounting_log(
-        self, busy_time: float, wait_time: float, ceiling: float, running_count: int
+        self, busy_time: float, wait_time: float, ceiling: float, measured_count: int
     ) -> dict[str, float | int | str]:
         return {
             "busy_time": busy_time,
             "wait_time": wait_time,
             "ceiling": ceiling,
-            "running_count": running_count,
+            "measured_count": measured_count,
             "processing_pool": self._processing_pool_name,
         }
 
@@ -1034,15 +1034,15 @@ class TaskWorkerProcessingPool:
             busy_time = 0.0
             wait_time = 0.0
             eligible_time = 0.0
-            running_count = 0
+            measured_count = 0
             for child in self._children.values():
                 state_counts[child.state] += 1
 
-                # Running only: the numerator must match occupancy's divisor.
-                if child.state != "running":
+                # Pending children count too: their startup is billed as busy.
+                if child.state == "exiting":
                     continue
 
-                running_count += 1
+                measured_count += 1
                 result = child.timing.sample(time.monotonic())
                 busy_time += result.busy
                 wait_time += result.wait
@@ -1070,9 +1070,9 @@ class TaskWorkerProcessingPool:
                 max(0.0, wait_time)
             )
 
-        if running_count > 0 and eligible_time > 0:
+        if measured_count > 0 and eligible_time > 0:
             # Sum of the windows each child was measured over. `elapsed *
-            # running_count` would instead bill a child baselined part-way
+            # measured_count` would instead bill a child baselined part-way
             # through this flush as if it had been here all along, which reads
             # as idle time the pool never had.
             ceiling = eligible_time
@@ -1086,7 +1086,7 @@ class TaskWorkerProcessingPool:
                 )
                 logger.warning(
                     "taskworker.worker.occupancy.accounting_overflow",
-                    extra=self._accounting_log(busy_time, wait_time, ceiling, running_count),
+                    extra=self._accounting_log(busy_time, wait_time, ceiling, measured_count),
                 )
             elif accounted < ceiling * 0.9:
                 self._metrics.incr(
@@ -1095,7 +1095,7 @@ class TaskWorkerProcessingPool:
                 )
                 logger.warning(
                     "taskworker.worker.occupancy.accounting_deficit",
-                    extra=self._accounting_log(busy_time, wait_time, ceiling, running_count),
+                    extra=self._accounting_log(busy_time, wait_time, ceiling, measured_count),
                 )
 
             occupancy = min(busy_time / ceiling, 1.0)
@@ -1302,7 +1302,7 @@ class TaskWorkerProcessingPool:
 
                             continue
 
-                        # Baseline here, where it also enters `running_count`.
+                        # Hand off from startup busy to reading the slot.
                         if message.event == "running":
                             child.state = "running"
                             child.timing.mark_running(time.monotonic())
@@ -1379,6 +1379,7 @@ class TaskWorkerProcessingPool:
                                 release=release,
                                 timing=ChildTimeAccounting(shm=timing_shm),
                             )
+                            child.timing.mark_spawned(time.monotonic())
 
                             self._children[child_id] = child
                     except Exception as e:
