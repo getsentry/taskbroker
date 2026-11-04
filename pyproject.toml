@@ -28,6 +28,12 @@ dev = [
 
 [tool.uv]
 environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
+conflicts = [
+    [
+        { package = "taskbroker-client", extra = "cluster" },
+        { package = "taskbroker-client", group = "dev" },
+    ],
+]
 
 [[tool.uv.index]]
 name = "sentry-pypi"

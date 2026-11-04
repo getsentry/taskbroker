@@ -32,6 +32,9 @@ dev = [
     "time-machine>=2.16.0",
     "types-protobuf>=5.27.0.20240626,<6.0.0",
     "datadog>=0.49",
+    # Tests run against redis-py's built-in RedisCluster, which redis-py-cluster (the
+    # `cluster` extra) can't be installed alongside.
+    "redis>=4.1",
 ]
 [project.optional-dependencies]
 # redis<4 does not bundle cluster support; pull in redis-py-cluster (EOL) for it.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from redis.client import StrictRedis
 
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
         # redis>=4.1 ships cluster support natively
         from redis import RedisCluster
     except ImportError:  # pragma: no cover - redis<4 fallback via the `cluster` extra
-        from rediscluster import RedisCluster
+        from rediscluster import RedisCluster  # type: ignore[no-redef]
 
 from taskbroker_client.metrics import MetricsBackend
 
@@ -138,7 +138,7 @@ class RunStorage(RunStorageProtocol):
         Retrieve the last run time of a task
         Returns None if last run time has expired or is unknown.
         """
-        result = self._redis.get(self._make_key(key))
+        result = cast(str | None, self._redis.get(self._make_key(key)))
         if result:
             return datetime.fromisoformat(result)
 
@@ -168,9 +168,15 @@ class RunStorage(RunStorageProtocol):
         compat_keys = [sk.split(":", 1)[1] for sk in storage_keys]
         legacy_keys = [ck.rsplit(":", 1)[0] for ck in compat_keys]
 
-        new_values = self._redis.mget([self._make_key(sk) for sk in storage_keys])
-        compat_values = self._redis.mget([self._make_key(ck) for ck in compat_keys])
-        legacy_values = self._redis.mget([self._make_key(lk) for lk in legacy_keys])
+        new_values = cast(
+            list[str | None], self._redis.mget([self._make_key(sk) for sk in storage_keys])
+        )
+        compat_values = cast(
+            list[str | None], self._redis.mget([self._make_key(ck) for ck in compat_keys])
+        )
+        legacy_values = cast(
+            list[str | None], self._redis.mget([self._make_key(lk) for lk in legacy_keys])
+        )
 
         run_times: dict[str, datetime | None] = {}
         for storage_key, new_val, compat_val, legacy_val in zip(
