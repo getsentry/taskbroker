@@ -825,10 +825,7 @@ async fn test_update_heartbeat(#[case] adapter: &str) {
 
     let response = service
         .batch_update_heartbeat(Request::new(BatchUpdateHeartbeatRequest {
-            updates: vec![
-                request(&activations[0].id).into_inner(),
-                request("missing").into_inner(),
-            ],
+            ids: vec![activations[0].id.clone(), "missing".to_string()],
         }))
         .await
         .unwrap();

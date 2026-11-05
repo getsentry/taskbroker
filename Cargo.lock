@@ -2997,7 +2997,7 @@ dependencies = [
 [[package]]
 name = "sentry_protos"
 version = "0.104.0"
-source = "git+https://github.com/getsentry/sentry-protos?rev=6a1fdb404953404abfce6a4d0a0d900a44c8a253#6a1fdb404953404abfce6a4d0a0d900a44c8a253"
+source = "git+https://github.com/getsentry/sentry-protos?rev=0383e4fc75e5eeccd5803de9cca509653681de5c#0383e4fc75e5eeccd5803de9cca509653681de5c"
 dependencies = [
  "prost",
  "prost-types",

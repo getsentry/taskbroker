@@ -404,12 +404,7 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<BatchUpdateHeartbeatRequest>,
     ) -> Result<Response<BatchUpdateHeartbeatResponse>, Status> {
-        let ids: Vec<String> = request
-            .into_inner()
-            .updates
-            .into_iter()
-            .map(|u| u.id)
-            .collect();
+        let ids = request.into_inner().ids;
 
         match self.store.update_heartbeats(&ids).await {
             Ok(updated) => {
