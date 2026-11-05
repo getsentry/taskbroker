@@ -118,6 +118,14 @@ class RunStorage(RunStorageProtocol):
     def _make_key(self, key: str) -> str:
         return f"tw:scheduler:{key}"
 
+    def _mget_nonatomic(self, keys: list[str]) -> list[str | None]:
+        # We want mget_nonatomic (spelled mget in redis-py-cluster) when dealing
+        # with a cluster. For non clusters we want plain mget.
+        mget_nonatomic = getattr(self._redis, "mget_nonatomic", None)
+        if mget_nonatomic is not None:
+            return mget_nonatomic(keys)
+        return self._redis.mget(keys)
+
     def set(self, key: str, next_runtime: datetime) -> bool:
         """
         Record a spawn time for a task.
@@ -168,9 +176,9 @@ class RunStorage(RunStorageProtocol):
         compat_keys = [sk.split(":", 1)[1] for sk in storage_keys]
         legacy_keys = [ck.rsplit(":", 1)[0] for ck in compat_keys]
 
-        new_values = self._redis.mget([self._make_key(sk) for sk in storage_keys])
-        compat_values = self._redis.mget([self._make_key(ck) for ck in compat_keys])
-        legacy_values = self._redis.mget([self._make_key(lk) for lk in legacy_keys])
+        new_values = self._mget_nonatomic([self._make_key(sk) for sk in storage_keys])
+        compat_values = self._mget_nonatomic([self._make_key(ck) for ck in compat_keys])
+        legacy_values = self._mget_nonatomic([self._make_key(lk) for lk in legacy_keys])
 
         run_times: dict[str, datetime | None] = {}
         for storage_key, new_val, compat_val, legacy_val in zip(
