@@ -28,11 +28,8 @@ def _single_server_slots(self: NodesManager) -> None:
 def cluster_storage() -> Iterator[RunStorage]:
     with mock.patch.object(NodesManager, "initialize", _single_server_slots):
         client = RedisCluster(host="localhost", port=6379, decode_responses=True)
-    storage = RunStorage(metrics=NoOpMetricsBackend(), redis=client)
-    keys = ["first:test:valid:300", "second:test:valid:300"]
-    yield storage
-    for key in keys:
-        storage.delete(key)
+    client.flushdb()
+    yield RunStorage(metrics=NoOpMetricsBackend(), redis=client)
 
 
 def test_run_storage_read_many_on_redis_cluster(cluster_storage: RunStorage) -> None:
