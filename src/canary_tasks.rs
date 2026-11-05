@@ -101,6 +101,8 @@ fn build_activations(config: &Config, topic: &str) -> Result<Vec<Activation>, Er
                 delay_until: None,
                 processing_deadline: None,
                 claim_expires_at: None,
+                heartbeat: None,
+                heartbeat_deadline: None,
                 on_attempts_exceeded: OnAttemptsExceeded::Discard,
                 at_most_once: false,
                 bucket: bucket_from_id(&id),

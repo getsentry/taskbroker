@@ -9,7 +9,7 @@ use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, GetTaskResponse, SetBatchActivationStatusRequest,
     SetBatchActivationStatusResponse, SetTaskStatusRequest, SetTaskStatusResponse, TaskActivation,
-    TaskActivationStatus,
+    TaskActivationStatus, UpdateHeartbeatRequest, UpdateHeartbeatResponse,
 };
 use tokio::sync::mpsc::Sender;
 use tonic::{Request, Response, Status};
@@ -365,6 +365,37 @@ impl ConsumerService for TaskbrokerServer {
         metrics::histogram!("grpc_server.set_batch_activation_status.duration")
             .record(start_time.elapsed());
         return Ok(Response::new(SetBatchActivationStatusResponse {}));
+    }
+
+    #[instrument(skip_all)]
+    async fn update_heartbeat(
+        &self,
+        request: Request<UpdateHeartbeatRequest>,
+    ) -> Result<Response<UpdateHeartbeatResponse>, Status> {
+        let id = &request.get_ref().id;
+
+        match self.store.update_heartbeat(id).await {
+            Ok(true) => {
+                metrics::counter!("grpc_server.update_heartbeat", "result" => "ok").increment(1);
+                Ok(Response::new(UpdateHeartbeatResponse {}))
+            }
+
+            Ok(false) => {
+                metrics::counter!("grpc_server.update_heartbeat", "result" => "not_found")
+                    .increment(1);
+                Err(Status::not_found(
+                    "No processing activation with a heartbeat",
+                ))
+            }
+
+            Err(e) => {
+                metrics::counter!("grpc_server.update_heartbeat", "result" => "error").increment(1);
+                error!(?id, "Unable to update heartbeat of activation: {:?}", e);
+                Err(Status::internal(format!(
+                    "Unable to update heartbeat of {id:?}"
+                )))
+            }
+        }
     }
 }
 

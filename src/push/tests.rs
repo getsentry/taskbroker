@@ -122,6 +122,10 @@ impl ActivationStore for MockStore {
         Ok(())
     }
 
+    async fn update_heartbeat(&self, _id: &str) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn delete_activation(&self, _id: &str) -> Result<()> {
         Ok(())
     }

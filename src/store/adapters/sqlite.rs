@@ -54,6 +54,8 @@ pub struct TableRow<'a> {
     pub processing_deadline_duration: i32,
     pub processing_deadline: Option<DateTime<Utc>>,
     pub claim_expires_at: Option<DateTime<Utc>>,
+    pub heartbeat: Option<i32>,
+    pub heartbeat_deadline: Option<DateTime<Utc>>,
     pub status: Cow<'a, str>,
     pub at_most_once: bool,
     pub application: Cow<'a, str>,
@@ -78,6 +80,8 @@ impl<'a> From<&'a Activation> for TableRow<'a> {
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
+            heartbeat: value.heartbeat,
+            heartbeat_deadline: value.heartbeat_deadline,
             status: Cow::Owned(value.status.to_string()),
             at_most_once: value.at_most_once,
             application: Cow::Borrowed(&value.application),
@@ -112,6 +116,8 @@ impl From<TableRow<'_>> for Activation {
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
+            heartbeat: value.heartbeat,
+            heartbeat_deadline: value.heartbeat_deadline,
             at_most_once: value.at_most_once,
             application: value.application.into_owned(),
             namespace: value.namespace.into_owned(),
@@ -140,6 +146,8 @@ impl FromRow<'_, SqliteRow> for TableRow<'static> {
             processing_deadline_duration: row.try_get("processing_deadline_duration")?,
             processing_deadline: row.try_get("processing_deadline")?,
             claim_expires_at: row.try_get("claim_expires_at")?,
+            heartbeat: row.try_get("heartbeat")?,
+            heartbeat_deadline: row.try_get("heartbeat_deadline")?,
             status: Cow::Owned(row.try_get::<String, _>("status")?),
             at_most_once: row.try_get("at_most_once")?,
             application: Cow::Owned(row.try_get::<String, _>("application")?),
@@ -444,6 +452,8 @@ impl ActivationStore for SqliteStore {
                 processing_deadline_duration,
                 processing_deadline,
                 claim_expires_at,
+                heartbeat,
+                heartbeat_deadline,
                 status,
                 at_most_once,
                 application,
@@ -504,6 +514,8 @@ impl ActivationStore for SqliteStore {
                     processing_deadline_duration,
                     processing_deadline,
                     claim_expires_at,
+                    heartbeat,
+                    heartbeat_deadline,
                     status,
                     at_most_once,
                     application,
@@ -542,6 +554,9 @@ impl ActivationStore for SqliteStore {
                 } else {
                     b.push("null");
                 }
+
+                b.push_bind(row.heartbeat);
+                b.push_bind(row.heartbeat_deadline.map(|t| t.timestamp()));
 
                 b.push_bind(row.status);
                 b.push_bind(row.at_most_once);
@@ -595,7 +610,7 @@ impl ActivationStore for SqliteStore {
 
         if mark_processing {
             query_builder.push(format!(
-                "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL, status = "
+                "processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), heartbeat_deadline = unixepoch('now', '+' || heartbeat || ' seconds'), claim_expires_at = NULL, status = "
             ));
 
             query_builder.push_bind(ActivationStatus::Processing);
@@ -660,7 +675,7 @@ impl ActivationStore for SqliteStore {
         let result = sqlx::query(&format!(
             "UPDATE inflight_taskactivations SET
                 status = $1,
-                processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'),
+                processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), heartbeat_deadline = unixepoch('now', '+' || heartbeat || ' seconds'),
                 claim_expires_at = NULL
             WHERE id = $2 AND status = $3",
         ))
@@ -699,7 +714,7 @@ impl ActivationStore for SqliteStore {
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations SET status = ");
         query_builder.push_bind(ActivationStatus::Processing);
         query_builder.push(format!(
-            ", processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), claim_expires_at = NULL WHERE status = ",
+            ", processing_deadline = unixepoch('now', '+' || (processing_deadline_duration + {grace_period}) || ' seconds'), heartbeat_deadline = unixepoch('now', '+' || heartbeat || ' seconds'), claim_expires_at = NULL WHERE status = ",
         ));
         query_builder.push_bind(ActivationStatus::Claimed);
         query_builder.push(" AND id IN (");
@@ -921,6 +936,21 @@ impl ActivationStore for SqliteStore {
     }
 
     #[instrument(skip_all)]
+    async fn update_heartbeat(&self, id: &str) -> Result<bool, Error> {
+        let mut conn = self.acquire_write_conn_metric("update_heartbeat").await?;
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET heartbeat_deadline = unixepoch('now', '+' || heartbeat || ' seconds')
+            WHERE id = $1 AND status = $2 AND heartbeat IS NOT NULL",
+        )
+        .bind(id)
+        .bind(ActivationStatus::Processing)
+        .execute(&mut *conn)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    #[instrument(skip_all)]
     async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
         sqlx::query("DELETE FROM inflight_taskactivations WHERE id = $1")
@@ -967,6 +997,8 @@ impl ActivationStore for SqliteStore {
                 processing_deadline_duration,
                 processing_deadline,
                 claim_expires_at,
+                heartbeat,
+                heartbeat_deadline,
                 status,
                 at_most_once,
                 application,
@@ -1026,46 +1058,56 @@ impl ActivationStore for SqliteStore {
     async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
+        let mut modified_rows = 0;
 
-        // Idempotent tasks that fail their processing deadlines go directly to failure
-        // there are no retries, as the worker will reject the task due to idempotency keys.
-        let most_once_result = sqlx::query(
-            "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1
-            WHERE processing_deadline < $2 AND at_most_once = TRUE AND status = $3",
-        )
-        .bind(ActivationStatus::Failure)
-        .bind(now.timestamp())
-        .bind(ActivationStatus::Processing)
-        .execute(&mut *atomic)
-        .await;
+        for (deadline, reason) in [
+            ("processing_deadline", "processing_deadline"),
+            ("heartbeat_deadline", "heartbeat"),
+        ] {
+            // Idempotent tasks that fail their deadlines go directly to failure
+            // there are no retries, as the worker will reject the task due to idempotency keys.
+            let most_once_result = sqlx::query(&format!(
+                "UPDATE inflight_taskactivations
+                SET processing_deadline = null, heartbeat_deadline = null, status = $1
+                WHERE {deadline} < $2 AND at_most_once = TRUE AND status = $3",
+            ))
+            .bind(ActivationStatus::Failure)
+            .bind(now.timestamp())
+            .bind(ActivationStatus::Processing)
+            .execute(&mut *atomic)
+            .await;
 
-        let mut processing_deadline_modified_rows = 0;
-        if let Ok(query_res) = most_once_result {
-            processing_deadline_modified_rows = query_res.rows_affected();
+            let mut reset = 0;
+            if let Ok(query_res) = most_once_result {
+                reset = query_res.rows_affected();
+            }
+
+            // Update non-idempotent tasks.
+            // Increment processing_attempts by 1 and reset deadlines to null.
+            let result = sqlx::query(&format!(
+                "UPDATE inflight_taskactivations
+                SET processing_deadline = null, heartbeat_deadline = null, status = $1, processing_attempts = processing_attempts + 1
+                WHERE {deadline} < $2 AND status = $3",
+            ))
+            .bind(ActivationStatus::Pending)
+            .bind(now.timestamp())
+            .bind(ActivationStatus::Processing)
+            .execute(&mut *atomic)
+            .await;
+
+            let Ok(query_res) = result else {
+                return Err(anyhow!("Could not update tasks past {deadline}"));
+            };
+            reset += query_res.rows_affected();
+
+            metrics::counter!("upkeep.handle_processing_deadline.reset", "reason" => reason)
+                .increment(reset);
+            modified_rows += reset;
         }
-
-        // Update non-idempotent tasks.
-        // Increment processing_attempts by 1 and reset processing_deadline to null.
-        let result = sqlx::query(
-            "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = $1, processing_attempts = processing_attempts + 1
-            WHERE processing_deadline < $2 AND status = $3",
-        )
-        .bind(ActivationStatus::Pending)
-        .bind(now.timestamp())
-        .bind(ActivationStatus::Processing)
-        .execute(&mut *atomic)
-        .await;
 
         atomic.commit().await?;
 
-        if let Ok(query_res) = result {
-            processing_deadline_modified_rows += query_res.rows_affected();
-            return Ok(processing_deadline_modified_rows);
-        }
-
-        Err(anyhow!("Could not update tasks past processing_deadline"))
+        Ok(modified_rows)
     }
 
     /// Update tasks that have exceeded their max processing attempts.

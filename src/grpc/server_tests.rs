@@ -5,7 +5,7 @@ use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
     FetchNextTask, GetTaskRequest, SetBatchActivationStatusRequest, SetTaskStatusRequest,
-    TaskActivation,
+    TaskActivation, UpdateHeartbeatRequest,
 };
 use tokio::sync::mpsc;
 use tonic::{Code, Request};
@@ -784,4 +784,42 @@ async fn test_set_batch_activation_status_mixed(#[case] adapter: &str) {
     assert!(row1.is_none(), "row should be deleted");
     let row2 = store.get_by_id("id_2").await.unwrap().expect("row exists");
     assert_eq!(row2.status, ActivationStatus::Retry);
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_update_heartbeat(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let mut activations = make_activations(1);
+    activations[0].status = ActivationStatus::Processing;
+    activations[0].heartbeat = Some(10);
+    store.store(&activations).await.unwrap();
+
+    let service = TaskbrokerServer {
+        store,
+        config: create_config(),
+        update_tx: None,
+    };
+
+    let request = |id: &str| {
+        Request::new(UpdateHeartbeatRequest {
+            id: id.to_string(),
+            heartbeat_interval: 10,
+        })
+    };
+
+    assert!(
+        service
+            .update_heartbeat(request(&activations[0].id))
+            .await
+            .is_ok()
+    );
+
+    let e = service
+        .update_heartbeat(request("missing"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Code::NotFound);
 }
