@@ -4,7 +4,7 @@
 FROM ghcr.io/getsentry/image-mirror-library-rust:1.96.1-trixie AS build
 
 RUN apt-get update && apt-get upgrade -y
-RUN apt-get install -y cmake pkg-config libssl-dev librdkafka-dev protobuf-compiler
+RUN apt-get install -y cmake pkg-config libssl-dev libcurl4-openssl-dev librdkafka-dev protobuf-compiler
 
 RUN USER=root cargo new --bin taskbroker
 WORKDIR /taskbroker
@@ -40,7 +40,7 @@ FROM debian:trixie-slim
 RUN groupadd taskbroker --gid 1000 && useradd --gid taskbroker --uid 1000 taskbroker
 
 # Necessary for libssl bindings
-RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev libsqlite3-dev libsqlite3-0 openssl ca-certificates
+RUN apt-get update && apt-get upgrade -y && apt-get install -y libssl-dev libsqlite3-dev libsqlite3-0 openssl ca-certificates libcurl4
 
 EXPOSE 50051
 

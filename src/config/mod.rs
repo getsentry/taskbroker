@@ -354,6 +354,7 @@ impl Config {
 
         for cluster in config.kafka_clusters.values_mut() {
             redact_optional(&mut cluster.sasl_password);
+            redact_optional(&mut cluster.sasl_oauthbearer_client_secret);
         }
 
         // Redact strings
@@ -599,6 +600,10 @@ impl Config {
                         .kafka_ssl_certificate_location
                         .clone(),
                     ssl_key_location: self.deprecated.kafka_ssl_key_location.clone(),
+                    sasl_oauthbearer_method: None,
+                    sasl_oauthbearer_token_endpoint_url: None,
+                    sasl_oauthbearer_client_id: None,
+                    sasl_oauthbearer_client_secret: None,
                 },
             );
             assert!(
@@ -628,6 +633,10 @@ impl Config {
                         .kafka_deadletter_ssl_certificate_location
                         .clone(),
                     ssl_key_location: self.deprecated.kafka_deadletter_ssl_key_location.clone(),
+                    sasl_oauthbearer_method: None,
+                    sasl_oauthbearer_token_endpoint_url: None,
+                    sasl_oauthbearer_client_id: None,
+                    sasl_oauthbearer_client_secret: None,
                 },
             );
             assert!(
@@ -1736,6 +1745,10 @@ kafka_clusters:
                     ssl_ca_location: None,
                     ssl_certificate_location: None,
                     ssl_key_location: None,
+                    sasl_oauthbearer_method: None,
+                    sasl_oauthbearer_token_endpoint_url: None,
+                    sasl_oauthbearer_client_id: None,
+                    sasl_oauthbearer_client_secret: None,
                 })
             );
             assert!(!clusters.contains_key("default"));
