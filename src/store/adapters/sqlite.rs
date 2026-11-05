@@ -936,18 +936,25 @@ impl ActivationStore for SqliteStore {
     }
 
     #[instrument(skip_all)]
-    async fn update_heartbeat(&self, id: &str) -> Result<bool, Error> {
-        let mut conn = self.acquire_write_conn_metric("update_heartbeat").await?;
-        let result = sqlx::query(
+    async fn update_heartbeats(&self, ids: &[String]) -> Result<Vec<String>, Error> {
+        let mut conn = self.acquire_write_conn_metric("update_heartbeats").await?;
+        let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
             SET heartbeat_deadline = unixepoch('now', '+' || heartbeat || ' seconds')
-            WHERE id = $1 AND status = $2 AND heartbeat IS NOT NULL",
-        )
-        .bind(id)
-        .bind(ActivationStatus::Processing)
-        .execute(&mut *conn)
-        .await?;
-        Ok(result.rows_affected() > 0)
+            WHERE heartbeat IS NOT NULL AND status = ",
+        );
+        query_builder.push_bind(ActivationStatus::Processing);
+        query_builder.push(" AND id IN (");
+        let mut separated = query_builder.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+        separated.push_unseparated(") RETURNING id");
+
+        Ok(query_builder
+            .build_query_scalar()
+            .fetch_all(&mut *conn)
+            .await?)
     }
 
     #[instrument(skip_all)]

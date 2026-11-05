@@ -1407,14 +1407,16 @@ async fn test_heartbeat_deadline_set_and_updated(#[case] adapter: &str) {
         let task = store.get_by_id(&activation.id).await.unwrap().unwrap();
         assert_eq!(task.status, ActivationStatus::Processing);
         assert!(task.heartbeat_deadline.unwrap() > now);
-        assert!(store.update_heartbeat(&activation.id).await.unwrap());
     }
 
     let task = store.get_by_id(&batch[2].id).await.unwrap().unwrap();
     assert_eq!(task.status, ActivationStatus::Processing);
     assert_eq!(task.heartbeat_deadline, None);
-    assert!(!store.update_heartbeat(&batch[2].id).await.unwrap());
-    assert!(!store.update_heartbeat("missing").await.unwrap());
+
+    let ids = [&batch[0].id, &batch[1].id, &batch[2].id, "missing"].map(String::from);
+    let mut updated = store.update_heartbeats(&ids).await.unwrap();
+    updated.sort();
+    assert_eq!(updated, ids[0..2]);
     store.remove_db().await.unwrap();
 }
 

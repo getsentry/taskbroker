@@ -1075,19 +1075,19 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
-    async fn update_heartbeat(&self, id: &str) -> Result<bool, Error> {
-        retry_query(&self.config.retry, "update_heartbeat", || async {
-            let mut conn = self.acquire_write_conn_metric("update_heartbeat").await?;
-            let result = sqlx::query(
+    async fn update_heartbeats(&self, ids: &[String]) -> Result<Vec<String>, Error> {
+        retry_query(&self.config.retry, "update_heartbeats", || async {
+            let mut conn = self.acquire_write_conn_metric("update_heartbeats").await?;
+            Ok(sqlx::query_scalar(
                 "UPDATE inflight_taskactivations
                 SET heartbeat_deadline = now() + (heartbeat * interval '1 second')
-                WHERE id = $1 AND status = $2 AND heartbeat IS NOT NULL",
+                WHERE id = ANY($1) AND status = $2 AND heartbeat IS NOT NULL
+                RETURNING id",
             )
-            .bind(id)
+            .bind(ids)
             .bind(ActivationStatus::Processing.to_string())
-            .execute(&mut *conn)
-            .await?;
-            Ok(result.rows_affected() > 0)
+            .fetch_all(&mut *conn)
+            .await?)
         })
         .await
     }

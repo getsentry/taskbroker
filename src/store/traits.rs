@@ -209,9 +209,9 @@ pub trait ActivationStore: Send + Sync {
         deadline: Option<DateTime<Utc>>,
     ) -> Result<(), Error>;
 
-    /// Push back the heartbeat deadline of a processing activation. Returns false
-    /// if no processing activation with a heartbeat has this id.
-    async fn update_heartbeat(&self, id: &str) -> Result<bool, Error>;
+    /// Push back the heartbeat deadline of processing activations. Returns the ids
+    /// that were updated; ids that are not processing or have no heartbeat are left out.
+    async fn update_heartbeats(&self, ids: &[String]) -> Result<Vec<String>, Error>;
 
     /// Delete an activation by id
     async fn delete_activation(&self, id: &str) -> Result<(), Error>;

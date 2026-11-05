@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -7,9 +7,10 @@ use chrono::Utc;
 use prost::Message;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    FetchNextTask, GetTaskRequest, GetTaskResponse, SetBatchActivationStatusRequest,
-    SetBatchActivationStatusResponse, SetTaskStatusRequest, SetTaskStatusResponse, TaskActivation,
-    TaskActivationStatus, UpdateHeartbeatRequest, UpdateHeartbeatResponse,
+    BatchUpdateHeartbeatRequest, BatchUpdateHeartbeatResponse, FetchNextTask, GetTaskRequest,
+    GetTaskResponse, SetBatchActivationStatusRequest, SetBatchActivationStatusResponse,
+    SetTaskStatusRequest, SetTaskStatusResponse, TaskActivation, TaskActivationStatus,
+    UpdateHeartbeatRequest, UpdateHeartbeatResponse,
 };
 use tokio::sync::mpsc::Sender;
 use tonic::{Request, Response, Status};
@@ -374,13 +375,13 @@ impl ConsumerService for TaskbrokerServer {
     ) -> Result<Response<UpdateHeartbeatResponse>, Status> {
         let id = &request.get_ref().id;
 
-        match self.store.update_heartbeat(id).await {
-            Ok(true) => {
+        match self.store.update_heartbeats(std::slice::from_ref(id)).await {
+            Ok(updated) if !updated.is_empty() => {
                 metrics::counter!("grpc_server.update_heartbeat", "result" => "ok").increment(1);
                 Ok(Response::new(UpdateHeartbeatResponse {}))
             }
 
-            Ok(false) => {
+            Ok(_) => {
                 metrics::counter!("grpc_server.update_heartbeat", "result" => "not_found")
                     .increment(1);
                 Err(Status::not_found(
@@ -394,6 +395,46 @@ impl ConsumerService for TaskbrokerServer {
                 Err(Status::internal(format!(
                     "Unable to update heartbeat of {id:?}"
                 )))
+            }
+        }
+    }
+
+    #[instrument(skip_all)]
+    async fn batch_update_heartbeat(
+        &self,
+        request: Request<BatchUpdateHeartbeatRequest>,
+    ) -> Result<Response<BatchUpdateHeartbeatResponse>, Status> {
+        let ids: Vec<String> = request
+            .into_inner()
+            .updates
+            .into_iter()
+            .map(|u| u.id)
+            .collect();
+
+        match self.store.update_heartbeats(&ids).await {
+            Ok(updated) => {
+                let updated: HashSet<String> = updated.into_iter().collect();
+                let not_found_ids: Vec<String> =
+                    ids.into_iter().filter(|id| !updated.contains(id)).collect();
+
+                metrics::counter!("grpc_server.batch_update_heartbeat", "result" => "ok")
+                    .increment(updated.len() as u64);
+                metrics::counter!("grpc_server.batch_update_heartbeat", "result" => "not_found")
+                    .increment(not_found_ids.len() as u64);
+                Ok(Response::new(BatchUpdateHeartbeatResponse {
+                    not_found_ids,
+                }))
+            }
+
+            Err(e) => {
+                metrics::counter!("grpc_server.batch_update_heartbeat", "result" => "error")
+                    .increment(1);
+                error!(
+                    "Unable to update heartbeats of {} activations: {:?}",
+                    ids.len(),
+                    e
+                );
+                Err(Status::internal("Unable to update heartbeats"))
             }
         }
     }

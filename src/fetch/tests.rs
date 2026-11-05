@@ -189,7 +189,7 @@ impl ActivationStore for MockStore {
         unimplemented!()
     }
 
-    async fn update_heartbeat(&self, _id: &str) -> Result<bool, Error> {
+    async fn update_heartbeats(&self, _ids: &[String]) -> Result<Vec<String>, Error> {
         unimplemented!()
     }
 

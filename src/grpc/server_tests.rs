@@ -4,8 +4,8 @@ use prost::Message;
 use rstest::rstest;
 use sentry_protos::taskbroker::v1::consumer_service_server::ConsumerService;
 use sentry_protos::taskbroker::v1::{
-    FetchNextTask, GetTaskRequest, SetBatchActivationStatusRequest, SetTaskStatusRequest,
-    TaskActivation, UpdateHeartbeatRequest,
+    BatchUpdateHeartbeatRequest, FetchNextTask, GetTaskRequest, SetBatchActivationStatusRequest,
+    SetTaskStatusRequest, TaskActivation, UpdateHeartbeatRequest,
 };
 use tokio::sync::mpsc;
 use tonic::{Code, Request};
@@ -822,4 +822,18 @@ async fn test_update_heartbeat(#[case] adapter: &str) {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Code::NotFound);
+
+    let response = service
+        .batch_update_heartbeat(Request::new(BatchUpdateHeartbeatRequest {
+            updates: vec![
+                request(&activations[0].id).into_inner(),
+                request("missing").into_inner(),
+            ],
+        }))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.get_ref().not_found_ids,
+        vec!["missing".to_string()]
+    );
 }
