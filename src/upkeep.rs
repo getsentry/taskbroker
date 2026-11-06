@@ -10,12 +10,9 @@ use prost_types::Timestamp;
 use sentry_arroyo::backends::ProducerError;
 use sentry_protos::taskbroker::v1::TaskActivation;
 use tokio::{fs, join, select, time};
-use tonic_health::ServingStatus;
-use tonic_health::server::HealthReporter;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::kafka::producer::KafkaProducer;
 use crate::runtime_config::RuntimeConfigManager;
@@ -29,7 +26,6 @@ pub async fn upkeep(
     store: Arc<dyn ActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    health_reporter: HealthReporter,
 ) -> Result<(), anyhow::Error> {
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -60,7 +56,6 @@ pub async fn upkeep(
                     &mut last_vacuum,
                     &mut emitted_partitions,
                 ).await;
-                check_health(health_reporter.clone()).await;
 
                 if config.log_async_backtrace
                     && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
@@ -558,18 +553,6 @@ fn create_retry_activation(mut new_activation: TaskActivation) -> TaskActivation
     }
 
     new_activation
-}
-
-/// Update health based on upkeep intervals
-///
-/// For an AlloyDB backed taskbroker, this check doesn't validate a specific pod, but AlloyDB
-/// in general. For now it's a no-op, and it will get more sophisticated as the AlloyDB
-/// taskbroker gets used more.
-pub async fn check_health(health_reporter: HealthReporter) {
-    metrics::counter!("upkeep.health", "status" => "healthy").increment(1);
-    health_reporter
-        .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-        .await;
 }
 
 #[cfg(test)]
