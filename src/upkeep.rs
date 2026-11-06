@@ -33,17 +33,15 @@ pub async fn upkeep(
 ) -> Result<(), anyhow::Error> {
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
-    let new_producer = |reloading| {
+    let kafka_config = config.kafka_producer_config();
+    let mut producer = Arc::new(
         KafkaProducer::new(
-            config.kafka_producer_config(),
+            kafka_config,
             &[config.retry_topic(), &config.kafka_deadletter_topic],
-            reloading,
+            runtime_config_manager.read().await.use_reloading_producer,
             Duration::from_millis(config.kafka_send_timeout_ms),
         )
-    };
-    let mut producer = Arc::new(
-        new_producer(runtime_config_manager.read().await.use_reloading_producer)
-            .expect("Could not create kafka producer in upkeep"),
+        .expect("Could not create kafka producer in upkeep"),
     );
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
@@ -56,10 +54,14 @@ pub async fn upkeep(
     loop {
         select! {
             _ = timer.tick() => {
-                let use_reloading_producer =
-                    runtime_config_manager.read().await.use_reloading_producer;
+                let use_reloading_producer = runtime_config_manager.read().await.use_reloading_producer;
                 if producer.is_reloading() != use_reloading_producer {
-                    match new_producer(use_reloading_producer) {
+                    match KafkaProducer::new(
+                        config.kafka_producer_config(),
+                        &[config.retry_topic(), &config.kafka_deadletter_topic],
+                        use_reloading_producer,
+                        Duration::from_millis(config.kafka_send_timeout_ms),
+                    ) {
                         Ok(new_producer) => producer = Arc::new(new_producer),
                         Err(err) => {
                             error!("Could not switch kafka producer in upkeep: {err}");
