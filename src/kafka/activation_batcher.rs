@@ -56,10 +56,8 @@ pub struct ActivationBatcher {
     deadletter_batch: Vec<(String, Vec<u8>)>, // application, payload
     config: ActivationBatcherConfig,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    /// Sends deadletters, on the deadletter cluster.
     producer: Arc<KafkaProducer>,
-    /// Sends demoted tasks: (cluster, topic, producer), rebuilt when any of them changes.
-    forward: Option<(String, String, Arc<KafkaProducer>)>,
+    producer_cluster: String,
 }
 
 impl ActivationBatcher {
@@ -70,12 +68,17 @@ impl ActivationBatcher {
         let producer = Arc::new(
             KafkaProducer::new(
                 config.producer_config.clone(),
-                &[&config.kafka_deadletter_topic],
+                &[&config.kafka_deadletter_topic, &config.kafka_long_topic],
                 false,
                 Duration::from_millis(config.send_timeout_ms),
             )
             .expect("Could not create kafka producer in activation batcher"),
         );
+        let producer_cluster = config
+            .producer_config
+            .get("bootstrap.servers")
+            .unwrap()
+            .to_owned();
         Self {
             batch: Vec::with_capacity(config.max_batch_len),
             batch_size: 0,
@@ -84,35 +87,8 @@ impl ActivationBatcher {
             config,
             runtime_config_manager,
             producer,
-            forward: None,
+            producer_cluster,
         }
-    }
-
-    /// The forwarding producer, rebuilt when the demoted topic, its cluster, or the
-    /// producer kind changed.
-    fn forward_producer(&mut self, cluster: String, topic: String) -> Arc<KafkaProducer> {
-        let reloading = self.producer.is_reloading();
-        if let Some((current_cluster, current_topic, producer)) = &self.forward
-            && *current_cluster == cluster
-            && *current_topic == topic
-            && producer.is_reloading() == reloading
-        {
-            return Arc::clone(producer);
-        }
-
-        let mut config = self.config.producer_config.clone();
-        config.set("bootstrap.servers", &cluster);
-        let producer = Arc::new(
-            KafkaProducer::new(
-                config,
-                &[&topic],
-                reloading,
-                Duration::from_millis(self.config.send_timeout_ms),
-            )
-            .expect("Could not create kafka producer in activation batcher"),
-        );
-        self.forward = Some((cluster, topic, Arc::clone(&producer)));
-        producer
     }
 
     /// The cluster the deadletter topic lives on. The forwarding producer
@@ -123,6 +99,34 @@ impl ActivationBatcher {
             .get("bootstrap.servers")
             .expect("producer config always sets bootstrap.servers")
             .to_string()
+    }
+
+    /// The producer, recreated when the target cluster, the demoted topic, or the flag changed.
+    fn producer_for(
+        &mut self,
+        cluster: String,
+        forward_topic: &str,
+        reloading: bool,
+    ) -> Arc<KafkaProducer> {
+        if self.producer_cluster != cluster
+            || self.producer.is_reloading() != reloading
+            || !self.producer.has_topic(forward_topic)
+        {
+            let mut config = self.config.producer_config.clone();
+            config.set("bootstrap.servers", &cluster);
+            self.producer = Arc::new(
+                KafkaProducer::new(
+                    config,
+                    &[&self.config.kafka_deadletter_topic, forward_topic],
+                    reloading,
+                    Duration::from_millis(self.config.send_timeout_ms),
+                )
+                .expect("Could not create kafka producer in activation batcher"),
+            );
+            self.producer_cluster = cluster;
+        }
+
+        self.producer.clone()
     }
 
     /// Produce every payload to `topic`, returning (attempts, successes).
@@ -249,19 +253,10 @@ impl Reducer for ActivationBatcher {
             .record(self.batch_size as f64);
 
         let runtime_config = self.runtime_config_manager.read().await;
-        if self.producer.is_reloading() != runtime_config.use_reloading_producer {
-            match KafkaProducer::new(
-                self.config.producer_config.clone(),
-                &[&self.config.kafka_deadletter_topic],
-                runtime_config.use_reloading_producer,
-                Duration::from_millis(self.config.send_timeout_ms),
-            ) {
-                Ok(new_producer) => self.producer = Arc::new(new_producer),
-                Err(err) => {
-                    error!("Could not switch kafka producer in activation batcher: {err}");
-                }
-            }
-        }
+        let forward_topic = runtime_config
+            .demoted_topic
+            .clone()
+            .unwrap_or(self.config.kafka_long_topic.clone());
 
         // Send all forward batch in parallel
         if !self.forward_batch.is_empty() {
@@ -272,11 +267,11 @@ impl Reducer for ActivationBatcher {
                 .demoted_topic_cluster
                 .clone()
                 .unwrap_or_else(|| self.deadletter_cluster());
-            let forward_topic = runtime_config
-                .demoted_topic
-                .clone()
-                .unwrap_or(self.config.kafka_long_topic.clone());
-            let producer = self.forward_producer(forward_cluster, forward_topic.clone());
+            let producer = self.producer_for(
+                forward_cluster,
+                &forward_topic,
+                runtime_config.use_reloading_producer,
+            );
 
             let (attempts, successes) = self
                 .send_all(&producer, &forward_topic, self.forward_batch.iter())
@@ -304,8 +299,12 @@ impl Reducer for ActivationBatcher {
                 "Discarding activations for applications this pool does not serve"
             );
 
-            // The batcher's own producer is on the deadletter cluster.
-            let producer = Arc::clone(&self.producer);
+            let deadletter_cluster = self.deadletter_cluster();
+            let producer = self.producer_for(
+                deadletter_cluster,
+                &forward_topic,
+                runtime_config.use_reloading_producer,
+            );
             let deadletter_topic = self.config.kafka_deadletter_topic.clone();
             let (attempts, successes) = self
                 .send_all(
@@ -745,8 +744,7 @@ demoted_topic: taskworker-demoted"#;
             .unwrap()
             .address
             .clone();
-        assert_eq!(batcher.deadletter_cluster(), cluster_address);
-        assert!(batcher.forward.is_none());
+        assert_eq!(batcher.producer_cluster, cluster_address);
 
         let activation_0 = ActivationBuilder::new()
             .id("0")
@@ -776,6 +774,6 @@ demoted_topic: taskworker-demoted"#;
         assert_eq!(flush_result.as_ref().unwrap()[0].taskname, "good_task");
         assert_eq!(batcher.batch.len(), 0);
         assert_eq!(batcher.forward_batch.len(), 0);
-        assert_eq!(batcher.forward.as_ref().unwrap().0, "0.0.0.0:9092");
+        assert_eq!(batcher.producer_cluster, "0.0.0.0:9092");
     }
 }

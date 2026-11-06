@@ -15,12 +15,9 @@ use sentry_arroyo::types::{Topic, TopicOrPartition};
 use rdkafka::ClientConfig;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 
-/// Arroyo producers for a fixed set of topics on one cluster, with bounded retries when the
-/// local queue is full.
+/// An Arroyo producer with bounded retries when the local queue is full.
 ///
-/// With `ReloadingKafkaProducer`, each topic gets its own producer, so each follows its own
-/// entry in the shared Kafka config instead of riding along on another topic's. With
-/// `AsyncKafkaProducer`, the topics share one, as before.
+/// Reloading producers are per topic so each follows its own entry in the shared Kafka config.
 pub struct KafkaProducer {
     reloading: bool,
     producers: HashMap<String, Arc<dyn AsyncProducer<KafkaPayload>>>,
@@ -28,7 +25,6 @@ pub struct KafkaProducer {
 }
 
 impl KafkaProducer {
-    /// `reloading` follows the `use_reloading_producer` runtime flag.
     pub fn new(
         config: ClientConfig,
         topics: &[&str],
@@ -79,6 +75,10 @@ impl KafkaProducer {
 
     pub fn is_reloading(&self) -> bool {
         self.reloading
+    }
+
+    pub fn has_topic(&self, topic: &str) -> bool {
+        self.producers.contains_key(topic)
     }
 
     pub async fn send(&self, topic: &str, payload: &[u8]) -> Result<(), ProducerError> {

@@ -376,8 +376,6 @@ pub async fn do_upkeep(
                 forward_cluster, dlq_cluster.address
             );
         }
-        // shortcut: rebuilt on every upkeep run while namespaces are demoted, which is rare;
-        // keep it across runs if demotion becomes common.
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
         let forward_producer = Arc::new(
