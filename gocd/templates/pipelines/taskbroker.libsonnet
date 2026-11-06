@@ -64,7 +64,7 @@ local deploy_canary_stage(region) =
 // of patching Kubernetes directly. A region qualifies once every broker GoCD
 // deploys there is in materialized-ops, under both workload types deploy.sh
 // deploys.
-local argocd_only_regions = ['s4s2'];
+local argocd_only_regions = ['s4s2', 'customer-1', 'customer-2'];
 
 local argocd_only_env(region) =
   if std.member(argocd_only_regions, region) then {
