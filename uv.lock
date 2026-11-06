@@ -17,7 +17,7 @@ members = [
 
 [[package]]
 name = "black"
-version = "26.3.1"
+version = "26.10.1"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "click" },
@@ -28,15 +28,15 @@ dependencies = [
     { name = "pytokens" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:bf9bf162ed91a26f1adba8efda0b573bc6924ec1408a52cc6f82cb73ec2b142c" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:474c27574d6d7037c1bc875a81d9be0a9a4f9ee95e62800dab3cfaadbf75acd5" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:41cd2012d35b47d589cb8a16faf8a32ef7a336f56356babd9fcf70939ad1897f" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0f76ff19ec5297dd8e66eb64deda23631e642c9393ab592826fd4bdc97a4bce7" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:8a33d657f3276328ce00e4d37fe70361e1ec7614da5d7b6e78de5426cb56332f" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f1cd08e99d2f9317292a311dfe578fd2a24b15dbce97792f9c4d752275c1fa56" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:f89f2ab047c76a9c03f78d0d66ca519e389519902fa27e7a91117ef7611c0568" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b07fc0dab849d24a80a29cfab8d8a19187d1c4685d8a5e6385a5ce323c1f015f" },
-    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.3.1-py3-none-any.whl", hash = "sha256:2bd5aa94fc267d38bb21a70d7410a89f1a1d318841855f698746f8e7f51acd1b" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7bdade400bfe24d78a7762896acc2f9a8e1a17fb0fd0536bf6b7c7097cf3eec7" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ff57f63029aa1353fa8b1b0c8971fd88a6c92dc766608d2eee33ad2deb23270e" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:182f6c32be38074b16d378498c498b32cb51928178ee611485344972c35ec9c6" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b5347d760f0c02bb00dd249384cab71c3bf828b4f68d5b401eb116e0390f147d" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:978113a40223a6aaefc17364176a809a320e6b288683841427fff04c6d7b4130" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:03c0ddd93bb392e71209903a691767eb366fe1a76deb9509ccbaae9e1f14bb52" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:d8b3a9074a680b3c5749633714e9ae3992a1e5a23343a97ad61cd9b119b444d2" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:289282aa2e09d3162312a3be1788ff21b08e9ea9cc4a81e656024728b32428fb" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/black-26.10.1-py3-none-any.whl", hash = "sha256:28842f9a8207cc1df6eb983a35a14c5a0dfcd603d214fe82d84bef552afd2e3a" },
 ]
 
 [[package]]
@@ -775,7 +775,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "black", specifier = "==26.3.1" },
+    { name = "black", specifier = "==26.10.1" },
     { name = "confluent-kafka", specifier = ">=2.3.0" },
     { name = "devservices", specifier = ">=1.2.1" },
     { name = "flake8", specifier = ">=7.3.0" },
@@ -864,7 +864,7 @@ provides-extras = ["cluster", "examples", "datadog"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "black", specifier = "==26.3.1" },
+    { name = "black", specifier = "==26.10.1" },
     { name = "datadog", specifier = ">=0.49" },
     { name = "devservices", specifier = ">=1.2.1" },
     { name = "flake8", specifier = ">=7.3.0" },
@@ -908,7 +908,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "black", specifier = "==26.3.1" },
+    { name = "black", specifier = "==26.10.1" },
     { name = "confluent-kafka", specifier = ">=2.3.0" },
     { name = "devservices", specifier = ">=1.2.1" },
     { name = "flake8", specifier = ">=7.3.0" },
