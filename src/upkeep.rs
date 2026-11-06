@@ -382,8 +382,7 @@ pub async fn do_upkeep(
             KafkaProducer::new(
                 forward_producer_config,
                 &[&forward_topic],
-                // Rebuilt every run, so it already follows runtime config. Port with STREAM-1967.
-                false,
+                producer.is_reloading(),
                 Duration::from_millis(config.kafka_send_timeout_ms),
             )
             .expect("Could not create kafka producer in upkeep"),

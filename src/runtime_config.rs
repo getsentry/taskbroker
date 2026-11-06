@@ -27,7 +27,7 @@ pub struct RuntimeConfig {
     /// If not set, the taskworker-long topic will be used
     pub demoted_topic: Option<String>,
     /// Use Arroyo's `ReloadingKafkaProducer` instead of `AsyncKafkaProducer` for retries,
-    /// deadletters, and consumer-side forwarding.
+    /// deadletters, and forwarding.
     #[serde(default)]
     pub use_reloading_producer: bool,
 }
