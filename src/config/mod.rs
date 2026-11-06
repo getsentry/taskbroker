@@ -159,13 +159,6 @@ pub struct Config {
     /// (discarding, retrying activations, etc.) are executed.
     pub upkeep_task_interval_ms: u64,
 
-    /// The number of milliseconds between upkeep runs that indicates unhealthy
-    /// performance that should trigger a restart.
-    pub upkeep_unhealthy_interval_ms: u64,
-
-    /// Whether to skip the health check if the pods are in a bad state.
-    pub health_check_killswitched: bool,
-
     /// The number of seconds that deadline resets
     /// are skipped after startup. This delay allows workers
     /// time to publish results after a broker restart.
@@ -303,8 +296,6 @@ impl Default for Config {
             store: StoreConfig::default(),
             runtime_config_path: None,
             upkeep_task_interval_ms: 1000,
-            upkeep_unhealthy_interval_ms: 5000,
-            health_check_killswitched: false,
             upkeep_deadline_reset_skip_after_startup_sec: 60,
             maintenance_task_interval_ms: 6000,
             runtime_metrics_interval: Duration::from_secs(1),

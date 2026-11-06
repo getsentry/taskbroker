@@ -10,12 +10,9 @@ use prost_types::Timestamp;
 use sentry_arroyo::backends::ProducerError;
 use sentry_protos::taskbroker::v1::TaskActivation;
 use tokio::{fs, join, select, time};
-use tonic_health::ServingStatus;
-use tonic_health::server::HealthReporter;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::kafka::producer::KafkaProducer;
 use crate::runtime_config::RuntimeConfigManager;
@@ -29,7 +26,6 @@ pub async fn upkeep(
     store: Arc<dyn ActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    health_reporter: HealthReporter,
 ) -> Result<(), anyhow::Error> {
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -45,7 +41,6 @@ pub async fn upkeep(
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
     let mut emitted_partitions: HashSet<TopicPartition> = HashSet::new();
@@ -61,7 +56,6 @@ pub async fn upkeep(
                     &mut last_vacuum,
                     &mut emitted_partitions,
                 ).await;
-                last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
                 if config.log_async_backtrace
                     && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
@@ -559,40 +553,6 @@ fn create_retry_activation(mut new_activation: TaskActivation) -> TaskActivation
     }
 
     new_activation
-}
-
-/// Update health based on upkeep intervals
-///
-/// Because SQLite is a shared component for upkeep, grpc, and consumer loops, when one gets slow
-/// they all do. We see taskbroker getting slow in production when the underlying cloud disk
-/// degrades. Restarting the application typically solves this problem.
-/// Track metrics and update status so that we can measure health failures, and apply probes
-/// incrementally.
-pub async fn check_health(
-    last_run: Instant,
-    config: &Config,
-    health_reporter: HealthReporter,
-) -> Instant {
-    let now = Instant::now();
-    if config.health_check_killswitched {
-        metrics::counter!("upkeep.health", "status" => "killswitched").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
-        return now;
-    }
-    if now - last_run > Duration::from_millis(config.upkeep_unhealthy_interval_ms) {
-        metrics::counter!("upkeep.health", "status" => "unhealthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::NotServing)
-            .await;
-    } else {
-        metrics::counter!("upkeep.health", "status" => "healthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
-    }
-    now
 }
 
 #[cfg(test)]
