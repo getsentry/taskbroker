@@ -27,6 +27,31 @@ class ContextHook(Protocol):
     def on_execute(self, headers: dict[str, str]) -> contextlib.AbstractContextManager[None]: ...
 
 
+class TaskCompletionHook(Protocol):
+    """
+    Hook called in the worker child after every activation, once the
+    processing deadline alarm has been disarmed.
+
+    The deadline is enforced by raising a BaseException from a signal
+    handler, so it can interrupt library code at an arbitrary point and leave
+    process-wide state (database connections, client sessions) broken for
+    the next task on the same child. This hook is where an application can
+    check that state and reset it before the next task runs.
+
+    deadline_exceeded is True when the processing deadline fired during the
+    task, including when another exception replaced it. Hooks should not rely
+    on it alone: a deadline can be swallowed entirely by code that catches
+    BaseException.
+    """
+
+    def after_task(
+        self,
+        activation: TaskActivation,
+        status: TaskActivationStatus.ValueType,
+        deadline_exceeded: bool,
+    ) -> None: ...
+
+
 class AtMostOnceStore(Protocol):
     """
     Interface for the at_most_once store used for idempotent task execution.
