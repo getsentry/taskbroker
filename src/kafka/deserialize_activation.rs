@@ -102,6 +102,8 @@ pub fn new(
             received_at: activation_time,
             processing_deadline: None,
             claim_expires_at: None,
+            heartbeat: activation.heartbeat.and_then(|h| i32::try_from(h).ok()),
+            heartbeat_deadline: None,
             processing_deadline_duration: activation.processing_deadline_duration as i32,
             processing_attempts: 0,
             expires_at,

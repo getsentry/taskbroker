@@ -1334,6 +1334,96 @@ async fn test_handle_processing_deadline(#[case] adapter: &str) {
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
+async fn test_handle_processing_deadline_heartbeat(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+    let past = Utc.with_ymd_and_hms(2024, 11, 14, 21, 22, 23).unwrap();
+    let future = Utc::now() + Duration::from_secs(600);
+
+    let mut batch = make_activations(2);
+    for activation in batch.iter_mut() {
+        activation.status = ActivationStatus::Processing;
+        activation.processing_deadline = Some(future);
+        activation.heartbeat = Some(10);
+    }
+    batch[0].heartbeat_deadline = Some(past);
+    batch[1].heartbeat_deadline = Some(future);
+    assert!(store.store(&batch).await.is_ok());
+
+    assert_eq!(store.handle_processing_deadline().await.unwrap(), 1);
+
+    let task = store.get_by_id(&batch[0].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Pending);
+    assert_eq!(task.processing_attempts, 1);
+    assert_eq!(task.heartbeat_deadline, None);
+    assert_eq!(task.processing_deadline, None);
+
+    let task = store.get_by_id(&batch[1].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Processing);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
+async fn test_heartbeat_deadline_set_and_updated(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let mut batch = make_activations(3);
+    batch[0].heartbeat = Some(10);
+    batch[1].heartbeat = Some(10);
+
+    // Pull mode sets the heartbeat deadline when claiming
+    assert!(store.store(&batch[0..1]).await.is_ok());
+    assert!(
+        store
+            .claim_activation_for_pull(None, None)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Push mode sets it when marking processing
+    assert!(store.store(&batch[1..]).await.is_ok());
+    assert_eq!(
+        store
+            .claim_activations_for_push(None, None)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    store
+        .mark_activation_processing(&batch[1].id)
+        .await
+        .unwrap();
+    store
+        .mark_processing_batch(&[batch[2].id.clone()])
+        .await
+        .unwrap();
+
+    let now = Utc::now();
+    for activation in &batch[0..2] {
+        let task = store.get_by_id(&activation.id).await.unwrap().unwrap();
+        assert_eq!(task.status, ActivationStatus::Processing);
+        assert!(task.heartbeat_deadline.unwrap() > now);
+    }
+
+    let task = store.get_by_id(&batch[2].id).await.unwrap().unwrap();
+    assert_eq!(task.status, ActivationStatus::Processing);
+    assert_eq!(task.heartbeat_deadline, None);
+
+    let ids = [&batch[0].id, &batch[1].id, &batch[2].id, "missing"].map(String::from);
+    let mut updated = store.update_heartbeats(&ids).await.unwrap();
+    updated.sort();
+    assert_eq!(updated, ids[0..2]);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 async fn test_handle_processing_deadline_multiple_tasks(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 

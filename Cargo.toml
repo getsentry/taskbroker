@@ -50,7 +50,7 @@ sentry = { version = "0.41.0", default-features = false, features = [
     "tracing",
     "logs",
 ] }
-sentry_protos = "0.22.0"
+sentry_protos = "0.106.0"
 # TLS for sentry's transport. Not using sentry's `native-tls` feature, which pulls ureq + webpki-root-certs into Cargo.lock.
 # Keep this on the same reqwest version as the `sentry` crate. When upgrading sentry (newer releases use reqwest 0.13),
 # bump this too, otherwise Cargo builds two reqwest copies and sentry's copy loses this TLS feature.
