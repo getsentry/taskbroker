@@ -40,6 +40,21 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
+def _join_surrogates(value: Any) -> Any:
+    """
+    Rebuild strings that hold a UTF-16 surrogate pair as two separate code points
+    (e.g. an emoji parsed with `ast.literal_eval`), which msgpack can't encode as
+    UTF-8. Pairs are joined into one character and lone halves become U+FFFD.
+    """
+    if isinstance(value, str):
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, dict):
+        return {_join_surrogates(k): _join_surrogates(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_join_surrogates(v) for v in value]
+    return value
+
+
 def assert_typed_kwarg(
     func: Callable[..., Any],
     param_name: str,
@@ -290,6 +305,13 @@ class Task(Generic[P, R]):
         """
         pass
 
+    def _producer_metric_tags(self) -> dict[str, str]:
+        return {
+            "namespace": self._namespace.name,
+            "taskname": self.name,
+            "topic": self._namespace.topic,
+        }
+
     def create_activation(
         self,
         args: Collection[Any],
@@ -342,7 +364,14 @@ class Task(Generic[P, R]):
                 )
 
         data = {"args": args, "kwargs": kwargs}
-        msgpack_bytes = msgpack.packb(data, use_bin_type=True)
+        try:
+            msgpack_bytes = msgpack.packb(data, use_bin_type=True)
+        except UnicodeEncodeError:
+            msgpack_bytes = msgpack.packb(_join_surrogates(data), use_bin_type=True)
+            self.namespace.metrics.incr(
+                "taskworker.producer.surrogates_repaired",
+                tags=self._producer_metric_tags(),
+            )
 
         should_compress = (
             self.compression_type == CompressionType.ZSTD
@@ -355,11 +384,7 @@ class Task(Generic[P, R]):
             parameters_bytes_val = zstd.compress(msgpack_bytes)
             elapsed = time.perf_counter() - start_time
 
-            metric_tags = {
-                "namespace": self._namespace.name,
-                "taskname": self.name,
-                "topic": self._namespace.topic,
-            }
+            metric_tags = self._producer_metric_tags()
             self.namespace.metrics.distribution(
                 "taskworker.producer.compressed_parameters_size",
                 len(parameters_bytes_val),

@@ -142,6 +142,10 @@ pub struct Config {
     /// `auto_offset_reset`.
     pub kafka_auto_offset_reset: String,
 
+    /// librdkafka's `queued.max.messages.kbytes`. Partition queues are split, so this caps
+    /// prefetched messages per assigned partition rather than per consumer.
+    pub kafka_queued_max_messages_kbytes: usize,
+
     /// The number of ms for timeouts when publishing messages to kafka.
     pub kafka_send_timeout_ms: u64,
 
@@ -294,6 +298,7 @@ impl Default for Config {
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
+            kafka_queued_max_messages_kbytes: 16384,
             kafka_send_timeout_ms: 500,
             store: StoreConfig::default(),
             runtime_config_path: None,
@@ -954,7 +959,11 @@ impl Config {
                 auto_commit_interval_ms.to_string(),
             )
             .set("auto.offset.reset", auto_offset_reset)
-            .set("enable.auto.offset.store", "false");
+            .set("enable.auto.offset.store", "false")
+            .set(
+                "queued.max.messages.kbytes",
+                self.kafka_queued_max_messages_kbytes.to_string(),
+            );
 
         config
     }
@@ -1438,6 +1447,10 @@ mod tests {
         );
         assert_eq!(consumer_config.get("group.id").unwrap(), "taskworker");
         assert!(consumer_config.get("session.timeout.ms").is_some());
+        assert_eq!(
+            consumer_config.get("queued.max.messages.kbytes").unwrap(),
+            "16384"
+        );
     }
 
     #[test]
