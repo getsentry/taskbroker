@@ -33,14 +33,17 @@ pub async fn upkeep(
 ) -> Result<(), anyhow::Error> {
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
-    let kafka_config = config.kafka_producer_config();
-    let producer = Arc::new(
+    let new_producer = |reloading| {
         KafkaProducer::new(
-            kafka_config,
-            &config.kafka_deadletter_topic,
+            config.kafka_producer_config(),
+            &[config.retry_topic(), &config.kafka_deadletter_topic],
+            reloading,
             Duration::from_millis(config.kafka_send_timeout_ms),
         )
-        .expect("Could not create kafka producer in upkeep"),
+    };
+    let mut producer = Arc::new(
+        new_producer(runtime_config_manager.read().await.use_reloading_producer)
+            .expect("Could not create kafka producer in upkeep"),
     );
 
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
@@ -53,6 +56,16 @@ pub async fn upkeep(
     loop {
         select! {
             _ = timer.tick() => {
+                let use_reloading_producer =
+                    runtime_config_manager.read().await.use_reloading_producer;
+                if producer.is_reloading() != use_reloading_producer {
+                    match new_producer(use_reloading_producer) {
+                        Ok(new_producer) => producer = Arc::new(new_producer),
+                        Err(err) => {
+                            error!("Could not switch kafka producer in upkeep: {err}");
+                        }
+                    }
+                }
                 let _ = do_upkeep(
                     config.clone(),
                     store.clone(),
@@ -363,12 +376,15 @@ pub async fn do_upkeep(
                 forward_cluster, dlq_cluster.address
             );
         }
+        // shortcut: rebuilt on every upkeep run while namespaces are demoted, which is rare;
+        // keep it across runs if demotion becomes common.
         let mut forward_producer_config = config.kafka_producer_config();
         forward_producer_config.set("bootstrap.servers", &forward_cluster);
         let forward_producer = Arc::new(
             KafkaProducer::new(
                 forward_producer_config,
-                &forward_topic,
+                &[&forward_topic],
+                producer.is_reloading(),
                 Duration::from_millis(config.kafka_send_timeout_ms),
             )
             .expect("Could not create kafka producer in upkeep"),
@@ -619,8 +635,8 @@ mod tests {
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
-        create_integration_config_from_base, create_producer, create_test_store, make_activations,
-        replace_retry_state, reset_topic,
+        create_integration_config_from_base, create_producer, create_producer_with_flag,
+        create_test_store, make_activations, replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
 
@@ -709,13 +725,20 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
+    async fn test_retry_activation_is_appended_to_kafka(
+        #[case] adapter: &str,
+        #[values(false, true)] use_reloading_producer: bool,
+    ) {
         let config = Arc::new(create_integration_config_from_base(Config {
             deprecated: DeprecatedConfig {
-                kafka_topic: Some(format!("taskbroker-test-retry-{adapter}")),
+                kafka_topic: Some(format!(
+                    "taskbroker-test-retry-{adapter}-{use_reloading_producer}"
+                )),
                 ..DeprecatedConfig::default()
             },
-            kafka_deadletter_topic: format!("taskbroker-test-retry-{adapter}-dlq"),
+            kafka_deadletter_topic: format!(
+                "taskbroker-test-retry-{adapter}-{use_reloading_producer}-dlq"
+            ),
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
@@ -723,7 +746,7 @@ mod tests {
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
         let store = create_test_store(adapter).await;
-        let producer = create_producer(config.clone());
+        let producer = create_producer_with_flag(config.clone(), use_reloading_producer);
         let mut records = make_activations(2);
 
         let old = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();

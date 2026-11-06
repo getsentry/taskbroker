@@ -2996,8 +2996,9 @@ dependencies = [
 
 [[package]]
 name = "sentry_arroyo"
-version = "2.48.1"
-source = "git+https://github.com/getsentry/arroyo?branch=markus%2Freloading-producer-delivery-futures#8cb627c971c69955b523f912be21127a8ce897e0"
+version = "2.49.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "264346ef3695c76f10f4cc4e6224f3d198ff3d9034280036f857b110f6ad9336"
 dependencies = [
  "async-stream",
  "chrono",
@@ -4272,7 +4273,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

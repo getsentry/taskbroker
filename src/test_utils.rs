@@ -341,9 +341,15 @@ pub fn create_integration_config() -> Config {
 
 /// Create a kafka producer for a given config
 pub fn create_producer(config: Arc<Config>) -> Arc<KafkaProducer> {
+    create_producer_with_flag(config, false)
+}
+
+/// Create a kafka producer for a given config, with `use_reloading_producer` set to `reloading`
+pub fn create_producer_with_flag(config: Arc<Config>, reloading: bool) -> Arc<KafkaProducer> {
     let producer = KafkaProducer::new(
         config.kafka_producer_config(),
-        &config.kafka_deadletter_topic,
+        &[config.retry_topic(), &config.kafka_deadletter_topic],
+        reloading,
         Duration::from_millis(config.kafka_send_timeout_ms),
     )
     .expect("Could not create kafka producer");
