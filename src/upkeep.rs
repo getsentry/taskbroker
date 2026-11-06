@@ -45,7 +45,6 @@ pub async fn upkeep(
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
     let mut emitted_partitions: HashSet<TopicPartition> = HashSet::new();
@@ -61,7 +60,7 @@ pub async fn upkeep(
                     &mut last_vacuum,
                     &mut emitted_partitions,
                 ).await;
-                last_run = check_health(last_run, &config, health_reporter.clone()).await;
+                check_health(health_reporter.clone()).await;
 
                 if config.log_async_backtrace
                     && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
@@ -566,16 +565,11 @@ fn create_retry_activation(mut new_activation: TaskActivation) -> TaskActivation
 /// For an AlloyDB backed taskbroker, this check doesn't validate a specific pod, but AlloyDB
 /// in general. For now it's a no-op, and it will get more sophisticated as the AlloyDB
 /// taskbroker gets used more.
-pub async fn check_health(
-    last_run: Instant,
-    config: &Config,
-    health_reporter: HealthReporter,
-) -> Instant {
+pub async fn check_health(health_reporter: HealthReporter) {
     metrics::counter!("upkeep.health", "status" => "healthy").increment(1);
     health_reporter
         .set_service_status(SERVICE_NAME, ServingStatus::Serving)
         .await;
-    Instant::now()
 }
 
 #[cfg(test)]
