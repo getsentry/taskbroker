@@ -563,36 +563,19 @@ fn create_retry_activation(mut new_activation: TaskActivation) -> TaskActivation
 
 /// Update health based on upkeep intervals
 ///
-/// Because SQLite is a shared component for upkeep, grpc, and consumer loops, when one gets slow
-/// they all do. We see taskbroker getting slow in production when the underlying cloud disk
-/// degrades. Restarting the application typically solves this problem.
-/// Track metrics and update status so that we can measure health failures, and apply probes
-/// incrementally.
+/// For an AlloyDB backed taskbroker, this check doesn't validate a specific pod, but AlloyDB
+/// in general. For now it's a no-op, and it will get more sophisticated as the AlloyDB
+/// taskbroker gets used more.
 pub async fn check_health(
     last_run: Instant,
     config: &Config,
     health_reporter: HealthReporter,
 ) -> Instant {
-    let now = Instant::now();
-    if config.health_check_killswitched {
-        metrics::counter!("upkeep.health", "status" => "killswitched").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
-        return now;
-    }
-    if now - last_run > Duration::from_millis(config.upkeep_unhealthy_interval_ms) {
-        metrics::counter!("upkeep.health", "status" => "unhealthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::NotServing)
-            .await;
-    } else {
-        metrics::counter!("upkeep.health", "status" => "healthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
-    }
-    now
+    metrics::counter!("upkeep.health", "status" => "healthy").increment(1);
+    health_reporter
+        .set_service_status(SERVICE_NAME, ServingStatus::Serving)
+        .await;
+    Instant::now()
 }
 
 #[cfg(test)]
