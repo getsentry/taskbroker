@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sentry_arroyo::backends::kafka::config::KafkaConfig;
@@ -16,12 +15,16 @@ use rdkafka::ClientConfig;
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 
 /// An Arroyo producer with bounded retries when the local queue is full.
-///
-/// Reloading producers are per topic so each follows its own entry in the shared Kafka config.
 pub struct KafkaProducer {
-    reloading: bool,
-    producers: HashMap<String, Arc<dyn AsyncProducer<KafkaPayload>>>,
+    backend: ProducerBackend,
     queue_timeout: Duration,
+}
+
+enum ProducerBackend {
+    /// One producer for every topic, as before the reloading producer.
+    Shared(AsyncKafkaProducer),
+    /// One per topic, so each follows its own entry in the shared Kafka config.
+    Reloading(HashMap<String, ReloadingKafkaProducer>),
 }
 
 impl KafkaProducer {
@@ -40,8 +43,8 @@ impl KafkaProducer {
             Some(config.config_map().clone()),
         );
 
-        let mut producers = HashMap::new();
-        if reloading {
+        let backend = if reloading {
+            let mut producers = HashMap::new();
             for topic in topics {
                 let settings = ReloadConfig {
                     // Taskbroker sends messages without a key, so their order does not
@@ -50,41 +53,44 @@ impl KafkaProducer {
                     ignore_key_ordering: true,
                     ..ReloadConfig::default()
                 };
-                let producer: Arc<dyn AsyncProducer<KafkaPayload>> =
-                    Arc::new(ReloadingKafkaProducer::from_config(
-                        arroyo_config.clone(),
-                        ProducerSelector::new(*topic, "taskbroker"),
-                        settings,
-                    )?);
+                let producer = ReloadingKafkaProducer::from_config(
+                    arroyo_config.clone(),
+                    ProducerSelector::new(*topic, "taskbroker"),
+                    settings,
+                )?;
                 producers.insert(topic.to_string(), producer);
             }
+            ProducerBackend::Reloading(producers)
         } else {
-            let shared: Arc<dyn AsyncProducer<KafkaPayload>> =
-                Arc::new(AsyncKafkaProducer::new(arroyo_config)?);
-            for topic in topics {
-                producers.insert(topic.to_string(), Arc::clone(&shared));
-            }
-        }
+            ProducerBackend::Shared(AsyncKafkaProducer::new(arroyo_config)?)
+        };
 
         Ok(Self {
-            reloading,
-            producers,
+            backend,
             queue_timeout,
         })
     }
 
     pub fn is_reloading(&self) -> bool {
-        self.reloading
+        matches!(self.backend, ProducerBackend::Reloading(_))
     }
 
     pub fn has_topic(&self, topic: &str) -> bool {
-        self.producers.contains_key(topic)
+        self.producer(topic).is_some()
+    }
+
+    fn producer(&self, topic: &str) -> Option<&dyn AsyncProducer<KafkaPayload>> {
+        match &self.backend {
+            ProducerBackend::Shared(producer) => Some(producer),
+            ProducerBackend::Reloading(producers) => producers
+                .get(topic)
+                .map(|producer| producer as &dyn AsyncProducer<KafkaPayload>),
+        }
     }
 
     pub async fn send(&self, topic: &str, payload: &[u8]) -> Result<(), ProducerError> {
         let producer = self
-            .producers
-            .get(topic)
+            .producer(topic)
             .ok_or_else(|| ProducerError::ProducerFailure {
                 error: format!("no producer for topic {topic}"),
             })?;
@@ -139,7 +145,7 @@ mod tests {
 
         // Fill the queue without polling the delivery future.
         let destination = TopicOrPartition::Topic(Topic::new("test"));
-        let _first = producer.producers["test"].produce(
+        let _first = producer.producer("test").unwrap().produce(
             &destination,
             KafkaPayload::new(None, None, Some(b"first".to_vec())),
         );
