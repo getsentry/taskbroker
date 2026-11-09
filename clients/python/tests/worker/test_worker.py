@@ -447,6 +447,7 @@ def _make_fake_context_pool(
     *,
     concurrency: int = 1,
     min_concurrency: int = 0,
+    wait_for_child_exit: bool = False,
 ) -> TaskWorkerProcessingPool:
     return TaskWorkerProcessingPool(
         app_module="examples.app:app",
@@ -455,6 +456,7 @@ def _make_fake_context_pool(
         max_child_task_count=1,
         concurrency=concurrency,
         min_concurrency=min_concurrency,
+        wait_for_child_exit=wait_for_child_exit,
         processing_pool_name="test",
         process_type="fork",
     )
@@ -1979,9 +1981,12 @@ def test_spawn_children_releases_draining_child_above_min_concurrency() -> None:
         pool.shutdown()
 
 
-def test_spawn_children_defers_draining_child_at_min_concurrency() -> None:
+@pytest.mark.parametrize("wait_for_child_exit", [False, True])
+def test_spawn_children_defers_draining_child_at_min_concurrency(wait_for_child_exit: bool) -> None:
     fake_context = _FakeContext()
-    pool = _make_fake_context_pool(fake_context, concurrency=2, min_concurrency=1)
+    pool = _make_fake_context_pool(
+        fake_context, concurrency=2, min_concurrency=1, wait_for_child_exit=wait_for_child_exit
+    )
 
     pool.start_spawn_children_thread()
     try:
@@ -2007,9 +2012,14 @@ def test_spawn_children_defers_draining_child_at_min_concurrency() -> None:
         pool.shutdown()
 
 
-def test_spawn_children_replaces_pending_child_that_dies_before_ready() -> None:
+@pytest.mark.parametrize("wait_for_child_exit", [False, True])
+def test_spawn_children_replaces_pending_child_that_dies_before_ready(
+    wait_for_child_exit: bool,
+) -> None:
     fake_context = _FakeContext()
-    pool = _make_fake_context_pool(fake_context, concurrency=1)
+    pool = _make_fake_context_pool(
+        fake_context, concurrency=1, wait_for_child_exit=wait_for_child_exit
+    )
 
     pool.start_spawn_children_thread()
     try:
@@ -2022,6 +2032,49 @@ def test_spawn_children_replaces_pending_child_that_dies_before_ready() -> None:
 
         assert first_process.join_calls
         assert fake_context.processes[1].started
+    finally:
+        pool.shutdown()
+
+
+@pytest.mark.parametrize("wait_for_child_exit", [False, True])
+def test_spawn_children_replacement_timing(wait_for_child_exit: bool) -> None:
+    fake_context = _FakeContext()
+    pool = _make_fake_context_pool(
+        fake_context, concurrency=1, wait_for_child_exit=wait_for_child_exit
+    )
+    messages = pool._mp_context.Queue()
+
+    try:
+        pool._manage_children_once(messages)
+        assert len(fake_context.processes) == 1
+        process = fake_context.processes[0]
+        child_id = process.args[0]
+        child = pool._children[child_id]
+
+        messages.put(ChildMessage(child_id, "running"))
+        pool._manage_children_once(messages)
+        assert pool.ready_count == 1
+
+        messages.put(ChildMessage(child_id, "exiting"))
+        pool._manage_children_once(messages)
+        assert child.release.is_set()
+        assert process.is_alive()
+
+        # By default the replacement overlaps with the retiring child.
+        expected_count = 1 if wait_for_child_exit else 2
+        assert len(fake_context.processes) == expected_count
+        assert all(p.is_alive() for p in fake_context.processes)
+
+        pool._manage_children_once(messages)
+        assert len(fake_context.processes) == expected_count
+
+        process.exitcode = 0
+        process.alive = False
+        pool._manage_children_once(messages)
+        assert process.join_calls == [0]
+        assert child_id not in pool._children
+        assert len(fake_context.processes) == 2
+        assert fake_context.processes[1].is_alive()
     finally:
         pool.shutdown()
 

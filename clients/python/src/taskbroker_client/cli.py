@@ -112,6 +112,11 @@ def scheduler() -> None:
     type=int,
 )
 @click.option(
+    "--wait-for-child-exit/--no-wait-for-child-exit",
+    help="Count retiring children toward concurrency until they exit. May reduce recycling throughput.",
+    default=False,
+)
+@click.option(
     "--child-tasks-queue-maxsize",
     help="Maximum number of pending tasks buffered for child processes.",
     default=DEFAULT_WORKER_QUEUE_SIZE,
@@ -174,6 +179,7 @@ def pull(
     namespace: str | None,
     concurrency: int,
     min_concurrency: int,
+    wait_for_child_exit: bool,
     child_tasks_queue_maxsize: int,
     result_queue_maxsize: int,
     rebalance_after: int,
@@ -197,6 +203,7 @@ def pull(
         namespace=namespace,
         concurrency=concurrency,
         min_concurrency=min_concurrency,
+        wait_for_child_exit=wait_for_child_exit,
         child_tasks_queue_maxsize=child_tasks_queue_maxsize,
         result_queue_maxsize=result_queue_maxsize,
         rebalance_after=rebalance_after,
@@ -244,6 +251,11 @@ def pull(
     help="The minimum number of child processes to keep running.",
     default=0,
     type=int,
+)
+@click.option(
+    "--wait-for-child-exit/--no-wait-for-child-exit",
+    help="Count retiring children toward concurrency until they exit. May reduce recycling throughput.",
+    default=False,
 )
 @click.option(
     "--child-tasks-queue-maxsize",
@@ -343,6 +355,7 @@ def push(
     namespace: str | None,
     concurrency: int,
     min_concurrency: int,
+    wait_for_child_exit: bool,
     child_tasks_queue_maxsize: int,
     result_queue_maxsize: int,
     rebalance_after: int,
@@ -372,6 +385,7 @@ def push(
         namespace=namespace,
         concurrency=concurrency,
         min_concurrency=min_concurrency,
+        wait_for_child_exit=wait_for_child_exit,
         child_tasks_queue_maxsize=child_tasks_queue_maxsize,
         result_queue_maxsize=result_queue_maxsize,
         rebalance_after=rebalance_after,
