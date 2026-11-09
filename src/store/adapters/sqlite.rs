@@ -1065,52 +1065,41 @@ impl ActivationStore for SqliteStore {
     async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
+        // Idempotent tasks that miss a deadline go directly to failure
+        // there are no retries, as the worker will reject the task due to idempotency keys.
+        let most_once_result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, heartbeat_deadline = null, status = $1
+            WHERE (processing_deadline < $2 OR heartbeat_deadline < $2) AND at_most_once = TRUE AND status = $3",
+        )
+        .bind(ActivationStatus::Failure)
+        .bind(now.timestamp())
+        .bind(ActivationStatus::Processing)
+        .execute(&mut *atomic)
+        .await;
+
         let mut modified_rows = 0;
-
-        for (deadline, reason) in [
-            ("processing_deadline", "processing_deadline"),
-            ("heartbeat_deadline", "heartbeat"),
-        ] {
-            // Idempotent tasks that fail their deadlines go directly to failure
-            // there are no retries, as the worker will reject the task due to idempotency keys.
-            let most_once_result = sqlx::query(&format!(
-                "UPDATE inflight_taskactivations
-                SET processing_deadline = null, heartbeat_deadline = null, status = $1
-                WHERE {deadline} < $2 AND at_most_once = TRUE AND status = $3",
-            ))
-            .bind(ActivationStatus::Failure)
-            .bind(now.timestamp())
-            .bind(ActivationStatus::Processing)
-            .execute(&mut *atomic)
-            .await;
-
-            let mut reset = 0;
-            if let Ok(query_res) = most_once_result {
-                reset = query_res.rows_affected();
-            }
-
-            // Update non-idempotent tasks.
-            // Increment processing_attempts by 1 and reset deadlines to null.
-            let result = sqlx::query(&format!(
-                "UPDATE inflight_taskactivations
-                SET processing_deadline = null, heartbeat_deadline = null, status = $1, processing_attempts = processing_attempts + 1
-                WHERE {deadline} < $2 AND status = $3",
-            ))
-            .bind(ActivationStatus::Pending)
-            .bind(now.timestamp())
-            .bind(ActivationStatus::Processing)
-            .execute(&mut *atomic)
-            .await;
-
-            let Ok(query_res) = result else {
-                return Err(anyhow!("Could not update tasks past {deadline}"));
-            };
-            reset += query_res.rows_affected();
-
-            metrics::counter!("upkeep.handle_processing_deadline.reset", "reason" => reason)
-                .increment(reset);
-            modified_rows += reset;
+        if let Ok(query_res) = most_once_result {
+            modified_rows = query_res.rows_affected();
         }
+
+        // Update non-idempotent tasks.
+        // Increment processing_attempts by 1 and reset deadlines to null.
+        let result = sqlx::query(
+            "UPDATE inflight_taskactivations
+            SET processing_deadline = null, heartbeat_deadline = null, status = $1, processing_attempts = processing_attempts + 1
+            WHERE (processing_deadline < $2 OR heartbeat_deadline < $2) AND status = $3",
+        )
+        .bind(ActivationStatus::Pending)
+        .bind(now.timestamp())
+        .bind(ActivationStatus::Processing)
+        .execute(&mut *atomic)
+        .await;
+
+        let Ok(query_res) = result else {
+            return Err(anyhow!("Could not update tasks past their deadlines"));
+        };
+        modified_rows += query_res.rows_affected();
 
         atomic.commit().await?;
 

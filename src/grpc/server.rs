@@ -373,9 +373,13 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<UpdateHeartbeatRequest>,
     ) -> Result<Response<UpdateHeartbeatResponse>, Status> {
+        let start_time = Instant::now();
         let id = &request.get_ref().id;
 
-        match self.store.update_heartbeats(std::slice::from_ref(id)).await {
+        let result = self.store.update_heartbeats(std::slice::from_ref(id)).await;
+        metrics::histogram!("grpc_server.update_heartbeat.duration").record(start_time.elapsed());
+
+        match result {
             Ok(updated) if !updated.is_empty() => {
                 metrics::counter!("grpc_server.update_heartbeat", "result" => "ok").increment(1);
                 Ok(Response::new(UpdateHeartbeatResponse {}))
@@ -404,9 +408,15 @@ impl ConsumerService for TaskbrokerServer {
         &self,
         request: Request<BatchUpdateHeartbeatRequest>,
     ) -> Result<Response<BatchUpdateHeartbeatResponse>, Status> {
+        let start_time = Instant::now();
         let ids = request.into_inner().ids;
+        metrics::histogram!("grpc_server.batch_update_heartbeat.ids").record(ids.len() as f64);
 
-        match self.store.update_heartbeats(&ids).await {
+        let result = self.store.update_heartbeats(&ids).await;
+        metrics::histogram!("grpc_server.batch_update_heartbeat.duration")
+            .record(start_time.elapsed());
+
+        match result {
             Ok(updated) => {
                 let updated: HashSet<String> = updated.into_iter().collect();
                 let not_found_ids: Vec<String> =
