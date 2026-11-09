@@ -836,6 +836,56 @@ impl Config {
 
         self.normalize_applications();
         self.validate_applications()?;
+        self.validate_store_limits()?;
+
+        Ok(())
+    }
+
+    /// The activation writer only stores a batch when `pending + batch.len()`
+    /// is within the pending limit. If a limit is below `insert_batch_max_length`,
+    /// a full batch can't be stored. The writer will keep retrying and the consumer
+    /// stops making progress.
+    fn validate_store_limits(&self) -> Result<()> {
+        let batch_len = self.store.insert_batch_max_length;
+
+        // Each consumed topic's writer uses either that topic's
+        // max_pending_activations or, if it has none, store.max_pending_count.
+        // Only check the global limit if at least one topic falls back to it.
+        let mut uses_global_pending_limit = false;
+
+        for (topic_name, topic_config) in &self.kafka_topics {
+            if topic_config.produce_only {
+                continue;
+            }
+
+            match topic_config.max_pending_activations {
+                Some(limit) if limit < batch_len => {
+                    return Err(anyhow!(
+                        "topic '{topic_name}' max_pending_activations ({limit}) must be at \
+                         least store.insert_batch_max_length ({batch_len}), or a full batch \
+                         can never be written"
+                    ));
+                }
+                Some(_) => {}
+                None => uses_global_pending_limit = true,
+            }
+        }
+
+        if uses_global_pending_limit && self.store.max_pending_count < batch_len {
+            return Err(anyhow!(
+                "store.max_pending_count ({}) must be at least store.insert_batch_max_length \
+                 ({batch_len}), or a full batch can never be written",
+                self.store.max_pending_count
+            ));
+        }
+
+        if self.store.max_delay_count < batch_len {
+            return Err(anyhow!(
+                "store.max_delay_count ({}) must be at least store.insert_batch_max_length \
+                 ({batch_len}), or a full batch of delayed tasks can never be written",
+                self.store.max_delay_count
+            ));
+        }
 
         Ok(())
     }
@@ -2347,5 +2397,171 @@ kafka_clusters:
 
             Ok(())
         });
+    }
+
+    /// Load a config from a YAML file through `from_args`, so deprecated
+    /// mapping and normalization run the same way they do at startup.
+    fn config_from_yaml(yaml: &str) -> anyhow::Result<Config> {
+        let mut result = None;
+        Jail::expect_with(|jail| {
+            jail.create_file("config.yaml", yaml)?;
+            let args = Args {
+                run: Run::Broker,
+                config: Some("config.yaml".to_owned()),
+            };
+            result = Some(Config::from_args(&args));
+            Ok(())
+        });
+        result.unwrap()
+    }
+
+    /// Two consumed topics plus produce-only retry and DLQ topics. `store`,
+    /// `a` and `b` are extra fields for the store and the `a` and `b` topics.
+    fn two_topic_yaml(store: &str, a: &str, b: &str) -> String {
+        format!(
+            r#"
+kafka_deadletter_topic: dlq
+kafka_retry_topic: retry
+
+store:
+{store}
+
+kafka_topics:
+  a:
+    cluster: my-cluster
+    consumer_group: taskbroker-a
+{a}
+  b:
+    cluster: my-cluster
+    consumer_group: taskbroker-b
+{b}
+  retry:
+    cluster: my-cluster
+    consumer_group: taskbroker-retry
+    produce_only: true
+  dlq:
+    cluster: my-cluster
+    consumer_group: taskbroker-dlq
+    produce_only: true
+    max_pending_activations: 1
+
+kafka_clusters:
+  my-cluster:
+    address: 10.0.0.1:9092
+"#
+        )
+    }
+
+    #[test]
+    fn test_store_limits_reject_pending_below_batch_len() {
+        // The us launchpad case: pending lowered to 128, batch length left at
+        // the default of 256. A full batch could never be written.
+        let err = config_from_yaml(
+            r#"
+store:
+    max_pending_count: 128
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("store.max_pending_count (128)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_store_limits_allow_pending_equal_to_batch_len() {
+        // 0 pending + a full batch of 128 is not over a limit of 128.
+        let config = config_from_yaml(
+            r#"
+store:
+    max_pending_count: 128
+    insert_batch_max_length: 128
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.store.max_pending_count, 128);
+        assert_eq!(config.store.insert_batch_max_length, 128);
+    }
+
+    #[test]
+    fn test_store_limits_apply_to_deprecated_batch_len() {
+        // The deprecated field maps onto insert_batch_max_length before
+        // validation, so it is checked too.
+        let err = config_from_yaml(
+            r#"
+db_insert_batch_max_len: 4096
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("store.max_pending_count (2048)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_store_limits_reject_delay_below_batch_len() {
+        let err = config_from_yaml(
+            r#"
+store:
+    max_delay_count: 100
+    insert_batch_max_length: 200
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("store.max_delay_count (100)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_store_limits_reject_topic_pending_below_batch_len() {
+        let yaml = two_topic_yaml(
+            "    insert_batch_max_length: 256",
+            "    max_pending_activations: 100",
+            "",
+        );
+        let err = config_from_yaml(&yaml).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("topic 'a' max_pending_activations (100)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_store_limits_skip_global_pending_when_every_topic_overrides() {
+        // Both consumed topics set their own limit, so the low global limit is
+        // never used. The produce-only DLQ's tiny limit is also ignored.
+        let yaml = two_topic_yaml(
+            "    max_pending_count: 1\n    insert_batch_max_length: 256",
+            "    max_pending_activations: 256",
+            "    max_pending_activations: 512",
+        );
+
+        assert!(config_from_yaml(&yaml).is_ok());
+    }
+
+    #[test]
+    fn test_store_limits_check_global_pending_when_a_topic_has_no_override() {
+        // Topic b has no override, so it falls back to the global limit.
+        let yaml = two_topic_yaml(
+            "    max_pending_count: 1\n    insert_batch_max_length: 256",
+            "    max_pending_activations: 256",
+            "",
+        );
+        let err = config_from_yaml(&yaml).unwrap_err();
+
+        assert!(
+            err.to_string().contains("store.max_pending_count (1)"),
+            "{err}"
+        );
     }
 }
