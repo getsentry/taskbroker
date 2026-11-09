@@ -1213,47 +1213,60 @@ impl ActivationStore for PostgresStore {
     async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
-        // At-most-once tasks that miss a deadline go directly to failure
-        // there are no retries, as the worker will reject the task due to at_most_once keys.
-        let mut query_builder = QueryBuilder::new(
-            "UPDATE inflight_taskactivations
-            SET processing_deadline = null, heartbeat_deadline = null, status = ",
-        );
-        query_builder.push_bind(ActivationStatus::Failure.to_string());
-        query_builder.push(" WHERE (processing_deadline < ");
-        query_builder.push_bind(now);
-        query_builder.push(" OR heartbeat_deadline < ");
-        query_builder.push_bind(now);
-        query_builder.push(") AND at_most_once = TRUE AND status = ");
-        query_builder.push_bind(ActivationStatus::Processing.to_string());
-
-        self.add_partition_condition(&mut query_builder, false);
-
         let mut modified_rows = 0;
-        if let Ok(query_res) = query_builder.build().execute(&mut *atomic).await {
-            modified_rows = query_res.rows_affected();
+
+        for (deadline, filter, reason) in [
+            ("processing_deadline", "", "processing_deadline"),
+            (
+                "heartbeat_deadline",
+                " AND heartbeat IS NOT NULL",
+                "heartbeat",
+            ),
+        ] {
+            // At-most-once tasks that fail their deadlines go directly to failure
+            // there are no retries, as the worker will reject the task due to at_most_once keys.
+            let mut query_builder = QueryBuilder::new(
+                "UPDATE inflight_taskactivations
+                SET processing_deadline = null, heartbeat_deadline = null, status = ",
+            );
+            query_builder.push_bind(ActivationStatus::Failure.to_string());
+            query_builder.push(format!(" WHERE {deadline} < "));
+            query_builder.push_bind(now);
+            query_builder.push(filter);
+            query_builder.push(" AND at_most_once = TRUE AND status = ");
+            query_builder.push_bind(ActivationStatus::Processing.to_string());
+
+            self.add_partition_condition(&mut query_builder, false);
+
+            let mut reset = 0;
+            if let Ok(query_res) = query_builder.build().execute(&mut *atomic).await {
+                reset = query_res.rows_affected();
+            }
+
+            // Update regular tasks.
+            // Increment processing_attempts by 1 and reset deadlines to null.
+            let mut query_builder = QueryBuilder::new(
+                "UPDATE inflight_taskactivations
+                SET processing_deadline = null, heartbeat_deadline = null, status = ",
+            );
+            query_builder.push_bind(ActivationStatus::Pending.to_string());
+            query_builder.push(", processing_attempts = processing_attempts + 1");
+            query_builder.push(format!(" WHERE {deadline} < "));
+            query_builder.push_bind(now);
+            query_builder.push(filter);
+            query_builder.push(" AND status = ");
+            query_builder.push_bind(ActivationStatus::Processing.to_string());
+            self.add_partition_condition(&mut query_builder, false);
+
+            let Ok(query_res) = query_builder.build().execute(&mut *atomic).await else {
+                return Err(anyhow!("Could not update tasks past {deadline}"));
+            };
+            reset += query_res.rows_affected();
+
+            metrics::counter!("upkeep.handle_processing_deadline.reset", "reason" => reason)
+                .increment(reset);
+            modified_rows += reset;
         }
-
-        // Update regular tasks.
-        // Increment processing_attempts by 1 and reset deadlines to null.
-        let mut query_builder = QueryBuilder::new(
-            "UPDATE inflight_taskactivations
-            SET processing_deadline = null, heartbeat_deadline = null, status = ",
-        );
-        query_builder.push_bind(ActivationStatus::Pending.to_string());
-        query_builder.push(", processing_attempts = processing_attempts + 1");
-        query_builder.push(" WHERE (processing_deadline < ");
-        query_builder.push_bind(now);
-        query_builder.push(" OR heartbeat_deadline < ");
-        query_builder.push_bind(now);
-        query_builder.push(") AND status = ");
-        query_builder.push_bind(ActivationStatus::Processing.to_string());
-        self.add_partition_condition(&mut query_builder, false);
-
-        let Ok(query_res) = query_builder.build().execute(&mut *atomic).await else {
-            return Err(anyhow!("Could not update tasks past their deadlines"));
-        };
-        modified_rows += query_res.rows_affected();
 
         atomic.commit().await?;
 
