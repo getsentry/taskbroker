@@ -16,11 +16,12 @@ run_migrations() {
   read -r -a broker_args < <(kubectl get deployment "$name" -o json \
     | jq -r '.spec.template.spec.containers[] | select(.name == "taskbroker") | .args // [] | join(" ")')
 
+  # k8s-spawn-job appends "-<10-digit ts>" and the result is a pod label (max 63 chars), so drop "-broker"
   if ! k8s-spawn-job \
     --label-selector="${label_selector}" \
     --container-name="taskbroker" \
     --try-deployments-and-statefulsets \
-    "${name}-migrations" \
+    "${name%-broker}-migrations" \
     "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
     /opt/taskbroker \
     -- \
