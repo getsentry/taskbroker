@@ -291,7 +291,7 @@ impl Default for Config {
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
-            kafka_queued_max_messages_kbytes: 16384,
+            kafka_queued_max_messages_kbytes: 4096,
             kafka_send_timeout_ms: 500,
             store: StoreConfig::default(),
             runtime_config_path: None,
@@ -1490,7 +1490,7 @@ mod tests {
         assert!(consumer_config.get("session.timeout.ms").is_some());
         assert_eq!(
             consumer_config.get("queued.max.messages.kbytes").unwrap(),
-            "16384"
+            "4096"
         );
     }
 
