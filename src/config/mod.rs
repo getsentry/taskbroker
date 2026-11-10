@@ -1490,7 +1490,7 @@ mod tests {
         assert!(consumer_config.get("session.timeout.ms").is_some());
         assert_eq!(
             consumer_config.get("queued.max.messages.kbytes").unwrap(),
-            "16384"
+            "4096"
         );
     }
 
