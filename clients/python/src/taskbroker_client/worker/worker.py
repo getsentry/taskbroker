@@ -191,14 +191,13 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
         )
 
         # Track before queueing, so a fast result can't untrack it before it is tracked.
-        heartbeats = self.heartbeats if request.task.HasField("heartbeat") else None
-        if heartbeats:
-            heartbeats.track(request.task.id)
+        if self.heartbeats:
+            self.heartbeats.track(inflight)
 
         # Push the task to the worker queue (wait at most N seconds)
         if not self.worker_pool.push_task(inflight, timeout=self.push_task_timeout):
-            if heartbeats:
-                heartbeats.untrack([request.task.id])
+            if self.heartbeats:
+                self.heartbeats.untrack([request.task.id])
             self.worker_pool._metrics.incr(
                 "taskworker.worker.push_rpc",
                 tags={"result": "busy", "processing_pool": self.worker_pool._processing_pool_name},
@@ -714,6 +713,14 @@ class TaskWorker:
 
         self._processing_pool_name: str = processing_pool_name or "unknown"
 
+        self._heartbeats = HeartbeatTracker(
+            app_module=app_module,
+            broker_hosts=broker_hosts,
+            processing_pool_name=self._processing_pool_name,
+            mp_context=self._mp_context,
+            metrics=app.metrics,
+        )
+
     def start(self) -> int:
         """
         This starts a loop that runs until the worker completes its `max_task_count` or it is killed.
@@ -721,6 +728,7 @@ class TaskWorker:
         self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
+        self._heartbeats.start()
 
         # Record the request and let the loop below act on it. Raising from a
         # handler unwinds at an arbitrary bytecode and can leave the locks held
@@ -804,6 +812,9 @@ class TaskWorker:
 
         try:
             next_task = self.client.update_task(result, fetch_next)
+            self._heartbeats.untrack([result.task_id])
+            if next_task:
+                self._heartbeats.track(next_task)
             self._setstatus_backoff_seconds = 0
             return next_task
         except grpc.RpcError as e:
@@ -872,6 +883,7 @@ class TaskWorker:
             )
             return None
 
+        self._heartbeats.track(activation)
         return activation
 
     def shutdown(self) -> None:
@@ -880,6 +892,7 @@ class TaskWorker:
         """
         self._shutdown_signal.set()
         self.worker_pool.shutdown()
+        self._heartbeats.shutdown()
 
 
 class TaskWorkerProcessingPool:

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence, Tuple, Union
 import grpc
 from google.protobuf.message import Message
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    BatchUpdateHeartbeatRequest,
     FetchNextTask,
     GetTaskRequest,
     SetTaskStatusRequest,
@@ -39,6 +40,9 @@ logger = logging.getLogger(__name__)
 _AUTH_FAILED = object()
 
 MAX_ACTIVATION_SIZE = 1024 * 1024 * 10
+
+# Well below the 10s minimum heartbeat, so a hung call can't eat a whole interval.
+HEARTBEAT_RPC_TIMEOUT_SEC = 5
 """Max payload size we will process."""
 
 GRPC_HEALTH_CHECK_METHOD = "/grpc.health.v1.Health/Check"
@@ -522,3 +526,23 @@ class TaskbrokerClient:
                 receive_timestamp=time.monotonic(),
             )
         return None
+
+    def update_heartbeats(self, host: str, ids: list[str]) -> list[str]:
+        """
+        Renew the heartbeat of activations processing on `host`. Returns the ids
+        that host no longer has processing.
+        """
+        tags = {"processing_pool": self._processing_pool_name}
+        try:
+            response = self._get_stub(host).BatchUpdateHeartbeat(
+                BatchUpdateHeartbeatRequest(ids=ids), timeout=HEARTBEAT_RPC_TIMEOUT_SEC
+            )
+        except grpc.RpcError as err:
+            self._metrics.incr(
+                "taskworker.client.heartbeat.rpc", tags={"status": err.code().name, **tags}
+            )
+            raise
+
+        self._metrics.incr("taskworker.client.heartbeat.rpc", tags={"status": "OK", **tags})
+        self._metrics.distribution("taskworker.client.heartbeat.batch_size", len(ids), tags=tags)
+        return list(response.not_found_ids)

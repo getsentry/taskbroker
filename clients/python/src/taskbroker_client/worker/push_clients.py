@@ -14,6 +14,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2_grpc import ConsumerServiceStub
 from taskbroker_client.metrics import MetricsBackend
 from taskbroker_client.types import ProcessingResult
 from taskbroker_client.worker.client import (
+    HEARTBEAT_RPC_TIMEOUT_SEC,
     MAX_ACTIVATION_SIZE,
     HealthCheckSettings,
     RequestSignatureInterceptor,
@@ -26,9 +27,6 @@ else:
     ServerInterceptor = grpc.ServerInterceptor
 
 logger = logging.getLogger(__name__)
-
-# Well below the 10s minimum heartbeat, so a hung call can't eat a whole interval.
-HEARTBEAT_RPC_TIMEOUT_SEC = 5
 
 
 def service_authority(service: str) -> str:
