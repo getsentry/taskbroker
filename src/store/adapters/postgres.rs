@@ -302,6 +302,8 @@ impl PostgresStore {
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
             connection = PgConnectOptions::from_str(&new_url).unwrap();
         }
+        // Cached plans break with "cached plan must not change result type" after a migration alters a table.
+        connection = connection.statement_cache_capacity(0);
 
         let (read_pool, write_pool) =
             create_postgres_pool(&connection, &config.store.pg.database_name).await?;
