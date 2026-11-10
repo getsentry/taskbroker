@@ -1,4 +1,15 @@
 # Changelog
+## 0.20.34
+
+### Bug Fixes 🐛
+
+- (client) Use mget_nonatomic for RunStorage.read_many on RedisCluster by @chromy and @claude in [#846](https://github.com/getsentry/taskbroker/pull/846)
+
+### Internal Changes 🔧
+
+- (deps-dev) Bump black from 26.3.1 to 26.10.1 by @dependabot in [#849](https://github.com/getsentry/taskbroker/pull/849)
+- Bump Python to 3.12.16 and uv to 0.13.7 by @oioki in [#850](https://github.com/getsentry/taskbroker/pull/850)
+
 ## 0.20.33
 
 ### Bug Fixes 🐛
