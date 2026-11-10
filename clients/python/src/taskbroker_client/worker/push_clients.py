@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import grpc
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    BatchUpdateHeartbeatRequest,
     SetBatchActivationStatusRequest,
     SetTaskStatusRequest,
 )
@@ -25,6 +26,9 @@ else:
     ServerInterceptor = grpc.ServerInterceptor
 
 logger = logging.getLogger(__name__)
+
+# Well below the 10s minimum heartbeat, so a hung call can't eat a whole interval.
+HEARTBEAT_RPC_TIMEOUT_SEC = 5
 
 
 def service_authority(service: str) -> str:
@@ -162,3 +166,23 @@ class PushTaskbrokerClient:
 
         if exception:
             raise exception
+
+    def update_heartbeats(self, ids: list[str]) -> list[str]:
+        """
+        Renew the heartbeat of processing activations. Returns the ids the broker
+        no longer has processing.
+        """
+        tags = {"processing_pool": self._processing_pool_name}
+        try:
+            response = self._stub.BatchUpdateHeartbeat(
+                BatchUpdateHeartbeatRequest(ids=ids), timeout=HEARTBEAT_RPC_TIMEOUT_SEC
+            )
+        except grpc.RpcError as err:
+            self._metrics.incr(
+                "taskworker.client.heartbeat.rpc", tags={"status": err.code().name, **tags}
+            )
+            raise
+
+        self._metrics.incr("taskworker.client.heartbeat.rpc", tags={"status": "OK", **tags})
+        self._metrics.distribution("taskworker.client.heartbeat.batch_size", len(ids), tags=tags)
+        return list(response.not_found_ids)
