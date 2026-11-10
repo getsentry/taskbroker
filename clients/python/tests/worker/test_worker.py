@@ -3513,14 +3513,23 @@ def _stage_names(metrics: mock.Mock) -> list[str]:
     ]
 
 
-class _SurvivingProcess(_FakeProcess):
-    """A child that ignores SIGTERM and only dies when killed."""
+class _SlowExitProcess(_FakeProcess):
+    """A child that keeps running its task for a few polls after SIGTERM."""
+
+    def __init__(self, *args: Any, polls_left: int, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.polls_left = polls_left
+        self.on_exit: Callable[[], None] = lambda: None
 
     def terminate(self) -> None:
         self.terminated = True
 
-    def join(self, timeout: float | None = None) -> None:
-        self.join_calls.append(timeout)
+    def is_alive(self) -> bool:
+        if self.alive and self.polls_left == 0:
+            self.on_exit()
+            self.alive = False
+        self.polls_left -= 1
+        return self.alive
 
 
 def test_shutdown_counts_child_tasks_it_discards() -> None:
@@ -3555,32 +3564,36 @@ def test_shutdown_reports_zero_when_no_child_tasks_are_lost() -> None:
     assert calls[0].kwargs["value"] == 0
 
 
-def test_shutdown_counts_children_it_had_to_kill() -> None:
+def test_shutdown_waits_for_running_children_and_sends_their_results() -> None:
+    capture = _SendResultCapture()
     fake_context = _FakeContext()
     pool = _make_fake_context_pool(fake_context)
+    pool._send_result_fn = capture
     pool._metrics = mock.Mock()
 
-    stubborn = _SurvivingProcess(name="stubborn", target=lambda: None, args=())
-    stubborn.start()
-    compliant = _FakeProcess(name="compliant", target=lambda: None, args=())
-    compliant.start()
+    slow = _SlowExitProcess(name="slow", target=lambda: None, args=(), polls_left=2)
+    slow.start()
+    late = ProcessingResult(
+        task_id="late",
+        status=TASK_ACTIVATION_STATUS_COMPLETE,
+        host="localhost:50051",
+        receive_timestamp=0,
+    )
+    slow.on_exit = lambda: pool._processed_tasks.put(late)
 
     with pool._children_lock:
         pool._children[uuid4()] = _make_tracked_child(
-            "running", process=stubborn, release=threading.Event()
-        )
-        pool._children[uuid4()] = _make_tracked_child(
-            "running", process=compliant, release=threading.Event()
+            "running", process=slow, release=threading.Event()
         )
 
-    pool.shutdown()
+    with mock.patch("taskbroker_client.worker.worker.SHUTDOWN_POLL_INTERVAL_SEC", 0):
+        pool.shutdown()
 
-    assert stubborn.killed is True
-    assert compliant.killed is False
-
-    calls = _incr_calls(pool._metrics, "taskworker.worker.shutdown.children_killed")
-    assert len(calls) == 1
-    assert calls[0].kwargs["value"] == 1
+    assert slow.terminated is True
+    assert slow.killed is False
+    assert slow.join_calls == [None]
+    assert [r.task_id for results, _ in capture.send_calls for r in results] == ["late"]
+    assert all(is_draining for _, is_draining in capture.send_calls)
 
 
 def test_shutdown_counts_results_it_drains() -> None:
@@ -3668,10 +3681,10 @@ def test_shutdown_records_a_duration_for_every_stage() -> None:
     # way through still reports how far it got.
     assert _stage_names(pool._metrics) == [
         "spawn_children",
-        "children",
-        "result_thread",
-        "drain_results",
         "drain_child_tasks",
+        "result_thread",
+        "children",
+        "drain_results",
     ]
     assert len(_distribution_calls(pool._metrics, "taskworker.worker.shutdown.duration")) == 1
 
