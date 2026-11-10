@@ -90,6 +90,12 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
     Ok(())
 }
 
+// Explicit columns instead of `*` so cached prepared statements survive migrations that add columns.
+const RETURNING_COLUMNS: &str = " RETURNING inflight_taskactivations.id, activation, topic, partition,
+    kafka_offset AS offset, added_at, received_at, processing_attempts, expires_at, delay_until,
+    processing_deadline_duration, processing_deadline, claim_expires_at, heartbeat, heartbeat_deadline,
+    status, at_most_once, application, namespace, taskname, on_attempts_exceeded, bucket";
+
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
 ///
@@ -302,8 +308,6 @@ impl PostgresStore {
                 url.as_ref().split('?').next().unwrap().to_string() + "?" + extra_query_params;
             connection = PgConnectOptions::from_str(&new_url).unwrap();
         }
-        // Cached plans break with "cached plan must not change result type" after a migration alters a table.
-        connection = connection.statement_cache_capacity(0);
 
         let (read_pool, write_pool) =
             create_postgres_pool(&connection, &config.store.pg.database_name).await?;
@@ -623,7 +627,7 @@ impl ActivationStore for PostgresStore {
 
             query_builder.push(" FROM selected_activations ");
             query_builder.push(" WHERE inflight_taskactivations.id = selected_activations.id");
-            query_builder.push(" RETURNING *, kafka_offset AS offset");
+            query_builder.push(RETURNING_COLUMNS);
 
             let mut conn = self.acquire_write_conn_metric("claim_activations").await?;
             let rows: Vec<TableRow> = query_builder
@@ -930,13 +934,14 @@ impl ActivationStore for PostgresStore {
         retry_query(&self.config.retry, "set_status", || async {
             let mut tx = self.begin_write_tx_metric("set_status").await?;
 
-            let result: Option<TableRow> = sqlx::query_as(
-                "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *, kafka_offset AS offset",
-            )
-            .bind(status.to_string())
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+            let sql = format!(
+                "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2{RETURNING_COLUMNS}"
+            );
+            let result: Option<TableRow> = sqlx::query_as(&sql)
+                .bind(status.to_string())
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
             let Some(mut row) = result else {
                 return Ok(None);
@@ -966,13 +971,11 @@ impl ActivationStore for PostgresStore {
 
             if needs_update {
                 let updated_activation = activation.encode_to_vec();
-                sqlx::query(
-                    "UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2",
-                )
-                .bind(&updated_activation)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+                sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
+                    .bind(&updated_activation)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
 
                 row.activation = Cow::Owned(updated_activation);
             }
