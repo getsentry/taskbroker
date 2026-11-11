@@ -2005,9 +2005,11 @@ def test_spawn_children_defers_draining_child_at_min_concurrency(wait_for_child_
         messages.put(ChildMessage(first_child_id, "exiting"))
         time.sleep(0.25)
         assert not first_release.is_set()
+        assert pool._children[first_child_id].exit_granted_at is None
 
         messages.put(ChildMessage(second_child_id, "running"))
         _wait_for(first_release.is_set)
+        assert pool._children[first_child_id].exit_granted_at is not None
     finally:
         pool.shutdown()
 
@@ -2056,8 +2058,11 @@ def test_spawn_children_replacement_timing(wait_for_child_exit: bool) -> None:
         assert pool.ready_count == 1
 
         messages.put(ChildMessage(child_id, "exiting"))
+        before_release = time.monotonic()
         pool._manage_children_once(messages)
         assert child.release.is_set()
+        assert child.exit_granted_at is not None
+        assert before_release <= child.exit_granted_at <= time.monotonic()
         assert process.is_alive()
 
         # By default the replacement overlaps with the retiring child.
@@ -2077,6 +2082,26 @@ def test_spawn_children_replacement_timing(wait_for_child_exit: bool) -> None:
         assert fake_context.processes[1].is_alive()
     finally:
         pool.shutdown()
+
+
+@pytest.mark.parametrize(
+    "exit_granted_times,expected",
+    [([], 0), ([None], 0), ([150, None, 0, 100], 200)],
+)
+def test_oldest_exiting_child_age(exit_granted_times: list[float | None], expected: float) -> None:
+    pool = _make_fake_context_pool(_FakeContext())
+    pool._metrics = mock.Mock()
+    for granted_at in exit_granted_times:
+        child = _make_tracked_child("pending" if granted_at is None else "exiting")
+        child.exit_granted_at = granted_at
+        pool._children[uuid4()] = child
+
+    with mock.patch("taskbroker_client.worker.worker.time.monotonic", return_value=200):
+        pool._emit_periodic_metrics()
+
+    calls = _gauge_calls(pool._metrics, "taskworker.worker.oldest_exiting_child_age")
+    assert len(calls) == 1
+    assert calls[0].args[1] == expected
 
 
 def test_shutdown_terminates_all_tracked_children() -> None:

@@ -232,6 +232,7 @@ class TrackedChild:
     release: Event
     # Holds the child's slot. Dropping this entry is what frees the memory.
     timing: ChildTimeAccounting
+    exit_granted_at: float | None = None
 
 
 class PushTaskWorker:
@@ -1056,6 +1057,16 @@ class TaskWorkerProcessingPool:
 
             exiting_children = len(self._exiting_children)
 
+            now = time.monotonic()
+            oldest_exiting_child_age = max(
+                (
+                    now - child.exit_granted_at
+                    for child in self._children.values()
+                    if child.exit_granted_at is not None
+                ),
+                default=0.0,
+            )
+
         # Emitted during warmup too: zero is correct for a counter.
         self._metrics.distribution(
             "taskworker.worker.child_busy_seconds",
@@ -1129,6 +1140,12 @@ class TaskWorkerProcessingPool:
                 float(count),
                 tags={**tags, "state": state},
             )
+
+        self._metrics.gauge(
+            "taskworker.worker.oldest_exiting_child_age",
+            oldest_exiting_child_age,
+            tags=tags,
+        )
 
         # Emit number of children waiting to exit
         self._metrics.gauge(
@@ -1334,6 +1351,7 @@ class TaskWorkerProcessingPool:
                 # once more on its way out, and its replacement can be
                 # handed the same memory the moment this one is freed.
                 child.timing.mark_stopped()
+                child.exit_granted_at = time.monotonic()
                 child.release.set()
 
             if self._wait_for_child_exit:
