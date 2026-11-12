@@ -231,6 +231,7 @@ class TrackedChild:
     release: Event
     # Holds the child's slot. Dropping this entry is what frees the memory.
     timing: ChildTimeAccounting
+    exit_granted_at: float | None = None
 
 
 class PushTaskWorker:
@@ -260,6 +261,7 @@ class PushTaskWorker:
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
         drain_file_path: str | None = DEFAULT_WORKER_DRAIN_FILE_PATH,
+        wait_for_child_exit: bool = False,
     ) -> None:
         app = import_app(app_module)
 
@@ -279,6 +281,7 @@ class PushTaskWorker:
             max_child_task_count=max_child_task_count,
             concurrency=concurrency,
             min_concurrency=min_concurrency,
+            wait_for_child_exit=wait_for_child_exit,
             child_tasks_queue_maxsize=child_tasks_queue_maxsize,
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
@@ -632,6 +635,7 @@ class TaskWorker:
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
         skip_awaiting_futures: bool = True,
         future_checking_frequency: float = 0.1,
+        wait_for_child_exit: bool = False,
     ) -> None:
         self._namespace = namespace
         app = import_app(app_module)
@@ -652,6 +656,7 @@ class TaskWorker:
             max_child_task_count=max_child_task_count,
             concurrency=concurrency,
             min_concurrency=min_concurrency,
+            wait_for_child_exit=wait_for_child_exit,
             child_tasks_queue_maxsize=child_tasks_queue_maxsize,
             result_queue_maxsize=result_queue_maxsize,
             processing_pool_name=processing_pool_name,
@@ -875,8 +880,10 @@ class TaskWorkerProcessingPool:
         prometheus_port: int | None = None,
         future_checking_frequency: float = 0.1,
         drain_file_path: str | None = None,
+        wait_for_child_exit: bool = False,
     ) -> None:
         self._concurrency = concurrency
+        self._wait_for_child_exit = wait_for_child_exit
 
         if min_concurrency < concurrency:
             self._min_concurrency = min_concurrency
@@ -1049,6 +1056,16 @@ class TaskWorkerProcessingPool:
 
             exiting_children = len(self._exiting_children)
 
+            now = time.monotonic()
+            oldest_exiting_child_age = max(
+                (
+                    now - child.exit_granted_at
+                    for child in self._children.values()
+                    if child.exit_granted_at is not None
+                ),
+                default=0.0,
+            )
+
         # Emitted during warmup too: zero is correct for a counter.
         self._metrics.distribution(
             "taskworker.worker.child_busy_seconds",
@@ -1122,6 +1139,12 @@ class TaskWorkerProcessingPool:
                 float(count),
                 tags={**tags, "state": state},
             )
+
+        self._metrics.gauge(
+            "taskworker.worker.oldest_exiting_child_age",
+            oldest_exiting_child_age,
+            tags=tags,
+        )
 
         # Emit number of children waiting to exit
         self._metrics.gauge(
@@ -1234,6 +1257,189 @@ class TaskWorkerProcessingPool:
         )
         self._result_thread.start()
 
+    def _manage_children_once(self, messages: multiprocessing.Queue[ChildMessage]) -> None:
+        # Read any events that may have come in since the last loop iteration
+        received: List[ChildMessage] = []
+
+        while True:
+            try:
+                message = messages.get(block=False)
+                received.append(message)
+            except queue.Empty:
+                break
+
+        # Lifecycle-queue lag. A rising line means this thread is behind.
+        if received:
+            drain_at = time.monotonic()
+            self._metrics.distribution(
+                "taskworker.worker.child_message.age",
+                drain_at - min(m.timestamp for m in received),
+                tags={
+                    "processing_pool": self._processing_pool_name,
+                    "pod_name": self._pod_name,
+                },
+            )
+
+        with self._children_lock:
+            children = list(self._children.items())
+
+            for cid, c in children:
+                if c.process.is_alive():
+                    continue
+
+                c.process.join(timeout=0)
+                self._children.pop(cid)
+
+                logger.info(
+                    "taskworker.child.exited",
+                    extra={
+                        "pid": c.process.pid,
+                        "cid": str(cid),
+                        "exitcode": c.process.exitcode,
+                        "state": c.state,
+                        "processing_pool": self._processing_pool_name,
+                    },
+                )
+
+            for message in received:
+                child = self._children.get(message.child_id)
+
+                # If we received a message from a child, we MUST be tracking that child
+                if child is None:
+                    logger.warning(
+                        "taskworker.child_message.unknown_child",
+                        extra={
+                            "cid": str(message.child_id),
+                            "event": message.event,
+                            "processing_pool": self._processing_pool_name,
+                        },
+                    )
+
+                    continue
+
+                # Baseline here, where it also enters `running_count`.
+                if message.event == "running":
+                    child.state = "running"
+                    child.timing.mark_running(time.monotonic())
+
+                # This child wants to exit, but we may not have enough running children to shut down right away
+                elif message.event == "exiting":
+                    self._exiting_children.append(message.child_id)
+
+            while True:
+                # Compute how many children are still running
+                running = sum(1 for c in self._children.values() if c.state == "running")
+
+                if running <= self._min_concurrency:
+                    # Cannot shut down any more children without falling below minimum concurrency (guaranteed < concurrency)
+                    break
+
+                if not self._exiting_children:
+                    # No children are waiting to exit
+                    break
+
+                child_id = self._exiting_children.popleft()
+                child = self._children.get(child_id)
+
+                # Child may have died already
+                if child is None:
+                    continue
+
+                child.state = "exiting"
+                # Stop counting it, but keep the slot: the child writes
+                # once more on its way out, and its replacement can be
+                # handed the same memory the moment this one is freed.
+                child.timing.mark_stopped()
+                child.exit_granted_at = time.monotonic()
+                child.release.set()
+
+            if self._wait_for_child_exit:
+                # Granting exit permission does not mean the child has exited.
+                # Keep counting it until we observe its exit and remove it above.
+                spawned = len(self._children)
+            else:
+                spawned = sum(1 for c in self._children.values() if c.state != "exiting")
+
+        # How many children do we need to spawn?
+        needed = max(self._concurrency - spawned, 0)
+
+        for _ in range(needed):
+            child_id = uuid4()
+            release = self._mp_context.Event()
+
+            try:
+                # Inside the try so an allocation failure retries next
+                # pass instead of killing the spawn thread.
+                timing_shm = new_slot(self._mp_context)
+
+                process = self._mp_context.Process(
+                    name=f"taskworker-child-{child_id}",
+                    target=child_process,
+                    args=(
+                        child_id,
+                        self._app_module,
+                        self._child_tasks,
+                        self._processed_tasks,
+                        self._shutdown_event,
+                        self._max_child_task_count,
+                        self._processing_pool_name,
+                        self._process_type,
+                        self._skip_awaiting_futures,
+                        self._future_checking_frequency,
+                        messages,
+                        release,
+                        timing_shm,
+                    ),
+                )
+                process.start()
+
+                with self._children_lock:
+                    child = TrackedChild(
+                        process=process,
+                        state="pending",
+                        release=release,
+                        timing=ChildTimeAccounting(shm=timing_shm),
+                    )
+
+                    self._children[child_id] = child
+            except Exception as e:
+                # `timing_shm` dies with this frame, so nothing leaks.
+                logger.exception(
+                    "taskworker.child.spawn.failed",
+                    extra={
+                        "cid": str(child_id),
+                        "error": e,
+                        "processing_pool": self._processing_pool_name,
+                    },
+                )
+
+                self._metrics.incr(
+                    "taskworker.worker.child.spawn",
+                    tags={
+                        "processing_pool": self._processing_pool_name,
+                        "result": "failure",
+                    },
+                )
+
+                continue
+
+            logger.info(
+                "taskworker.spawn_child",
+                extra={
+                    "pid": process.pid,
+                    "cid": str(child_id),
+                    "processing_pool": self._processing_pool_name,
+                },
+            )
+
+            self._metrics.incr(
+                "taskworker.worker.spawn_child",
+                tags={
+                    "processing_pool": self._processing_pool_name,
+                    "result": "success",
+                },
+            )
+
     def start_spawn_children_thread(self) -> None:
         def spawn_children_thread() -> None:
             logger.debug("taskworker.worker.spawn_children_thread.started")
@@ -1242,182 +1448,7 @@ class TaskWorkerProcessingPool:
             messages: multiprocessing.Queue[ChildMessage] = self._mp_context.Queue()
 
             while not self._shutdown_event.is_set():
-                # Read any events that may have come in since the last loop iteration
-                received: List[ChildMessage] = []
-
-                while True:
-                    try:
-                        message = messages.get(block=False)
-                        received.append(message)
-                    except queue.Empty:
-                        break
-
-                # Lifecycle-queue lag. A rising line means this thread is behind.
-                if received:
-                    drain_at = time.monotonic()
-                    self._metrics.distribution(
-                        "taskworker.worker.child_message.age",
-                        drain_at - min(m.timestamp for m in received),
-                        tags={
-                            "processing_pool": self._processing_pool_name,
-                            "pod_name": self._pod_name,
-                        },
-                    )
-
-                with self._children_lock:
-                    children = list(self._children.items())
-
-                    for cid, c in children:
-                        if c.process.is_alive():
-                            continue
-
-                        c.process.join(timeout=0)
-                        self._children.pop(cid)
-
-                        logger.info(
-                            "taskworker.child.exited",
-                            extra={
-                                "pid": c.process.pid,
-                                "cid": str(cid),
-                                "exitcode": c.process.exitcode,
-                                "state": c.state,
-                                "processing_pool": self._processing_pool_name,
-                            },
-                        )
-
-                    for message in received:
-                        child = self._children.get(message.child_id)
-
-                        # If we received a message from a child, we MUST be tracking that child
-                        if child is None:
-                            logger.warning(
-                                "taskworker.child_message.unknown_child",
-                                extra={
-                                    "cid": str(message.child_id),
-                                    "event": message.event,
-                                    "processing_pool": self._processing_pool_name,
-                                },
-                            )
-
-                            continue
-
-                        # Baseline here, where it also enters `running_count`.
-                        if message.event == "running":
-                            child.state = "running"
-                            child.timing.mark_running(time.monotonic())
-
-                        # This child wants to exit, but we may not have enough running children to shut down right away
-                        elif message.event == "exiting":
-                            self._exiting_children.append(message.child_id)
-
-                    while True:
-                        # Compute how many children are still running
-                        running = sum(1 for c in self._children.values() if c.state == "running")
-
-                        if running <= self._min_concurrency:
-                            # Cannot shut down any more children without falling below minimum concurrency (guaranteed < concurrency)
-                            break
-
-                        if not self._exiting_children:
-                            # No children are waiting to exit
-                            break
-
-                        child_id = self._exiting_children.popleft()
-                        child = self._children.get(child_id)
-
-                        # Child may have died already
-                        if child is None:
-                            continue
-
-                        child.state = "exiting"
-                        # Stop counting it, but keep the slot: the child writes
-                        # once more on its way out, and its replacement can be
-                        # handed the same memory the moment this one is freed.
-                        child.timing.mark_stopped()
-                        child.release.set()
-
-                    spawned = sum(1 for c in self._children.values() if c.state != "exiting")
-
-                # How many children do we need to spawn?
-                needed = max(self._concurrency - spawned, 0)
-
-                for _ in range(needed):
-                    child_id = uuid4()
-                    release = self._mp_context.Event()
-
-                    try:
-                        # Inside the try so an allocation failure retries next
-                        # pass instead of killing the spawn thread.
-                        timing_shm = new_slot(self._mp_context)
-
-                        process = self._mp_context.Process(
-                            name=f"taskworker-child-{child_id}",
-                            target=child_process,
-                            args=(
-                                child_id,
-                                self._app_module,
-                                self._child_tasks,
-                                self._processed_tasks,
-                                self._shutdown_event,
-                                self._max_child_task_count,
-                                self._processing_pool_name,
-                                self._process_type,
-                                self._skip_awaiting_futures,
-                                self._future_checking_frequency,
-                                messages,
-                                release,
-                                timing_shm,
-                            ),
-                        )
-                        process.start()
-
-                        with self._children_lock:
-                            child = TrackedChild(
-                                process=process,
-                                state="pending",
-                                release=release,
-                                timing=ChildTimeAccounting(shm=timing_shm),
-                            )
-
-                            self._children[child_id] = child
-                    except Exception as e:
-                        # `timing_shm` dies with this frame, so nothing leaks.
-                        logger.exception(
-                            "taskworker.child.spawn.failed",
-                            extra={
-                                "cid": str(child_id),
-                                "error": e,
-                                "processing_pool": self._processing_pool_name,
-                            },
-                        )
-
-                        self._metrics.incr(
-                            "taskworker.worker.child.spawn",
-                            tags={
-                                "processing_pool": self._processing_pool_name,
-                                "result": "failure",
-                            },
-                        )
-
-                        continue
-
-                    logger.info(
-                        "taskworker.spawn_child",
-                        extra={
-                            "pid": process.pid,
-                            "cid": str(child_id),
-                            "processing_pool": self._processing_pool_name,
-                        },
-                    )
-
-                    self._metrics.incr(
-                        "taskworker.worker.spawn_child",
-                        tags={
-                            "processing_pool": self._processing_pool_name,
-                            "result": "success",
-                        },
-                    )
-
+                self._manage_children_once(messages)
                 time.sleep(0.1)
 
         self._spawn_children_thread = threading.Thread(
