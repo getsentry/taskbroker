@@ -11,6 +11,11 @@ The fallback/default processing_deadline that tasks
 will use if neither the TaskNamespace or Task define a deadline
 """
 
+MIN_HEARTBEAT = 10
+"""
+The smallest heartbeat (in seconds) a task can set.
+"""
+
 DEFAULT_REBALANCE_AFTER = 32
 """
 The number of tasks a worker will process before it

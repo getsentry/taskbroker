@@ -49,6 +49,7 @@ from taskbroker_client.worker.client import (
     TaskbrokerClient,
     parse_rpc_secret_list,
 )
+from taskbroker_client.worker.heartbeat import HeartbeatTracker
 from taskbroker_client.worker.push_clients import PushTaskbrokerClient
 from taskbroker_client.worker.workerchild import ChildMessage, child_process
 
@@ -159,9 +160,15 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
     gRPC servicer that receives task activations pushed from the broker
     """
 
-    def __init__(self, worker: TaskWorkerProcessingPool, push_task_timeout: float = 5) -> None:
+    def __init__(
+        self,
+        worker: TaskWorkerProcessingPool,
+        push_task_timeout: float = 5,
+        heartbeats: HeartbeatTracker | None = None,
+    ) -> None:
         self.worker_pool = worker
         self.push_task_timeout = push_task_timeout
+        self.heartbeats = heartbeats
 
     def PushTask(
         self,
@@ -182,8 +189,14 @@ class WorkerServicer(taskbroker_pb2_grpc.WorkerServiceServicer):
             receive_timestamp=time.monotonic(),
         )
 
+        # Track before queueing, so a fast result can't untrack it before it is tracked.
+        if self.heartbeats:
+            self.heartbeats.track(inflight)
+
         # Push the task to the worker queue (wait at most N seconds)
         if not self.worker_pool.push_task(inflight, timeout=self.push_task_timeout):
+            if self.heartbeats:
+                self.heartbeats.untrack([request.task.id])
             self.worker_pool._metrics.incr(
                 "taskworker.worker.push_rpc",
                 tags={"result": "busy", "processing_pool": self.worker_pool._processing_pool_name},
@@ -326,6 +339,14 @@ class PushTaskWorker:
 
         self._warmup_timeout = warmup_timeout
 
+        self._heartbeats = HeartbeatTracker(
+            app_module=app_module,
+            broker_service=broker_service,
+            processing_pool_name=self._processing_pool_name,
+            mp_context=self._mp_context,
+            metrics=app.metrics,
+        )
+
     def _create_client(
         self,
         service: str,
@@ -376,6 +397,7 @@ class PushTaskWorker:
 
         try:
             self.client.update_tasks(results)
+            self._heartbeats.untrack([result.task_id for result in results])
             self._setstatus_backoff_seconds = 0
             return None
         except grpc.RpcError as e:
@@ -387,6 +409,7 @@ class PushTaskWorker:
             if e.code() != grpc.StatusCode.NOT_FOUND:
                 # If the task was not found, we can't update it, so we should just return None
                 raise RequeueException(f"Failed to update task batch: {e}")
+            self._heartbeats.untrack([result.task_id for result in results])
         except HostTemporarilyUnavailable as e:
             self._setstatus_backoff_seconds = min(
                 self._setstatus_backoff_seconds + 4, MAX_BACKOFF_SECONDS_WHEN_HOST_UNAVAILABLE
@@ -489,6 +512,7 @@ class PushTaskWorker:
         """
         This starts the worker gRPC server.
         """
+        self._heartbeats.start()
         self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
@@ -534,7 +558,8 @@ class PushTaskWorker:
             )
 
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
-                WorkerServicer(self.worker_pool, self._push_task_timeout), server
+                WorkerServicer(self.worker_pool, self._push_task_timeout, self._heartbeats),
+                server,
             )
 
             # The health service is used by the K8s readiness check
@@ -602,6 +627,7 @@ class PushTaskWorker:
         self._stop_health_check_thread()
         self._shutdown_signal.set()
         self.worker_pool.shutdown()
+        self._heartbeats.shutdown()
 
 
 class TaskWorker:
@@ -686,10 +712,19 @@ class TaskWorker:
 
         self._processing_pool_name: str = processing_pool_name or "unknown"
 
+        self._heartbeats = HeartbeatTracker(
+            app_module=app_module,
+            broker_hosts=broker_hosts,
+            processing_pool_name=self._processing_pool_name,
+            mp_context=self._mp_context,
+            metrics=app.metrics,
+        )
+
     def start(self) -> int:
         """
         This starts a loop that runs until the worker completes its `max_task_count` or it is killed.
         """
+        self._heartbeats.start()
         self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
@@ -776,6 +811,9 @@ class TaskWorker:
 
         try:
             next_task = self.client.update_task(result, fetch_next)
+            self._heartbeats.untrack([result.task_id])
+            if next_task:
+                self._heartbeats.track(next_task)
             self._setstatus_backoff_seconds = 0
             return next_task
         except grpc.RpcError as e:
@@ -844,6 +882,7 @@ class TaskWorker:
             )
             return None
 
+        self._heartbeats.track(activation)
         return activation
 
     def shutdown(self) -> None:
@@ -852,6 +891,7 @@ class TaskWorker:
         """
         self._shutdown_signal.set()
         self.worker_pool.shutdown()
+        self._heartbeats.shutdown()
 
 
 class TaskWorkerProcessingPool:

@@ -93,6 +93,7 @@ class TaskNamespace:
         processing_deadline_duration: int | datetime.timedelta | None,
         at_most_once: bool,
         compression_type: CompressionType,
+        heartbeat: int | datetime.timedelta | None,
     ) -> None:
         """
         Reject task options that taskbroker ignores in raw mode.
@@ -137,6 +138,11 @@ class TaskNamespace:
                 "taskbroker hardcodes at_most_once=false for raw activations, so the task "
                 "would still be retried past its processing deadline."
             )
+        if heartbeat is not None:
+            raise ValueError(
+                f"Task {name!r} in raw-mode namespace {self.name!r} sets heartbeat. "
+                "taskbroker never sets a heartbeat on raw activations, so it would be ignored."
+            )
         if retry is not None and retry._times_exceeded == LastAction.Deadletter:
             raise ValueError(
                 f"Task {name!r} in raw-mode namespace {self.name!r} sets "
@@ -157,6 +163,7 @@ class TaskNamespace:
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
         pass_headers: bool = False,
+        heartbeat: int | datetime.timedelta | None = None,
     ) -> Callable[[Callable[P, R]], Task[P, R]]:
         """
         Register a task.
@@ -191,6 +198,10 @@ class TaskNamespace:
         pass_headers: bool
             If True, the task function will receive task activation headers
             as a keyword argument named `headers` (dict[str, str]).
+        heartbeat: int | datetime.timedelta | None
+            If set, the worker renews this task's heartbeat while it runs, and
+            the broker retries it once a heartbeat is missed for this many seconds.
+            Must be at least 10s and less than processing_deadline_duration.
         """
 
         def wrapped(func: Callable[P, R]) -> Task[P, R]:
@@ -205,6 +216,7 @@ class TaskNamespace:
                     processing_deadline_duration=processing_deadline_duration,
                     at_most_once=at_most_once,
                     compression_type=compression_type,
+                    heartbeat=heartbeat,
                 )
             task = Task(
                 name=name,
@@ -221,6 +233,7 @@ class TaskNamespace:
                 report_timeout_errors=report_timeout_errors,
                 silenced_exceptions=silenced_exceptions,
                 pass_headers=pass_headers,
+                heartbeat=heartbeat,
             )
             # TODO(taskworker) tasks should be registered into the registry
             # so that we can ensure task names are globally unique
@@ -320,6 +333,7 @@ class ExternalNamespace(TaskNamespace):
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
         pass_headers: bool = False,
+        heartbeat: int | datetime.timedelta | None = None,
     ) -> Callable[[Callable[P, R]], ExternalTask[P, R]]:
         """
         Register an external task stub.
@@ -372,6 +386,7 @@ class ExternalNamespace(TaskNamespace):
                 report_timeout_errors=report_timeout_errors,
                 silenced_exceptions=silenced_exceptions,
                 pass_headers=pass_headers,
+                heartbeat=heartbeat,
             )
             self._registered_tasks[name] = task
             return task

@@ -22,6 +22,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 from taskbroker_client.constants import (
     DEFAULT_PROCESSING_DEADLINE,
     MAX_PARAMETER_BYTES_BEFORE_COMPRESSION,
+    MIN_HEARTBEAT,
     CompressionType,
 )
 from taskbroker_client.retry import Retry
@@ -106,6 +107,7 @@ class Task(Generic[P, R]):
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
         pass_headers: bool = False,
+        heartbeat: int | datetime.timedelta | None = None,
     ):
         self.name = name
         self._func = func
@@ -120,6 +122,22 @@ class Task(Generic[P, R]):
                 Having retries enabled means that a task supports being executed
                 multiple times and thus cannot be idempotent.
                 """)
+        if isinstance(heartbeat, datetime.timedelta):
+            heartbeat = int(heartbeat.total_seconds())
+        if heartbeat is not None:
+            deadline = self._processing_deadline_duration
+            if isinstance(deadline, datetime.timedelta):
+                deadline = int(deadline.total_seconds())
+            if heartbeat < MIN_HEARTBEAT:
+                raise ValueError(
+                    f"Task {name!r} heartbeat must be at least {MIN_HEARTBEAT}s, got {heartbeat}s"
+                )
+            if heartbeat >= deadline:
+                raise ValueError(
+                    f"Task {name!r} heartbeat ({heartbeat}s) must be less than its "
+                    f"processing_deadline_duration ({deadline}s)"
+                )
+        self.heartbeat = heartbeat
         self._retry = retry
         self.at_most_once = at_most_once
         self.wait_for_delivery = wait_for_delivery
@@ -410,6 +428,7 @@ class Task(Generic[P, R]):
             processing_deadline_duration=processing_deadline,
             expires=expires,
             delay=countdown,
+            heartbeat=self.heartbeat,
         )
 
     def create_testing_activation(
