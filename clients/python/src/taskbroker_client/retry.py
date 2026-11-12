@@ -59,7 +59,11 @@ def retry_task(exc: Exception | None = None, raise_on_no_retries: bool = True) -
 
 
 class Retry:
-    """Used with tasks to define the retry policy for a task"""
+    """Used with tasks to define the retry policy for a task.
+
+    ``times`` is the total number of attempts, including the initial execution.
+    For example, ``Retry(times=3)`` allows the initial attempt plus two retries.
+    """
 
     def __init__(
         self,
