@@ -513,10 +513,10 @@ class PushTaskWorker:
         """
         This starts the worker gRPC server.
         """
+        self._heartbeats.start()
         self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
-        self._heartbeats.start()
 
         server: grpc.Server | None = None
         server_started = False
@@ -725,10 +725,10 @@ class TaskWorker:
         """
         This starts a loop that runs until the worker completes its `max_task_count` or it is killed.
         """
+        self._heartbeats.start()
         self.worker_pool.start_metrics_thread()
         self.worker_pool.start_result_thread()
         self.worker_pool.start_spawn_children_thread()
-        self._heartbeats.start()
 
         # Record the request and let the loop below act on it. Raising from a
         # handler unwinds at an arbitrary bytecode and can leave the locks held
