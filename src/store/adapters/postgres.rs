@@ -90,6 +90,12 @@ pub async fn migrate(config: &StoreConfig) -> Result<()> {
     Ok(())
 }
 
+// Explicit columns instead of `*` so cached prepared statements survive migrations that add columns.
+const RETURNING_COLUMNS: &str = " RETURNING inflight_taskactivations.id, activation, topic, partition,
+    kafka_offset AS offset, added_at, received_at, processing_attempts, expires_at, delay_until,
+    processing_deadline_duration, processing_deadline, claim_expires_at, heartbeat, heartbeat_deadline,
+    status, at_most_once, application, namespace, taskname, on_attempts_exceeded, bucket";
+
 /// Database representation of an [`Activation`], used for both reads and
 /// writes.
 ///
@@ -112,6 +118,8 @@ struct TableRow<'a> {
     pub processing_deadline_duration: i32,
     pub processing_deadline: Option<DateTime<Utc>>,
     pub claim_expires_at: Option<DateTime<Utc>>,
+    pub heartbeat: Option<i32>,
+    pub heartbeat_deadline: Option<DateTime<Utc>>,
     pub status: Cow<'a, str>,
     pub at_most_once: bool,
     pub application: Cow<'a, str>,
@@ -137,6 +145,8 @@ impl<'a> From<&'a Activation> for TableRow<'a> {
             processing_deadline_duration: value.processing_deadline_duration,
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
+            heartbeat: value.heartbeat,
+            heartbeat_deadline: value.heartbeat_deadline,
             status: Cow::Owned(value.status.to_string()),
             at_most_once: value.at_most_once,
             application: Cow::Borrowed(&value.application),
@@ -167,6 +177,8 @@ impl From<TableRow<'_>> for Activation {
             delay_until: value.delay_until,
             processing_deadline: value.processing_deadline,
             claim_expires_at: value.claim_expires_at,
+            heartbeat: value.heartbeat,
+            heartbeat_deadline: value.heartbeat_deadline,
             at_most_once: value.at_most_once,
             application: value.application.into_owned(),
             namespace: value.namespace.into_owned(),
@@ -196,6 +208,8 @@ impl FromRow<'_, PgRow> for TableRow<'static> {
             processing_deadline_duration: row.try_get("processing_deadline_duration")?,
             processing_deadline: row.try_get("processing_deadline")?,
             claim_expires_at: row.try_get("claim_expires_at")?,
+            heartbeat: row.try_get("heartbeat")?,
+            heartbeat_deadline: row.try_get("heartbeat_deadline")?,
             status: Cow::Owned(row.try_get::<String, _>("status")?),
             at_most_once: row.try_get("at_most_once")?,
             application: Cow::Owned(row.try_get::<String, _>("application")?),
@@ -404,6 +418,8 @@ impl ActivationStore for PostgresStore {
                         processing_deadline_duration,
                         processing_deadline,
                         claim_expires_at,
+                        heartbeat,
+                        heartbeat_deadline,
                         status,
                         at_most_once,
                         application,
@@ -468,6 +484,8 @@ impl ActivationStore for PostgresStore {
                         processing_deadline_duration,
                         processing_deadline,
                         claim_expires_at,
+                        heartbeat,
+                        heartbeat_deadline,
                         status,
                         at_most_once,
                         application,
@@ -505,6 +523,8 @@ impl ActivationStore for PostgresStore {
                     } else {
                         b.push("null");
                     }
+                    b.push_bind(row.heartbeat);
+                    b.push_bind(row.heartbeat_deadline);
                     b.push_bind(row.status);
                     b.push_bind(row.at_most_once);
                     b.push_bind(row.application);
@@ -588,6 +608,7 @@ impl ActivationStore for PostgresStore {
                 query_builder.push(format!(
                     "UPDATE inflight_taskactivations
                      SET processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                        heartbeat_deadline = now() + (heartbeat * interval '1 second'),
                          claim_expires_at = NULL,
                          status = "
                 ));
@@ -606,7 +627,7 @@ impl ActivationStore for PostgresStore {
 
             query_builder.push(" FROM selected_activations ");
             query_builder.push(" WHERE inflight_taskactivations.id = selected_activations.id");
-            query_builder.push(" RETURNING *, kafka_offset AS offset");
+            query_builder.push(RETURNING_COLUMNS);
 
             let mut conn = self.acquire_write_conn_metric("claim_activations").await?;
             let rows: Vec<TableRow> = query_builder
@@ -641,6 +662,7 @@ impl ActivationStore for PostgresStore {
                     UPDATE inflight_taskactivations SET
                         status = $1,
                         processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                        heartbeat_deadline = now() + (heartbeat * interval '1 second'),
                         claim_expires_at = NULL
                     FROM selected
                     WHERE inflight_taskactivations.id = selected.id",
@@ -695,6 +717,7 @@ impl ActivationStore for PostgresStore {
                     UPDATE inflight_taskactivations SET
                         status = $1,
                         processing_deadline = now() + (processing_deadline_duration * interval '1 second') + (interval '{grace_period} seconds'),
+                        heartbeat_deadline = now() + (heartbeat * interval '1 second'),
                         claim_expires_at = NULL
                     FROM selected
                     WHERE inflight_taskactivations.id = selected.id",
@@ -911,13 +934,14 @@ impl ActivationStore for PostgresStore {
         retry_query(&self.config.retry, "set_status", || async {
             let mut tx = self.begin_write_tx_metric("set_status").await?;
 
-            let result: Option<TableRow> = sqlx::query_as(
-                "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2 RETURNING *, kafka_offset AS offset",
-            )
-            .bind(status.to_string())
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
+            let sql = format!(
+                "UPDATE inflight_taskactivations SET status = $1 WHERE id = $2{RETURNING_COLUMNS}"
+            );
+            let result: Option<TableRow> = sqlx::query_as(&sql)
+                .bind(status.to_string())
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
 
             let Some(mut row) = result else {
                 return Ok(None);
@@ -947,13 +971,11 @@ impl ActivationStore for PostgresStore {
 
             if needs_update {
                 let updated_activation = activation.encode_to_vec();
-                sqlx::query(
-                    "UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2",
-                )
-                .bind(&updated_activation)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+                sqlx::query("UPDATE inflight_taskactivations SET activation = $1 WHERE id = $2")
+                    .bind(&updated_activation)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
 
                 row.activation = Cow::Owned(updated_activation);
             }
@@ -1058,6 +1080,25 @@ impl ActivationStore for PostgresStore {
 
     #[instrument(skip_all)]
     #[framed]
+    async fn update_heartbeats(&self, ids: &[String]) -> Result<Vec<String>, Error> {
+        retry_query(&self.config.retry, "update_heartbeats", || async {
+            let mut conn = self.acquire_write_conn_metric("update_heartbeats").await?;
+            Ok(sqlx::query_scalar(
+                "UPDATE inflight_taskactivations
+                SET heartbeat_deadline = now() + (heartbeat * interval '1 second')
+                WHERE id = ANY($1) AND status = $2 AND heartbeat IS NOT NULL
+                RETURNING id",
+            )
+            .bind(ids)
+            .bind(ActivationStatus::Processing.to_string())
+            .fetch_all(&mut *conn)
+            .await?)
+        })
+        .await
+    }
+
+    #[instrument(skip_all)]
+    #[framed]
     async fn delete_activation(&self, id: &str) -> Result<(), Error> {
         retry_query(&self.config.retry, "delete_activation", || async {
             let mut conn = self.acquire_write_conn_metric("delete_activation").await?;
@@ -1104,6 +1145,8 @@ impl ActivationStore for PostgresStore {
                         processing_deadline_duration,
                         processing_deadline,
                         claim_expires_at,
+                        heartbeat,
+                        heartbeat_deadline,
                         status,
                         at_most_once,
                         application,
@@ -1175,52 +1218,64 @@ impl ActivationStore for PostgresStore {
     async fn handle_processing_deadline(&self) -> Result<u64, Error> {
         let now = Utc::now();
         let mut atomic = self.write_pool.begin().await?;
+        let mut modified_rows = 0;
 
-        // At-most-once tasks that fail their processing deadlines go directly to failure
-        // there are no retries, as the worker will reject the task due to at_most_once keys.
-        let mut query_builder = QueryBuilder::new(
-            "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = ",
-        );
-        query_builder.push_bind(ActivationStatus::Failure.to_string());
-        query_builder.push(" WHERE processing_deadline < ");
-        query_builder.push_bind(now);
-        query_builder.push(" AND at_most_once = TRUE AND status = ");
-        query_builder.push_bind(ActivationStatus::Processing.to_string());
+        for (deadline, filter, reason) in [
+            ("processing_deadline", "", "processing_deadline"),
+            (
+                "heartbeat_deadline",
+                " AND heartbeat IS NOT NULL",
+                "heartbeat",
+            ),
+        ] {
+            // At-most-once tasks that fail their deadlines go directly to failure
+            // there are no retries, as the worker will reject the task due to at_most_once keys.
+            let mut query_builder = QueryBuilder::new(
+                "UPDATE inflight_taskactivations
+                SET processing_deadline = null, heartbeat_deadline = null, status = ",
+            );
+            query_builder.push_bind(ActivationStatus::Failure.to_string());
+            query_builder.push(format!(" WHERE {deadline} < "));
+            query_builder.push_bind(now);
+            query_builder.push(filter);
+            query_builder.push(" AND at_most_once = TRUE AND status = ");
+            query_builder.push_bind(ActivationStatus::Processing.to_string());
 
-        self.add_partition_condition(&mut query_builder, false);
+            self.add_partition_condition(&mut query_builder, false);
 
-        let most_once_result = query_builder.build().execute(&mut *atomic).await;
+            let mut reset = 0;
+            if let Ok(query_res) = query_builder.build().execute(&mut *atomic).await {
+                reset = query_res.rows_affected();
+            }
 
-        let mut processing_deadline_modified_rows = 0;
-        if let Ok(query_res) = most_once_result {
-            processing_deadline_modified_rows = query_res.rows_affected();
+            // Update regular tasks.
+            // Increment processing_attempts by 1 and reset deadlines to null.
+            let mut query_builder = QueryBuilder::new(
+                "UPDATE inflight_taskactivations
+                SET processing_deadline = null, heartbeat_deadline = null, status = ",
+            );
+            query_builder.push_bind(ActivationStatus::Pending.to_string());
+            query_builder.push(", processing_attempts = processing_attempts + 1");
+            query_builder.push(format!(" WHERE {deadline} < "));
+            query_builder.push_bind(now);
+            query_builder.push(filter);
+            query_builder.push(" AND status = ");
+            query_builder.push_bind(ActivationStatus::Processing.to_string());
+            self.add_partition_condition(&mut query_builder, false);
+
+            let Ok(query_res) = query_builder.build().execute(&mut *atomic).await else {
+                return Err(anyhow!("Could not update tasks past {deadline}"));
+            };
+            reset += query_res.rows_affected();
+
+            metrics::counter!("upkeep.handle_processing_deadline.reset", "reason" => reason)
+                .increment(reset);
+            modified_rows += reset;
         }
-
-        // Update regular tasks.
-        // Increment processing_attempts by 1 and reset processing_deadline to null.
-        let mut query_builder = QueryBuilder::new(
-            "UPDATE inflight_taskactivations
-            SET processing_deadline = null, status = ",
-        );
-        query_builder.push_bind(ActivationStatus::Pending.to_string());
-        query_builder.push(", processing_attempts = processing_attempts + 1");
-        query_builder.push(" WHERE processing_deadline < ");
-        query_builder.push_bind(now);
-        query_builder.push(" AND status = ");
-        query_builder.push_bind(ActivationStatus::Processing.to_string());
-        self.add_partition_condition(&mut query_builder, false);
-
-        let result = query_builder.build().execute(&mut *atomic).await;
 
         atomic.commit().await?;
 
-        if let Ok(query_res) = result {
-            processing_deadline_modified_rows += query_res.rows_affected();
-            return Ok(processing_deadline_modified_rows);
-        }
-
-        Err(anyhow!("Could not update tasks past processing_deadline"))
+        Ok(modified_rows)
     }
 
     /// Update tasks that have exceeded their max processing attempts.

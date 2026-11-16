@@ -20,7 +20,7 @@ run_migrations() {
     --label-selector="${label_selector}" \
     --container-name="taskbroker" \
     --try-deployments-and-statefulsets \
-    "${name}-migrations" \
+    "${name%-broker}-migrations" \
     "us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
     /opt/taskbroker \
     -- \

@@ -10,12 +10,9 @@ use prost_types::Timestamp;
 use sentry_arroyo::backends::ProducerError;
 use sentry_protos::taskbroker::v1::TaskActivation;
 use tokio::{fs, join, select, time};
-use tonic_health::ServingStatus;
-use tonic_health::server::HealthReporter;
 use tracing::{debug, error, info, instrument, warn};
 use uuid::Uuid;
 
-use crate::SERVICE_NAME;
 use crate::config::Config;
 use crate::kafka::producer::KafkaProducer;
 use crate::runtime_config::RuntimeConfigManager;
@@ -29,14 +26,15 @@ pub async fn upkeep(
     store: Arc<dyn ActivationStore>,
     startup_time: DateTime<Utc>,
     runtime_config_manager: Arc<RuntimeConfigManager>,
-    health_reporter: HealthReporter,
 ) -> Result<(), anyhow::Error> {
     const ASYNC_BACKTRACE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
     let kafka_config = config.kafka_producer_config();
-    let producer = Arc::new(
+    let mut producer = Arc::new(
         KafkaProducer::new(
             kafka_config,
+            &[config.retry_topic(), &config.kafka_deadletter_topic],
+            runtime_config_manager.read().await.use_reloading_producer,
             Duration::from_millis(config.kafka_send_timeout_ms),
         )
         .expect("Could not create kafka producer in upkeep"),
@@ -45,13 +43,26 @@ pub async fn upkeep(
     let guard = elegant_departure::get_shutdown_guard().shutdown_on_drop();
     let mut timer = time::interval(Duration::from_millis(config.upkeep_task_interval_ms));
     timer.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-    let mut last_run = Instant::now();
     let mut last_vacuum = Instant::now();
     let mut last_backtrace_log = Instant::now();
     let mut emitted_partitions: HashSet<TopicPartition> = HashSet::new();
     loop {
         select! {
             _ = timer.tick() => {
+                let use_reloading_producer = runtime_config_manager.read().await.use_reloading_producer;
+                if producer.is_reloading() != use_reloading_producer {
+                    match KafkaProducer::new(
+                        config.kafka_producer_config(),
+                        &[config.retry_topic(), &config.kafka_deadletter_topic],
+                        use_reloading_producer,
+                        Duration::from_millis(config.kafka_send_timeout_ms),
+                    ) {
+                        Ok(new_producer) => producer = Arc::new(new_producer),
+                        Err(err) => {
+                            error!("Could not switch kafka producer in upkeep: {err}");
+                        }
+                    }
+                }
                 let _ = do_upkeep(
                     config.clone(),
                     store.clone(),
@@ -61,7 +72,6 @@ pub async fn upkeep(
                     &mut last_vacuum,
                     &mut emitted_partitions,
                 ).await;
-                last_run = check_health(last_run, &config, health_reporter.clone()).await;
 
                 if config.log_async_backtrace
                     && last_backtrace_log.elapsed() >= ASYNC_BACKTRACE_LOG_INTERVAL
@@ -367,6 +377,8 @@ pub async fn do_upkeep(
         let forward_producer = Arc::new(
             KafkaProducer::new(
                 forward_producer_config,
+                &[&forward_topic],
+                producer.is_reloading(),
                 Duration::from_millis(config.kafka_send_timeout_ms),
             )
             .expect("Could not create kafka producer in upkeep"),
@@ -561,40 +573,6 @@ fn create_retry_activation(mut new_activation: TaskActivation) -> TaskActivation
     new_activation
 }
 
-/// Update health based on upkeep intervals
-///
-/// Because SQLite is a shared component for upkeep, grpc, and consumer loops, when one gets slow
-/// they all do. We see taskbroker getting slow in production when the underlying cloud disk
-/// degrades. Restarting the application typically solves this problem.
-/// Track metrics and update status so that we can measure health failures, and apply probes
-/// incrementally.
-pub async fn check_health(
-    last_run: Instant,
-    config: &Config,
-    health_reporter: HealthReporter,
-) -> Instant {
-    let now = Instant::now();
-    if config.health_check_killswitched {
-        metrics::counter!("upkeep.health", "status" => "killswitched").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
-        return now;
-    }
-    if now - last_run > Duration::from_millis(config.upkeep_unhealthy_interval_ms) {
-        metrics::counter!("upkeep.health", "status" => "unhealthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::NotServing)
-            .await;
-    } else {
-        metrics::counter!("upkeep.health", "status" => "healthy").increment(1);
-        health_reporter
-            .set_service_status(SERVICE_NAME, ServingStatus::Serving)
-            .await;
-    }
-    now
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -617,8 +595,8 @@ mod tests {
     use crate::store::activation::ActivationStatus;
     use crate::test_utils::{
         StatusCount, assert_counts, consume_topic, create_config,
-        create_integration_config_from_base, create_producer, create_test_store, make_activations,
-        replace_retry_state, reset_topic,
+        create_integration_config_from_base, create_producer, create_producer_with_flag,
+        create_test_store, make_activations, replace_retry_state, reset_topic,
     };
     use crate::upkeep::{create_retry_activation, do_upkeep};
 
@@ -707,13 +685,20 @@ mod tests {
     #[rstest]
     #[case::sqlite("sqlite")]
     #[case::postgres("postgres")]
-    async fn test_retry_activation_is_appended_to_kafka(#[case] adapter: &str) {
+    async fn test_retry_activation_is_appended_to_kafka(
+        #[case] adapter: &str,
+        #[values(false, true)] use_reloading_producer: bool,
+    ) {
         let config = Arc::new(create_integration_config_from_base(Config {
             deprecated: DeprecatedConfig {
-                kafka_topic: Some(format!("taskbroker-test-retry-{adapter}")),
+                kafka_topic: Some(format!(
+                    "taskbroker-test-retry-{adapter}-{use_reloading_producer}"
+                )),
                 ..DeprecatedConfig::default()
             },
-            kafka_deadletter_topic: format!("taskbroker-test-retry-{adapter}-dlq"),
+            kafka_deadletter_topic: format!(
+                "taskbroker-test-retry-{adapter}-{use_reloading_producer}-dlq"
+            ),
             ..Default::default()
         }));
         let runtime_config = Arc::new(RuntimeConfigManager::new(None).await);
@@ -721,7 +706,7 @@ mod tests {
         let start_time = Utc::now();
         let mut last_vacuum = Instant::now();
         let store = create_test_store(adapter).await;
-        let producer = create_producer(config.clone());
+        let producer = create_producer_with_flag(config.clone(), use_reloading_producer);
         let mut records = make_activations(2);
 
         let old = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap();

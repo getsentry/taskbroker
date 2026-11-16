@@ -134,7 +134,6 @@ async fn main() -> Result<(), Error> {
                 upkeep_store,
                 startup_time,
                 runtime_config_manager.clone(),
-                health_reporter.clone(),
             )
             .await?;
             Ok(())

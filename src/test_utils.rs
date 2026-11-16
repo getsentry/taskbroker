@@ -40,6 +40,7 @@ pub struct TaskActivationBuilder {
     pub processing_deadline_duration: Option<u64>,
     pub expires: Option<u64>,
     pub delay: Option<u64>,
+    pub heartbeat: Option<u64>,
 }
 
 impl TaskActivationBuilder {
@@ -56,6 +57,7 @@ impl TaskActivationBuilder {
             processing_deadline_duration: None,
             expires: None,
             delay: None,
+            heartbeat: None,
         }
     }
 
@@ -114,6 +116,11 @@ impl TaskActivationBuilder {
         self
     }
 
+    pub fn heartbeat(mut self, heartbeat: u64) -> Self {
+        self.heartbeat = Some(heartbeat);
+        self
+    }
+
     #[allow(deprecated)]
     pub fn build(self) -> v1::TaskActivation {
         v1::TaskActivation {
@@ -132,6 +139,7 @@ impl TaskActivationBuilder {
             retry_state: self.retry_state,
             expires: self.expires,
             delay: self.delay,
+            heartbeat: self.heartbeat,
         }
     }
 }
@@ -191,6 +199,7 @@ impl ActivationBuilder {
         // Set 'expiration' and 'delay' fields manually after activation has been build
         activation.expires = expires;
         activation.delay = delay;
+        activation.heartbeat = self.heartbeat.flatten().map(|h| h as u64);
 
         self.activation = Some(activation.encode_to_vec());
 
@@ -341,8 +350,14 @@ pub fn create_integration_config() -> Config {
 
 /// Create a kafka producer for a given config
 pub fn create_producer(config: Arc<Config>) -> Arc<KafkaProducer> {
+    create_producer_with_flag(config, false)
+}
+
+pub fn create_producer_with_flag(config: Arc<Config>, reloading: bool) -> Arc<KafkaProducer> {
     let producer = KafkaProducer::new(
         config.kafka_producer_config(),
+        &[config.retry_topic(), &config.kafka_deadletter_topic],
+        reloading,
         Duration::from_millis(config.kafka_send_timeout_ms),
     )
     .expect("Could not create kafka producer");
