@@ -1086,11 +1086,12 @@ impl ActivationStore for PostgresStore {
             Ok(sqlx::query_scalar(
                 "UPDATE inflight_taskactivations
                 SET heartbeat_deadline = now() + (heartbeat * interval '1 second')
-                WHERE id = ANY($1) AND status = $2 AND heartbeat IS NOT NULL
+                WHERE id = ANY($1) AND status IN ($2, $3) AND heartbeat IS NOT NULL
                 RETURNING id",
             )
             .bind(ids)
             .bind(ActivationStatus::Processing.to_string())
+            .bind(ActivationStatus::Claimed.to_string())
             .fetch_all(&mut *conn)
             .await?)
         })

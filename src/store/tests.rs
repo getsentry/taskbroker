@@ -1369,12 +1369,14 @@ async fn test_handle_processing_deadline_heartbeat(#[case] adapter: &str) {
 async fn test_heartbeat_deadline_set_and_updated(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
 
-    let mut batch = make_activations(4);
+    let mut batch = make_activations(5);
     batch[0].heartbeat = Some(10);
     batch[1].heartbeat = Some(10);
     batch[3].status = ActivationStatus::Processing;
     batch[3].heartbeat = Some(10);
     batch[3].heartbeat_deadline = Some(Utc::now() - Duration::from_secs(60));
+    batch[4].status = ActivationStatus::Claimed;
+    batch[4].heartbeat = Some(10);
 
     // Pull mode sets the heartbeat deadline when claiming
     assert!(store.store(&batch[0..1]).await.is_ok());
@@ -1421,16 +1423,19 @@ async fn test_heartbeat_deadline_set_and_updated(#[case] adapter: &str) {
         &batch[0].id,
         &batch[1].id,
         &batch[3].id,
+        &batch[4].id,
         &batch[2].id,
         "missing",
     ]
     .map(String::from);
     let mut updated = store.update_heartbeats(&ids).await.unwrap();
     updated.sort();
-    assert_eq!(updated, ids[0..3]);
+    assert_eq!(updated, ids[0..4]);
 
-    let task = store.get_by_id(&batch[3].id).await.unwrap().unwrap();
-    assert!(task.heartbeat_deadline.unwrap() > Utc::now());
+    for activation in &batch[3..] {
+        let task = store.get_by_id(&activation.id).await.unwrap().unwrap();
+        assert!(task.heartbeat_deadline.unwrap() > Utc::now());
+    }
     store.remove_db().await.unwrap();
 }
 
