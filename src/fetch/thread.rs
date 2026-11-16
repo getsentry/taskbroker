@@ -6,6 +6,7 @@ use anyhow::Result;
 use chrono::Utc;
 use elegant_departure::get_shutdown_guard;
 use flume::{Sender, TrySendError};
+use futures::FutureExt;
 use tokio::time::{Duration, sleep};
 use tracing::{debug, info, warn};
 
@@ -39,17 +40,15 @@ impl FetchThread {
         let guard = get_shutdown_guard().shutdown_on_drop();
 
         loop {
-            tokio::select! {
-                _ = guard.wait() => {
-                    info!("Fetch loop received shutdown signal");
-                    return Ok(());
-                }
+            // Check between batches instead of racing them, since cancelling `fetch_once`
+            // strands its claimed but unsubmitted rows until their lease expires
+            if guard.wait().now_or_never().is_some() {
+                info!("Fetch loop received shutdown signal");
+                return Ok(());
+            }
 
-                keep_running = self.fetch_once(fetch_backoff) => {
-                    if !keep_running {
-                        return Ok(());
-                    }
-                }
+            if !self.fetch_once(fetch_backoff).await {
+                return Ok(());
             }
         }
     }
