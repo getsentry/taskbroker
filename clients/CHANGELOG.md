@@ -1,4 +1,13 @@
 # Changelog
+## 0.20.35
+
+### New Features ✨
+
+#### Taskworker
+
+- Add opt-in wait for child exit during recycling by @jamieQ in [#855](https://github.com/getsentry/taskbroker/pull/855)
+- Wait for running tasks on shutdown instead of killing children by @evanh and @claude in [#857](https://github.com/getsentry/taskbroker/pull/857)
+
 ## 0.20.34
 
 ### Bug Fixes 🐛
