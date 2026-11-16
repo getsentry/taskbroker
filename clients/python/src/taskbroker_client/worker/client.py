@@ -40,10 +40,10 @@ logger = logging.getLogger(__name__)
 _AUTH_FAILED = object()
 
 MAX_ACTIVATION_SIZE = 1024 * 1024 * 10
+"""Max payload size we will process."""
 
 # Well below the 10s minimum heartbeat, so a hung call can't eat a whole interval.
 HEARTBEAT_RPC_TIMEOUT_SEC = 5
-"""Max payload size we will process."""
 
 GRPC_HEALTH_CHECK_METHOD = "/grpc.health.v1.Health/Check"
 
