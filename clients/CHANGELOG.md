@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.36
+
+### New Features ✨
+
+- (taskworker) Send heartbeats for running tasks by @evanh and @claude in [#859](https://github.com/getsentry/taskbroker/pull/859)
+
 ## 0.20.35
 
 ### New Features ✨
