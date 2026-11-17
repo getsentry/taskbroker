@@ -1173,6 +1173,70 @@ def test_push_start_exits_cleanly_on_sigterm() -> None:
     pool_shutdown.assert_called_once_with()
 
 
+def test_push_start_without_health_port_has_no_rpc_limit() -> None:
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5)
+    taskworker._shutdown_signal.request()
+
+    fake_health = mock.MagicMock()
+    fake_server = mock.MagicMock()
+
+    with (
+        _push_worker_grpc_mocks(taskworker, fake_server, fake_health),
+        mock.patch(
+            "taskbroker_client.worker.worker.grpc.server", return_value=fake_server
+        ) as grpc_server,
+    ):
+        taskworker.start()
+
+    grpc_server.assert_called_once()
+    assert grpc_server.call_args.kwargs["maximum_concurrent_rpcs"] is None
+
+
+def test_push_start_serves_health_on_separate_server() -> None:
+    taskworker = _make_push_worker(concurrency=2, warmup_timeout=5, health_port=50098)
+    handlers: dict[int, Callable[..., None]] = {}
+
+    fake_health = mock.MagicMock()
+    fake_server = mock.MagicMock()
+    fake_health_server = mock.MagicMock()
+
+    def wait_for_termination(timeout: float | None = None) -> bool:
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return True
+
+    fake_server.wait_for_termination.side_effect = wait_for_termination
+
+    with (
+        _push_worker_grpc_mocks(taskworker, fake_server, fake_health, handlers),
+        mock.patch(
+            "taskbroker_client.worker.worker.grpc.server",
+            side_effect=[fake_server, fake_health_server],
+        ) as grpc_server,
+        mock.patch(
+            "taskbroker_client.worker.worker.health_pb2_grpc.add_HealthServicer_to_server"
+        ) as add_health,
+        mock.patch.object(
+            TaskWorkerProcessingPool, "ready_count", new_callable=mock.PropertyMock, return_value=2
+        ),
+    ):
+        exitcode = taskworker.start()
+
+    assert exitcode == 0
+    push_call, health_call = grpc_server.call_args_list
+    assert push_call.kwargs["maximum_concurrent_rpcs"] == 2
+    assert "maximum_concurrent_rpcs" not in health_call.kwargs
+
+    # Health stays on the push server too, so probes on the old port keep working during rollout.
+    assert add_health.call_args_list == [
+        mock.call(fake_health, fake_server),
+        mock.call(fake_health, fake_health_server),
+    ]
+    fake_health_server.add_insecure_port.assert_called_once_with("[::]:50098")
+    fake_health_server.start.assert_called_once_with()
+    fake_server.stop.assert_called_once_with(grace=5)
+    fake_health_server.stop.assert_called_once_with(grace=None)
+
+
 def test_push_start_keeps_serving_while_server_is_healthy() -> None:
     """
     A healthy server must not end the serve loop.

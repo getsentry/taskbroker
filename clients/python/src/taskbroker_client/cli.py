@@ -309,6 +309,15 @@ def pull(
     type=int,
 )
 @click.option(
+    "--health-port",
+    help=(
+        "Serve gRPC health checks on this port, separate from the push server. When set, pushes "
+        "beyond --concurrency are rejected with RESOURCE_EXHAUSTED instead of queueing."
+    ),
+    default=None,
+    type=int,
+)
+@click.option(
     "--grpc-max-message-size",
     help="Maximum gRPC send/receive message size, in bytes.",
     default=-1,
@@ -365,6 +374,7 @@ def push(
     health_check_file_path: str | None,
     health_check_sec_per_touch: float,
     grpc_port: int,
+    health_port: int | None,
     grpc_max_message_size: int,
     push_task_timeout: float,
     skip_awaiting_futures: bool,
@@ -395,6 +405,7 @@ def push(
         health_check_file_path=health_check_file_path,
         health_check_sec_per_touch=health_check_sec_per_touch,
         grpc_port=grpc_port,
+        health_port=health_port,
         grpc_max_message_size=grpc_max_message_size,
         push_task_timeout=push_task_timeout,
         skip_awaiting_futures=skip_awaiting_futures,

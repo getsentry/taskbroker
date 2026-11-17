@@ -267,6 +267,7 @@ class PushTaskWorker:
         health_check_file_path: str | None = None,
         health_check_sec_per_touch: float = DEFAULT_WORKER_HEALTH_CHECK_SEC_PER_TOUCH,
         grpc_port: int = 50052,
+        health_port: int | None = None,
         grpc_max_message_size: int = -1,
         push_task_timeout: float = 5,
         skip_awaiting_futures: bool = True,
@@ -336,6 +337,7 @@ class PushTaskWorker:
         self._processing_pool_name: str = processing_pool_name or "unknown"
 
         self._grpc_port = grpc_port
+        self._health_port = health_port
         self._grpc_max_message_size = grpc_max_message_size
         self._grpc_secrets = parse_rpc_secret_list(app.config["rpc_secret"])
         self._push_task_timeout = push_task_timeout
@@ -521,6 +523,7 @@ class PushTaskWorker:
         self.worker_pool.start_spawn_children_thread()
 
         server: grpc.Server | None = None
+        health_server: grpc.Server | None = None
         server_started = False
         health_servicer: health.HealthServicer | None = None
 
@@ -558,6 +561,11 @@ class PushTaskWorker:
                     ("grpc.max_receive_message_length", max_message_size),
                     ("grpc.max_send_message_length", max_message_size),
                 ],
+                # One RPC per handler thread, so excess pushes are rejected instead of queueing.
+                # The limit covers every service on the server, so it needs health on its own server.
+                maximum_concurrent_rpcs=(
+                    self._concurrency if self._health_port is not None else None
+                ),
             )
 
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
@@ -573,10 +581,17 @@ class PushTaskWorker:
 
             server.add_insecure_port(f"[::]:{self._grpc_port}")
 
+            if self._health_port is not None:
+                health_server = grpc.server(ThreadPoolExecutor(max_workers=1))
+                health_pb2_grpc.add_HealthServicer_to_server(health_servicer, health_server)
+                health_server.add_insecure_port(f"[::]:{self._health_port}")
+
             # Don't accept connections we are about to drop.
             if self._shutdown_signal.is_set():
                 return 0
 
+            if health_server is not None:
+                health_server.start()
             server.start()
             server_started = True
 
@@ -593,7 +608,10 @@ class PushTaskWorker:
             health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
             health_servicer.set(WORKER_SERVICE_NAME, health_pb2.HealthCheckResponse.SERVING)
 
-            logger.info("taskworker.grpc_server.started", extra={"port": self._grpc_port})
+            logger.info(
+                "taskworker.grpc_server.started",
+                extra={"port": self._grpc_port, "health_port": self._health_port},
+            )
             self._start_health_check_thread()
 
             # Poll so a signal handler that only flipped a bool still gets us
@@ -618,6 +636,10 @@ class PushTaskWorker:
 
             if server is not None and server_started:
                 server.stop(grace=5)
+
+            # Stopped after the push server so probes keep seeing NOT_SERVING during its grace period.
+            if health_server is not None and server_started:
+                health_server.stop(grace=None)
 
             self.shutdown()
 
