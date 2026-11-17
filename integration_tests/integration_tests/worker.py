@@ -7,6 +7,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
     TASK_ACTIVATION_STATUS_COMPLETE,
     TASK_ACTIVATION_STATUS_FAILURE,
     TASK_ACTIVATION_STATUS_RETRY,
+    BatchUpdateHeartbeatRequest,
     FetchNextTask,
     GetTaskRequest,
     SetTaskStatusRequest,
@@ -69,6 +70,11 @@ class TaskWorkerClient:
         if response.HasField("task"):
             return response.task
         return None
+
+    def update_heartbeats(self, ids: list[str]) -> list[str]:
+        """Renew the heartbeat of processing activations. Returns the ids that are not processing."""
+        response = self._stub.BatchUpdateHeartbeat(BatchUpdateHeartbeatRequest(ids=ids))
+        return list(response.not_found_ids)
 
 
 class ConfigurableTaskWorker:

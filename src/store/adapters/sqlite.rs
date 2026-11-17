@@ -941,9 +941,12 @@ impl ActivationStore for SqliteStore {
         let mut query_builder = QueryBuilder::new(
             "UPDATE inflight_taskactivations
             SET heartbeat_deadline = unixepoch('now', '+' || heartbeat || ' seconds')
-            WHERE heartbeat IS NOT NULL AND status = ",
+            WHERE heartbeat IS NOT NULL AND (status = ",
         );
         query_builder.push_bind(ActivationStatus::Processing);
+        query_builder.push(" OR status = ");
+        query_builder.push_bind(ActivationStatus::Claimed);
+        query_builder.push(")");
         query_builder.push(" AND id IN (");
         let mut separated = query_builder.separated(", ");
         for id in ids {

@@ -89,12 +89,17 @@ test-failed-tasks: build reset-kafka ## Run the failed tasks integration test
 	rm -r integration_tests/.tests_output/test_failed_tasks
 .PHONY: test-failed-tasks
 
+test-heartbeat: build reset-kafka ## Run the task heartbeat integration test
+	python -m pytest integration_tests/integration_tests/test_heartbeat.py -s
+	rm -r integration_tests/.tests_output/test_heartbeat
+.PHONY: test-heartbeat
+
 test-push-postgres: build reset-kafka ## Run the postgres-backed push mode integration test
 	python -m pytest integration_tests/integration_tests/test_push_postgres.py -s
 	rm -r integration_tests/.tests_output/test_push_postgres
 .PHONY: test-push-postgres
 
-integration-test: test-rebalance test-worker-processing test-upkeep-retry test-upkeep-expiry test-upkeep-delay test-failed-tasks ## Run all integration tests
+integration-test: test-rebalance test-worker-processing test-upkeep-retry test-upkeep-expiry test-upkeep-delay test-failed-tasks test-heartbeat ## Run all integration tests
 .PHONY: integration-test
 
 

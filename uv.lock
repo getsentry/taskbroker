@@ -690,7 +690,7 @@ wheels = [
 
 [[package]]
 name = "sentry-protos"
-version = "0.26.1"
+version = "0.106.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "grpc-stubs" },
@@ -698,7 +698,7 @@ dependencies = [
     { name = "protobuf" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_protos-0.26.1-py3-none-any.whl", hash = "sha256:66bc22be8ac3efeceeb09af30a3ca55943ad83a3d28905263255f74a02206822" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_protos-0.106.0-py3-none-any.whl", hash = "sha256:120a7845a82c63e100bcba88ee265a1964f1f648094f8513d2a6e1dcf40ab38e" },
 ]
 
 [[package]]
@@ -855,7 +855,7 @@ requires-dist = [
     { name = "redis", specifier = ">=3.4.1" },
     { name = "redis-py-cluster", marker = "extra == 'cluster'", specifier = ">=2.1.0" },
     { name = "sentry-arroyo", specifier = ">=2.41.1" },
-    { name = "sentry-protos", specifier = ">=0.26.1" },
+    { name = "sentry-protos", specifier = ">=0.106.0" },
     { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.73.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
     { name = "zstandard", specifier = ">=0.18.0" },
