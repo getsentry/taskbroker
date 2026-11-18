@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.37
+
+### New Features ✨
+
+- (taskworker) Serve push health checks on a separate port by @evanh and @claude in [#869](https://github.com/getsentry/taskbroker/pull/869)
+
 ## 0.20.36
 
 ### New Features ✨
