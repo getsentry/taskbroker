@@ -1259,6 +1259,9 @@ impl ActivationStore for SqliteStore {
     /// Mark a collection of tasks as complete by id
     #[instrument(skip_all)]
     async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
         let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
         query_builder
             .push("SET status = ")

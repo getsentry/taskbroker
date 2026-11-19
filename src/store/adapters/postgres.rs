@@ -1421,6 +1421,9 @@ impl ActivationStore for PostgresStore {
     #[instrument(skip_all)]
     #[framed]
     async fn mark_completed(&self, ids: Vec<String>) -> Result<u64, Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
         retry_query(&self.config.retry, "mark_completed", || async {
             let mut query_builder = QueryBuilder::new("UPDATE inflight_taskactivations ");
             query_builder
