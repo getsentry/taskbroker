@@ -2121,6 +2121,19 @@ async fn test_mark_completed(#[case] adapter: &str) {
 #[rstest]
 #[case::sqlite("sqlite")]
 #[case::postgres("postgres")]
+async fn test_mark_completed_empty(#[case] adapter: &str) {
+    let store = create_test_store(adapter).await;
+
+    let result = store.mark_completed(vec![]).await;
+
+    assert_eq!(result.unwrap(), 0);
+    store.remove_db().await.unwrap();
+}
+
+#[tokio::test]
+#[rstest]
+#[case::sqlite("sqlite")]
+#[case::postgres("postgres")]
 async fn test_handle_expires_at(#[case] adapter: &str) {
     let store = create_test_store(adapter).await;
     let mut batch = make_activations(3);
