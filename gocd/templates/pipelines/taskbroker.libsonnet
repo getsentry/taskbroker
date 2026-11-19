@@ -34,18 +34,6 @@ local run_migrations_stage = {
   },
 };
 
-// Regions that commit images to materialized-ops and wait for ArgoCD instead
-// of patching Kubernetes directly. A region qualifies once every broker GoCD
-// deploys there is in materialized-ops, under both workload types deploy.sh
-// deploys.
-local argocd_only_regions = ['s4s2', 'customer-1', 'customer-2', 'customer-7'];
-
-local argocd_only_env(region) =
-  if std.member(argocd_only_regions, region) then {
-    ARGOCD_ONLY: 'true',
-    ARGOCD_SERVICE: 'taskbroker',
-  } else {};
-
 local deploy_canary_stage(region) =
   if region == 'us' || region == 'de' || region == 's4s2' then
     [
@@ -61,7 +49,9 @@ local deploy_canary_stage(region) =
                 GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
                 GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
                 LABEL_SELECTOR: 'service=taskbroker,env=canary',
-              } + argocd_only_env(region),
+                ARGOCD_ONLY: 'true',
+                ARGOCD_SERVICE: 'taskbroker',
+              },
               tasks: [
                 gocdtasks.script(importstr '../bash/deploy.sh'),
                 gocdtasks.script(importstr '../bash/wait-canary.sh'),
@@ -84,7 +74,9 @@ local deployPrimaryStage(region) = {
           GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
           GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
           LABEL_SELECTOR: 'service=taskbroker',
-        } + argocd_only_env(region),
+          ARGOCD_ONLY: 'true',
+          ARGOCD_SERVICE: 'taskbroker',
+        },
         tasks: [
           gocdtasks.script(importstr '../bash/deploy.sh'),
         ],
