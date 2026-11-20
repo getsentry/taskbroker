@@ -561,11 +561,6 @@ class PushTaskWorker:
                     ("grpc.max_receive_message_length", max_message_size),
                     ("grpc.max_send_message_length", max_message_size),
                 ],
-                # One RPC per handler thread, so excess pushes are rejected instead of queueing.
-                # The limit covers every service on the server, so it needs health on its own server.
-                maximum_concurrent_rpcs=(
-                    self._concurrency if self._health_port is not None else None
-                ),
             )
 
             taskbroker_pb2_grpc.add_WorkerServiceServicer_to_server(
