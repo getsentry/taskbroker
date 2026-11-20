@@ -1190,6 +1190,10 @@ def test_push_start_serves_health_on_separate_server() -> None:
     with (
         _push_worker_grpc_mocks(taskworker, fake_server, fake_health, handlers),
         mock.patch(
+            "taskbroker_client.worker.worker.grpc.server",
+            side_effect=[fake_server, fake_health_server],
+        ),
+        mock.patch(
             "taskbroker_client.worker.worker.health_pb2_grpc.add_HealthServicer_to_server"
         ) as add_health,
         mock.patch.object(
