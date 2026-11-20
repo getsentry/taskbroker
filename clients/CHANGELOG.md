@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.38
+
+### Bug Fixes 🐛
+
+- (rpc) Remove maximum_concurrent_rpcs limit by @evanh in [#874](https://github.com/getsentry/taskbroker/pull/874)
+
 ## 0.20.37
 
 ### New Features ✨
