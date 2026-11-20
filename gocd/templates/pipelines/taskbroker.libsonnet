@@ -19,20 +19,6 @@ local checks_stage = {
   },
 };
 
-local run_migrations_stage = {
-  'run-migrations': {
-    fetch_materials: true,
-    jobs: {
-      'run-migrations': {
-        timeout: 60,
-        elastic_profile_id: 'taskbroker',
-        tasks: [
-          gocdtasks.script(importstr '../bash/run-migrations.sh'),
-        ],
-      },
-    },
-  },
-};
 
 local deploy_canary_stage(region) =
   if region == 'us' || region == 'de' || region == 's4s2' then
@@ -99,7 +85,7 @@ function(region) {
     },
   },
   lock_behavior: 'unlockWhenFinished',
-  stages: [checks_stage, run_migrations_stage]
+  stages: [checks_stage]
           + deploy_canary_stage(region)
           + [deployPrimaryStage(region)],
 }
