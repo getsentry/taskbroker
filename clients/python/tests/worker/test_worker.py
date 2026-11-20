@@ -2871,6 +2871,119 @@ def test_child_process_error_event_uses_task_transaction(
     assert event["transaction"] == taskname
 
 
+TAGGED_TASK_TRACE_ID = "a" * 32
+
+
+def _tagged_task(
+    tag: str,
+    action: str,
+    deadline: int = 2,
+    retry_state: RetryState | None = None,
+) -> InflightTaskActivation:
+    return InflightTaskActivation(
+        host="localhost:50051",
+        receive_timestamp=0,
+        activation=TaskActivation(
+            id="tagged",
+            namespace="examples",
+            taskname="examples.tagged",
+            parameters_bytes=msgpack.packb(
+                {"args": [tag, action], "kwargs": {}}, use_bin_type=True
+            ),
+            processing_deadline_duration=deadline,
+            retry_state=retry_state or RetryState(),
+            headers={"sentry-trace": f"{TAGGED_TASK_TRACE_ID}-{'b' * 16}"},
+        ),
+    )
+
+
+def _run_child_capturing_events(
+    *tasks: InflightTaskActivation,
+) -> tuple[list[ProcessingResult], list[dict[str, Any]]]:
+    """Run `tasks` in one worker child. Return their results and the Sentry error events."""
+    todo: queue.Queue[InflightTaskActivation] = queue.Queue()
+    processed: queue.Queue[ProcessingResult] = queue.Queue()
+    for task in tasks:
+        todo.put(task)
+
+    # Inspect each fully processed error event, then drop it instead of sending it.
+    capture_event = mock.Mock(return_value=None)
+    with (
+        sentry_sdk.Client(
+            dsn="https://public@example.com/1",
+            default_integrations=False,
+            integrations=[LoggingIntegration()],
+            transport=mock.Mock(spec=Transport),
+            before_send=capture_event,
+            traces_sample_rate=0,
+            trace_lifecycle="stream",
+        ) as client,
+        sentry_sdk.isolation_scope() as scope,
+    ):
+        scope.set_client(client)
+        child_process(
+            "examples.app:app",
+            todo,
+            processed,
+            Event(),
+            max_task_count=len(tasks),
+            processing_pool_name="test",
+            process_type="fork",
+            skip_awaiting_futures=False,
+            future_checking_frequency=0.1,
+        )
+
+    results = [processed.get_nowait() for _ in tasks]
+    events = [call.args[0] for call in capture_event.call_args_list]
+    return results, events
+
+
+@pytest.mark.usefixtures("restore_signal_handlers")
+@pytest.mark.parametrize(
+    ("action", "deadline", "retry_state"),
+    [
+        pytest.param("fail", 2, RetryState(), id="exception"),
+        pytest.param("raise", 2, RetryState(attempts=2, max_attempts=3), id="retry-exhausted"),
+        pytest.param("sleep", 1, RetryState(), id="timeout"),
+    ],
+)
+def test_child_process_error_event_has_task_scope_data(
+    action: str, deadline: int, retry_state: RetryState
+) -> None:
+    results, events = _run_child_capturing_events(
+        _tagged_task("from-task", action, deadline, retry_state)
+    )
+
+    assert [result.status for result in results] == [TASK_ACTIVATION_STATUS_FAILURE]
+    [event] = events
+    assert event["tags"]["example.task_tag"] == "from-task"
+    assert event["contexts"]["example"] == {"tag": "from-task"}
+    assert event["contexts"]["trace"]["trace_id"] == TAGGED_TASK_TRACE_ID
+
+
+@pytest.mark.usefixtures("restore_signal_handlers")
+@pytest.mark.parametrize(
+    ("first_action", "first_status", "event_count"),
+    [
+        pytest.param("pass", TASK_ACTIVATION_STATUS_COMPLETE, 1, id="after-success"),
+        pytest.param("fail", TASK_ACTIVATION_STATUS_FAILURE, 2, id="after-failure"),
+    ],
+)
+def test_child_process_task_scope_data_does_not_reach_next_task(
+    first_action: str, first_status: int, event_count: int
+) -> None:
+    results, events = _run_child_capturing_events(
+        _tagged_task("from-first-task", first_action), FAIL_TASK
+    )
+
+    assert [result.status for result in results] == [first_status, TASK_ACTIVATION_STATUS_FAILURE]
+    # A successful task makes no event. The last event is from FAIL_TASK, which sets no scope data.
+    assert len(events) == event_count
+    assert "example.task_tag" not in events[-1].get("tags", {})
+    assert "example" not in events[-1]["contexts"]
+    assert events[-1]["contexts"]["trace"]["trace_id"] != TAGGED_TASK_TRACE_ID
+
+
 @mock.patch("taskbroker_client.worker.workerchild.capture_checkin")
 def test_child_process_decompression(mock_capture_checkin: mock.MagicMock) -> None:
 

@@ -9,6 +9,7 @@ import random
 from time import sleep
 from typing import Any
 
+import sentry_sdk
 from arroyo.backends.kafka import FutureTrackingProducer, KafkaPayload, KafkaProducer
 from arroyo.types import Topic
 from redis import StrictRedis
@@ -76,6 +77,22 @@ def will_retry(failure: str) -> None:
 def timed_task(sleep_seconds: float | str, *args: list[Any], **kwargs: dict[str, Any]) -> None:
     sleep(float(sleep_seconds))
     logger.debug("timed_task complete")
+
+
+@exampletasks.register(
+    name="examples.tagged",
+    retry=Retry(times=3, on=(RuntimeError,), times_exceeded=LastAction.Discard),
+)
+def tagged_task(tag: str, action: str) -> None:
+    """Set Sentry scope data, then do `action`: "pass", "raise" (retried), "fail" or "sleep"."""
+    sentry_sdk.set_tag("example.task_tag", tag)
+    sentry_sdk.set_context("example", {"tag": tag})
+    if action == "raise":
+        raise RuntimeError("oh no")
+    if action == "fail":
+        raise ValueError("nope")
+    if action == "sleep":
+        sleep(3)
 
 
 @exampletasks.register(

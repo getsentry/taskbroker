@@ -503,88 +503,93 @@ def child_process(
             next_state = TASK_ACTIVATION_STATUS_FAILURE
             # Use time.time() so we can measure against activation.received_at
             execution_start_time = time.time()
-            try:
-                with timeout_alarm(inflight.activation.processing_deadline_duration, handle_alarm):
-                    _execute_activation(task_func, inflight.activation, app.context_hooks)
-                next_state = TASK_ACTIVATION_STATUS_COMPLETE
-            except ProcessingDeadlineExceeded as err:
-                if task_func.report_timeout_errors:
-                    with sentry_sdk.isolation_scope() as scope:
-                        scope.fingerprint = [
-                            "taskworker.processing_deadline_exceeded",
-                            inflight.activation.namespace,
-                            inflight.activation.taskname,
-                        ]
-                        # Override transaction names inherited from worker startup.
-                        sentry_sdk.get_current_scope().set_transaction_name(
-                            inflight.activation.taskname
-                        )
-                        _log_task_failed(inflight.activation, err, processing_pool_name)
-                metrics.incr(
-                    "taskworker.worker.processing_deadline_exceeded",
-                    tags={
-                        "processing_pool": processing_pool_name,
-                        "namespace": inflight.activation.namespace,
-                        "taskname": inflight.activation.taskname,
-                    },
-                )
-                retry = task_func.retry
-                if retry and retry.should_retry(inflight.activation.retry_state, err):
-                    next_state = TASK_ACTIVATION_STATUS_RETRY
-                else:
-                    next_state = TASK_ACTIVATION_STATUS_FAILURE
-            except Exception as err:
-                retry = task_func.retry
-                captured_error = False
-                should_capture_error = not isinstance(err, task_func.silenced_exceptions)
-                if retry:
-                    if retry.should_retry(inflight.activation.retry_state, err):
-                        logger.info(
-                            "taskworker.task.retry",
-                            extra={
-                                "namespace": inflight.activation.namespace,
-                                "taskname": inflight.activation.taskname,
-                                "processing_pool": processing_pool_name,
-                                "error": str(err),
-                            },
-                        )
-                        next_state = TASK_ACTIVATION_STATUS_RETRY
-                    elif retry.max_attempts_reached(inflight.activation.retry_state):
+            # The task's isolation scope also covers failure reporting below, so the
+            # tags, contexts and trace that the task sets reach its error events.
+            with sentry_sdk.isolation_scope():
+                try:
+                    with timeout_alarm(
+                        inflight.activation.processing_deadline_duration, handle_alarm
+                    ):
+                        _execute_activation(task_func, inflight.activation, app.context_hooks)
+                    next_state = TASK_ACTIVATION_STATUS_COMPLETE
+                except ProcessingDeadlineExceeded as err:
+                    if task_func.report_timeout_errors:
                         with sentry_sdk.isolation_scope() as scope:
-                            # Only report to Sentry when the underlying error is not silenced.
-                            if should_capture_error:
-                                retry_error = NoRetriesRemainingError(
-                                    f"{inflight.activation.taskname} has consumed all of its retries"
-                                )
-                                retry_error.__cause__ = err
-                                scope.fingerprint = [
-                                    "taskworker.no_retries_remaining",
-                                    inflight.activation.namespace,
-                                    inflight.activation.taskname,
-                                ]
-                                sentry_sdk.get_current_scope().set_transaction_name(
-                                    inflight.activation.taskname
-                                )
-                                sentry_sdk.capture_exception(retry_error)
-                            # Emit a structured worker log without logger.exception so this
-                            # branch does not create a second Sentry error event.
-                            _log_task_retry_exhausted(
-                                inflight.activation, err, processing_pool_name
+                            scope.fingerprint = [
+                                "taskworker.processing_deadline_exceeded",
+                                inflight.activation.namespace,
+                                inflight.activation.taskname,
+                            ]
+                            # Override transaction names inherited from worker startup.
+                            sentry_sdk.get_current_scope().set_transaction_name(
+                                inflight.activation.taskname
                             )
-                        # In this branch, all exceptions should be either
-                        #  captured or silenced.
-                        captured_error = True
+                            _log_task_failed(inflight.activation, err, processing_pool_name)
+                    metrics.incr(
+                        "taskworker.worker.processing_deadline_exceeded",
+                        tags={
+                            "processing_pool": processing_pool_name,
+                            "namespace": inflight.activation.namespace,
+                            "taskname": inflight.activation.taskname,
+                        },
+                    )
+                    retry = task_func.retry
+                    if retry and retry.should_retry(inflight.activation.retry_state, err):
+                        next_state = TASK_ACTIVATION_STATUS_RETRY
+                    else:
+                        next_state = TASK_ACTIVATION_STATUS_FAILURE
+                except Exception as err:
+                    retry = task_func.retry
+                    captured_error = False
+                    should_capture_error = not isinstance(err, task_func.silenced_exceptions)
+                    if retry:
+                        if retry.should_retry(inflight.activation.retry_state, err):
+                            logger.info(
+                                "taskworker.task.retry",
+                                extra={
+                                    "namespace": inflight.activation.namespace,
+                                    "taskname": inflight.activation.taskname,
+                                    "processing_pool": processing_pool_name,
+                                    "error": str(err),
+                                },
+                            )
+                            next_state = TASK_ACTIVATION_STATUS_RETRY
+                        elif retry.max_attempts_reached(inflight.activation.retry_state):
+                            with sentry_sdk.isolation_scope() as scope:
+                                # Only report to Sentry when the underlying error is not silenced.
+                                if should_capture_error:
+                                    retry_error = NoRetriesRemainingError(
+                                        f"{inflight.activation.taskname} has consumed all of its retries"
+                                    )
+                                    retry_error.__cause__ = err
+                                    scope.fingerprint = [
+                                        "taskworker.no_retries_remaining",
+                                        inflight.activation.namespace,
+                                        inflight.activation.taskname,
+                                    ]
+                                    sentry_sdk.get_current_scope().set_transaction_name(
+                                        inflight.activation.taskname
+                                    )
+                                    sentry_sdk.capture_exception(retry_error)
+                                # Emit a structured worker log without logger.exception so this
+                                # branch does not create a second Sentry error event.
+                                _log_task_retry_exhausted(
+                                    inflight.activation, err, processing_pool_name
+                                )
+                            # In this branch, all exceptions should be either
+                            #  captured or silenced.
+                            captured_error = True
 
-                if (
-                    should_capture_error
-                    and not captured_error
-                    and next_state != TASK_ACTIVATION_STATUS_RETRY
-                ):
-                    with sentry_sdk.isolation_scope():
-                        sentry_sdk.get_current_scope().set_transaction_name(
-                            inflight.activation.taskname
-                        )
-                        _log_task_failed(inflight.activation, err, processing_pool_name)
+                    if (
+                        should_capture_error
+                        and not captured_error
+                        and next_state != TASK_ACTIVATION_STATUS_RETRY
+                    ):
+                        with sentry_sdk.isolation_scope():
+                            sentry_sdk.get_current_scope().set_transaction_name(
+                                inflight.activation.taskname
+                            )
+                            _log_task_failed(inflight.activation, err, processing_pool_name)
 
             clear_current_task()
             processed_task_count += 1
@@ -654,7 +659,11 @@ def child_process(
         activation: TaskActivation,
         context_hooks: Sequence[ContextHook] = (),
     ) -> None:
-        """Invoke a task function with the activation parameters."""
+        """
+        Invoke a task function with the activation parameters.
+
+        Call this inside the task's isolation scope.
+        """
         parameters = load_parameters(activation)
 
         args = parameters.get("args", [])
@@ -667,7 +676,6 @@ def child_process(
                 "taskworker.worker.memory_change",
                 tags={"namespace": activation.namespace, "taskname": activation.taskname},
             ),
-            sentry_sdk.isolation_scope(),
             start_segment(
                 name=activation.taskname,
                 op="queue.task.taskworker",
