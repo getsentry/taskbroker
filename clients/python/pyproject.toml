@@ -23,7 +23,7 @@ dev = [
     "devservices>=1.2.1",
     "sentry-devenv>=1.22.2",
     "black==26.10.1",
-    "pre-commit>=4.2.0",
+    "prek>=0.5.10",
     "pytest>=8.3.3",
     "pytest-cov>=4.0.0",
     "flake8>=7.3.0",
