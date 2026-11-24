@@ -174,7 +174,7 @@ wheels = [
 
 [[package]]
 name = "devservices"
-version = "1.2.1"
+version = "1.5.5"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "packaging" },
@@ -184,7 +184,7 @@ dependencies = [
     { name = "supervisor" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/devservices-1.2.1-py3-none-any.whl", hash = "sha256:7c76ab711550cd1f42bd99b12edfcbdb1792fb7df0b7fec51eb13a2e2ff5df1b" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/devservices-1.5.5-py3-none-any.whl", hash = "sha256:7b88327c7e55340c89c65530c069c95e3a813d15f7350afa0041fc7256b316fb" },
 ]
 
 [[package]]
@@ -703,14 +703,14 @@ wheels = [
 
 [[package]]
 name = "sentry-sdk"
-version = "2.73.0"
+version = "3.0.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
 dependencies = [
     { name = "certifi" },
     { name = "urllib3" },
 ]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_sdk-2.73.0-py3-none-any.whl", hash = "sha256:0bcfa6928ea5adbb89591858b514d27adac27c7a3cccc31b20ed10e0b09eda9e" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/sentry_sdk-3.0.0-py3-none-any.whl", hash = "sha256:22cfcdb11b494e8efa82a48edd655afdf99179df37f2ed37f18846b938455c36" },
 ]
 
 [package.optional-dependencies]
@@ -736,13 +736,10 @@ wheels = [
 
 [[package]]
 name = "supervisor"
-version = "4.2.5"
+version = "4.3.0"
 source = { registry = "https://pypi.devinfra.sentry.io/simple" }
-dependencies = [
-    { name = "setuptools" },
-]
 wheels = [
-    { url = "https://pypi.devinfra.sentry.io/wheels/supervisor-4.2.5-py2.py3-none-any.whl", hash = "sha256:2ecaede32fc25af814696374b79e42644ecaba5c09494c51016ffda9602d0f08" },
+    { url = "https://pypi.devinfra.sentry.io/wheels/supervisor-4.3.0-py2.py3-none-any.whl", hash = "sha256:0bcb763fddafba410f35cbde226aa7f8514b9fb82eb05a0c85f6588d1c13f8db" },
 ]
 
 [[package]]
@@ -837,6 +834,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "sentry-devenv" },
+    { name = "setuptools" },
     { name = "time-machine" },
     { name = "types-protobuf" },
 ]
@@ -856,7 +854,7 @@ requires-dist = [
     { name = "redis-py-cluster", marker = "extra == 'cluster'", specifier = ">=2.1.0" },
     { name = "sentry-arroyo", specifier = ">=2.41.1" },
     { name = "sentry-protos", specifier = ">=0.106.0" },
-    { name = "sentry-sdk", extras = ["http2"], specifier = ">=2.73.0" },
+    { name = "sentry-sdk", extras = ["http2"], specifier = ">=3.0.0" },
     { name = "setuptools", marker = "extra == 'examples'", specifier = ">=80.0" },
     { name = "zstandard", specifier = ">=0.18.0" },
 ]
@@ -874,6 +872,7 @@ dev = [
     { name = "pytest", specifier = ">=8.3.3" },
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "sentry-devenv", specifier = ">=1.22.2" },
+    { name = "setuptools", specifier = ">=80.0" },
     { name = "time-machine", specifier = ">=2.16.0" },
     { name = "types-protobuf", specifier = ">=5.27.0.20240626,<6.0.0" },
 ]
