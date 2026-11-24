@@ -23,16 +23,13 @@ def current_task() -> CurrentTaskState | None:
     return _current_state.state
 
 
-def set_current_task(activation: TaskActivation) -> None:
-    retry_state = activation.retry_state
+def set_current_task(activation: TaskActivation, *, retries_remaining: bool) -> None:
     state = CurrentTaskState(
         id=activation.id,
         namespace=activation.namespace,
         taskname=activation.taskname,
         attempt=activation.retry_state.attempts,
-        # We subtract one, as attempts starts at 0, but `max_attempts`
-        # starts at 1.
-        retries_remaining=(retry_state.attempts < (retry_state.max_attempts - 1)),
+        retries_remaining=retries_remaining,
         processing_deadline_duration=activation.processing_deadline_duration,
     )
     _current_state.state = state
