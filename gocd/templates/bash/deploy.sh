@@ -10,7 +10,7 @@ fi
 
 /devinfra/scripts/get-cluster-credentials
 
-# With ARGOCD_ONLY, k8s-deploy waits forever when nothing matches (e.g. the s4s2 canary has no StatefulSet).
+# With ARGOCD_ONLY, k8s-deploy waits forever when nothing matches (e.g. the s4s2 canary has no StatefulSet), so skip empty types.
 statefulsets=$(kubectl get statefulset -A -l "${LABEL_SELECTOR}" -o name)
 if [ -n "${statefulsets}" ]; then
 	k8s-deploy \
@@ -21,9 +21,12 @@ if [ -n "${statefulsets}" ]; then
 		${WAIT_TIMEOUT:+"${WAIT_TIMEOUT}"}
 fi
 
-k8s-deploy \
+deployments=$(kubectl get deployment -A -l "${LABEL_SELECTOR}" -o name)
+if [ -n "${deployments}" ]; then
+	k8s-deploy \
 		--label-selector="${LABEL_SELECTOR}" \
 		--image="us-central1-docker.pkg.dev/sentryio/taskbroker/image:${GO_REVISION_TASKBROKER_REPO}" \
 		--type="deployment" \
 		--container-name="taskbroker" \
-		${WAIT_TIMEOUT:+"${WAIT_TIMEOUT}"};
+		${WAIT_TIMEOUT:+"${WAIT_TIMEOUT}"}
+fi
