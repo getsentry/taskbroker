@@ -1,6 +1,7 @@
 import contextlib
 import ctypes
 import gc
+import logging
 import os
 import queue
 import random
@@ -2842,11 +2843,10 @@ def test_child_process_error_event_uses_task_transaction(
         sentry_sdk.Client(
             dsn="https://public@example.com/1",
             default_integrations=False,
-            integrations=[LoggingIntegration()],
+            integrations=[LoggingIntegration(level=None, event_level=logging.ERROR)],
             transport=mock.Mock(spec=Transport),
             before_send=capture_event,
             traces_sample_rate=0,
-            trace_lifecycle="stream",
         ) as client,
         sentry_sdk.isolation_scope() as scope,
     ):

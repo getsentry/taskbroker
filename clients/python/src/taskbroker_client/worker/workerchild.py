@@ -136,7 +136,8 @@ def _log_task_failed(
 ) -> None:
     """
     Emit a structured failure log via logger.exception. When the embedding
-    application has the Sentry SDK's LoggingIntegration enabled (default),
+    application adds the Sentry SDK's LoggingIntegration with
+    event_level=logging.ERROR (sentry-sdk 3.x doesn't enable it by default),
     this also produces the Sentry event, so the same call covers both the
     structured stdout log and the Sentry capture. Call this from inside an
     existing isolation_scope block so fingerprints/tags are preserved.
