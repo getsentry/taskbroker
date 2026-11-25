@@ -39,7 +39,7 @@ class ProducerProtocol(Protocol):
     """Interface for producers that tasks depend on."""
 
     def produce(
-        self, dest: Topic | Partition, payload: KafkaPayload
+        self, dest: Topic | Partition, /, payload: KafkaPayload
     ) -> ProducerFuture[BrokerValue[KafkaPayload]]: ...
 
 
@@ -47,7 +47,7 @@ class CloseableProducerProtocol(Protocol):
     """Interface used by TaskProducer. Represents a producer that has a shutdown method."""
 
     def produce(
-        self, dest: Topic | Partition, payload: KafkaPayload
+        self, dest: Topic | Partition, /, payload: KafkaPayload
     ) -> ProducerFuture[BrokerValue[KafkaPayload]]: ...
 
     def close(self) -> Future[None]: ...
