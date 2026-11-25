@@ -1,4 +1,10 @@
 # Changelog
+## 0.20.39
+
+### Bug Fixes 🐛
+
+- (client) Make the producer protocols' dest positional-only by @chromy and @claude in [#878](https://github.com/getsentry/taskbroker/pull/878)
+
 ## 0.20.38
 
 ### Bug Fixes 🐛
