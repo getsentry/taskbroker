@@ -1,4 +1,65 @@
 # Changelog
+## 0.20.39
+
+### Bug Fixes 🐛
+
+- (client) Make the producer protocols' dest positional-only by @chromy and @claude in [#878](https://github.com/getsentry/taskbroker/pull/878)
+
+## 0.20.38
+
+### Bug Fixes 🐛
+
+- (rpc) Remove maximum_concurrent_rpcs limit by @evanh in [#874](https://github.com/getsentry/taskbroker/pull/874)
+
+## 0.20.37
+
+### New Features ✨
+
+- (taskworker) Serve push health checks on a separate port by @evanh and @claude in [#869](https://github.com/getsentry/taskbroker/pull/869)
+
+## 0.20.36
+
+### New Features ✨
+
+- (taskworker) Send heartbeats for running tasks by @evanh and @claude in [#859](https://github.com/getsentry/taskbroker/pull/859)
+
+## 0.20.35
+
+### New Features ✨
+
+#### Taskworker
+
+- Add opt-in wait for child exit during recycling by @jamieQ in [#855](https://github.com/getsentry/taskbroker/pull/855)
+- Wait for running tasks on shutdown instead of killing children by @evanh and @claude in [#857](https://github.com/getsentry/taskbroker/pull/857)
+
+## 0.20.34
+
+### Bug Fixes 🐛
+
+- (client) Use mget_nonatomic for RunStorage.read_many on RedisCluster by @chromy and @claude in [#846](https://github.com/getsentry/taskbroker/pull/846)
+
+### Internal Changes 🔧
+
+- (deps-dev) Bump black from 26.3.1 to 26.10.1 by @dependabot in [#849](https://github.com/getsentry/taskbroker/pull/849)
+- Bump Python to 3.12.16 and uv to 0.13.7 by @oioki in [#850](https://github.com/getsentry/taskbroker/pull/850)
+
+## 0.20.33
+
+### Bug Fixes 🐛
+
+#### Client
+
+- Join split surrogate pairs when encoding task parameters by @enochtangg and @claude in [#835](https://github.com/getsentry/taskbroker/pull/835)
+- Reject push requests with a missing or invalid signature by @theminjunchoi in [#836](https://github.com/getsentry/taskbroker/pull/836)
+
+### Other
+
+- release: 0.20.32 by @untitaker in [a9351e89](https://github.com/getsentry/taskbroker/commit/a9351e897d45f6bfb0797d77599b30df3cd5dd50)
+
+## 0.20.32
+
+- No documented changes.
+
 ## 0.20.30
 
 ### New Features ✨

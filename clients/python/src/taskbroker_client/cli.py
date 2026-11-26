@@ -112,6 +112,11 @@ def scheduler() -> None:
     type=int,
 )
 @click.option(
+    "--wait-for-child-exit/--no-wait-for-child-exit",
+    help="Count retiring children toward concurrency until they exit. May reduce recycling throughput.",
+    default=False,
+)
+@click.option(
     "--child-tasks-queue-maxsize",
     help="Maximum number of pending tasks buffered for child processes.",
     default=DEFAULT_WORKER_QUEUE_SIZE,
@@ -174,6 +179,7 @@ def pull(
     namespace: str | None,
     concurrency: int,
     min_concurrency: int,
+    wait_for_child_exit: bool,
     child_tasks_queue_maxsize: int,
     result_queue_maxsize: int,
     rebalance_after: int,
@@ -197,6 +203,7 @@ def pull(
         namespace=namespace,
         concurrency=concurrency,
         min_concurrency=min_concurrency,
+        wait_for_child_exit=wait_for_child_exit,
         child_tasks_queue_maxsize=child_tasks_queue_maxsize,
         result_queue_maxsize=result_queue_maxsize,
         rebalance_after=rebalance_after,
@@ -244,6 +251,11 @@ def pull(
     help="The minimum number of child processes to keep running.",
     default=0,
     type=int,
+)
+@click.option(
+    "--wait-for-child-exit/--no-wait-for-child-exit",
+    help="Count retiring children toward concurrency until they exit. May reduce recycling throughput.",
+    default=False,
 )
 @click.option(
     "--child-tasks-queue-maxsize",
@@ -297,6 +309,15 @@ def pull(
     type=int,
 )
 @click.option(
+    "--health-port",
+    help=(
+        "Serve gRPC health checks on this port, separate from the push server. When set, pushes "
+        "beyond --concurrency are rejected with RESOURCE_EXHAUSTED instead of queueing."
+    ),
+    default=None,
+    type=int,
+)
+@click.option(
     "--grpc-max-message-size",
     help="Maximum gRPC send/receive message size, in bytes.",
     default=-1,
@@ -343,6 +364,7 @@ def push(
     namespace: str | None,
     concurrency: int,
     min_concurrency: int,
+    wait_for_child_exit: bool,
     child_tasks_queue_maxsize: int,
     result_queue_maxsize: int,
     rebalance_after: int,
@@ -352,6 +374,7 @@ def push(
     health_check_file_path: str | None,
     health_check_sec_per_touch: float,
     grpc_port: int,
+    health_port: int | None,
     grpc_max_message_size: int,
     push_task_timeout: float,
     skip_awaiting_futures: bool,
@@ -372,6 +395,7 @@ def push(
         namespace=namespace,
         concurrency=concurrency,
         min_concurrency=min_concurrency,
+        wait_for_child_exit=wait_for_child_exit,
         child_tasks_queue_maxsize=child_tasks_queue_maxsize,
         result_queue_maxsize=result_queue_maxsize,
         rebalance_after=rebalance_after,
@@ -381,6 +405,7 @@ def push(
         health_check_file_path=health_check_file_path,
         health_check_sec_per_touch=health_check_sec_per_touch,
         grpc_port=grpc_port,
+        health_port=health_port,
         grpc_max_message_size=grpc_max_message_size,
         push_task_timeout=push_task_timeout,
         skip_awaiting_futures=skip_awaiting_futures,

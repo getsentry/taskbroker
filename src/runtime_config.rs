@@ -218,7 +218,9 @@ drop_task_killswitch: []
 demoted_namespaces:
   - bad_namespace
 demoted_topic_cluster: kafka:9092
-demoted_topic: taskworker-demoted-topic"#;
+demoted_topic: taskworker-demoted-topic
+# Removed flag; deployed configs that still set it must keep parsing.
+use_reloading_producer: true"#;
 
         let mut config_file = NamedTempFile::new().unwrap();
         writeln!(config_file, "{}", test_yaml).unwrap();

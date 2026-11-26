@@ -12,7 +12,8 @@ Covered behaviors:
 - happy-path delivery: every task is pushed exactly once and marked processing;
 - push-failure revert: a rejecting worker causes claimed tasks to revert to pending;
 - claim-expiration / upkeep: claims stranded by a killed broker are returned to
-  pending by upkeep after restart.
+  pending by upkeep after restart;
+- graceful shutdown: stopping the broker mid-batch leaves no task claimed.
 
 Requires devservices postgres up (127.0.0.1:5432, postgres/password) and kafka
 up (127.0.0.1:9092), which `make test-push-postgres` provisions.
@@ -405,6 +406,81 @@ def test_push_postgres_upkeep_reverts_expired_claims() -> None:
         counts = get_num_tasks_in_postgres_group_by_status(pg)
         assert counts.get("Complete", 0) == 0, f"nothing should complete: {counts}"
         assert get_num_tasks_in_postgres(pg) == num_messages, f"no task should be lost: {counts}"
+    finally:
+        if process is not None:
+            stop_broker(process)
+        server.stop(0)
+        drop_postgres_db(pg)
+
+
+def test_push_postgres_shutdown_leaves_no_claims() -> None:
+    """
+    Stop the broker with SIGINT while its fetch thread is partway through a
+    batch, and assert that no task is left 'Claimed' after a clean exit.
+
+    A worker that hangs past push.timeout keeps the one-slot push queue full, so
+    the fetch thread spends nearly all its time holding claimed rows it has not
+    submitted yet. Shutdown used to cancel the fetch thread right there and
+    strand those rows until their lease expired. Every row the broker hands off
+    fails its push and goes back to 'Pending', so a clean shutdown leaves all of
+    them pending.
+    """
+    num_messages = 200
+    grpc_port, worker_port = get_available_ports(2)
+    config_path, log_path, curr = _setup_paths("shutdown")
+    topic = f"push-pg-shutdown-{curr}"
+    dlq_topic = f"push-pg-shutdown-dlq-{curr}"
+    pg = PostgresConfig(database_name=unique_pg_database_name("push_pg_shutdown"))
+
+    create_topic(topic, 1)
+    create_topic(dlq_topic, 1)
+
+    # queue.timeout is far above push.timeout, so the fetch thread waits for a
+    # free slot rather than timing out and releasing the batch itself. Finishing
+    # a batch after the signal takes at most batch_length × push.timeout (1.5s).
+    config = build_push_config(
+        topic=topic,
+        dlq_topic=dlq_topic,
+        grpc_port=grpc_port,
+        worker_port=worker_port,
+        pg=pg,
+        fetch={"threads": 1, "batch_length": 3, "backoff": "100ms"},
+        push={
+            "threads": 1,
+            "timeout": "500ms",
+            "queue": {"size": 1, "timeout": "5000ms"},
+            "update": {"batched": False},
+        },
+    )
+    with open(config_path, "w") as f:
+        yaml.safe_dump(config, f)
+
+    activations = make_activations(num_messages)
+    send_custom_messages_to_topic(topic, activations)
+
+    # Hang longer than push.timeout so every push fails and nothing is acked.
+    server, servicer = start_mock_worker(worker_port, hang=10.0)
+    process = None
+    try:
+        process = start_broker(config_path, log_path)
+
+        assert wait_until(
+            lambda: get_num_tasks_in_postgres(pg) == num_messages, timeout=60
+        ), f"expected {num_messages} tasks written, got {get_num_tasks_in_postgres(pg)}"
+
+        # One row in a push, one in the queue, and at least one held by the fetch thread
+        assert wait_until(
+            lambda: get_num_tasks_in_postgres_by_status(pg, "Claimed") >= 3, timeout=30
+        ), f"expected a saturated push pipeline: {get_num_tasks_in_postgres_group_by_status(pg)}"
+
+        # Asserts a clean exit within 10 seconds
+        stop_broker(process)
+        process = None
+
+        counts = get_num_tasks_in_postgres_group_by_status(pg)
+        assert counts == {
+            "Pending": num_messages
+        }, f"expected every task back in pending after shutdown: {counts}"
     finally:
         if process is not None:
             stop_broker(process)

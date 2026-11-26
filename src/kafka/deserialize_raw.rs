@@ -154,6 +154,7 @@ pub fn new(config: RawConfig) -> impl Fn(&MessageBackend) -> Result<Activation, 
             processing_deadline_duration: config.processing_deadline_duration.into(),
             expires: None,
             delay: None,
+            heartbeat: None,
         };
 
         let activation_bytes = activation.encode_to_vec();
@@ -188,6 +189,8 @@ pub fn new(config: RawConfig) -> impl Fn(&MessageBackend) -> Result<Activation, 
             received_at: received_at_time,
             processing_deadline: None,
             claim_expires_at: None,
+            heartbeat: None,
+            heartbeat_deadline: None,
             processing_deadline_duration: config.processing_deadline_duration.into(),
             processing_attempts: 0,
             expires_at: None,

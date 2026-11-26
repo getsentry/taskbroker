@@ -1,3 +1,7 @@
+minVersion: "3.9.0"
+versioning:
+  policy: manual
+
 preReleaseCommand: ../scripts/bump-version-clients.sh
 
 changelog:

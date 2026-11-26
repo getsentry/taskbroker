@@ -86,6 +86,7 @@ impl WorkerClient for Worker {
 
         let request = PushTaskRequest {
             task: Some(task),
+            #[allow(deprecated)]
             callback_url: "".into(), // Workers don't use this anymore, so use an empty string until field is removed from schema
         };
 

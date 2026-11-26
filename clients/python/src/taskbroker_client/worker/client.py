@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence, Tuple, Union
 import grpc
 from google.protobuf.message import Message
 from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
+    BatchUpdateHeartbeatRequest,
     FetchNextTask,
     GetTaskRequest,
     SetTaskStatusRequest,
@@ -34,12 +35,15 @@ else:
 
 logger = logging.getLogger(__name__)
 
-# gRPC runs the unary request deserializer and the servicer on the same thread for a given call
-# If HMAC verification fails inside a deserializer wrapper, raising turns into INTERNAL, so we set this flag and abort UNAUTHENTICATED from the servicer
-_RPC_SIGNATURE_AUTH_TLS = threading.local()
+# Raising in the deserializer would return INTERNAL, so a request that fails the HMAC check
+# is replaced with this marker and the servicer aborts with UNAUTHENTICATED.
+_AUTH_FAILED = object()
 
 MAX_ACTIVATION_SIZE = 1024 * 1024 * 10
 """Max payload size we will process."""
+
+# Well below the 10s minimum heartbeat, so a hung call can't eat a whole interval.
+HEARTBEAT_RPC_TIMEOUT_SEC = 5
 
 GRPC_HEALTH_CHECK_METHOD = "/grpc.health.v1.Health/Check"
 
@@ -217,18 +221,15 @@ class RequestSignatureServerInterceptor(ServerInterceptor):
         original = handler.unary_unary
 
         def request_deserializer(serialized_request: bytes) -> Any:
-            _RPC_SIGNATURE_AUTH_TLS.failed = False
-
             if not verify_rpc_request_signature_hmac(
                 self._secrets, method, serialized_request, signature
             ):
-                _RPC_SIGNATURE_AUTH_TLS.failed = True
-                return inner_deserializer(b"")
+                return _AUTH_FAILED
 
             return inner_deserializer(serialized_request)
 
         def unary_unary(request: Any, context: grpc.ServicerContext) -> Any:
-            if getattr(_RPC_SIGNATURE_AUTH_TLS, "failed", False):
+            if request is _AUTH_FAILED:
                 context.abort(grpc.StatusCode.UNAUTHENTICATED, "Authentication failed")
 
             return original(request, context)
@@ -525,3 +526,23 @@ class TaskbrokerClient:
                 receive_timestamp=time.monotonic(),
             )
         return None
+
+    def update_heartbeats(self, host: str, ids: list[str]) -> list[str]:
+        """
+        Renew the heartbeat of activations processing on `host`. Returns the ids
+        that host no longer has processing.
+        """
+        tags = {"processing_pool": self._processing_pool_name}
+        try:
+            response = self._get_stub(host).BatchUpdateHeartbeat(
+                BatchUpdateHeartbeatRequest(ids=ids), timeout=HEARTBEAT_RPC_TIMEOUT_SEC
+            )
+        except grpc.RpcError as err:
+            self._metrics.incr(
+                "taskworker.client.heartbeat.rpc", tags={"status": err.code().name, **tags}
+            )
+            raise
+
+        self._metrics.incr("taskworker.client.heartbeat.rpc", tags={"status": "OK", **tags})
+        self._metrics.distribution("taskworker.client.heartbeat.batch_size", len(ids), tags=tags)
+        return list(response.not_found_ids)

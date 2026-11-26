@@ -297,6 +297,71 @@ def test_create_activation_parameters(task_namespace: TaskNamespace) -> None:
     assert activation.parameters == ""
 
 
+EMOJI = chr(0x1F600)
+# The same emoji as two separate surrogate code points, which isn't valid UTF-8.
+SPLIT_EMOJI = chr(0xD83D) + chr(0xDE00)
+
+
+def test_create_activation_joins_split_surrogate_pair(task_namespace: TaskNamespace) -> None:
+    @task_namespace.register(name="test.surrogates")
+    def with_message(message: str) -> None:
+        raise NotImplementedError
+
+    with patch.object(task_namespace.metrics, "incr") as mock_incr:
+        activation = with_message.create_activation([], {"message": "hi " + SPLIT_EMOJI})
+
+    params = msgpack.unpackb(activation.parameters_bytes, raw=False)
+    assert params["kwargs"] == {"message": "hi " + EMOJI}
+    mock_incr.assert_called_once_with(
+        "taskworker.producer.surrogates_repaired",
+        tags={
+            "namespace": task_namespace.name,
+            "taskname": "test.surrogates",
+            "topic": task_namespace.topic,
+        },
+    )
+
+
+def test_create_activation_joins_nested_surrogate_pairs(task_namespace: TaskNamespace) -> None:
+    @task_namespace.register(name="test.surrogates_nested")
+    def with_nested(data: dict[str, Any], count: int) -> None:
+        raise NotImplementedError
+
+    activation = with_nested.create_activation(
+        [{SPLIT_EMOJI: [SPLIT_EMOJI, b"raw", 1]}],
+        {"count": 2},
+    )
+
+    params = msgpack.unpackb(activation.parameters_bytes, raw=False)
+    assert params["args"] == [{EMOJI: [EMOJI, b"raw", 1]}]
+    assert params["kwargs"] == {"count": 2}
+
+
+def test_create_activation_replaces_lone_surrogate(task_namespace: TaskNamespace) -> None:
+    @task_namespace.register(name="test.surrogates_lone")
+    def with_message(message: str) -> None:
+        raise NotImplementedError
+
+    activation = with_message.create_activation([], {"message": "hi " + chr(0xD83D)})
+
+    params = msgpack.unpackb(activation.parameters_bytes, raw=False)
+    assert params["kwargs"] == {"message": "hi " + chr(0xFFFD)}
+
+
+def test_create_activation_valid_unicode_unchanged(task_namespace: TaskNamespace) -> None:
+    @task_namespace.register(name="test.unicode")
+    def with_message(message: str) -> None:
+        raise NotImplementedError
+
+    kwargs = {"message": "hi " + EMOJI}
+    with patch.object(task_namespace.metrics, "incr") as mock_incr:
+        activation = with_message.create_activation([], kwargs)
+
+    expected = msgpack.packb({"args": [], "kwargs": kwargs}, use_bin_type=True)
+    assert activation.parameters_bytes == expected
+    mock_incr.assert_not_called()
+
+
 def test_create_activation_tracing(task_namespace: TaskNamespace) -> None:
     @task_namespace.register(name="test.parameters")
     def with_parameters(one: str, two: int, org_id: int) -> None:

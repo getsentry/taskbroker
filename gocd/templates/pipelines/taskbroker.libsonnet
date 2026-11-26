@@ -19,23 +19,9 @@ local checks_stage = {
   },
 };
 
-local run_migrations_stage = {
-  'run-migrations': {
-    fetch_materials: true,
-    jobs: {
-      'run-migrations': {
-        timeout: 60,
-        elastic_profile_id: 'taskbroker',
-        tasks: [
-          gocdtasks.script(importstr '../bash/run-migrations.sh'),
-        ],
-      },
-    },
-  },
-};
 
 local deploy_canary_stage(region) =
-  if region == 'us' || region == 'de' then
+  if region == 'us' || region == 'de' || region == 's4s2' then
     [
       {
         'deploy-canary': {
@@ -49,6 +35,8 @@ local deploy_canary_stage(region) =
                 GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
                 GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
                 LABEL_SELECTOR: 'service=taskbroker,env=canary',
+                ARGOCD_ONLY: 'true',
+                ARGOCD_SERVICE: 'taskbroker',
               },
               tasks: [
                 gocdtasks.script(importstr '../bash/deploy.sh'),
@@ -60,7 +48,7 @@ local deploy_canary_stage(region) =
       },
     ] else [];
 
-local deployPrimaryStage = {
+local deployPrimaryStage(region) = {
   'deploy-primary': {
     fetch_materials: true,
     jobs: {
@@ -72,6 +60,8 @@ local deployPrimaryStage = {
           GITHUB_APP_ID: '{{SECRET:[devinfra-github][app_id]}}',
           GITHUB_APP_PRIVATE_KEY: '{{SECRET:[devinfra-github][private_key]}}',
           LABEL_SELECTOR: 'service=taskbroker',
+          ARGOCD_ONLY: 'true',
+          ARGOCD_SERVICE: 'taskbroker',
         },
         tasks: [
           gocdtasks.script(importstr '../bash/deploy.sh'),
@@ -95,7 +85,7 @@ function(region) {
     },
   },
   lock_behavior: 'unlockWhenFinished',
-  stages: [checks_stage, run_migrations_stage]
+  stages: [checks_stage]
           + deploy_canary_stage(region)
-          + [deployPrimaryStage],
+          + [deployPrimaryStage(region)],
 }

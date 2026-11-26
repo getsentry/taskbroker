@@ -22,6 +22,7 @@ from sentry_protos.taskbroker.v1.taskbroker_pb2 import (
 from taskbroker_client.constants import (
     DEFAULT_PROCESSING_DEADLINE,
     MAX_PARAMETER_BYTES_BEFORE_COMPRESSION,
+    MIN_HEARTBEAT,
     CompressionType,
 )
 from taskbroker_client.retry import Retry
@@ -38,6 +39,21 @@ This can be mutated by application test harnesses to run tasks without Kafka.
 
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
+def _join_surrogates(value: Any) -> Any:
+    """
+    Rebuild strings that hold a UTF-16 surrogate pair as two separate code points
+    (e.g. an emoji parsed with `ast.literal_eval`), which msgpack can't encode as
+    UTF-8. Pairs are joined into one character and lone halves become U+FFFD.
+    """
+    if isinstance(value, str):
+        return value.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    if isinstance(value, dict):
+        return {_join_surrogates(k): _join_surrogates(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_join_surrogates(v) for v in value]
+    return value
 
 
 def assert_typed_kwarg(
@@ -91,6 +107,7 @@ class Task(Generic[P, R]):
         report_timeout_errors: bool = True,
         silenced_exceptions: tuple[type[BaseException], ...] | None = None,
         pass_headers: bool = False,
+        heartbeat: int | datetime.timedelta | None = None,
     ):
         self.name = name
         self._func = func
@@ -105,6 +122,22 @@ class Task(Generic[P, R]):
                 Having retries enabled means that a task supports being executed
                 multiple times and thus cannot be idempotent.
                 """)
+        if isinstance(heartbeat, datetime.timedelta):
+            heartbeat = int(heartbeat.total_seconds())
+        if heartbeat is not None:
+            deadline = self._processing_deadline_duration
+            if isinstance(deadline, datetime.timedelta):
+                deadline = int(deadline.total_seconds())
+            if heartbeat < MIN_HEARTBEAT:
+                raise ValueError(
+                    f"Task {name!r} heartbeat must be at least {MIN_HEARTBEAT}s, got {heartbeat}s"
+                )
+            if heartbeat >= deadline:
+                raise ValueError(
+                    f"Task {name!r} heartbeat ({heartbeat}s) must be less than its "
+                    f"processing_deadline_duration ({deadline}s)"
+                )
+        self.heartbeat = heartbeat
         self._retry = retry
         self.at_most_once = at_most_once
         self.wait_for_delivery = wait_for_delivery
@@ -290,6 +323,13 @@ class Task(Generic[P, R]):
         """
         pass
 
+    def _producer_metric_tags(self) -> dict[str, str]:
+        return {
+            "namespace": self._namespace.name,
+            "taskname": self.name,
+            "topic": self._namespace.topic,
+        }
+
     def create_activation(
         self,
         args: Collection[Any],
@@ -342,7 +382,14 @@ class Task(Generic[P, R]):
                 )
 
         data = {"args": args, "kwargs": kwargs}
-        msgpack_bytes = msgpack.packb(data, use_bin_type=True)
+        try:
+            msgpack_bytes = msgpack.packb(data, use_bin_type=True)
+        except UnicodeEncodeError:
+            msgpack_bytes = msgpack.packb(_join_surrogates(data), use_bin_type=True)
+            self.namespace.metrics.incr(
+                "taskworker.producer.surrogates_repaired",
+                tags=self._producer_metric_tags(),
+            )
 
         should_compress = (
             self.compression_type == CompressionType.ZSTD
@@ -355,11 +402,7 @@ class Task(Generic[P, R]):
             parameters_bytes_val = zstd.compress(msgpack_bytes)
             elapsed = time.perf_counter() - start_time
 
-            metric_tags = {
-                "namespace": self._namespace.name,
-                "taskname": self.name,
-                "topic": self._namespace.topic,
-            }
+            metric_tags = self._producer_metric_tags()
             self.namespace.metrics.distribution(
                 "taskworker.producer.compressed_parameters_size",
                 len(parameters_bytes_val),
@@ -385,6 +428,7 @@ class Task(Generic[P, R]):
             processing_deadline_duration=processing_deadline,
             expires=expires,
             delay=countdown,
+            heartbeat=self.heartbeat,
         )
 
     def create_testing_activation(

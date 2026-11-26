@@ -152,6 +152,14 @@ pub struct Activation {
     #[builder(default = None, setter(strip_option))]
     pub processing_deadline: Option<DateTime<Utc>>,
 
+    /// Seconds a worker has between heartbeats. None means the task does not heartbeat.
+    #[builder(default = None, setter(strip_option))]
+    pub heartbeat: Option<i32>,
+
+    /// If a heartbeat task is still processing after this time, upkeep retries it.
+    #[builder(default = None, setter(strip_option))]
+    pub heartbeat_deadline: Option<DateTime<Utc>>,
+
     /// If a task is still claimed after this time, upkeep may release the claim.
     #[builder(default = None, setter(strip_option))]
     pub claim_expires_at: Option<DateTime<Utc>>,

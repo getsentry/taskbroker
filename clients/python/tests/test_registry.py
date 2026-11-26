@@ -515,3 +515,56 @@ def test_registry_create_namespace_is_raw_mode() -> None:
     )
     assert not registry.create_namespace("tests").is_raw_mode
     assert registry.create_namespace("tests.raw", is_raw_mode=True).is_raw_mode
+
+
+def test_register_heartbeat_sets_activation_field() -> None:
+    namespace = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+    )
+
+    @namespace.register(name="tests.heartbeat", processing_deadline_duration=60, heartbeat=10)
+    def heartbeat_task() -> None:
+        raise NotImplementedError
+
+    assert heartbeat_task.create_activation([], {}).heartbeat == 10
+
+
+@pytest.mark.parametrize(
+    "heartbeat,match",
+    [
+        pytest.param(9, "at least 10s", id="too_small"),
+        pytest.param(60, "less than its processing_deadline_duration", id="not_below_deadline"),
+    ],
+)
+def test_register_rejects_invalid_heartbeat(heartbeat: int, match: str) -> None:
+    namespace = TaskNamespace(
+        name="tests",
+        application="acme",
+        producer_factory=producer_factory,
+        router=DefaultRouter(),
+        metrics=NoOpMetricsBackend(),
+        retry=None,
+    )
+
+    with pytest.raises(ValueError, match=match):
+
+        @namespace.register(
+            name="tests.heartbeat", processing_deadline_duration=60, heartbeat=heartbeat
+        )
+        def heartbeat_task() -> None:
+            raise NotImplementedError
+
+
+def test_raw_mode_namespace_rejects_heartbeat() -> None:
+    namespace = raw_namespace()
+
+    with pytest.raises(ValueError, match="sets heartbeat"):
+
+        @namespace.register(name="tests.raw.consume", heartbeat=10)
+        def consume(message_bytes: bytes) -> None:
+            raise NotImplementedError
