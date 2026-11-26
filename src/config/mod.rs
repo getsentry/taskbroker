@@ -142,6 +142,11 @@ pub struct Config {
     /// `auto_offset_reset`.
     pub kafka_auto_offset_reset: String,
 
+    /// Use the `cooperative-sticky` assignor instead of eager rebalancing. Members on the new
+    /// assignor wait until every member on the old one has left the group, so flip this with a
+    /// rolling deploy, in either direction.
+    pub kafka_cooperative_rebalance: bool,
+
     /// librdkafka's `queued.max.messages.kbytes`. Partition queues are split, so this caps
     /// prefetched messages per assigned partition rather than per consumer.
     pub kafka_queued_max_messages_kbytes: usize,
@@ -291,6 +296,7 @@ impl Default for Config {
             kafka_session_timeout_ms: 6000,
             kafka_auto_commit_interval_ms: 5000,
             kafka_auto_offset_reset: "latest".to_owned(),
+            kafka_cooperative_rebalance: false,
             kafka_queued_max_messages_kbytes: 4096,
             kafka_send_timeout_ms: 500,
             store: StoreConfig::default(),
@@ -1005,6 +1011,9 @@ impl Config {
                 "queued.max.messages.kbytes",
                 self.kafka_queued_max_messages_kbytes.to_string(),
             );
+        if self.kafka_cooperative_rebalance {
+            config.set("partition.assignment.strategy", "cooperative-sticky");
+        }
 
         config
     }
@@ -1488,6 +1497,11 @@ mod tests {
         );
         assert_eq!(consumer_config.get("group.id").unwrap(), "taskworker");
         assert!(consumer_config.get("session.timeout.ms").is_some());
+        assert!(
+            consumer_config
+                .get("partition.assignment.strategy")
+                .is_none()
+        );
         assert_eq!(
             consumer_config.get("queued.max.messages.kbytes").unwrap(),
             "4096"
@@ -2234,6 +2248,7 @@ kafka_deadletter_topic: profiles-dlq
 kafka_session_timeout_ms: 7000
 kafka_auto_commit_interval_ms: 2000
 kafka_auto_offset_reset: earliest
+kafka_cooperative_rebalance: true
 
 kafka_topics:
   profiles:
@@ -2259,6 +2274,12 @@ kafka_clusters:
 
             // No per-topic overrides, so the globals are used.
             assert_eq!(consumer_config.get("session.timeout.ms").unwrap(), "7000");
+            assert_eq!(
+                consumer_config
+                    .get("partition.assignment.strategy")
+                    .unwrap(),
+                "cooperative-sticky"
+            );
             assert_eq!(
                 consumer_config.get("auto.commit.interval.ms").unwrap(),
                 "2000"
