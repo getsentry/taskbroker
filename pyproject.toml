@@ -9,7 +9,7 @@ requires-python = ">=3.11"
 dev = [
     "black==26.10.1",
     "devservices>=1.2.1",
-    "pre-commit>=4.2.0",
+    "prek>=0.5.10",
     "pytest>=9.0.3",
     "sentry-devenv>=1.22.2",
     "confluent_kafka>=2.3.0",
@@ -28,6 +28,9 @@ dev = [
 
 [tool.uv]
 environments = ["sys_platform == 'darwin' or sys_platform == 'linux'"]
+
+[tool.uv.sources]
+prek = { index = "sfw" }
 
 [[tool.uv.index]]
 name = "sentry-pypi"

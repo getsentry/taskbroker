@@ -8,7 +8,7 @@ version = "0.0.0"
 dev = [
     "black==26.10.1",
     "devservices>=1.2.1",
-    "pre-commit>=4.2.0",
+    "prek>=0.5.10",
     "pytest>=8.3.3",
     "sentry-devenv>=1.22.2",
     "confluent_kafka>=2.3.0",
